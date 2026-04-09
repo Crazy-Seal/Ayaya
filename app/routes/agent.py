@@ -4,7 +4,7 @@ import json
 
 from app.dependencies import get_agent_service
 from app.schemas.result import Result
-from app.schemas.chat import ChatRequest
+from app.schemas.chat import ChatRequest, AgentInput
 from app.services.agent_service import AgentService
 
 router = APIRouter(tags=["agent"])
@@ -26,8 +26,13 @@ def chat(
     session_id = payload.session_id
 
     def event_stream():
+        agent_input = AgentInput(
+            message=payload.message,
+            image_data=payload.image_data,
+            document_name=payload.document_name,
+        )
         try:
-            for chunk in agent_service.stream_chat(payload.message, session_id):
+            for chunk in agent_service.stream_chat(agent_input, session_id):
                 data = json.dumps({"response": chunk}, ensure_ascii=False)
                 yield f"data: {data}\n\n"
             yield "data: [DONE]\n\n"

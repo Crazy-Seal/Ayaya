@@ -47,7 +47,21 @@ The backend depends on the Python environment. Python 3.12 is recommended.
    pip install -r requirements.txt
    ```
 3. **Environment Configuration**:
-   Modify or confirm the `config/settings.yaml` configuration, fill in the API key of the large model you are using, or put the API key into the environment variables.
+   Create or update the `.env` file in the project root and fill in your model/search credentials:
+   ```dotenv
+   EMBEDDING_API_KEY=your_embedding_api_key
+   EMBEDDING_MODEL=text-embedding-v4
+   EMBEDDING_DIMENSION=1024
+   EMBEDDING_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+
+   CODING_API_KEY=your_coding_api_key
+   CODING_MODEL=gpt-5.3-codex
+   CODING_BASE_URL=https://www.dmxapi.cn/v1
+   CODING_TEMPERATURE=0.3
+
+   TAVILY_API_KEY=your_tavily_api_key
+   ```
+   > `config/settings.yaml` is no longer used at runtime (it is kept only as a migration hint file).
 4. **Start the service**:
    ```powershell
    uvicorn main:app --reload --reload-exclude "agent_workspace/*"

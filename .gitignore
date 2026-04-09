@@ -25,3 +25,9 @@ ui/hiyori_pro_zh.zip
 # ===== OS files =====
 .DS_Store
 Thumbs.db
+
+# ===== Logs =====
+app/agent/tools/tools.log
+
+# ===== Environment files =====
+.env

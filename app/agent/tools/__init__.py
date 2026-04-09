@@ -11,6 +11,8 @@ TOOLS_REGISTRY = {
     "write_file": "app.agent.tools.write_file:write_file",
     "edit_file": "app.agent.tools.edit_file:edit_file",
     "delete_file": "app.agent.tools.delete_file:delete_file",
+    "execute_screen": "app.agent.tools.execute_screen:execute_screen",
+    "screenshot": "app.agent.tools.screenshot:screenshot",
 }
 
 # 编程子图工具：同样走延迟加载，集中在 tools 包统一维护。

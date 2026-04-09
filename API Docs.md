@@ -169,9 +169,18 @@
 ```json
 {
   "message": "你好",
-  "session_id": "a9ea0407-6a54-4535-b424-b7cd454d7bcd"
+  "session_id": "a9ea0407-6a54-4535-b424-b7cd454d7bcd",
+  "image_data": "data:image/png;base64,iVBORw0KGgoAAA...",
+  "document_name": "需求说明.md"
 }
 ```
+
+字段说明：
+- `message`：用户输入文本（必填）
+- `session_id`：会话ID（必填）
+- `image_data`：图像数据（可选，`string | null`，支持 HTTP JSON 传入 base64 字符串）
+- `document_name`：文档名（可选，`string | null`）
+
 
 #### 返回结果：
 

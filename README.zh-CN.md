@@ -1,4 +1,4 @@
-﻿[**English**](./README.md) | [**简体中文**](./README.zh-CN.md)
+﻿﻿[**English**](./README.md) | [**简体中文**](./README.zh-CN.md)
 
 # Hiyori Agent
 
@@ -47,7 +47,21 @@ hiyori_agent/
    pip install -r requirements.txt
    ```
 3. **环境配置**:
-   修改或确认 config/settings.yaml 配置，填入您使用的大模型 API key ，或将 API key 填入环境变量中
+   在项目根目录创建或修改 `.env` 文件，并填写模型/搜索相关密钥：
+   ```dotenv
+   EMBEDDING_API_KEY=your_embedding_api_key
+   EMBEDDING_MODEL=text-embedding-v4
+   EMBEDDING_DIMENSION=1024
+   EMBEDDING_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+
+   CODING_API_KEY=your_coding_api_key
+   CODING_MODEL=gpt-5.3-codex
+   CODING_BASE_URL=https://www.dmxapi.cn/v1
+   CODING_TEMPERATURE=0.3
+
+   TAVILY_API_KEY=your_tavily_api_key
+   ```
+   > `config/settings.yaml` 已不再参与运行时读取（当前仅保留为迁移提示文件）。
 4. **启动服务**:
    ```powershell
    uvicorn main:app --reload --reload-exclude "agent_workspace/*"

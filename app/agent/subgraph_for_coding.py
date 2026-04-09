@@ -1,6 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any, cast
+import os
 import sqlite3
 
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage
@@ -13,12 +14,16 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from pydantic import BaseModel, SecretStr
 
 from app.agent.tools import get_subgraph_tools
-from app.config.config import get_coding_model_settings
-
 from app.agent.utils.messages import normalize_messages_for_model
 from app.agent.utils.todo_manager import TodoManager
 from app.agent.utils.work_memory import slice_recent_messages_by_human
-from app.schemas.chat_settings import ChatSettings
+
+
+def _require_env(name: str) -> str:
+    value = (os.getenv(name) or "").strip()
+    if not value:
+        raise RuntimeError(f"Environment variable not found: {name}")
+    return value
 
 
 # 子图 checkpoint 独立存储路径，避免和主图短期记忆冲突。
@@ -46,8 +51,6 @@ def reduce_messages_keep_recent_humans(
 class CodingSubgraphState(BaseModel):
     # 子图运行时消息状态：使用 reducer 自动合并并裁剪历史消息。
     messages: Annotated[list[AnyMessage], reduce_messages_keep_recent_humans]
-    # 当前会话模型配置。
-    chat_settings: ChatSettings
     # 可序列化的待办事项列表，供 checkpoint 持久化。
     todo_items: list[dict[str, str]]
 
@@ -62,13 +65,12 @@ def get_subgraph_checkpointer() -> SqliteSaver:
 
 @lru_cache
 def get_subgraph_model(stream_tokens: bool = False) -> ChatOpenAI:
-    """读取 settings.yaml 中的编程模型配置并创建子图模型。"""
-    coding_settings = get_coding_model_settings()
+    """从 .env 读取编程模型配置并创建子图模型。"""
     model = ChatOpenAI(
-        model=str(coding_settings["model"]),
-        base_url=str(coding_settings["base_url"]),
-        api_key=SecretStr(str(coding_settings["api_key"])),
-        temperature=float(coding_settings["temperature"]),
+        model=_require_env("CODING_MODEL"),
+        base_url=_require_env("CODING_BASE_URL"),
+        api_key=SecretStr(_require_env("CODING_API_KEY")),
+        temperature=float(_require_env("CODING_TEMPERATURE")),
         streaming=stream_tokens,
     )
     tools = get_subgraph_tools()
@@ -110,7 +112,7 @@ def call_subgraph_model(state: CodingSubgraphState, config: RunnableConfig | Non
 
 
 @lru_cache
-def build_coding_subgraph(chat_settings: ChatSettings):
+def build_coding_subgraph():
     """构建并编译子图：coding_chatbot -> coding_tools -> coding_chatbot。"""
     tools = get_subgraph_tools()
 
@@ -152,12 +154,12 @@ def _content_to_text(content: object) -> str:
     return ""
 
 
-def invoke_coding_subgraph(command: str, todo_manager: TodoManager, chat_settings: ChatSettings) -> str:
+def invoke_coding_subgraph(command: str, todo_manager: TodoManager, session_id: str) -> str:
     """调用子图执行编码任务，并返回最后一条 AI 文本结果。"""
-    graph = build_coding_subgraph(chat_settings)
+    graph = build_coding_subgraph()
 
     # 使用独立命名空间，后续若恢复子图 checkpoint 也可避免和父图串线。
-    thread_id = f"{chat_settings.session_id}:coding"
+    thread_id = f"{session_id}:coding"
     config: RunnableConfig = {
         "configurable": {
             "thread_id": thread_id,
@@ -169,7 +171,6 @@ def invoke_coding_subgraph(command: str, todo_manager: TodoManager, chat_setting
     result = graph.invoke(
         cast(Any, {
             "messages": [HumanMessage(content=command)],
-            "chat_settings": chat_settings,
             "todo_items": list(todo_manager.items),
         }),
         config=config,

@@ -40,12 +40,14 @@ def plan_and_coding(raw_items: str, command: str, runtime: ToolRuntime) -> str:
     except Exception as e:
         return f"错误: {e}"
     try:
-        # 从父图 runtime 中取出 chat_settings，确保子图沿用同一会话配置。
-        chat_settings = cast(Any, runtime.state).chat_settings
+        # 从父图 runtime 中取出 session_id，供子图复用会话线程。
+        session_id = cast(Any, runtime.state).session_id
+        if not session_id:
+            return "编程专家出错: 缺少会话id信息"
         result = invoke_coding_subgraph(
             command=command,
             todo_manager=todo_manager,
-            chat_settings=chat_settings,
+            session_id=session_id,
         )
         # 返回给父图的结果里保留计划和执行输出，便于用户查看。
         return f"[编程专家回复]\n{result}"

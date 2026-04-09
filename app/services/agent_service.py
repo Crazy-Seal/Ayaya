@@ -2,13 +2,10 @@ from datetime import datetime
 from typing import Callable, Iterator
 import logging
 
-from app.agent.graph import (
-    invoke_agent_stream,
-    get_thread_checkpoint_watermark,
-    rollback_thread_checkpoints_after,
-)
+from app.agent.graph import MyAgent
 from app.config.config import get_chat_settings
 from app.crud.chat_history_dao import ChatHistoryDao
+from app.schemas.chat import AgentInput
 from app.schemas.chat_settings import ChatSettings
 
 
@@ -72,22 +69,26 @@ class AgentService:
         }
 
     @staticmethod
-    def _rollback_checkpoints(session_id: str, checkpoint_baseline: int) -> tuple[int, int]:
+    def _rollback_checkpoints(session_id: str, agent: MyAgent) -> tuple[int, int]:
         try:
-            return rollback_thread_checkpoints_after(session_id, checkpoint_baseline)
+            return agent.rollback_thread_checkpoints()
         except Exception:
             logger.exception("[AgentService][session=%s] checkpoints回滚失败", session_id)
             return 0, 0
 
-    def stream_chat(self, user_message: str, session_id: str = "default") -> Iterator[str]:
+    def stream_chat(self, agent_input: AgentInput, session_id: str = "default") -> Iterator[str]:
         chat_settings = self.chat_settings_loader(session_id)
-        timed_user_message = self._build_timed_user_message(user_message)
+        agent = MyAgent(chat_settings)
 
-        checkpoint_baseline = get_thread_checkpoint_watermark(session_id)
+        timed_agent_input = AgentInput(
+            message=self._build_timed_user_message(agent_input.message),
+            image_data=agent_input.image_data,
+            document_name=agent_input.document_name,
+        )
 
         response_parts: list[str] = []
         try:
-            for chunk in invoke_agent_stream(timed_user_message, chat_settings):
+            for chunk in agent.invoke_agent_stream(timed_agent_input):
                 text = self._extract_text(chunk.content)
                 if not text:
                     text = self._extract_text(chunk)
@@ -97,13 +98,13 @@ class AgentService:
                 yield text
         except Exception:
             logger.exception("[AgentService][session=%s] graph运行中出现错误，尝试回滚checkpoints", session_id)
-            self._rollback_checkpoints(session_id, checkpoint_baseline)
+            self._rollback_checkpoints(session_id, agent)
             yield "[错误：agent调用异常]"
             return
 
         ai_message = "".join(response_parts)
         if not ai_message.strip():
-            deleted_checkpoints, deleted_writes = self._rollback_checkpoints(session_id, checkpoint_baseline)
+            deleted_checkpoints, deleted_writes = self._rollback_checkpoints(session_id, agent)
             logger.warning(
                 "[AgentService][session=%s] 模型输出空，已回滚 checkpoints=%d, writes=%d",
                 session_id,
@@ -113,5 +114,5 @@ class AgentService:
             yield "[错误：未返回内容]"
             return
 
-        self.chat_history_dao.save_chat_message(session_id, "Human", user_message)
+        self.chat_history_dao.save_chat_message(session_id, "Human", agent_input.message)
         self.chat_history_dao.save_chat_message(session_id, "AI", ai_message)

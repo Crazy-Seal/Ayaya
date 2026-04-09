@@ -16,7 +16,7 @@ def search_memory(
     """
     try:
         store = runtime.store
-        session_id = runtime.state.chat_settings.session_id
+        session_id = runtime.state.session_id
         if not query or not query.strip():
             return "错误: query不能为空。"
         if session_id is None:

@@ -2,6 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 import logging
+import os
 import re
 import sqlite3
 import time
@@ -13,7 +14,6 @@ from langgraph.store.sqlite import SqliteStore
 from langgraph.store.sqlite.base import SqliteIndexConfig
 from pydantic import SecretStr
 
-from app.config.config import get_embedding_model_settings
 from app.schemas.chat_settings import ChatSettings
 
 
@@ -26,19 +26,31 @@ LATER_HUMAN_MESSAGES_FOR_SUMMARY = 10
 _summary_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="memory-summary")
 
 
+def _require_env(name: str) -> str:
+    value = (os.getenv(name) or "").strip()
+    if not value:
+        raise RuntimeError(f"Environment variable not found: {name}")
+    return value
+
+
 # @lru_cache(maxsize=1)  # 注释掉，防止数据库并发冲突
 def get_store() -> SqliteStore:
     """创建长期记忆向量存储。"""
     STORE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(STORE_DB_PATH), check_same_thread=False, isolation_level=None)
     conn.execute("PRAGMA journal_mode=WAL")
-    embedding_settings = get_embedding_model_settings()
+
+    embedding_api_key = _require_env("EMBEDDING_API_KEY")
+    embedding_model = _require_env("EMBEDDING_MODEL")
+    embedding_base_url = _require_env("EMBEDDING_BASE_URL")
+    embedding_dimension = int(_require_env("EMBEDDING_DIMENSION"))
+
     index_config = SqliteIndexConfig(
-        dims=int(embedding_settings["dimension"]),
+        dims=embedding_dimension,
         embed=OpenAIEmbeddings(
-            model=str(embedding_settings["model"]),
-            api_key=SecretStr(str(embedding_settings["api_key"])),
-            base_url=str(embedding_settings["base_url"]),
+            model=embedding_model,
+            api_key=SecretStr(embedding_api_key),
+            base_url=embedding_base_url,
             check_embedding_ctx_length=False,
             tiktoken_enabled=False,
         ),
@@ -238,7 +250,7 @@ def _summarize_and_store(
    主人说自己生日是9月25日，希望AI记住
    主人最近在学Python，问了很多编程问题
    AI承诺帮主人提醒明天的会议
-3. 多个相关要点可以用分号或逗号连接，较为不相关的要点需要分成不同的记忆条目，每条只记录一个事实或事件
+3. 不相关的要点需要分成不同的记忆条目，每条只记录一个事实或事件
 4. 每条记忆15-80字，保留关键细节
 5. 忽略无意义的闲聊（如"嗯"、"好的"、"知道了"）
 6. 可以记忆以下内容，重要程度从高到低：
@@ -333,4 +345,3 @@ def enqueue_memory_finalize_task(chat_settings: ChatSettings, messages: list[Any
     """投递记忆收尾任务到后台线程。"""
     future = _summary_executor.submit(_run_memory_finalize, chat_settings, list(messages))
     future.add_done_callback(_log_future_error)
-

@@ -7,7 +7,6 @@ from typing import Any
 from app.schemas.chat_settings import ChatSettings
 
 CHAT_CONFIG_FILE = Path(__file__).resolve().parents[2] / "config" / "chat_settings.yaml"
-SETTINGS_FILE = Path(__file__).resolve().parents[2] / "config" / "settings.yaml"
 
 
 _ENV_PLACEHOLDER_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)}")
@@ -57,30 +56,3 @@ def get_chat_settings(session_id: str) -> ChatSettings:
         system_prompt=matched_model["system_prompt"],
         tools_list=matched_model["tools_list"],
     )
-
-
-@lru_cache(maxsize=1)
-def get_embedding_model_settings() -> dict[str, str | int]:
-    raw = _load_yaml_with_env(SETTINGS_FILE)
-
-    embedding = raw["memory"]["embedding_model"]
-    return {
-        "api_key": embedding["api_key"],
-        "model": embedding["model"],
-        "dimension": embedding["dimension"],
-        "base_url": embedding["base_url"],
-    }
-
-
-@lru_cache(maxsize=1)
-def get_coding_model_settings() -> dict[str, str | float]:
-    """读取编程子图模型配置。"""
-    raw = _load_yaml_with_env(SETTINGS_FILE)
-
-    coding_model = raw["coding"]["coding_model"]
-    return {
-        "api_key": coding_model["api_key"],
-        "model": coding_model["model"],
-        "base_url": coding_model["base_url"],
-        "temperature": float(coding_model["temperature"]),
-    }

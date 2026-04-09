@@ -1,36 +1,14 @@
-from pathlib import Path
 import os
 
-import yaml
 from langchain.tools import tool
 from langchain_tavily import TavilySearch
 
 from app.agent.utils.log import log_tool_call, shorten_for_log
 
 
-SETTINGS_FILE = Path(__file__).resolve().parents[3] / "config" / "settings.yaml"
-
-
 def _load_tavily_api_key() -> str | None:
-    """读取 Tavily API Key：环境变量优先，配置文件兜底。"""
-    env_key = (os.getenv("TAVILY_API_KEY") or "").strip()
-    if env_key:
-        return env_key
-
-    if not SETTINGS_FILE.exists():
-        return None
-
-    try:
-        with SETTINGS_FILE.open("r", encoding="utf-8") as file:
-            raw = yaml.safe_load(file) or {}
-    except Exception:
-        return None
-
-    key = (
-        (raw.get("tavily", {}) or {}).get("api_key")
-        or ""
-    )
-    key = str(key).strip()
+    """读取 Tavily API Key：从 TAVILY_API_KEY 读取。"""
+    key = (os.getenv("TAVILY_API_KEY") or "").strip()
     return key or None
 
 
@@ -87,7 +65,7 @@ def access_the_internet(query: str) -> str:
 
     api_key = _load_tavily_api_key()
     if not api_key:
-        return "错误: 未找到 Tavily API Key。请设置环境变量 TAVILY_API_KEY 或在 config/settings.yaml 中配置。"
+        return "错误: 未找到 Tavily API Key。请设置环境变量 TAVILY_API_KEY。"
 
     # 仅在当前进程设置环境变量，供 langchain-tavily 底层客户端读取。
     os.environ["TAVILY_API_KEY"] = api_key
