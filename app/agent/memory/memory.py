@@ -33,7 +33,6 @@ def _require_env(name: str) -> str:
     return value
 
 
-# @lru_cache(maxsize=1)  # 注释掉，防止数据库并发冲突
 def get_store() -> SqliteStore:
     """创建长期记忆向量存储。"""
     STORE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -62,7 +61,7 @@ def get_store() -> SqliteStore:
 
 
 @lru_cache
-def get_summary_model(chat_settings: ChatSettings) -> ChatOpenAI:
+def _get_summary_model(chat_settings: ChatSettings) -> ChatOpenAI:
     """构建用于记忆提取与融合的总结模型。"""
     return ChatOpenAI(
         model=chat_settings.model_name,
@@ -72,7 +71,7 @@ def get_summary_model(chat_settings: ChatSettings) -> ChatOpenAI:
     )
 
 
-def extract_text(content: object) -> str:
+def _extract_text(content: object) -> str:
     """从模型消息 content 中提取纯文本。"""
     if isinstance(content, str):
         return content
@@ -91,7 +90,7 @@ def get_last_human_text(messages: list[AnyMessage]) -> str:
     """反向查找最近一条用户消息文本。"""
     for msg in reversed(messages):
         if isinstance(msg, HumanMessage):
-            return extract_text(msg.content)
+            return _extract_text(msg.content)
     return ""
 
 
@@ -136,7 +135,7 @@ def _build_summary_source(messages: list[AnyMessage]) -> str:
     """把消息整理为“角色: 内容”文本，供总结模型使用。"""
     lines: list[str] = []
     for message in messages:
-        text = extract_text(message.content)
+        text = _extract_text(message.content)
         if text:
             lines.append(f"{_message_role_name(message)}: {text}")
     return "\n".join(lines)
@@ -193,12 +192,12 @@ def _merge_long_memory_text(chat_settings: ChatSettings, existing_text: str, new
         "请把两条相似的长期记忆合并为一条更完整、去重后的记忆。"
         "保持事实准确，保留所有有效信息，不要新增原文没有的信息，只输出最终一条记忆。"
     )
-    model = get_summary_model(chat_settings)
+    model = _get_summary_model(chat_settings)
     response = model.invoke([
         SystemMessage(content=prompt),
         HumanMessage(content=f"已有记忆：{existing_text}\n新记忆：{new_text}"),
     ])
-    merged_text = extract_text(response.content).strip()
+    merged_text = _extract_text(response.content).strip()
     return merged_text if merged_text else f"{existing_text}；{new_text}"
 
 
@@ -261,7 +260,7 @@ def _summarize_and_store(
 8. 禁止使用“现在”“最近”“目前”“正在”等表示现在进行时的时间词，以保持时间中立性
 9. 可以提取0-5条记忆，返回多条记忆时使用换行分隔，不要输出额外解释。没有记忆要总结就返回None"""
     )
-    model = get_summary_model(chat_settings)
+    model = _get_summary_model(chat_settings)
     response = model.invoke([
         SystemMessage(content=prompt),
         HumanMessage(
@@ -272,7 +271,7 @@ def _summarize_and_store(
             )
         ),
     ])
-    summary_text = extract_text(response.content)
+    summary_text = _extract_text(response.content)
     if summary_text in ["None", "none", "NONE", ""]:
         return
 
@@ -305,7 +304,7 @@ def _summarize_short_memory(
         "如果字数过多，可以适量精简或删去时间较早的事件。"
         "禁止改变段落意思，禁止添加之前没有的信息或事件关系。"
     )
-    model = get_summary_model(chat_settings)
+    model = _get_summary_model(chat_settings)
     response = model.invoke([
         SystemMessage(content=prompt),
         HumanMessage(
@@ -316,7 +315,7 @@ def _summarize_short_memory(
             )
         ),
     ])
-    short_memory_text = extract_text(response.content).strip()
+    short_memory_text = _extract_text(response.content).strip()
     return short_memory_text if short_memory_text else previous_short_memory
 
 
