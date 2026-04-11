@@ -7,13 +7,13 @@ class ChatSettingsService:
         self.chat_settings_dao = chat_settings_dao
 
     def add_chat_settings(self, chat_settings: ChatSettings) -> ChatSettings:
-        return self.chat_settings_dao.add_api_key(chat_settings)
+        return self.chat_settings_dao.add_chat_settings(chat_settings)
 
     def delete_chat_settings(self, session_id: str) -> None:
-        self.chat_settings_dao.delete_api_key(session_id)
+        self.chat_settings_dao.delete_chat_settings(session_id)
 
     def get_chat_settings_by_session(self, session_id: str) -> ChatSettings:
-        return self.chat_settings_dao.get_api_key(session_id)
+        return self.chat_settings_dao.get_chat_settings(session_id)
 
     def update_chat_settings(self, chat_settings: ChatSettings) -> ChatSettings:
-        return self.chat_settings_dao.update_api_key(chat_settings.session_id, chat_settings)
+        return self.chat_settings_dao.update_chat_settings(chat_settings.session_id, chat_settings)

@@ -36,7 +36,7 @@ def _load_yaml_with_env(file_path: Path) -> dict[str, Any]:
     return _resolve_env_placeholders(raw)
 
 
-@lru_cache(maxsize=1)
+@lru_cache
 def get_chat_settings(session_id: str) -> ChatSettings:
     # 从 YAML 文件读取配置
     if not CHAT_CONFIG_FILE.exists():

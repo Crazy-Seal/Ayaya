@@ -39,7 +39,7 @@ class ChatSettingsDao:
             tools_list=item["tools_list"],
         )
 
-    def add_api_key(self, chat_settings: ChatSettings) -> ChatSettings:
+    def add_chat_settings(self, chat_settings: ChatSettings) -> ChatSettings:
         data = self._load_apikey_file()
         chat_models = data["chat_models"]
         session_id = chat_settings.session_id
@@ -52,7 +52,7 @@ class ChatSettingsDao:
         self._clear_caches()
         return chat_settings
 
-    def get_api_key(self, session_id: str) -> ChatSettings:
+    def get_chat_settings(self, session_id: str) -> ChatSettings:
         data = self._load_apikey_file()
         chat_models = data["chat_models"]
 
@@ -62,7 +62,7 @@ class ChatSettingsDao:
 
         raise KeyError(f"session_id not found: {session_id}")
 
-    def delete_api_key(self, session_id: str) -> None:
+    def delete_chat_settings(self, session_id: str) -> None:
         data = self._load_apikey_file()
         chat_models = data["chat_models"]
 
@@ -75,7 +75,7 @@ class ChatSettingsDao:
 
         raise KeyError(f"session_id not found: {session_id}")
 
-    def update_api_key(self, session_id: str, chat_settings: ChatSettings) -> ChatSettings:
+    def update_chat_settings(self, session_id: str, chat_settings: ChatSettings) -> ChatSettings:
         data = self._load_apikey_file()
         chat_models = data["chat_models"]
 

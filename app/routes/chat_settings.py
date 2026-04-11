@@ -10,7 +10,7 @@ router = APIRouter(tags=["chat_settings"])
 
 # 增
 @router.post("/chat_settings", response_model=Result)
-def add_api_key(
+def add_chat_settings(
     chat_settings: ChatSettings,
     chat_settings_service: ChatSettingsService = Depends(get_chat_settings_service),
 ) -> Result:
@@ -23,7 +23,7 @@ def add_api_key(
 
 # 删
 @router.delete("/chat_settings/{session_id}", response_model=Result)
-def delete_api_key(
+def delete_chat_settings(
     session_id: str,
     chat_settings_service: ChatSettingsService = Depends(get_chat_settings_service),
 ) -> Result:
@@ -36,7 +36,7 @@ def delete_api_key(
 
 # 查
 @router.get("/chat_settings/{session_id}", response_model=Result)
-def get_api_key(
+def get_chat_settings(
     session_id: str,
     chat_settings_service: ChatSettingsService = Depends(get_chat_settings_service),
 ) -> Result:
@@ -49,7 +49,7 @@ def get_api_key(
 
 # 改
 @router.put("/chat_settings", response_model=Result)
-def update_api_key(
+def update_chat_settings(
     chat_settings: ChatSettings,
     chat_settings_service: ChatSettingsService = Depends(get_chat_settings_service),
 ) -> Result:

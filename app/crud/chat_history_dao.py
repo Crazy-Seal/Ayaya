@@ -4,7 +4,7 @@ import sqlite3
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
-DB_PATH = Path(__file__).resolve().parents[2] / "memory" / "sqlite" / "checkpoints.sqlite3"
+DB_PATH = Path(__file__).resolve().parents[2] / "memory" / "sqlite" / "chat_history.sqlite3"
 
 
 class ChatHistoryDao:
