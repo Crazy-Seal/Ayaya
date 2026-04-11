@@ -2,7 +2,8 @@ from datetime import datetime
 from typing import Callable, Iterator
 import logging
 
-from app.agent.graph import MyAgent
+from app.agent.my_agent import MyAgent
+from app.agent.interface import BaseAgent
 from app.config.config import get_chat_settings
 from app.crud.chat_history_dao import ChatHistoryDao
 from app.schemas.chat import AgentInput
@@ -17,9 +18,11 @@ class AgentService:
         self,
         chat_history_dao: ChatHistoryDao,
         chat_settings_loader: Callable[[str], ChatSettings] = get_chat_settings,
+        agent_factory: Callable[[ChatSettings], BaseAgent] | None = None,
     ):
         self.chat_history_dao = chat_history_dao
         self.chat_settings_loader = chat_settings_loader
+        self.agent_factory = agent_factory or MyAgent
 
     @staticmethod
     def _build_timed_user_message(user_message: str) -> str:
@@ -69,7 +72,7 @@ class AgentService:
         }
 
     @staticmethod
-    def _rollback_checkpoints(session_id: str, agent: MyAgent) -> tuple[int, int]:
+    def _rollback_checkpoints(session_id: str, agent: BaseAgent) -> tuple[int, int]:
         try:
             return agent.rollback_thread_checkpoints()
         except Exception:
@@ -78,7 +81,7 @@ class AgentService:
 
     def stream_chat(self, agent_input: AgentInput, session_id: str = "default") -> Iterator[str]:
         chat_settings = self.chat_settings_loader(session_id)
-        agent = MyAgent(chat_settings)
+        agent = self.agent_factory(chat_settings)
 
         timed_agent_input = AgentInput(
             message=self._build_timed_user_message(agent_input.message),

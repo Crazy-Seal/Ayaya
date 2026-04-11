@@ -97,7 +97,7 @@ def call_subgraph_model(state: CodingSubgraphState, config: RunnableConfig | Non
     todo_manager = TodoManager()
     todo_view = todo_manager.update(state.todo_items)
     system_prompt = (
-        "你是专注执行编程任务的编程专家。"
+        "你是调用工具执行编程任务的编程专家。"
         "conda环境和工作目录都已经为你准备好，你可以直接调用工具执行命令和生成文件。"
         "每完成一条编码计划，必须调用工具更新编码计划列表的状态。"
         "若代码运行出错或缺少依赖，可根据错误提示修改代码或安装依赖后重试，直到成功为止。"
