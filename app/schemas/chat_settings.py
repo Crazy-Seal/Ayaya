@@ -15,6 +15,8 @@ class ChatSettings(BaseModel):
     system_prompt: str
     # 工具列表
     tools_list: list[str]
+    # 可选：启用的记忆插件列表（按顺序执行）
+    memory_plugins: list[str] | None = None
 
     def __hash__(self):
         return hash((self.session_id,
@@ -24,4 +26,5 @@ class ChatSettings(BaseModel):
                      self.temperature,
                      # 不管system_prompt内容，只要配置和工具列表相同就认为是同一个模型配置（因为系统提示词经常调整）
                      # self.system_prompt,
-                     tuple(self.tools_list)))
+                     tuple(self.tools_list),
+                     tuple(self.memory_plugins or [])))

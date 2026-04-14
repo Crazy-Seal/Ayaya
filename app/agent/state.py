@@ -16,7 +16,7 @@ def reduce_messages_keep_recent_humans(
     left: list[AnyMessage],
     right: list[AnyMessage] | AnyMessage,
 ) -> list[AnyMessage]:
-    """Merge LangGraph messages and keep only a bounded recent human window."""
+    """合并 LangGraph 消息，并仅保留最近固定窗口的人类消息."""
     merged = add_messages(left, right)
     # checkpoint 里只保留最近窗口，避免历史消息无限增长。
     return slice_recent_messages_by_human(
@@ -26,7 +26,7 @@ def reduce_messages_keep_recent_humans(
 
 
 class AgentState(BaseModel):
-    # StateGraph message history with reducer-based truncation.
+    # StateGraph 消息历史，经过 reducer 自动裁剪。
     messages: Annotated[list[AnyMessage], reduce_messages_keep_recent_humans]
     # 会话隔离标识，贯穿记忆检索、工具调用和 checkpoint。
     session_id: str

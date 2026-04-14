@@ -1,13 +1,14 @@
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any, cast
+import asyncio
 import os
-import sqlite3
 
+import aiosqlite
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
@@ -34,6 +35,10 @@ SUBGRAPH_MAX_HUMAN_MESSAGES_IN_CHECKPOINT = 50
 SUBGRAPH_RECENT_CONTEXT_HUMAN_MESSAGES = 5
 
 # 子图可调用工具由 app.agent.tools.get_subgraph_tools 统一管理。
+_SUBGRAPH_CHECKPOINTER: AsyncSqliteSaver | None = None
+_SUBGRAPH_CHECKPOINTER_LOCK = asyncio.Lock()
+_CODING_SUBGRAPH = None
+_CODING_SUBGRAPH_LOCK = asyncio.Lock()
 
 
 def reduce_messages_keep_recent_humans(
@@ -55,12 +60,21 @@ class CodingSubgraphState(BaseModel):
     todo_items: list[dict[str, str]]
 
 
-@lru_cache(maxsize=1)
-def get_subgraph_checkpointer() -> SqliteSaver:
+async def get_subgraph_checkpointer() -> AsyncSqliteSaver:
     """创建并缓存子图专用 checkpoint 存储器。"""
-    SUBGRAPH_CHECKPOINT_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(SUBGRAPH_CHECKPOINT_DB_PATH), check_same_thread=False)
-    return SqliteSaver(conn)
+    global _SUBGRAPH_CHECKPOINTER
+    if _SUBGRAPH_CHECKPOINTER is not None:
+        return _SUBGRAPH_CHECKPOINTER
+
+    async with _SUBGRAPH_CHECKPOINTER_LOCK:
+        if _SUBGRAPH_CHECKPOINTER is not None:
+            return _SUBGRAPH_CHECKPOINTER
+        SUBGRAPH_CHECKPOINT_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        conn = await aiosqlite.connect(str(SUBGRAPH_CHECKPOINT_DB_PATH))
+        saver = AsyncSqliteSaver(conn)
+        await saver.setup()
+        _SUBGRAPH_CHECKPOINTER = saver
+        return _SUBGRAPH_CHECKPOINTER
 
 
 @lru_cache
@@ -79,7 +93,7 @@ def get_subgraph_model(stream_tokens: bool = False) -> ChatOpenAI:
     return model
 
 
-def call_subgraph_model(state: CodingSubgraphState, config: RunnableConfig | None = None):
+async def call_subgraph_model(state: CodingSubgraphState, config: RunnableConfig | None = None):
     """子图核心推理节点：拼装上下文后调用模型。"""
     configurable = (config or {}).get("configurable", {}) if isinstance(config, dict) else {}
     stream_tokens = bool(configurable.get("stream_tokens", False))
@@ -107,36 +121,44 @@ def call_subgraph_model(state: CodingSubgraphState, config: RunnableConfig | Non
         f"\n\n[编码计划列表]\n{todo_view}"
     )
     messages = [SystemMessage(content=system_prompt)] + recent_messages
-    response = model.invoke(messages)
+    response = await model.ainvoke(messages)
     return {"messages": [response]}
 
 
-@lru_cache
-def build_coding_subgraph():
+async def build_coding_subgraph():
     """构建并编译子图：coding_chatbot -> coding_tools -> coding_chatbot。"""
-    tools = get_subgraph_tools()
+    global _CODING_SUBGRAPH
+    if _CODING_SUBGRAPH is not None:
+        return _CODING_SUBGRAPH
 
-    def coding_chatbot(state: CodingSubgraphState, config: RunnableConfig):
-        """子图聊天节点包装，便于接入 StateGraph。"""
-        return call_subgraph_model(state, config)
+    async with _CODING_SUBGRAPH_LOCK:
+        if _CODING_SUBGRAPH is not None:
+            return _CODING_SUBGRAPH
 
-    builder = StateGraph(CodingSubgraphState)
-    # 使用 coding_ 前缀，避免在父图流式输出中过滤到子图节点事件。
-    builder.add_node("coding_chatbot", coding_chatbot)
-    builder.add_node("coding_tools", ToolNode(tools=tools))
+        tools = get_subgraph_tools()
 
-    # 子图入口先走模型，再根据是否触发工具决定流转。
-    builder.add_edge(START, "coding_chatbot")
-    builder.add_conditional_edges(
-        "coding_chatbot",
-        tools_condition,
-        {"tools": "coding_tools", "__end__": END},
-    )
-    # 工具执行后回到模型继续推理。
-    builder.add_edge("coding_tools", "coding_chatbot")
+        async def coding_chatbot(state: CodingSubgraphState, config: RunnableConfig):
+            """子图聊天节点包装，便于接入 StateGraph。"""
+            return await call_subgraph_model(state, config)
 
-    # 子图状态已改为可序列化结构，可安全挂载 checkpoint。
-    return builder.compile(checkpointer=get_subgraph_checkpointer())
+        builder = StateGraph(CodingSubgraphState)
+        # 使用 coding_ 前缀，避免在父图流式输出中过滤到子图节点事件。
+        builder.add_node("coding_chatbot", coding_chatbot)
+        builder.add_node("coding_tools", ToolNode(tools=tools))
+
+        # 子图入口先走模型，再根据是否触发工具决定流转。
+        builder.add_edge(START, "coding_chatbot")
+        builder.add_conditional_edges(
+            "coding_chatbot",
+            tools_condition,
+            {"tools": "coding_tools", "__end__": END},
+        )
+        # 工具执行后回到模型继续推理。
+        builder.add_edge("coding_tools", "coding_chatbot")
+
+        # 子图状态已改为可序列化结构，可安全挂载 checkpoint。
+        _CODING_SUBGRAPH = builder.compile(checkpointer=await get_subgraph_checkpointer())
+        return _CODING_SUBGRAPH
 
 
 def _content_to_text(content: object) -> str:
@@ -154,9 +176,9 @@ def _content_to_text(content: object) -> str:
     return ""
 
 
-def invoke_coding_subgraph(command: str, todo_manager: TodoManager, session_id: str) -> str:
+async def invoke_coding_subgraph(command: str, todo_manager: TodoManager, session_id: str) -> str:
     """调用子图执行编码任务，并返回最后一条 AI 文本结果。"""
-    graph = build_coding_subgraph()
+    graph = await build_coding_subgraph()
 
     # 使用独立命名空间，后续若恢复子图 checkpoint 也可避免和父图串线。
     thread_id = f"{session_id}:coding"
@@ -168,7 +190,7 @@ def invoke_coding_subgraph(command: str, todo_manager: TodoManager, session_id: 
     }
 
     # 初始 state 注入可序列化 todo_items
-    result = graph.invoke(
+    result = await graph.ainvoke(
         cast(Any, {
             "messages": [HumanMessage(content=command)],
             "todo_items": list(todo_manager.items),

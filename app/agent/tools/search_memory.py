@@ -1,11 +1,13 @@
 from langchain.tools import tool
 from langgraph.prebuilt import ToolRuntime
+
+from app.agent.memory_hub.storage.adapters import get_vector_memory_adapter
 from app.agent.utils.log import log_tool_call
 
 
 @tool
 @log_tool_call()
-def search_memory(
+async def search_memory(
     query: str,
     runtime: ToolRuntime
 ) -> str:
@@ -15,24 +17,27 @@ def search_memory(
         query: 搜索关键词/关键句。
     """
     try:
-        store = runtime.store
-        session_id = runtime.state.session_id
+        state = runtime.state
+        session_id = state.get("session_id") if isinstance(state, dict) else getattr(state, "session_id", None)
         if not query or not query.strip():
             return "错误: query不能为空。"
         if session_id is None:
             return "错误: 缺少会话id信息，无法定位长期记忆。"
 
-        namespace = ("long_mem", session_id)
-        items = store.search(namespace, query=query.strip(), limit=5)
+        items = await get_vector_memory_adapter().search_async(
+            user_id=str(session_id),
+            query=query.strip(),
+            limit=5,
+            namespace="episodic_memory",
+        )
 
         lines: list[str] = []
         for idx, item in enumerate(items, start=1):
-            text = ""
-            if isinstance(item.value, dict):
-                text = str(item.value.get("text", "")).strip()
+            text = str(item.get("text", "")).strip()
             if not text:
                 continue
-            score = f"{item.score:.4f}" if item.score is not None else "N/A"
+            score_value = item.get("score")
+            score = f"{score_value:.4f}" if isinstance(score_value, (int, float)) else "N/A"
             lines.append(f"{idx}. {text} (score={score})")
 
         if not lines:

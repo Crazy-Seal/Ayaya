@@ -74,8 +74,7 @@ def log_tool_call(logger_name: str = "app.agent.tools"):
     def decorator(func):
         signature = inspect.signature(func)
 
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
+        def _prepare_log_context(args, kwargs):
             logger = logging.getLogger(logger_name)
             _ensure_tool_file_handler(logger)
             call_time = dt.datetime.now(dt.UTC).isoformat()
@@ -85,41 +84,65 @@ def log_tool_call(logger_name: str = "app.agent.tools"):
                 params = _sanitize_params(dict(bound.arguments))
             except Exception:
                 params = {"args": _sanitize_value(args), "kwargs": _sanitize_value(kwargs)}
-
             logger.info("tool=%s event=start call_time=%s params=%s", func.__name__, call_time, params)
-            try:
-                result = func(*args, **kwargs)
-                duration_ms = int((time.perf_counter() - start) * 1000)
-                result_preview = _sanitize_value(result)
-                if isinstance(result, str) and result.lstrip().startswith("错误:"):
-                    logger.error(
-                        "tool=%s event=error call_time=%s duration_ms=%s params=%s error=%s",
-                        func.__name__,
-                        call_time,
-                        duration_ms,
-                        params,
-                        result_preview,
-                    )
-                else:
-                    logger.info(
-                        "tool=%s event=success call_time=%s duration_ms=%s params=%s output=%s",
-                        func.__name__,
-                        call_time,
-                        duration_ms,
-                        params,
-                        result_preview,
-                    )
-                return result
-            except Exception as exc:
-                duration_ms = int((time.perf_counter() - start) * 1000)
-                logger.exception(
-                    "tool=%s event=exception call_time=%s duration_ms=%s params=%s error=%s",
+            return logger, call_time, start, params
+
+        def _log_success_or_error(logger, call_time, start, params, result):
+            duration_ms = int((time.perf_counter() - start) * 1000)
+            result_preview = _sanitize_value(result)
+            if isinstance(result, str) and result.lstrip().startswith("错误:"):
+                logger.error(
+                    "tool=%s event=error call_time=%s duration_ms=%s params=%s error=%s",
                     func.__name__,
                     call_time,
                     duration_ms,
                     params,
-                    shorten_for_log(str(exc), max_len=500),
+                    result_preview,
                 )
+            else:
+                logger.info(
+                    "tool=%s event=success call_time=%s duration_ms=%s params=%s output=%s",
+                    func.__name__,
+                    call_time,
+                    duration_ms,
+                    params,
+                    result_preview,
+                )
+
+        def _log_exception(logger, call_time, start, params, exc: Exception):
+            duration_ms = int((time.perf_counter() - start) * 1000)
+            logger.exception(
+                "tool=%s event=exception call_time=%s duration_ms=%s params=%s error=%s",
+                func.__name__,
+                call_time,
+                duration_ms,
+                params,
+                shorten_for_log(str(exc), max_len=500),
+            )
+
+        if inspect.iscoroutinefunction(func):
+            @functools.wraps(func)
+            async def async_wrapper(*args, **kwargs):
+                logger, call_time, start, params = _prepare_log_context(args, kwargs)
+                try:
+                    result = await func(*args, **kwargs)
+                    _log_success_or_error(logger, call_time, start, params, result)
+                    return result
+                except Exception as exc:
+                    _log_exception(logger, call_time, start, params, exc)
+                    raise
+
+            return async_wrapper
+
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            logger, call_time, start, params = _prepare_log_context(args, kwargs)
+            try:
+                result = func(*args, **kwargs)
+                _log_success_or_error(logger, call_time, start, params, result)
+                return result
+            except Exception as exc:
+                _log_exception(logger, call_time, start, params, exc)
                 raise
 
         return wrapper

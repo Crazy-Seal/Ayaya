@@ -53,9 +53,9 @@ def _format_search_output(data) -> str:
 
 @tool
 @log_tool_call()
-def access_the_internet(query: str) -> str:
+async def access_the_internet(query: str) -> str:
     """
-    访问互联网，搜索你想要的信息。
+    访问互联网，搜索你想要的信息。当用户提及你不知道的信息，或你想上网查询时使用。
 
     Args:
         query: 你的搜索问题或关键词等。
@@ -76,7 +76,7 @@ def access_the_internet(query: str) -> str:
             search_depth="advanced",
             include_answer=True,
         )
-        result = search_tool.invoke({"query": query.strip()})
+        result = await search_tool.ainvoke({"query": query.strip()})
         return _format_search_output(result)
     except ModuleNotFoundError:
         return "错误: 缺少 langchain-tavily 依赖，请先安装: pip install langchain-tavily"

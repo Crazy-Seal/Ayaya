@@ -8,7 +8,7 @@ from app.schemas.chat_settings import ChatSettings
 
 @lru_cache
 def get_model(chat_settings: ChatSettings) -> ChatOpenAI:
-    """Build and cache the base chat model by session settings."""
+    """按会话配置创建并缓存主对话模型实例。"""
     # 模型构建集中在 provider，避免在多个模块重复初始化参数。
     return ChatOpenAI(
         model=chat_settings.model_name,

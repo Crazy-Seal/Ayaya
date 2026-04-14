@@ -55,4 +55,5 @@ def get_chat_settings(session_id: str) -> ChatSettings:
         temperature=matched_model["temperature"],
         system_prompt=matched_model["system_prompt"],
         tools_list=matched_model["tools_list"],
+        memory_plugins=matched_model.get("memory_plugins"),
     )

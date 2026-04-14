@@ -1,11 +1,12 @@
 from abc import ABC, abstractmethod
+from typing import AsyncIterator
 
 from app.schemas.chat import AgentInput
 
 
 class BaseAgent(ABC):
     @abstractmethod
-    def invoke_agent_stream(self, user_message: AgentInput) -> object:
+    async def ainvoke_agent_stream(self, user_message: AgentInput) -> AsyncIterator[object]:
         """流式调用入口，子类实现具体逻辑。"""
 
     @abstractmethod

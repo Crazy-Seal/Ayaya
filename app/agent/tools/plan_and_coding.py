@@ -1,10 +1,15 @@
-from langchain.tools import tool
-from langgraph.prebuilt import ToolRuntime
+import logging
 from typing import Any, cast
 
+from langchain.tools import tool
+from langgraph.prebuilt import ToolRuntime
+
 from app.agent.subgraph_for_coding import invoke_coding_subgraph
+from app.agent.utils.background_tasks import create_background_task
 from app.agent.utils.log import log_tool_call
 from app.agent.utils.todo_manager import TodoManager
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_todo_items(raw_items: str) -> list[dict[str, str]]:
@@ -19,9 +24,19 @@ def _parse_todo_items(raw_items: str) -> list[dict[str, str]]:
     return items
 
 
+async def _run_coding_subgraph(command: str, todo_manager: TodoManager, session_id: str) -> None:
+    """后台执行编程子图，避免工具调用阻塞主流程。"""
+    result = await invoke_coding_subgraph(
+        command=command,
+        todo_manager=todo_manager,
+        session_id=session_id,
+    )
+    logger.info("编程子图执行完成: session_id=%s, output=%s", session_id, result)
+
+
 @tool
 @log_tool_call()
-def plan_and_coding(raw_items: str, command: str, runtime: ToolRuntime) -> str:
+async def plan_and_coding(raw_items: str, command: str, runtime: ToolRuntime) -> str:
     """
     创建编程任务的待办事项列表，并命令编程专家agent进行编程。需要进行编程时使用该工具。
     请将任务的不同步骤精确地拆解成多个待办事项，任务代码量大时，可将其按不同文件模块拆分成多个待办事项。
@@ -36,7 +51,7 @@ def plan_and_coding(raw_items: str, command: str, runtime: ToolRuntime) -> str:
         # 先构建并校验待办管理器，作为子图状态的一部分传入。
         items = _parse_todo_items(raw_items)
         todo_manager = TodoManager()
-        todo_view = todo_manager.update(items)
+        todo_manager.update(items)
     except Exception as e:
         return f"错误: {e}"
     try:
@@ -44,12 +59,17 @@ def plan_and_coding(raw_items: str, command: str, runtime: ToolRuntime) -> str:
         session_id = cast(Any, runtime.state).session_id
         if not session_id:
             return "编程专家出错: 缺少会话id信息"
-        result = invoke_coding_subgraph(
-            command=command,
-            todo_manager=todo_manager,
-            session_id=session_id,
+
+        # 改为后台任务，主流程立即返回，避免长任务阻塞聊天。
+        create_background_task(
+            _run_coding_subgraph(
+                command=command,
+                todo_manager=todo_manager,
+                session_id=session_id,
+            ),
+            logger=logger,
+            task_name=f"plan_and_coding:{session_id}",
         )
-        # 返回给父图的结果里保留计划和执行输出，便于用户查看。
-        return f"[编程专家回复]\n{result}"
+        return "任务已提交，正在后台执行。"
     except Exception as e:
         return f"编程专家出错: {e}"

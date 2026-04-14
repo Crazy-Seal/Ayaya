@@ -1,6 +1,6 @@
 from pathlib import Path
 import logging
-import sqlite3
+import aiosqlite
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
@@ -51,30 +51,30 @@ class ChatHistoryDao:
             logger.warning("[ChatHistory] 无法解析 timestamp=%r", utc_timestamp_value)
             return str(utc_timestamp_value)
 
-    def save_chat_message(self, session_id: str, role: str, content: str) -> None:
+    async def save_chat_message_async(self, session_id: str, role: str, content: str) -> None:
         """保存单条聊天消息到 chat_history 表。"""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            with sqlite3.connect(str(self.db_path)) as conn:
-                conn.execute(
+            async with aiosqlite.connect(str(self.db_path)) as conn:
+                await conn.execute(
                     "INSERT INTO chat_history (thread_id, role, content) VALUES (?, ?, ?)",
                     (session_id, role, content),
                 )
-                conn.commit()
+                await conn.commit()
         except Exception:
             logger.exception("[ChatHistory][session=%s] 保存聊天记录失败", session_id)
 
-    def save_chat_pair(self, session_id: str, user_message: str, ai_message: str) -> None:
+    async def save_chat_pair_async(self, session_id: str, user_message: str, ai_message: str) -> None:
         """兼容旧调用：保存一轮用户与助手对话到 chat_history 表。"""
-        self.save_chat_message(session_id, "Human", user_message)
-        self.save_chat_message(session_id, "AI", ai_message)
+        await self.save_chat_message_async(session_id, "Human", user_message)
+        await self.save_chat_message_async(session_id, "AI", ai_message)
 
-    def list_chat_history(self, session_id: str, start: int = 0, limit: int = 200) -> list[dict[str, str]]:
+    async def list_chat_history_async(self, session_id: str, start: int = 0, limit: int = 200) -> list[dict[str, str]]:
         """查询会话历史，并把 UTC 时间转换为系统本地时区。"""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            with sqlite3.connect(str(self.db_path)) as conn:
-                rows = conn.execute(
+            async with aiosqlite.connect(str(self.db_path)) as conn:
+                cursor = await conn.execute(
                     """
                     SELECT role, content, timestamp
                     FROM chat_history
@@ -83,7 +83,8 @@ class ChatHistoryDao:
                     LIMIT ? OFFSET ?
                     """,
                     (session_id, limit, start),
-                ).fetchall()
+                )
+                rows = await cursor.fetchall()
 
             return [
                 {

@@ -1,19 +1,34 @@
-from functools import lru_cache
 from pathlib import Path
+import asyncio
 import sqlite3
 
-from langgraph.checkpoint.sqlite import SqliteSaver
+import aiosqlite
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 
 CHECKPOINT_DB_PATH = Path(__file__).resolve().parents[2] / "memory" / "sqlite" / "checkpoints.sqlite3"
 
 
-@lru_cache(maxsize=1)
-def get_checkpointer() -> SqliteSaver:
-    """Return a cached checkpoint saver bound to the local sqlite db."""
-    CHECKPOINT_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(CHECKPOINT_DB_PATH), check_same_thread=False)
-    return SqliteSaver(conn)
+_CHECKPOINTER: AsyncSqliteSaver | None = None
+_CHECKPOINTER_LOCK = asyncio.Lock()
+
+
+async def get_checkpointer_async() -> AsyncSqliteSaver:
+    """返回进程级缓存的 AsyncSqliteSaver，用于异步 LangGraph checkpoint 持久化。"""
+    global _CHECKPOINTER
+    if _CHECKPOINTER is not None:
+        return _CHECKPOINTER
+
+    async with _CHECKPOINTER_LOCK:
+        if _CHECKPOINTER is not None:
+            return _CHECKPOINTER
+
+        CHECKPOINT_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        conn = await aiosqlite.connect(str(CHECKPOINT_DB_PATH))
+        saver = AsyncSqliteSaver(conn)
+        await saver.setup()
+        _CHECKPOINTER = saver
+    return _CHECKPOINTER
 
 
 class CheckpointRepository:

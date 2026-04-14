@@ -1,3 +1,4 @@
+-- 聊天记录表
 CREATE TABLE IF NOT EXISTS chat_history (
                                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                                             thread_id TEXT NOT NULL,           -- 对应 session_id

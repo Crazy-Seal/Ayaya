@@ -4,28 +4,44 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 
-from app.agent.checkpoint_repository import get_checkpointer
-from app.agent.memory.memory import get_store
+from app.agent.checkpoint_repository import get_checkpointer_async
+from app.agent.memory_hub import MemoryManager
 from app.agent.nodes import ChatNode, MemoryFinalizeNode
 from app.agent.state import AgentState
 from app.schemas.chat_settings import ChatSettings
 
 
 class AgentGraphBuilder:
-    """Build the LangGraph topology from pluggable node implementations."""
+    """根据可插拔节点实现构建 LangGraph 拓扑。"""
 
-    def __init__(self, model: Any, tools: list[Any], chat_settings: ChatSettings):
+    def __init__(
+        self,
+        model: Any,
+        tools: list[Any],
+        chat_settings: ChatSettings,
+        memory_manager: MemoryManager,
+    ):
+        # 运行依赖在构造阶段注入，避免节点内部直接创建外部资源。
         self.model = model
         self.tools = tools
         self.chat_settings = chat_settings
+        self.memory_manager = memory_manager
 
-    def build(self) -> Any:
+    async def build(self) -> Any:
         # 节点实现与图结构分离，便于后续替换节点策略。
-        chat_node = ChatNode(model=self.model, chat_settings=self.chat_settings)
-        memory_node = MemoryFinalizeNode(chat_settings=self.chat_settings)
+        chat_node = ChatNode(
+            model=self.model,
+            chat_settings=self.chat_settings,
+            memory_manager=self.memory_manager,
+        )
+        memory_node = MemoryFinalizeNode(
+            chat_settings=self.chat_settings,
+            memory_manager=self.memory_manager,
+        )
 
-        def chatbot(state: AgentState, config: RunnableConfig):
-            return chat_node(state)
+        async def chatbot(state: AgentState, config: RunnableConfig):
+            # 统一在这里把 StateGraph 回调转发给节点对象。
+            return await chat_node(state)
 
         builder = StateGraph(AgentState)
         builder.add_node("chatbot", chatbot)
@@ -42,5 +58,5 @@ class AgentGraphBuilder:
         builder.add_edge("tools", "chatbot")
         builder.add_edge("memory_finalize", END)
 
-        # 编译时统一注入 checkpoint 与向量存储，避免节点层重复依赖装配。
-        return builder.compile(checkpointer=get_checkpointer(), store=get_store())
+        # 编译时仅注入 checkpoint；工具侧记忆查询统一走 memory_hub 调用链。
+        return builder.compile(checkpointer=await get_checkpointer_async())

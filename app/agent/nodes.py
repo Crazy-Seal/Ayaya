@@ -1,29 +1,30 @@
+import logging
 from typing import Any
 
 from langchain_core.messages import SystemMessage
 
-from app.agent.memory.memory import (
-    enqueue_memory_finalize_task,
-    get_last_human_text,
-    get_latest_short_memory,
-    get_store,
-)
+from app.agent.memory_hub.manager import MemoryManager
+from app.agent.memory_hub.text_utils import get_last_human_text
 from app.agent.state import (
     AgentState,
     RECENT_CONTEXT_HUMAN_MESSAGES,
     SUMMARY_EVERY_HUMAN_MESSAGES,
 )
+from app.agent.utils.background_tasks import create_background_task
 from app.agent.utils.messages import normalize_messages_for_model
 from app.agent.utils.work_memory import slice_recent_messages_by_human
 from app.schemas.chat_settings import ChatSettings
 
+logger = logging.getLogger(__name__)
+
 
 class ChatNode:
-    def __init__(self, model: Any, chat_settings: ChatSettings):
+    def __init__(self, model: Any, chat_settings: ChatSettings, memory_manager: MemoryManager):
         self.model = model
         self.chat_settings = chat_settings
+        self.memory_manager = memory_manager
 
-    def __call__(self, state: AgentState) -> dict[str, Any]:
+    async def __call__(self, state: AgentState) -> dict[str, Any]:
         # 先裁剪上下文窗口，再做消息格式清洗，控制 token 并避免格式异常。
         recent_messages = slice_recent_messages_by_human(
             state.messages,
@@ -31,31 +32,27 @@ class ChatNode:
         )
         recent_messages = normalize_messages_for_model(recent_messages)
 
-        # 本轮首次进入 chatbot 才检索长期记忆，避免工具回环阶段重复查询。
-        if state.memory_text is None:
-            store = get_store()
-            namespace = ("long_mem", state.session_id)
-            recall_query = get_last_human_text(recent_messages)
-            memories = store.search(namespace, query=recall_query, limit=3)
-            state.memory_text = "\n".join(
-                item.value.get("text", "")
-                for item in memories
-                if isinstance(item.value, dict)
-            )
+        # 本轮首次进入 chatbot 才检索记忆，避免工具回环阶段重复查询。
+        if state.memory_text is None or state.short_memory is None:
+            last_user_text = get_last_human_text(recent_messages)
 
-        # 短期记忆同样只在本轮首次加载，后续节点复用缓存。
-        if state.short_memory is None:
-            state.short_memory = get_latest_short_memory(state.session_id)
+            memory_context = await self.memory_manager.recall(
+                messages=recent_messages,
+                query_text=last_user_text,
+                top_k=3,
+            )
+            state.short_memory = memory_context.short_memory
+            state.memory_text = memory_context.merged_text
 
         # 动态拼装系统提示词：基础 prompt + 短期记忆 + 检索到的长期记忆。
         system_prompt = self.chat_settings.system_prompt
         if state.short_memory:
-            system_prompt = f"{system_prompt}\n\n[之前对话的短期记忆摘要]\n{state.short_memory}"
+            system_prompt = f"{system_prompt}\n\n[摘要记忆]\n{state.short_memory}"
         if state.memory_text:
-            system_prompt = f"{system_prompt}\n\n[检索到的相关长期记忆]\n{state.memory_text}"
+            system_prompt = f"{system_prompt}\n\n[长期记忆]\n{state.memory_text}"
 
         messages = [SystemMessage(content=system_prompt)] + recent_messages
-        response = self.model.invoke(messages)
+        response = await self.model.ainvoke(messages)
         return {
             "messages": [response],
             "short_memory": state.short_memory,
@@ -64,15 +61,20 @@ class ChatNode:
 
 
 class MemoryFinalizeNode:
-    def __init__(self, chat_settings: ChatSettings):
+    def __init__(self, chat_settings: ChatSettings, memory_manager: MemoryManager):
         self.chat_settings = chat_settings
+        self.memory_manager = memory_manager
 
-    def __call__(self, state: AgentState) -> dict[str, int]:
+    async def __call__(self, state: AgentState) -> dict[str, int]:
         # 通过计数器控制总结频率，避免每轮都触发记忆归纳。
         next_counter = state.summary_counter + 1
         if next_counter < SUMMARY_EVERY_HUMAN_MESSAGES:
             return {"summary_counter": next_counter}
 
-        # 满足阈值后异步投递记忆收尾任务，不阻塞主回复链路。
-        enqueue_memory_finalize_task(self.chat_settings, list(state.messages))
+        # 满足阈值后改为后台提交，不阻塞本轮响应返回。
+        create_background_task(
+            self.memory_manager.persist(list(state.messages)),
+            logger=logger,
+            task_name="memory_finalize.persist",
+        )
         return {"summary_counter": 0}

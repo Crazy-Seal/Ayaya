@@ -1,4 +1,4 @@
-from typing import Iterator, Any, cast
+from typing import AsyncIterator, Any, cast
 import logging
 
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
@@ -7,6 +7,7 @@ from langchain_core.runnables import RunnableConfig
 from app.agent.checkpoint_repository import CheckpointRepository
 from app.agent.graph_builder import AgentGraphBuilder
 from app.agent.interface import BaseAgent
+from app.agent.memory_hub import build_default_memory_manager
 from app.agent.model_provider import get_model
 from app.agent.tools import get_tools
 from app.agent.utils.log import shorten_for_log
@@ -34,26 +35,33 @@ class MyAgent(BaseAgent):
         }
 
         self.checkpoint_repo = CheckpointRepository()
+        self.memory_manager = build_default_memory_manager(chat_settings)
+
         # 图构建由独立 builder 负责，MyAgent 只做装配。
-        self.graph = AgentGraphBuilder(
+        self.graph_builder = AgentGraphBuilder(
             model=self.model,
             tools=self.tools,
             chat_settings=self.chat_settings,
-        ).build()
+            memory_manager=self.memory_manager,
+        )
+        self.graph: Any | None = None
         # 首次记录基线，用于失败时回滚本轮新增 checkpoint。
         self.checkpoint_watermark = self.checkpoint_repo.get_thread_checkpoint_watermark(
             chat_settings.session_id
         )
 
-    def invoke_agent_stream(self, user_message: AgentInput) -> Iterator[AIMessage | AIMessageChunk]:
+    async def ainvoke_agent_stream(self, user_message: AgentInput) -> AsyncIterator[AIMessage | AIMessageChunk]:
         """流式调用入口：仅透传 chatbot 节点的 AI 输出分片。"""
+        if self.graph is None:
+            self.graph = await self.graph_builder.build()
+
         active_session_id = self.chat_settings.session_id
         logger.info("[Agent][session=%s] 收到流式消息: %s", active_session_id, shorten_for_log(user_message.message))
 
         # 每轮前刷新水位线，确保回滚范围只覆盖当前轮次写入。
         self.checkpoint_watermark = self.checkpoint_repo.get_thread_checkpoint_watermark(active_session_id)
 
-        for chunk, metadata in self.graph.stream(
+        async for chunk, metadata in self.graph.astream(
             cast(Any, {
                 # 新回合输入只注入当前用户消息；记忆字段显式清空，防止跨回合复用。
                 "messages": [HumanMessage(content=user_message.message)],

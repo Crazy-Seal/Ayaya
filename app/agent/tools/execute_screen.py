@@ -5,7 +5,7 @@ import re
 from typing import Any, cast
 
 from langchain.tools import tool
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 from app.agent.tools.screenshot import capture_screenshot_base64
 from app.agent.utils.log import log_tool_call
@@ -89,7 +89,7 @@ def _clamp_bbox_to_image(bbox: list[int], image: Any) -> list[int]:
 
 @tool
 @log_tool_call()
-def execute_screen(element_description: str) -> str:
+async def execute_screen(element_description: str) -> str:
     """基于当前屏幕截图识别并双击目标元素。
 
     Args:
@@ -114,8 +114,8 @@ def execute_screen(element_description: str) -> str:
             },
         ]
 
-        client = OpenAI(api_key=api_key, base_url=base_url)
-        response = client.chat.completions.create(
+        client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        response = await client.chat.completions.create(
             model=model,
             messages=cast(Any, messages),
             stream=False,

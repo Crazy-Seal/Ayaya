@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Callable, Iterator
+from typing import AsyncIterator, Callable
 import logging
 
 from app.agent.my_agent import MyAgent
@@ -79,7 +79,7 @@ class AgentService:
             logger.exception("[AgentService][session=%s] checkpoints回滚失败", session_id)
             return 0, 0
 
-    def stream_chat(self, agent_input: AgentInput, session_id: str = "default") -> Iterator[str]:
+    async def stream_chat(self, agent_input: AgentInput, session_id: str = "default") -> AsyncIterator[str]:
         chat_settings = self.chat_settings_loader(session_id)
         agent = self.agent_factory(chat_settings)
 
@@ -91,7 +91,7 @@ class AgentService:
 
         response_parts: list[str] = []
         try:
-            for chunk in agent.invoke_agent_stream(timed_agent_input):
+            async for chunk in agent.ainvoke_agent_stream(timed_agent_input):
                 text = self._extract_text(chunk.content)
                 if not text:
                     text = self._extract_text(chunk)
@@ -117,5 +117,5 @@ class AgentService:
             yield "[错误：未返回内容]"
             return
 
-        self.chat_history_dao.save_chat_message(session_id, "Human", agent_input.message)
-        self.chat_history_dao.save_chat_message(session_id, "AI", ai_message)
+        await self.chat_history_dao.save_chat_message_async(session_id, "Human", timed_agent_input.message)
+        await self.chat_history_dao.save_chat_message_async(session_id, "AI", ai_message)

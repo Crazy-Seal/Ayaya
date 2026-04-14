@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import subprocess
@@ -22,14 +23,17 @@ if RUN_PS_TIMEOUT_BEHAVIOR not in {"background", "kill"}:
     RUN_PS_TIMEOUT_BEHAVIOR = "background"
 
 
-def _find_conda_exe() -> str | None:
+async def _find_conda_exe() -> str | None:
     try:
         # where conda 可能返回多行，这里选第一个 .exe。
-        output = subprocess.check_output(
-            ["where", "conda"],
-            text=True,
-            stderr=subprocess.DEVNULL,
+        proc = await asyncio.create_subprocess_exec(
+            "where",
+            "conda",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
         )
+        stdout, _ = await proc.communicate()
+        output = stdout.decode("utf-8", errors="replace")
         for line in output.splitlines():
             candidate = line.strip().strip('"')
             if candidate.lower().endswith(".exe"):
@@ -39,7 +43,7 @@ def _find_conda_exe() -> str | None:
         return None
 
 
-def _build_command(command: str) -> list[str] | None:
+async def _build_command(command: str) -> list[str] | None:
     """构建最终执行命令；要求使用独立 conda 环境时返回 conda run 前缀。"""
     # 统一设置 PowerShell 进程与子命令输出为 UTF-8，减少中文乱码。
     utf8_command = (
@@ -62,21 +66,25 @@ def _build_command(command: str) -> list[str] | None:
     if not RUN_PS_FORCE_CONDA:
         return ps_cmd
 
-    conda_exe = _find_conda_exe()
+    conda_exe = await _find_conda_exe()
     if not conda_exe:
         return None
     return [conda_exe, "run", "-n", RUN_PS_CONDA_ENV] + ps_cmd
 
 
-def _kill_process_tree(pid: int) -> None:
+async def _kill_process_tree(pid: int) -> None:
     """Windows 上强制结束进程树，避免超时后子进程残留。"""
     try:
-        subprocess.run(
-            ["taskkill", "/PID", str(pid), "/T", "/F"],
-            capture_output=True,
-            text=True,
-            timeout=10,
+        proc = await asyncio.create_subprocess_exec(
+            "taskkill",
+            "/PID",
+            str(pid),
+            "/T",
+            "/F",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
+        await asyncio.wait_for(proc.communicate(), timeout=10)
     except Exception:
         # 兜底：忽略清理异常，避免覆盖原始超时语义。
         pass
@@ -108,7 +116,7 @@ def _select_timeout_sec(command: str) -> Tuple[int, str]:
 
 @tool
 @log_tool_call()
-def run_ps(command: str) -> str:
+async def run_ps(command: str) -> str:
     """运行 PowerShell 命令并返回输出结果。警告：绝对禁止运行可能对系统造成损害的命令，如删除文件、操作磁盘或注册表、重启或关闭计算机等。
 
     Args:
@@ -156,28 +164,27 @@ def run_ps(command: str) -> str:
     if any(d in cmd_lower for d in dangerous):
         return "错误: 检测到潜在危险命令，已阻止执行。"
 
-    final_cmd = _build_command(command)
+    final_cmd = await _build_command(command)
     if final_cmd is None:
         return "错误: 未找到 conda 可执行文件，无法使用独立环境执行命令。"
 
     timeout_sec, report = _select_timeout_sec(command)
 
     try:
-        proc = subprocess.Popen(
-            final_cmd,
+        proc = await asyncio.create_subprocess_exec(
+            *final_cmd,
             cwd=WORKDIR,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
         )
         try:
-            stdout, stderr = proc.communicate(timeout=timeout_sec)
-        except subprocess.TimeoutExpired:
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=timeout_sec)
+            stdout = stdout_bytes.decode("utf-8", errors="replace")
+            stderr = stderr_bytes.decode("utf-8", errors="replace")
+        except asyncio.TimeoutError:
             if RUN_PS_TIMEOUT_BEHAVIOR == "kill":
-                _kill_process_tree(proc.pid)
+                await _kill_process_tree(proc.pid)
                 return f"命令执行超时（{timeout_sec}s），已终止进程树。"
             return (
                 report +

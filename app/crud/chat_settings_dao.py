@@ -37,6 +37,7 @@ class ChatSettingsDao:
             temperature=item["temperature"],
             system_prompt=item["system_prompt"],
             tools_list=item["tools_list"],
+            memory_plugins=item.get("memory_plugins"),
         )
 
     def add_chat_settings(self, chat_settings: ChatSettings) -> ChatSettings:
