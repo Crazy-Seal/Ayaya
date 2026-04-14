@@ -117,5 +117,5 @@ class AgentService:
             yield "[错误：未返回内容]"
             return
 
-        await self.chat_history_dao.save_chat_message_async(session_id, "Human", timed_agent_input.message)
+        await self.chat_history_dao.save_chat_message_async(session_id, "Human", agent_input.message)
         await self.chat_history_dao.save_chat_message_async(session_id, "AI", ai_message)
