@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from app.agent.utils.work_memory import slice_recent_messages_by_human
 
 
-MAX_HUMAN_MESSAGES_IN_CHECKPOINT = 100  # checkpoint 人类消息数量上限
+MAX_HUMAN_MESSAGES_IN_CHECKPOINT = 20  # checkpoint 人类消息数量上限
 SUMMARY_EVERY_HUMAN_MESSAGES = 10  # 每隔多少条人类消息总结一次
 RECENT_CONTEXT_HUMAN_MESSAGES = 10  # 最近上下文的人类消息数量
 

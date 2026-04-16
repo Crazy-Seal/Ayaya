@@ -38,6 +38,13 @@ class ChatSettingsDao:
             system_prompt=item["system_prompt"],
             tools_list=item["tools_list"],
             memory_plugins=item.get("memory_plugins"),
+            # 提示词模板字段
+            name=item.get("name"),
+            feature=item.get("feature"),
+            character=item.get("character"),
+            address=item.get("address"),
+            characteristic=item.get("characteristic"),
+            constraint=item.get("constraint"),
         )
 
     def add_chat_settings(self, chat_settings: ChatSettings) -> ChatSettings:

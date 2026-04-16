@@ -24,6 +24,13 @@ const llmModelNameInput = document.querySelector<HTMLInputElement>("#llm-model-n
 const llmTemperatureInput = document.querySelector<HTMLInputElement>("#llm-temperature");
 const llmSystemPromptInput = document.querySelector<HTMLTextAreaElement>("#llm-system-prompt");
 const llmConfirmBtn = document.querySelector<HTMLButtonElement>("#llm-confirm-btn");
+// 提示词模板字段
+const llmNameInput = document.querySelector<HTMLInputElement>("#llm-name");
+const llmFeatureInput = document.querySelector<HTMLInputElement>("#llm-feature");
+const llmCharacterInput = document.querySelector<HTMLInputElement>("#llm-character");
+const llmAddressInput = document.querySelector<HTMLInputElement>("#llm-address");
+const llmCharacteristicInput = document.querySelector<HTMLTextAreaElement>("#llm-characteristic");
+const llmConstraintInput = document.querySelector<HTMLTextAreaElement>("#llm-constraint");
 const toolsConfirmBtn = document.querySelector<HTMLButtonElement>("#tools-confirm-btn");
 const deleteConfirmDialog = document.querySelector<HTMLDivElement>("#delete-confirm-dialog");
 const deleteConfirmCancelBtn = document.querySelector<HTMLButtonElement>("#delete-confirm-cancel");
@@ -57,7 +64,13 @@ if (
   !toolsConfirmBtn ||
   !deleteConfirmDialog ||
   !deleteConfirmCancelBtn ||
-  !deleteConfirmOkBtn
+  !deleteConfirmOkBtn ||
+  !llmNameInput ||
+  !llmFeatureInput ||
+  !llmCharacterInput ||
+  !llmAddressInput ||
+  !llmCharacteristicInput ||
+  !llmConstraintInput
 ) {
   throw new Error("设置窗口初始化失败");
 }
@@ -91,10 +104,47 @@ type ChatSettingsState = {
   temperature: number;
   system_prompt: string;
   tools_list: string[];
+  memory_plugins?: string[];
+  // 提示词模板字段
+  name?: string;
+  feature?: string;
+  character?: string;
+  address?: string;
+  characteristic?: string;
+  constraint?: string;
 };
 
 let chatSettingsState: ChatSettingsState | null = null;
 let availableTools: Array<{ name: string }> = [];
+
+/**
+ * 根据模板字段拼装系统提示词
+ * 模板：你是{name}，一个{feature}的{character}，称呼用户为{address}。
+ */
+const buildSystemPrompt = (): string => {
+  const name = llmNameInput.value.trim() || "日和";
+  const feature = llmFeatureInput.value.trim() || "可爱";
+  const character = llmCharacterInput.value.trim() || "AI少女";
+  const address = llmAddressInput.value.trim() || "主人";
+  const characteristic = llmCharacteristicInput.value.trim();
+  const constraint = llmConstraintInput.value.trim();
+
+  let prompt = `你是${name}，一个${feature}的${character}，称呼用户为${address}。`;
+  if (characteristic) {
+    prompt += `\n${characteristic}`;
+  }
+  if (constraint) {
+    prompt += `\n${constraint}`;
+  }
+  return prompt;
+};
+
+/**
+ * 更新系统提示词预览
+ */
+const updateSystemPromptPreview = () => {
+  llmSystemPromptInput.value = buildSystemPrompt();
+};
 
 const closeDeleteConfirmDialog = (confirmed: boolean) => {
   deleteConfirmDialog.hidden = true;
@@ -163,7 +213,17 @@ const renderLlmSettings = () => {
   llmApiKeyInput.value = chatSettingsState.openai_api_key;
   llmModelNameInput.value = chatSettingsState.model_name;
   llmTemperatureInput.value = String(chatSettingsState.temperature);
-  llmSystemPromptInput.value = chatSettingsState.system_prompt;
+
+  // 渲染提示词模板字段
+  llmNameInput.value = chatSettingsState.name || "";
+  llmFeatureInput.value = chatSettingsState.feature || "";
+  llmCharacterInput.value = chatSettingsState.character || "";
+  llmAddressInput.value = chatSettingsState.address || "";
+  llmCharacteristicInput.value = chatSettingsState.characteristic || "";
+  llmConstraintInput.value = chatSettingsState.constraint || "";
+
+  // 更新系统提示词预览
+  updateSystemPromptPreview();
 };
 
 const renderToolsSelection = () => {
@@ -388,10 +448,25 @@ followCursorCheckbox.addEventListener("change", () => {
   void updateActiveModelTransform();
 });
 
+// 提示词模板字段变化时更新预览
+[
+  llmNameInput,
+  llmFeatureInput,
+  llmCharacterInput,
+  llmAddressInput,
+  llmCharacteristicInput,
+  llmConstraintInput,
+].forEach((input) => {
+  input.addEventListener("input", updateSystemPromptPreview);
+});
+
 llmConfirmBtn.addEventListener("click", async () => {
   if (!chatSettingsState) {
     return;
   }
+
+  // 拼装系统提示词
+  const system_prompt = buildSystemPrompt();
 
   chatSettingsState = {
     ...chatSettingsState,
@@ -401,7 +476,14 @@ llmConfirmBtn.addEventListener("click", async () => {
     temperature: Number.isFinite(Number(llmTemperatureInput.value))
       ? Number(llmTemperatureInput.value)
       : chatSettingsState.temperature,
-    system_prompt: llmSystemPromptInput.value
+    system_prompt,
+    // 提示词模板字段
+    name: llmNameInput.value.trim() || null,
+    feature: llmFeatureInput.value.trim() || null,
+    character: llmCharacterInput.value.trim() || null,
+    address: llmAddressInput.value.trim() || null,
+    characteristic: llmCharacteristicInput.value.trim() || null,
+    constraint: llmConstraintInput.value.trim() || null,
   };
 
   await window.desktopPetApi.updateChatSettings(chatSettingsState);

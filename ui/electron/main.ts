@@ -64,6 +64,13 @@ type ChatSettingsData = {
   temperature: number;
   system_prompt: string;
   tools_list: string[];
+  // 提示词模板字段
+  name?: string;
+  feature?: string;
+  character?: string;
+  address?: string;
+  characteristic?: string;
+  constraint?: string;
 };
 
 type ChatHistoryItem = {
@@ -345,7 +352,13 @@ const fetchChatSettingsBySessionId = async (sessionId: string): Promise<ChatSett
     system_prompt: String(result.data.system_prompt ?? ""),
     tools_list: Array.isArray(result.data.tools_list)
       ? result.data.tools_list.map((item) => String(item))
-      : []
+      : [],
+    name: result.data.name ?? undefined,
+    feature: result.data.feature ?? undefined,
+    character: result.data.character ?? undefined,
+    address: result.data.address ?? undefined,
+    characteristic: result.data.characteristic ?? undefined,
+    constraint: result.data.constraint ?? undefined
   };
 };
 
@@ -430,7 +443,13 @@ const createEmptyChatSettings = async (sessionId: string) => {
     openai_base_url: "",
     temperature: 0,
     system_prompt: "",
-    tools_list: []
+    tools_list: [],
+    name: undefined,
+    feature: undefined,
+    character: undefined,
+    address: undefined,
+    characteristic: undefined,
+    constraint: undefined
   };
 
   const res = await fetch(`${backendBaseUrl}/chat_settings`, {
@@ -689,7 +708,13 @@ ipcMain.handle("desktop-pet:update-chat-settings", async (_event, payload: ChatS
     openai_base_url: payload.openai_base_url,
     temperature: payload.temperature,
     system_prompt: payload.system_prompt,
-    tools_list: [...payload.tools_list]
+    tools_list: [...payload.tools_list],
+    name: payload.name,
+    feature: payload.feature,
+    character: payload.character,
+    address: payload.address,
+    characteristic: payload.characteristic,
+    constraint: payload.constraint
   };
 
   const res = await fetch(`${backendBaseUrl}/chat_settings`, {

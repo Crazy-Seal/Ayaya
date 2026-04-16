@@ -18,6 +18,20 @@ class ChatSettings(BaseModel):
     # 可选：启用的记忆插件列表（按顺序执行）
     memory_plugins: list[str] | None = None
 
+    # === 提示词模板字段 ===
+    # AI 名字，如 "日和"
+    name: str | None = None
+    # AI 性格特点，如 "可爱"
+    feature: str | None = None
+    # AI 人设，如 "AI少女"
+    character: str | None = None
+    # 对用户称呼，如 "主人"
+    address: str | None = None
+    # 详细性格描述
+    characteristic: str | None = None
+    # 发言约束
+    constraint: str | None = None
+
     def __hash__(self):
         return hash((self.session_id,
                      self.model_name,

@@ -37,6 +37,14 @@ interface DesktopPetApi {
     temperature: number;
     system_prompt: string;
     tools_list: string[];
+    memory_plugins?: string[];
+    // 提示词模板字段
+    name?: string;
+    feature?: string;
+    character?: string;
+    address?: string;
+    characteristic?: string;
+    constraint?: string;
   }>;
   getLatestAiMessage: (sessionId?: string) => Promise<{
     sessionId: string;
@@ -50,6 +58,14 @@ interface DesktopPetApi {
     temperature: number;
     system_prompt: string;
     tools_list: string[];
+    memory_plugins?: string[];
+    // 提示词模板字段
+    name?: string;
+    feature?: string;
+    character?: string;
+    address?: string;
+    characteristic?: string;
+    constraint?: string;
   }) => Promise<{
     data: null;
     msg: string;

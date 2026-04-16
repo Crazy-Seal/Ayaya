@@ -173,24 +173,33 @@ body {
 .settings-content {
   flex: 1;
   display: flex;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .settings-page {
   width: 100%;
+  height: 100%;
   display: none;
-  align-items: center;
-  justify-content: center;
   font-size: 18px;
   color: rgba(255, 255, 255, 0.88);
+  overflow: auto;
+}
+
+.page-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .settings-page.active {
-  display: flex;
+  display: block;
 }
 
 .llm-config-panel {
   width: 100%;
-  height: 100%;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -239,6 +248,31 @@ body {
   min-height: 120px;
 }
 
+.llm-divider {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.12);
+  margin: 8px 0;
+}
+
+.llm-prompt-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.llm-prompt-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.95);
+  margin-bottom: 4px;
+}
+
+.llm-field-readonly textarea {
+  background: rgba(255, 255, 255, 0.03);
+  color: rgba(255, 255, 255, 0.7);
+  cursor: default;
+}
+
 .llm-confirm-btn {
   align-self: flex-start;
   border: none;
@@ -252,7 +286,6 @@ body {
 
 .tools-panel {
   width: 100%;
-  height: 100%;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -317,7 +350,6 @@ body {
 
 .model-manager {
   width: 100%;
-  height: 100%;
   display: flex;
   flex-direction: column;
   padding: 16px;

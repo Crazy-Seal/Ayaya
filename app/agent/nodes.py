@@ -45,7 +45,7 @@ class ChatNode:
             state.memory_text = memory_context.merged_text
 
         # 动态拼装系统提示词：基础 prompt + 短期记忆 + 检索到的长期记忆。
-        system_prompt = self.chat_settings.system_prompt
+        system_prompt = f"{self.chat_settings.system_prompt}\n\n以下文本是你的记忆，其中，[摘要记忆]是你对前段时间和当前对话的记忆，[长期记忆]是系统根据主人输入检索到的，你记忆的更早之前的事情。"
         if state.short_memory:
             system_prompt = f"{system_prompt}\n\n[摘要记忆]\n{state.short_memory}"
         if state.memory_text:
