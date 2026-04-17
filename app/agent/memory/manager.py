@@ -1,0 +1,240 @@
+"""记忆管理器 - 核心调度层"""
+import logging
+from datetime import date, datetime, timedelta
+
+from langchain_core.messages import AnyMessage
+
+from app.agent.memory.config import MemoryConfig
+from app.agent.memory.memories.episodic import EpisodicMemory
+from app.agent.memory.memories.semantic import SemanticMemory
+from app.agent.memory.memories.summary import SummaryMemory
+from app.agent.memory.store.chat_history_store import ChatHistoryStore
+from app.crud.chat_settings_dao import ChatSettingsDao
+from app.schemas.chat_settings import ChatSettings
+
+logger = logging.getLogger(__name__)
+
+
+class MemoryManager:
+    """记忆管理器
+
+    职责：
+    - 统一管理三种记忆类型
+    - 提供统一的添加/检索接口
+    - 组装记忆上下文
+
+    关键概念：
+    - 摘要：当天聊天记录的阶段性总结，每10/20/30...条用户消息触发一次（覆盖更新）
+    - 日记：当天完整聊天记录的总结，检查最后一个有记录的日期没有日记就生成
+    - 情景记忆/语义记忆：每次 add() 都处理，实时生成
+
+    时间规则：
+    - 使用配置的时区（默认系统时区）
+    - 凌晨 N 点前算前一天，N 点后算当天（N 由 day_boundary_hour 配置）
+    - 数据库存储 UTC 时间，ChatHistoryStore 负责转换
+
+    方法职责：
+    - add(): 只处理情景记忆和语义记忆
+    - try_summary(): 保存本轮对话，触发摘要/日记检查
+    - get_context(): 组装上下文
+
+    状态管理：
+    - 不在内存中维护状态，全部从数据库查询（解决服务重启问题）
+    """
+
+    def __init__(
+        self,
+        session_id: str,
+        config: MemoryConfig | None = None,
+        chat_settings: ChatSettings | None = None,
+    ):
+        self.session_id = session_id
+        self.config = config or MemoryConfig.from_env()
+
+        # 加载 ChatSettings
+        if chat_settings:
+            self.chat_settings = chat_settings
+        else:
+            chat_settings_dao = ChatSettingsDao()
+            self.chat_settings = chat_settings_dao.get_chat_settings(session_id)
+
+        # 初始化存储层（传入时区配置）
+        self.chat_history_store = ChatHistoryStore(
+            timezone=self.config.timezone,
+            day_boundary_hour=self.config.day_boundary_hour,
+        )
+
+        # 初始化三种记忆
+        self.summary_memory = SummaryMemory(
+            session_id, self.config, self.chat_settings, self.chat_history_store
+        )
+        self.episodic_memory = EpisodicMemory(session_id, self.config)
+        self.semantic_memory = SemanticMemory(session_id, self.config)
+
+    # ==================== 核心方法 ====================
+
+    async def add(
+        self,
+        messages: list[AnyMessage],
+        history: list[AnyMessage] | None = None,
+    ) -> None:
+        """添加记忆 - 只处理情景记忆和语义记忆
+
+        Args:
+            messages: 当前聊天记录（10条）
+            history: 历史聊天记录（5条，用于前情提要）
+        """
+        # 格式化消息
+        messages_text = self._format_messages(messages)
+        history_text = self._format_messages(history) if history else ""
+
+        # 情景记忆和语义记忆处理
+        await self.episodic_memory.add(messages_text, history_text)
+        await self.semantic_memory.add(messages_text, history_text)
+
+    async def try_summary(
+        self,
+        user_message: str,
+        ai_message: str,
+    ) -> None:
+        """保存本轮对话并触发摘要/日记检查
+
+        在每次 agent 响应完成后调用
+
+        Args:
+            user_message: 用户消息
+            ai_message: AI 响应
+        """
+        # 计算今天的有效日期
+        now = datetime.now(self.config.timezone)
+        today = self._get_effective_date(now)
+
+        # 1. 保存本轮对话到 chat_history
+        await self.chat_history_store.save_chat_message(self.session_id, "Human", user_message)
+        await self.chat_history_store.save_chat_message(self.session_id, "AI", ai_message)
+
+        # 2. SummaryMemory 检查并生成摘要/日记
+        await self.summary_memory.check_and_generate(today)
+
+    async def get_context(self) -> str:
+        """获取当前对话上下文
+
+        组装顺序：
+        1. 前两天摘要/日记 + 今日摘要
+        2. 相关情景记忆
+        3. 相关语义记忆
+
+        Returns:
+            格式化的上下文字符串
+        """
+        parts = []
+
+        # 计算今天的有效日期
+        now = datetime.now(self.config.timezone)
+        today = self._get_effective_date(now)
+
+        # 1. 摘要部分
+        summary_context = await self.summary_memory.get_context(today)
+        if summary_context:
+            parts.append(f"[历史摘要]\n{summary_context}")
+
+        # 2. 情景记忆（暂不实现）
+
+        # 3. 语义记忆（暂不实现）
+
+        return "\n\n".join(parts) if parts else ""
+
+    async def search(
+        self,
+        query: str,
+        memory_type: str,
+        top_k: int = 3,
+    ) -> str:
+        """搜索相关记忆
+
+        Args:
+            query: 查询文本
+            memory_type: 记忆类型 (episodic/semantic/all)
+            top_k: 返回数量
+
+        Returns:
+            格式化的记忆文本
+        """
+        results = []
+
+        if memory_type in ("episodic", "all"):
+            episodic = await self.episodic_memory.search(query, top_k)
+            results.extend([f"[情景记忆] {m.content}" for m in episodic])
+
+        if memory_type in ("semantic", "all"):
+            semantic = await self.semantic_memory.search(query, top_k)
+            results.extend([f"[语义记忆] {m.content}" for m in semantic])
+
+        return "\n".join(results) if results else "未找到相关记忆"
+
+    async def search_diary(self, start: date, end: date) -> str:
+        """搜索时间范围内的日记
+
+        Args:
+            start: 开始日期
+            end: 结束日期（最多间隔5天）
+
+        Returns:
+            日记内容
+
+        Raises:
+            ValueError: 时间范围超过5天
+        """
+        if (end - start).days > 5:
+            raise ValueError("时间范围不能超过5天")
+
+        diaries = await self.summary_memory.search_diary(start, end)
+        if not diaries:
+            return "该时间范围内没有日记"
+
+        return "\n\n".join(
+            f"【{start + timedelta(days=i)}】\n{d}"
+            for i, d in enumerate(diaries)
+        )
+
+    # ==================== 日期相关方法 ====================
+
+    def _get_effective_date(self, now: datetime) -> date:
+        """获取有效日期
+
+        凌晨 N 点前算前一天，N 点后算当天
+
+        Args:
+            now: 当前时间（应带配置的时区）
+
+        Returns:
+            有效日期
+        """
+        if now.hour < self.config.day_boundary_hour:
+            return (now - timedelta(days=1)).date()
+        return now.date()
+
+    # ==================== 工具方法 ====================
+
+    def _format_messages(self, messages: list[AnyMessage]) -> str:
+        """格式化 LangChain 消息列表为文本
+
+        Args:
+            messages: 消息列表
+
+        Returns:
+            格式化后的文本
+        """
+        if not messages:
+            return ""
+        user_name = self.chat_settings.address or "用户"
+        ai_name = self.chat_settings.name or "AI"
+        lines = []
+        for msg in messages:
+            if msg.type == "human":
+                role = user_name
+            else:
+                role = ai_name
+            content = msg.content if isinstance(msg.content, str) else str(msg.content)
+            lines.append(f"{role}: {content}")
+        return "\n".join(lines)

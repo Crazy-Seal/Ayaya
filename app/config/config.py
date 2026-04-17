@@ -56,4 +56,11 @@ def get_chat_settings(session_id: str) -> ChatSettings:
         system_prompt=matched_model["system_prompt"],
         tools_list=matched_model["tools_list"],
         memory_plugins=matched_model.get("memory_plugins"),
+        # 提示词模板字段
+        name=matched_model.get("name"),
+        feature=matched_model.get("feature"),
+        character=matched_model.get("character"),
+        address=matched_model.get("address"),
+        characteristic=matched_model.get("characteristic"),
+        constraint=matched_model.get("constraint"),
     )
