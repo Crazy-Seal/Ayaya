@@ -68,7 +68,9 @@ class MemoryManager:
         self.summary_memory = SummaryMemory(
             session_id, self.config, self.chat_settings, self.chat_history_store
         )
-        self.episodic_memory = EpisodicMemory(session_id, self.config)
+        self.episodic_memory = EpisodicMemory(
+            session_id, self.config, self.chat_settings
+        )
         self.semantic_memory = SemanticMemory(session_id, self.config)
 
     # ==================== 核心方法 ====================
@@ -88,9 +90,11 @@ class MemoryManager:
         messages_text = self._format_messages(messages)
         history_text = self._format_messages(history) if history else ""
 
-        # 情景记忆和语义记忆处理
+        # 情景记忆处理
         await self.episodic_memory.add(messages_text, history_text)
-        await self.semantic_memory.add(messages_text, history_text)
+
+        # 语义记忆处理（暂不实现）
+        # await self.semantic_memory.add(messages_text, history_text)
 
     async def try_summary(
         self,
@@ -116,13 +120,16 @@ class MemoryManager:
         # 2. SummaryMemory 检查并生成摘要/日记
         await self.summary_memory.check_and_generate(today)
 
-    async def get_context(self) -> str:
+    async def get_context(self, query: str = "") -> str:
         """获取当前对话上下文
 
         组装顺序：
         1. 前两天摘要/日记 + 今日摘要
-        2. 相关情景记忆
+        2. 相关情景记忆（需要 query）
         3. 相关语义记忆
+
+        Args:
+            query: 查询文本，用于检索相关情景记忆
 
         Returns:
             格式化的上下文字符串
@@ -136,9 +143,14 @@ class MemoryManager:
         # 1. 摘要部分
         summary_context = await self.summary_memory.get_context(today)
         if summary_context:
-            parts.append(f"[历史摘要]\n{summary_context}")
+            parts.append(f"[你的历史日记和摘要]\n{summary_context}")
 
-        # 2. 情景记忆（暂不实现）
+        # 2. 情景记忆
+        if query.strip():
+            episodic_memories = await self.episodic_memory.search(query, self.config.episodic_top_k)
+            if episodic_memories:
+                memory_texts = [f"- {m.content}（{m.timestamp.strftime('%Y-%m-%d')}）" for m in episodic_memories]
+                parts.append(f"[相关情景记忆]\n" + "\n".join(memory_texts))
 
         # 3. 语义记忆（暂不实现）
 
@@ -166,9 +178,10 @@ class MemoryManager:
             episodic = await self.episodic_memory.search(query, top_k)
             results.extend([f"[情景记忆] {m.content}" for m in episodic])
 
-        if memory_type in ("semantic", "all"):
-            semantic = await self.semantic_memory.search(query, top_k)
-            results.extend([f"[语义记忆] {m.content}" for m in semantic])
+        # 语义记忆暂不实现
+        # if memory_type in ("semantic", "all"):
+        #     semantic = await self.semantic_memory.search(query, top_k)
+        #     results.extend([f"[语义记忆] {m.content}" for m in semantic])
 
         return "\n".join(results) if results else "未找到相关记忆"
 
@@ -193,8 +206,8 @@ class MemoryManager:
             return "该时间范围内没有日记"
 
         return "\n\n".join(
-            f"【{start + timedelta(days=i)}】\n{d}"
-            for i, d in enumerate(diaries)
+            f"【{d}】\n{content}"
+            for d, content in diaries
         )
 
     # ==================== 日期相关方法 ====================

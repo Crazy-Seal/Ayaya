@@ -9,7 +9,7 @@ from pydantic import SecretStr
 
 from app.agent.memory.config import MemoryConfig
 from app.agent.memory.store.chat_history_store import ChatHistoryStore
-from app.agent.memory.store.sqlite_store import SqliteStore
+from app.agent.memory.store.diary_sqlite_store import DiarySqliteStore
 from app.schemas.chat_settings import ChatSettings
 
 logger = logging.getLogger(__name__)
@@ -42,8 +42,8 @@ class SummaryMemory:
         self.session_id = session_id
         self.config = config
         self.chat_settings = chat_settings
-        self.chat_history_store = chat_history_store
-        self.store = SqliteStore(config.sqlite_path)
+        self.chat_history_store = chat_history_store    # 存聊天记录
+        self.store = DiarySqliteStore(config.sqlite_path)    # 存摘要日记
 
         # 初始化 LLM（从 ChatSettings 获取参数）
         # 摘要和日记可以使用同一个模型
@@ -51,7 +51,7 @@ class SummaryMemory:
             model=chat_settings.model_name,
             api_key=SecretStr(chat_settings.openai_api_key),
             base_url=chat_settings.openai_base_url,
-            temperature=chat_settings.temperature,
+            temperature=0.2,
         )
 
     # ==================== 核心方法 ====================
@@ -120,7 +120,7 @@ class SummaryMemory:
             is_diary=True,
         )
 
-    async def search_diary(self, start: date, end: date) -> list[str]:
+    async def search_diary(self, start: date, end: date) -> list[tuple[date, str]]:
         """搜索时间范围内的日记
 
         Args:
@@ -128,7 +128,7 @@ class SummaryMemory:
             end: 结束日期
 
         Returns:
-            日记内容列表（按日期升序）
+            (日期, 内容) 列表（按日期升序）
         """
         return await self.store.get_range(
             session_id=self.session_id,

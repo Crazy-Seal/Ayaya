@@ -8,8 +8,8 @@ from typing import Any
 import aiosqlite
 
 
-class SqliteStore:
-    """SQLite 存储类
+class DiarySqliteStore:
+    """日记、摘要记忆 SQLite 存储类
 
     负责：
     - 存储摘要记忆
@@ -27,6 +27,11 @@ class SqliteStore:
         """确保表存在（同步方法，仅在初始化时调用）"""
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(self.db_path) as conn:
+            # 开启 WAL 模式，提高并发性（数据库级别设置，持久化）
+            conn.execute("PRAGMA journal_mode=WAL")
+            # 设置等待超时（毫秒）
+            conn.execute("PRAGMA busy_timeout=5000")
+
             conn.execute(f"""
                 CREATE TABLE IF NOT EXISTS {self.TABLE_NAME} (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,6 +72,7 @@ class SqliteStore:
         """
         date_str = date_obj.isoformat()
         async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute("PRAGMA busy_timeout=5000")
             cursor = await conn.execute(
                 f"""
                 INSERT INTO {self.TABLE_NAME} (session_id, date, content, is_diary)
@@ -99,6 +105,7 @@ class SqliteStore:
         """
         date_str = date_obj.isoformat()
         async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute("PRAGMA busy_timeout=5000")
             cursor = await conn.execute(
                 f"SELECT content FROM {self.TABLE_NAME} WHERE session_id = ? AND date = ? AND is_diary = ?",
                 (session_id, date_str, 1 if is_diary else 0),
@@ -124,6 +131,7 @@ class SqliteStore:
         """
         date_str = date_obj.isoformat()
         async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute("PRAGMA busy_timeout=5000")
             cursor = await conn.execute(
                 f"SELECT 1 FROM {self.TABLE_NAME} WHERE session_id = ? AND date = ? AND is_diary = ?",
                 (session_id, date_str, 1 if is_diary else 0),
@@ -137,7 +145,7 @@ class SqliteStore:
         start: date,
         end: date,
         is_diary: bool = True,
-    ) -> list[str]:
+    ) -> list[tuple[date, str]]:
         """获取时间范围内的内容
 
         Args:
@@ -147,21 +155,22 @@ class SqliteStore:
             is_diary: 是否为日记
 
         Returns:
-            内容列表（按日期升序）
+            (日期, 内容) 列表（按日期升序）
         """
         start_str = start.isoformat()
         end_str = end.isoformat()
         async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute("PRAGMA busy_timeout=5000")
             cursor = await conn.execute(
                 f"""
-                SELECT content FROM {self.TABLE_NAME}
+                SELECT date, content FROM {self.TABLE_NAME}
                 WHERE session_id = ? AND date >= ? AND date <= ? AND is_diary = ?
                 ORDER BY date ASC
                 """,
                 (session_id, start_str, end_str, 1 if is_diary else 0),
             )
             rows = await cursor.fetchall()
-            return [row[0] for row in rows]
+            return [(date.fromisoformat(row[0]), row[1]) for row in rows]
 
     async def get_recent_before_date(
         self,
@@ -183,6 +192,7 @@ class SqliteStore:
         """
         date_str = before_date.isoformat()
         async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute("PRAGMA busy_timeout=5000")
             cursor = await conn.execute(
                 f"""
                 SELECT date, content FROM {self.TABLE_NAME}

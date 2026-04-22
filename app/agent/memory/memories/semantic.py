@@ -2,7 +2,7 @@
 
 from app.agent.memory.base import Entity, MemoryItem, Relation
 from app.agent.memory.config import MemoryConfig
-from app.agent.memory.store.chroma_store import ChromaStore
+from app.agent.memory.store.episodic_chroma_store import EpisodicChromaStore
 from app.agent.memory.store.neo4j_store import Neo4jStore
 
 
@@ -20,7 +20,7 @@ class SemanticMemory:
     def __init__(self, session_id: str, config: MemoryConfig):
         self.session_id = session_id
         self.config = config
-        self.vector_store = ChromaStore(
+        self.vector_store = EpisodicChromaStore(
             collection_name=self.NAMESPACE,
             embedding_config={
                 "api_key": config.embedding_api_key,

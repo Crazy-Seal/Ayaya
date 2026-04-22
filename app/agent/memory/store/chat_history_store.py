@@ -51,6 +51,10 @@ class ChatHistoryStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         import sqlite3
         with sqlite3.connect(str(self.db_path)) as conn:
+            # 开启 WAL 模式，提高并发性
+            conn.execute("PRAGMA journal_mode=WAL")
+            # 设置等待超时（毫秒）
+            conn.execute("PRAGMA busy_timeout=5000")
             conn.execute(f"""
                 CREATE TABLE IF NOT EXISTS {self.TABLE_NAME} (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -215,6 +219,7 @@ class ChatHistoryStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             async with aiosqlite.connect(str(self.db_path)) as conn:
+                await conn.execute("PRAGMA busy_timeout=5000")
                 await conn.execute(
                     f"INSERT INTO {self.TABLE_NAME} (thread_id, role, content) VALUES (?, ?, ?)",
                     (session_id, role, content),
@@ -244,6 +249,7 @@ class ChatHistoryStore:
         utc_start, utc_end = self._effective_date_to_utc_range(effective_date)
 
         async with aiosqlite.connect(str(self.db_path)) as conn:
+            await conn.execute("PRAGMA busy_timeout=5000")
             if role:
                 cursor = await conn.execute(
                     f"""
@@ -278,6 +284,7 @@ class ChatHistoryStore:
             最后一个有聊天记录的有效日期，如果没有则返回 None
         """
         async with aiosqlite.connect(str(self.db_path)) as conn:
+            await conn.execute("PRAGMA busy_timeout=5000")
             if exclude_today:
                 # 将排除的有效日期转换为 UTC 时间范围
                 utc_start, utc_end = self._effective_date_to_utc_range(exclude_today)
@@ -322,6 +329,7 @@ class ChatHistoryStore:
         utc_start, utc_end = self._effective_date_to_utc_range(effective_date)
 
         async with aiosqlite.connect(str(self.db_path)) as conn:
+            await conn.execute("PRAGMA busy_timeout=5000")
             cursor = await conn.execute(
                 f"""
                 SELECT role, content, timestamp
@@ -360,6 +368,7 @@ class ChatHistoryStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             async with aiosqlite.connect(str(self.db_path)) as conn:
+                await conn.execute("PRAGMA busy_timeout=5000")
                 cursor = await conn.execute(
                     f"""
                     SELECT role, content, timestamp
@@ -420,6 +429,7 @@ class ChatHistoryStore:
         utc_start, utc_end = self._effective_date_to_utc_range(before_date)
 
         async with aiosqlite.connect(str(self.db_path)) as conn:
+            await conn.execute("PRAGMA busy_timeout=5000")
             # 先按时间倒序取最后 N 条，再按时间正序返回
             cursor = await conn.execute(
                 f"""
