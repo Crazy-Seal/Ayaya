@@ -25,7 +25,7 @@ class MemoryConfig:
     chroma_path: str = ""
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
-    neo4j_password: str = ""
+    neo4j_password: str = "neo4j"
 
     # 嵌入配置
     embedding_api_key: str = ""

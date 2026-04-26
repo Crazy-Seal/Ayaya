@@ -71,7 +71,9 @@ class MemoryManager:
         self.episodic_memory = EpisodicMemory(
             session_id, self.config, self.chat_settings
         )
-        self.semantic_memory = SemanticMemory(session_id, self.config)
+        self.semantic_memory = SemanticMemory(
+            session_id, self.config, self.chat_settings
+        )
 
     # ==================== 核心方法 ====================
 
@@ -79,22 +81,34 @@ class MemoryManager:
         self,
         messages: list[AnyMessage],
         history: list[AnyMessage] | None = None,
-    ) -> None:
+    ) -> dict[str, int]:
         """添加记忆 - 只处理情景记忆和语义记忆
 
         Args:
             messages: 当前聊天记录（10条）
             history: 历史聊天记录（5条，用于前情提要）
+
+        Returns:
+            添加结果，如 {"episodic": 3, "semantic": 2}
         """
+        result = {"episodic": 0, "semantic": 0}
+
         # 格式化消息
         messages_text = self._format_messages(messages)
         history_text = self._format_messages(history) if history else ""
 
         # 情景记忆处理
-        await self.episodic_memory.add(messages_text, history_text)
+        episodic_ids = await self.episodic_memory.add(messages_text, history_text)
+        result["episodic"] = len(episodic_ids)
 
-        # 语义记忆处理（暂不实现）
-        # await self.semantic_memory.add(messages_text, history_text)
+        # 语义记忆处理
+        try:
+            semantic_ids = await self.semantic_memory.add(messages_text, history_text)
+            result["semantic"] = len(semantic_ids)
+        except Exception as e:
+            logger.warning("[MemoryManager] 语义记忆处理失败: %s", e)
+
+        return result
 
     async def try_summary(
         self,
@@ -152,7 +166,23 @@ class MemoryManager:
                 memory_texts = [f"- {m.content}（{m.timestamp.strftime('%Y-%m-%d')}）" for m in episodic_memories]
                 parts.append(f"[相关情景记忆]\n" + "\n".join(memory_texts))
 
-        # 3. 语义记忆（暂不实现）
+        # 3. 语义记忆
+        if query.strip():
+            try:
+                semantic_memories = await self.semantic_memory.search(query, top_k=3)
+                if semantic_memories:
+                    memory_texts = []
+                    for m in semantic_memories:
+                        subject = m.metadata.get("subject", "")
+                        relation = m.metadata.get("relation", "")
+                        obj = m.metadata.get("obj", "")
+                        if subject and relation and obj:
+                            memory_texts.append(f"- {subject} {relation} {obj}")
+                        else:
+                            memory_texts.append(f"- {m.content}")
+                    parts.append(f"[相关语义知识]\n" + "\n".join(memory_texts))
+            except Exception as e:
+                logger.warning("[MemoryManager] 语义记忆检索失败: %s", e)
 
         return "\n\n".join(parts) if parts else ""
 
@@ -178,10 +208,12 @@ class MemoryManager:
             episodic = await self.episodic_memory.search(query, top_k)
             results.extend([f"[情景记忆] {m.content}" for m in episodic])
 
-        # 语义记忆暂不实现
-        # if memory_type in ("semantic", "all"):
-        #     semantic = await self.semantic_memory.search(query, top_k)
-        #     results.extend([f"[语义记忆] {m.content}" for m in semantic])
+        if memory_type in ("semantic", "all"):
+            try:
+                semantic = await self.semantic_memory.search(query, top_k)
+                results.extend([f"[语义记忆] {m.content}" for m in semantic])
+            except Exception as e:
+                logger.warning("[MemoryManager] 语义记忆检索失败: %s", e)
 
         return "\n".join(results) if results else "未找到相关记忆"
 
