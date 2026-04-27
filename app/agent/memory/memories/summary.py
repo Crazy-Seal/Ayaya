@@ -10,6 +10,7 @@ from pydantic import SecretStr
 from app.agent.memory.config import MemoryConfig
 from app.agent.memory.store.chat_history_store import ChatHistoryStore
 from app.agent.memory.store.diary_sqlite_store import DiarySqliteStore
+from app.agent.utils.llm_utils import ainvoke_with_retry
 from app.schemas.chat_settings import ChatSettings
 
 logger = logging.getLogger(__name__)
@@ -233,7 +234,7 @@ class SummaryMemory:
         """
         prompt = await self._build_system_prompt(messages, target_date, "对话摘要")
         try:
-            response = await self.llm.ainvoke(prompt)
+            response = await ainvoke_with_retry(self.llm, prompt)
             summary_content = response.content
             await self.add(target_date, summary_content, is_diary=False)
         except Exception:
@@ -252,7 +253,7 @@ class SummaryMemory:
         """
         prompt = await self._build_system_prompt(messages, target_date, "日记")
         try:
-            response = await self.llm.ainvoke(prompt)
+            response = await ainvoke_with_retry(self.llm, prompt)
             diary_content = response.content
             await self.add(target_date, diary_content, is_diary=True)
         except Exception:
@@ -323,7 +324,7 @@ class SummaryMemory:
 {target_date}的对话内容（需要你记录的部分）：
 {chat_text}
 
-请生成{summary_type}（200字以内）："""
+请生成{summary_type}（300字以内）："""
 
     def _format_diaries_with_gaps(
         self,

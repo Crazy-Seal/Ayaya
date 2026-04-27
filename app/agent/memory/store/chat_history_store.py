@@ -19,18 +19,18 @@ class ChatHistoryStore:
 
     负责：
     - 保存聊天记录
-    - 按日期查询消息数量
-    - 获取指定日期的聊天记录
-    - 获取最后一个有聊天记录的日期
+    - 按本地日期查询消息数量
+    - 获取指定本地日期的聊天记录
+    - 获取最后一个有聊天记录的本地日期
 
     时间规则：
-    - 使用配置的时区（默认系统时区）
-    - 凌晨 N 点前算前一天，N 点后算当天
-    - 数据库存储 UTC 时间，查询时需要转换
+    - 数据库存储 UTC 时间
+    - 查询和显示使用本地时间（配置的时区）
+    - 本地日期边界：凌晨 N 点前算前一天，N 点后算当天
 
-    有效日期 D 对应的时间范围：
-    - 本地时间：D 04:00:00 ~ D+1 03:59:59（假设 day_boundary_hour=4）
-    - UTC 时间：根据时区计算
+    本地日期 D 对应的时间范围（假设 day_boundary_hour=4）：
+    - 本地时间：D 04:00:00 ~ D+1 03:59:59
+    - UTC 时间：根据时区偏移计算（例如东八区为 D-1 20:00:00 ~ D 19:59:59 UTC）
     """
 
     TABLE_NAME = "chat_history"
@@ -70,25 +70,25 @@ class ChatHistoryStore:
             """)
             conn.commit()
 
-    def _effective_date_to_utc_range(self, effective_date: date) -> tuple[datetime, datetime]:
-        """将有效日期转换为 UTC 时间范围
+    def _local_date_to_utc_range(self, local_date: date) -> tuple[datetime, datetime]:
+        """将本地日期转换为 UTC 时间范围
 
-        有效日期 D 对应：
-        - 本地时间：D {day_boundary_hour}:00:00 ~ D+1 {day_boundary_hour-1}:59:59
+        本地日期 D 对应：
+        - 本地时间：D {day_boundary_hour}:00:00 ~ D+1 {day_boundary_hour}:00:00（左闭右开）
         - UTC 时间：根据时区偏移计算
 
         Args:
-            effective_date: 有效日期
+            local_date: 本地日期
 
         Returns:
             (utc_start, utc_end) UTC 时间范围
         """
         # 本地时间范围的开始和结束
         local_start = datetime.combine(
-            effective_date, time(self.day_boundary_hour, 0, 0), tzinfo=self.timezone
+            local_date, time(self.day_boundary_hour, 0, 0), tzinfo=self.timezone
         )
         local_end = datetime.combine(
-            effective_date + timedelta(days=1), time(self.day_boundary_hour, 0, 0), tzinfo=self.timezone
+            local_date + timedelta(days=1), time(self.day_boundary_hour, 0, 0), tzinfo=self.timezone
         )
 
         # 转换为 UTC
@@ -97,14 +97,14 @@ class ChatHistoryStore:
 
         return utc_start, utc_end
 
-    def _utc_to_effective_date(self, utc_timestamp: str | datetime | int | float) -> date:
-        """将 UTC 时间戳转换为有效日期
+    def _utc_to_local_date(self, utc_timestamp: str | datetime | int | float) -> date:
+        """将 UTC 时间戳转换为本地日期
 
         Args:
             utc_timestamp: UTC 时间戳（字符串、datetime、毫秒/秒时间戳）
 
         Returns:
-            有效日期
+            本地日期（根据 day_boundary_hour 计算）
         """
         dt = self._parse_timestamp(utc_timestamp)
         if dt is None:
@@ -116,7 +116,7 @@ class ChatHistoryStore:
         # 转换为本地时间
         local_dt = dt.astimezone(self.timezone)
 
-        # 计算有效日期
+        # 计算本地日期（凌晨 N 点前算前一天）
         if local_dt.hour < self.day_boundary_hour:
             return (local_dt - timedelta(days=1)).date()
         return local_dt.date()
@@ -163,7 +163,11 @@ class ChatHistoryStore:
 
             # 尝试解析 ISO 格式
             try:
-                return datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                # 如果没有时区信息，假设为 UTC
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt
             except ValueError:
                 pass
 
@@ -236,17 +240,17 @@ class ChatHistoryStore:
         effective_date: date,
         role: str | None = None,
     ) -> int:
-        """获取指定有效日期的消息数量
+        """获取指定本地日期的消息数量
 
         Args:
             session_id: 会话ID
-            effective_date: 有效日期
+            effective_date: 本地日期（根据 day_boundary_hour 计算）
             role: 角色过滤（Human/AI/Tool），None 表示不过滤
 
         Returns:
             消息数量
         """
-        utc_start, utc_end = self._effective_date_to_utc_range(effective_date)
+        utc_start, utc_end = self._local_date_to_utc_range(effective_date)
 
         async with aiosqlite.connect(str(self.db_path)) as conn:
             await conn.execute("PRAGMA busy_timeout=5000")
@@ -274,20 +278,20 @@ class ChatHistoryStore:
         session_id: str,
         exclude_today: date | None = None,
     ) -> date | None:
-        """获取最后一个有聊天记录的有效日期
+        """获取最后一个有聊天记录的本地日期
 
         Args:
             session_id: 会话ID
-            exclude_today: 要排除的有效日期（通常是今天）
+            exclude_today: 要排除的本地日期（通常是今天）
 
         Returns:
-            最后一个有聊天记录的有效日期，如果没有则返回 None
+            最后一个有聊天记录的本地日期，如果没有则返回 None
         """
         async with aiosqlite.connect(str(self.db_path)) as conn:
             await conn.execute("PRAGMA busy_timeout=5000")
             if exclude_today:
-                # 将排除的有效日期转换为 UTC 时间范围
-                utc_start, utc_end = self._effective_date_to_utc_range(exclude_today)
+                # 将排除的本地日期转换为 UTC 时间范围
+                utc_start, utc_end = self._local_date_to_utc_range(exclude_today)
                 cursor = await conn.execute(
                     f"""
                     SELECT timestamp FROM {self.TABLE_NAME}
@@ -309,7 +313,7 @@ class ChatHistoryStore:
                 )
             row = await cursor.fetchone()
             if row:
-                return self._utc_to_effective_date(row[0])
+                return self._utc_to_local_date(row[0])
             return None
 
     async def get_messages_by_date(
@@ -317,16 +321,16 @@ class ChatHistoryStore:
         session_id: str,
         effective_date: date,
     ) -> list[dict[str, Any]]:
-        """获取指定有效日期的所有聊天记录
+        """获取指定本地日期的所有聊天记录
 
         Args:
             session_id: 会话ID
-            effective_date: 有效日期
+            effective_date: 本地日期
 
         Returns:
             聊天记录列表，每条包含 role, content, timestamp（本地时间字符串）
         """
-        utc_start, utc_end = self._effective_date_to_utc_range(effective_date)
+        utc_start, utc_end = self._local_date_to_utc_range(effective_date)
 
         async with aiosqlite.connect(str(self.db_path)) as conn:
             await conn.execute("PRAGMA busy_timeout=5000")
@@ -397,11 +401,11 @@ class ChatHistoryStore:
         session_id: str,
         effective_date: date,
     ) -> bool:
-        """检查指定有效日期是否有聊天记录
+        """检查指定本地日期是否有聊天记录
 
         Args:
             session_id: 会话ID
-            effective_date: 有效日期
+            effective_date: 本地日期
 
         Returns:
             是否有聊天记录
@@ -415,18 +419,18 @@ class ChatHistoryStore:
         before_date: date,
         limit: int = 10,
     ) -> list[dict[str, Any]]:
-        """获取指定日期之前的最后 N 条聊天记录
+        """获取指定本地日期之前的最后 N 条聊天记录
 
         Args:
             session_id: 会话ID
-            before_date: 排除的有效日期（取这天之前的）
+            before_date: 排除的本地日期（取这天之前的）
             limit: 数量限制（默认10条，约5轮对话）
 
         Returns:
             聊天记录列表（按时间升序），timestamp 为本地时间字符串
         """
-        # 将有效日期转换为 UTC 时间范围
-        utc_start, utc_end = self._effective_date_to_utc_range(before_date)
+        # 将本地日期转换为 UTC 时间范围
+        utc_start, utc_end = self._local_date_to_utc_range(before_date)
 
         async with aiosqlite.connect(str(self.db_path)) as conn:
             await conn.execute("PRAGMA busy_timeout=5000")

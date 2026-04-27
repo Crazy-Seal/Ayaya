@@ -32,6 +32,5 @@ class AgentState(BaseModel):
     session_id: str
     # 人类消息计数器，达到阈值后触发一次 memory finalize。
     summary_counter: int = 0
-    # 这两个字段是“单回合缓存”，避免工具回环重复检索。
-    short_memory: str | None = None
+    # 单回合缓存，避免工具回环重复检索。
     memory_text: str | None = None

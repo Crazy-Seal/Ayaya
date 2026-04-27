@@ -1,3 +1,5 @@
+"""文本处理工具函数"""
+
 import re
 
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
@@ -26,22 +28,27 @@ def get_last_human_text(messages: list[AnyMessage]) -> str:
     return ""
 
 
-def _message_role_name(message: AnyMessage) -> str:
-    if isinstance(message, HumanMessage):
-        return "主人"
-    if isinstance(message, AIMessage):
-        return "AI"
-    return "工具"
-
-
-def build_summary_source(messages: list[AnyMessage]) -> str:
-    """把消息整理为“角色: 内容”文本，供总结模型使用。"""
-    lines: list[str] = []
-    for message in messages:
-        text = extract_text(message.content)
-        if text:
-            lines.append(f"{_message_role_name(message)}: {text}")
-    return "\n".join(lines)
+# def _message_role_name(message: AnyMessage, user_name: str = "主人", ai_name: str = "AI") -> str:
+#     """获取消息的角色名称"""
+#     if isinstance(message, HumanMessage):
+#         return user_name
+#     if isinstance(message, AIMessage):
+#         return ai_name
+#     return "工具"
+#
+#
+# def build_summary_source(
+#     messages: list[AnyMessage],
+#     user_name: str = "主人",
+#     ai_name: str = "AI",
+# ) -> str:
+#     """把消息整理为"角色: 内容"文本，供总结模型使用。"""
+#     lines: list[str] = []
+#     for message in messages:
+#         text = extract_text(message.content)
+#         if text:
+#             lines.append(f"{_message_role_name(message, user_name, ai_name)}: {text}")
+#     return "\n".join(lines)
 
 
 def split_context(
@@ -49,7 +56,16 @@ def split_context(
     later_human_count: int,
     previous_human_count: int,
 ) -> tuple[list[AnyMessage], list[AnyMessage]]:
-    """把上下文切分成“前情提要段”和“待总结段”。"""
+    """把上下文切分成"前情提要段"和"待总结段"。
+
+    Args:
+        messages: 消息列表
+        later_human_count: 待提取的人类消息数量
+        previous_human_count: 前情提要的人类消息数量
+
+    Returns:
+        (前情提要消息, 待提取消息)
+    """
     human_indices = [idx for idx, msg in enumerate(messages) if isinstance(msg, HumanMessage)]
     if not human_indices:
         return [], []
@@ -69,21 +85,21 @@ def split_context(
     return previous_tail_messages, later_messages
 
 
-def split_summary_items(summary_text: str) -> list[str]:
-    """把多行摘要拆成独立记忆条目。"""
-    items: list[str] = []
-    for raw_line in summary_text.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        line = re.sub(r"^[-*•]\s+", "", line)
-        line = re.sub(r"^\d+[.)]\s+", "", line)
-        if line:
-            items.append(line)
-    if items:
-        return items
-    line = summary_text.strip()
-    return [line] if line else []
+# def split_summary_items(summary_text: str) -> list[str]:
+#     """把多行摘要拆成独立记忆条目。"""
+#     items: list[str] = []
+#     for raw_line in summary_text.splitlines():
+#         line = raw_line.strip()
+#         if not line:
+#             continue
+#         line = re.sub(r"^[-*•]\s+", "", line)
+#         line = re.sub(r"^\d+[.)]\s+", "", line)
+#         if line:
+#             items.append(line)
+#     if items:
+#         return items
+#     line = summary_text.strip()
+#     return [line] if line else []
 
 
 def extract_multimodal_signals(messages: list[AnyMessage]) -> list[str]:

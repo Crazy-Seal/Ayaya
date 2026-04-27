@@ -1,3 +1,5 @@
+from datetime import date
+
 from langchain.tools import tool
 from langgraph.prebuilt import ToolRuntime
 
@@ -9,24 +11,28 @@ from app.agent.utils.log import log_tool_call
 
 @tool
 @log_tool_call()
-async def search_memory(
-    query: str,
+async def search_diary(
+    start: str,
+    end: str,
     runtime: ToolRuntime
 ) -> str:
-    """在长期记忆中搜索相关信息，并返回最相近的10条。
+    """搜索指定日期范围的日记。返回[start, end]范围内的日记内容(包括end那天的)，按日期排序。两个日期参数之间最多间隔5天。
 
     Args:
-        query: 搜索关键词/关键句。
+        start: 开始日期，格式 YYYY-MM-DD
+        end: 结束日期，格式 YYYY-MM-DD
     """
     try:
         state = runtime.state
         session_id = state.get("session_id") if isinstance(state, dict) else getattr(state, "session_id", None)
-        if not query or not query.strip():
-            return "错误: query不能为空。"
         if session_id is None:
-            return "错误: 缺少会话id信息，无法定位长期记忆。"
+            return "错误: 缺少会话id信息，无法查找日记。"
 
-        # 初始化新记忆管理器
+        # 解析日期
+        start_date = date.fromisoformat(start)
+        end_date = date.fromisoformat(end)
+
+        # 初始化记忆管理器
         config = MemoryConfig.from_env()
         chat_settings = ChatSettingsDao().get_chat_settings(session_id)
         memory_manager = MemoryManager(
@@ -35,16 +41,10 @@ async def search_memory(
             chat_settings=chat_settings,
         )
 
-        # 使用新系统搜索记忆
-        result = await memory_manager.search(
-            query=query.strip(),
-            memory_type="all",
-            top_k=5,
-        )
+        # 搜索日记
+        return await memory_manager.search_diary(start_date, end_date)
 
-        if not result or result == "未找到相关记忆":
-            return "未找到有效的长期记忆内容。"
-        return "检索到的长期记忆:\n" + result
-
+    except ValueError as e:
+        return f"错误: {e}"
     except Exception as e:
         return f"错误: {e}"

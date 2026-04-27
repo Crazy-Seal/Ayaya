@@ -27,6 +27,13 @@ class MemoryConfig:
     neo4j_user: str = "neo4j"
     neo4j_password: str = "neo4j"
 
+    # 语义记忆后端选择
+    semantic_backend: str = "mem0"  # "native" | "mem0"
+
+    # Mem0 配置
+    mem0_qdrant_path: str = ""
+    mem0_collection_name: str = "hiyori_semantic_memory"
+
     # 嵌入配置
     embedding_api_key: str = ""
     embedding_model: str = ""
@@ -66,6 +73,9 @@ class MemoryConfig:
             neo4j_uri=os.getenv("NEO4J_URI", "bolt://localhost:7687"),
             neo4j_user=os.getenv("NEO4J_USER", "neo4j"),
             neo4j_password=os.getenv("NEO4J_PASSWORD", ""),
+            semantic_backend=os.getenv("SEMANTIC_BACKEND", "mem0"),
+            mem0_qdrant_path=os.getenv("MEM0_QDRANT_PATH", str(base_path / "mem0" / "qdrant_data")),
+            mem0_collection_name=os.getenv("MEM0_COLLECTION_NAME", "hiyori_semantic_memory"),
             embedding_api_key=os.getenv("EMBEDDING_API_KEY", ""),
             embedding_model=os.getenv("EMBEDDING_MODEL", ""),
             embedding_dimension=int(os.getenv("EMBEDDING_DIMENSION", "1024")),

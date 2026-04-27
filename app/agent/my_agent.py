@@ -7,7 +7,8 @@ from langchain_core.runnables import RunnableConfig
 from app.agent.checkpoint_repository import CheckpointRepository
 from app.agent.graph_builder import AgentGraphBuilder
 from app.agent.interface import BaseAgent
-from app.agent.memory_hub import build_default_memory_manager
+from app.agent.memory.config import MemoryConfig
+from app.agent.memory.manager import MemoryManager
 from app.agent.model_provider import get_model
 from app.agent.tools import get_tools
 from app.agent.utils.log import shorten_for_log
@@ -35,7 +36,11 @@ class MyAgent(BaseAgent):
         }
 
         self.checkpoint_repo = CheckpointRepository()
-        self.memory_manager = build_default_memory_manager(chat_settings)
+        self.memory_manager = MemoryManager(
+            session_id=chat_settings.session_id,
+            config=MemoryConfig.from_env(),
+            chat_settings=chat_settings,
+        )
 
         # 图构建由独立 builder 负责，MyAgent 只做装配。
         self.graph_builder = AgentGraphBuilder(
@@ -66,7 +71,6 @@ class MyAgent(BaseAgent):
                 # 新回合输入只注入当前用户消息；记忆字段显式清空，防止跨回合复用。
                 "messages": [HumanMessage(content=user_message.message)],
                 "session_id": active_session_id,
-                "short_memory": None,
                 "memory_text": None,
             }),
             config=self.config,

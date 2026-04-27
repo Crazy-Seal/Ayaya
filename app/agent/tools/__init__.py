@@ -4,6 +4,7 @@ from importlib import import_module
 # 主图工具：使用"模块路径:符号名"做延迟加载，避免包初始化阶段的循环依赖。
 TOOLS_REGISTRY = {
     "search_memory": "app.agent.tools.search_memory:search_memory",
+    "search_diary": "app.agent.tools.search_diary:search_diary",
     "access_the_internet": "app.agent.tools.access_the_internet:access_the_internet",
     "plan_and_coding": "app.agent.tools.plan_and_coding:plan_and_coding",
     "run_ps": "app.agent.tools.run_ps:run_ps",

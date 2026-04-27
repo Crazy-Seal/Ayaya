@@ -5,7 +5,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 
 from app.agent.checkpoint_repository import get_checkpointer_async
-from app.agent.memory_hub import MemoryManager
+from app.agent.memory.manager import MemoryManager
 from app.agent.nodes import ChatNode, MemoryFinalizeNode
 from app.agent.state import AgentState
 from app.schemas.chat_settings import ChatSettings

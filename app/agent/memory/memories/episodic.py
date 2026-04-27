@@ -12,6 +12,7 @@ from app.agent.memory.base import MemoryItem
 from app.agent.memory.config import MemoryConfig
 from app.agent.memory.store.episodic_chroma_store import EpisodicChromaStore
 from app.agent.memory.store.episodic_sqlite_store import EpisodicSqliteStore
+from app.agent.utils.llm_utils import ainvoke_with_retry
 from app.schemas.chat_settings import ChatSettings
 
 logger = logging.getLogger(__name__)
@@ -365,7 +366,7 @@ class EpisodicMemory:
         try:
             # 使用扁平化 schema（兼容更多 API 提供商，避免 $defs/$ref）
             structured_llm = self.llm.with_structured_output(EPISODIC_MEMORY_SCHEMA)
-            result: dict = await structured_llm.ainvoke(prompt)
+            result: dict = await ainvoke_with_retry(structured_llm, prompt)
 
             # 使用 Pydantic 验证返回数据
             validated = EpisodicMemoryOutput.model_validate(result)
@@ -409,7 +410,7 @@ class EpisodicMemory:
 
 ## 要求
 - 1. 用自然的中文记录记忆条目，像写日记一样记录要点，不相关的事件需要分成不同的条目，每个条目只能记录一个事件
-- 2. 识别事件发生的日期（若无法识别，则使用事件相关片段的对话日期）
+- 2. 识别事件发生的日期（若无法识别，则使用事件相关片段的对话日期），对于凌晨4:00之前的事件和消息，请按照前一天日期记录（如2026-03-20 01:15:00记录成2026-03-19）
 - 3. 评估记忆重要性（保留一位小数，0.0-1.0）：
   - 0.8-1.0：重大事件（表白、重要决定、约定等）
   - 0.6-0.8：重要互动（共度时光、深度陪伴、谈心等）

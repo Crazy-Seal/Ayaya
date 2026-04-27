@@ -1,5 +1,3 @@
-import os
-import re
 import yaml
 from functools import lru_cache
 from pathlib import Path
@@ -8,32 +6,10 @@ from app.schemas.chat_settings import ChatSettings
 
 CHAT_CONFIG_FILE = Path(__file__).resolve().parents[2] / "config" / "chat_settings.yaml"
 
-
-_ENV_PLACEHOLDER_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)}")
-
-
-def _resolve_env_placeholders(value: Any) -> Any:
-    """Recursively resolve ${VAR_NAME} placeholders using environment variables."""
-    if isinstance(value, dict):
-        return {k: _resolve_env_placeholders(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_resolve_env_placeholders(item) for item in value]
-    if isinstance(value, str):
-        def _replace(match: re.Match[str]) -> str:
-            env_name = match.group(1)
-            env_value = os.getenv(env_name)
-            if env_value is None:
-                raise RuntimeError(f"Environment variable not found: {env_name}")
-            return env_value
-
-        return _ENV_PLACEHOLDER_PATTERN.sub(_replace, value)
-    return value
-
-
 def _load_yaml_with_env(file_path: Path) -> dict[str, Any]:
     with file_path.open("r", encoding="utf-8") as file:
         raw = yaml.safe_load(file) or {}
-    return _resolve_env_placeholders(raw)
+    return raw
 
 
 @lru_cache

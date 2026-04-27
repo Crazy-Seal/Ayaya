@@ -335,7 +335,7 @@ const initModel = async () => {
 
       event.preventDefault();
       const factor = event.deltaY < 0 ? 1.08 : 0.92;
-      userScale = clamp(userScale * factor, 0.5, 1.5);
+      userScale = clamp(userScale * factor, 0.5, 3.0);
       applyTransform();
       persistTransform();
     },

@@ -51,24 +51,6 @@ class ChatHistoryDao:
             logger.warning("[ChatHistory] 无法解析 timestamp=%r", utc_timestamp_value)
             return str(utc_timestamp_value)
 
-    async def save_chat_message_async(self, session_id: str, role: str, content: str) -> None:
-        """保存单条聊天消息到 chat_history 表。"""
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            async with aiosqlite.connect(str(self.db_path)) as conn:
-                await conn.execute(
-                    "INSERT INTO chat_history (thread_id, role, content) VALUES (?, ?, ?)",
-                    (session_id, role, content),
-                )
-                await conn.commit()
-        except Exception:
-            logger.exception("[ChatHistory][session=%s] 保存聊天记录失败", session_id)
-
-    async def save_chat_pair_async(self, session_id: str, user_message: str, ai_message: str) -> None:
-        """兼容旧调用：保存一轮用户与助手对话到 chat_history 表。"""
-        await self.save_chat_message_async(session_id, "Human", user_message)
-        await self.save_chat_message_async(session_id, "AI", ai_message)
-
     async def list_chat_history_async(self, session_id: str, start: int = 0, limit: int = 200) -> list[dict[str, str]]:
         """查询会话历史，并把 UTC 时间转换为系统本地时区。"""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
