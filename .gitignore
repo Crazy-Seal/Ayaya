@@ -31,3 +31,18 @@ app/agent/tools/tools.log
 
 # ===== Environment files =====
 .env
+config/chat_settings.yaml
+
+# ===== tests =====
+tests
+
+# ===== Claude =====
+.claude
+CLAUDE.md
+
+# ===== demo =====
+app/agent/memory/diary_demo.py
+app/agent/memory/import_demo.py
+
+# ===== memory =====
+memory
