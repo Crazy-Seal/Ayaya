@@ -1,0 +1,556 @@
+/**
+ * IPC 处理器注册
+ */
+
+import { ipcMain, BrowserWindow, dialog, net } from "electron";
+import fs from "node:fs";
+
+import { BACKEND_BASE_URL, CHAT_REQUEST_TIMEOUT_MS, TOOLS_REGISTRY_FILE } from "./config.js";
+import type {
+  ChatSettingsData,
+  ModelTransformPayload,
+  ToolItem,
+  ModelChangedPayload,
+  ModelTransformChangedPayload,
+  ChatChunkPayload,
+} from "./types.js";
+import {
+  loadModelConfig,
+  saveModelConfig,
+  getActiveModelRecord,
+  resolveModelUrl,
+  resolveRootDirAbsolute,
+  inspectImportSource,
+  resolveUniqueModelDir,
+  copyDirectory,
+  findModel3JsonRelativePath,
+  createModelRecord,
+  sanitizeModelName,
+} from "./model-manager.js";
+import {
+  ensureChatSettingsLoaded,
+  createEmptyChatSettings,
+  deleteChatSettingsBySessionId,
+  fetchLatestAiMessageBySessionId,
+  updateChatSettings,
+  updateChatSettingsCache,
+  clearChatSettingsCache,
+} from "./chat-settings.js";
+import { getMainWindow, getSettingsWindow, openSettingsWindow } from "./window-manager.js";
+
+/**
+ * 通知模型已更改（同时通知主窗口和设置窗口）
+ */
+const notifyModelChanged = (): void => {
+  const active = getActiveModelRecord();
+  const payload: ModelChangedPayload = {
+    id: active.id,
+    name: active.name,
+    sessionId: active.sessionId,
+    modelUrl: resolveModelUrl(active),
+    offsetX: active.offsetX ?? 0,
+    offsetY: active.offsetY ?? 0,
+    userScale: active.userScale ?? 1,
+    followCursor: active.followCursor ?? true,
+  };
+
+  // 通知主窗口
+  const mainWindow = getMainWindow();
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("desktop-pet:model-changed", payload);
+  }
+
+  // 通知设置窗口
+  const settingsWindow = getSettingsWindow();
+  if (settingsWindow && !settingsWindow.isDestroyed()) {
+    settingsWindow.webContents.send("desktop-pet:model-changed", payload);
+  }
+};
+
+/**
+ * 通知主窗口模型变换已更改
+ */
+const notifyModelTransformChanged = (model: {
+  id: string;
+  offsetX?: number;
+  offsetY?: number;
+  userScale?: number;
+  followCursor?: boolean;
+}): void => {
+  const mainWindow = getMainWindow();
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  const payload: ModelTransformChangedPayload = {
+    id: model.id,
+    offsetX: model.offsetX ?? 0,
+    offsetY: model.offsetY ?? 0,
+    userScale: model.userScale ?? 1,
+    followCursor: model.followCursor ?? true,
+  };
+
+  mainWindow.webContents.send("desktop-pet:model-transform-changed", payload);
+};
+
+/**
+ * 加载可用工具列表
+ */
+const loadAvailableTools = (): ToolItem[] => {
+  if (!fs.existsSync(TOOLS_REGISTRY_FILE)) {
+    return [];
+  }
+
+  const content = fs.readFileSync(TOOLS_REGISTRY_FILE, "utf-8");
+  const blockMatch = content.match(/TOOLS_REGISTRY\s*=\s*\{([\s\S]*?)\}/m);
+  if (!blockMatch) {
+    return [];
+  }
+
+  const block = blockMatch[1];
+  const keyPattern = /["']([^"']+)["']\s*:/g;
+  const tools: ToolItem[] = [];
+  const seen = new Set<string>();
+  let matched: RegExpExecArray | null = keyPattern.exec(block);
+
+  while (matched) {
+    const name = matched[1].trim();
+    if (name && !seen.has(name)) {
+      seen.add(name);
+      tools.push({ name });
+    }
+    matched = keyPattern.exec(block);
+  }
+
+  return tools;
+};
+
+/**
+ * 注册 IPC 处理器
+ */
+export const registerIpcHandlers = (): void => {
+  // 鼠标穿透控制
+  ipcMain.on("desktop-pet:set-mouse-passthrough", (event, enabled: boolean) => {
+    const win = BrowserWindow.fromWebContents(event.sender) ?? getMainWindow();
+    if (!win) {
+      return;
+    }
+
+    win.setIgnoreMouseEvents(Boolean(enabled), { forward: true });
+  });
+
+  // 指针交互控制
+  ipcMain.on("desktop-pet:set-pointer-interactive", (event, enabled: boolean) => {
+    const win = BrowserWindow.fromWebContents(event.sender) ?? getMainWindow();
+    if (!win) {
+      return;
+    }
+
+    win.setIgnoreMouseEvents(!Boolean(enabled), { forward: true });
+  });
+
+  // 获取当前激活的模型
+  ipcMain.handle("desktop-pet:get-active-model", () => {
+    const active = getActiveModelRecord();
+    return {
+      id: active.id,
+      name: active.name,
+      sessionId: active.sessionId,
+      modelUrl: resolveModelUrl(active),
+      offsetX: active.offsetX ?? 0,
+      offsetY: active.offsetY ?? 0,
+      userScale: active.userScale ?? 1,
+      followCursor: active.followCursor ?? true,
+    };
+  });
+
+  // 获取模型配置
+  ipcMain.handle("desktop-pet:get-model-config", () => {
+    const config = loadModelConfig();
+    return {
+      activeModelId: config.activeModelId,
+      models: config.models.map((item) => ({
+        id: item.id,
+        name: item.name,
+        sessionId: item.sessionId,
+        source: item.source,
+        deletable: item.source !== "builtin",
+        offsetX: item.offsetX ?? 0,
+        offsetY: item.offsetY ?? 0,
+        userScale: item.userScale ?? 1,
+        followCursor: item.followCursor ?? true,
+      })),
+    };
+  });
+
+  // 获取聊天设置
+  ipcMain.handle("desktop-pet:get-chat-settings", async () => {
+    const settings = await ensureChatSettingsLoaded();
+    return settings;
+  });
+
+  // 获取最新 AI 消息
+  ipcMain.handle("desktop-pet:get-latest-ai-message", async (_event, sessionId?: string) => {
+    const resolvedSessionId = sessionId || getActiveModelRecord().sessionId;
+    return {
+      sessionId: resolvedSessionId,
+      latestAiMessage: await fetchLatestAiMessageBySessionId(resolvedSessionId),
+    };
+  });
+
+  // 更新聊天设置
+  ipcMain.handle("desktop-pet:update-chat-settings", async (_event, payload: ChatSettingsData) => {
+    updateChatSettingsCache({
+      session_id: payload.session_id,
+      model_name: payload.model_name,
+      openai_api_key: payload.openai_api_key,
+      openai_base_url: payload.openai_base_url,
+      temperature: payload.temperature,
+      system_prompt: payload.system_prompt,
+      tools_list: [...payload.tools_list],
+      name: payload.name,
+      feature: payload.feature,
+      character: payload.character,
+      address: payload.address,
+      characteristic: payload.characteristic,
+      constraint: payload.constraint,
+    });
+
+    return await updateChatSettings(payload);
+  });
+
+  // 获取可用工具
+  ipcMain.handle("desktop-pet:get-available-tools", () => {
+    return {
+      tools: loadAvailableTools(),
+    };
+  });
+
+  // 更新模型变换
+  ipcMain.handle(
+    "desktop-pet:update-model-transform",
+    (_event, payload: ModelTransformPayload) => {
+      const config = loadModelConfig();
+      const target = config.models.find((item) => item.id === payload.modelId);
+      if (!target) {
+        throw new Error("Model not found");
+      }
+
+      if (typeof payload.offsetX === "number") {
+        target.offsetX = payload.offsetX;
+      }
+      if (typeof payload.offsetY === "number") {
+        target.offsetY = payload.offsetY;
+      }
+      if (typeof payload.userScale === "number") {
+        target.userScale = payload.userScale;
+      }
+      if (typeof payload.followCursor === "boolean") {
+        target.followCursor = payload.followCursor;
+      }
+
+      saveModelConfig(config);
+      notifyModelTransformChanged(target);
+
+      return {
+        modelId: target.id,
+        offsetX: target.offsetX ?? 0,
+        offsetY: target.offsetY ?? 0,
+        userScale: target.userScale ?? 1,
+        followCursor: target.followCursor ?? true,
+      };
+    }
+  );
+
+  // 预览 Live2D 导入
+  ipcMain.handle("desktop-pet:preview-live2d-import", async () => {
+    const chooser = getSettingsWindow() ?? getMainWindow();
+    if (!chooser) {
+      return null;
+    }
+
+    const result = await dialog.showOpenDialog(chooser, {
+      title: "选择 Live2D 模型文件夹",
+      properties: ["openDirectory"],
+    });
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return null;
+    }
+
+    return inspectImportSource(result.filePaths[0]);
+  });
+
+  // 导入 Live2D 模型
+  ipcMain.handle(
+    "desktop-pet:import-live2d-model",
+    async (_event, payload?: { selectedPath: string; suggestedName?: string }) => {
+      if (!payload?.selectedPath) {
+        throw new Error("Missing import path");
+      }
+
+      const preview = inspectImportSource(payload.selectedPath);
+      const modelName = sanitizeModelName(payload.suggestedName || preview.suggestedName);
+      const destDir = resolveUniqueModelDir(modelName);
+
+      copyDirectory(preview.selectedPath, destDir);
+
+      const entryName = findModel3JsonRelativePath(destDir);
+      if (!entryName) {
+        fs.rmSync(destDir, { recursive: true, force: true });
+        throw new Error("Model3.json not found in the selected folder");
+      }
+
+      const record = createModelRecord(modelName, destDir, entryName);
+
+      try {
+        await createEmptyChatSettings(record.sessionId);
+      } catch (error) {
+        fs.rmSync(destDir, { recursive: true, force: true });
+        throw error;
+      }
+
+      const config = loadModelConfig();
+      config.models.push(record);
+      config.activeModelId = record.id;
+      saveModelConfig(config);
+
+      // 清除聊天设置缓存，确保下次获取新模型的设置
+      clearChatSettingsCache();
+
+      notifyModelChanged();
+
+      return {
+        id: record.id,
+        name: record.name,
+        sessionId: record.sessionId,
+        source: record.source,
+      };
+    }
+  );
+
+  // 删除模型
+  ipcMain.handle("desktop-pet:delete-model", async (_event, modelId: string) => {
+    const config = loadModelConfig();
+    const target = config.models.find((item) => item.id === modelId);
+    if (!target) {
+      throw new Error("Model not found");
+    }
+
+    if (target.source === "builtin") {
+      throw new Error("Default model cannot be deleted");
+    }
+
+    await deleteChatSettingsBySessionId(target.sessionId);
+
+    if (target.rootDir) {
+      fs.rmSync(resolveRootDirAbsolute(target.rootDir), { recursive: true, force: true });
+    }
+
+    config.models = config.models.filter((item) => item.id !== modelId);
+    if (config.models.length === 0) {
+      const { createDefaultModelConfig } = await import("./model-manager.js");
+      const fallback = createDefaultModelConfig();
+      saveModelConfig(fallback);
+      clearChatSettingsCache();
+      notifyModelChanged();
+      return {
+        activeModelId: fallback.activeModelId,
+      };
+    }
+
+    if (config.activeModelId === modelId) {
+      const builtin =
+        config.models.find((item) => item.id === "builtin-hiyori") ??
+        config.models.find((item) => item.source === "builtin") ??
+        config.models[0];
+      config.activeModelId = builtin.id;
+    }
+
+    saveModelConfig(config);
+    clearChatSettingsCache();
+    notifyModelChanged();
+
+    return {
+      activeModelId: config.activeModelId,
+    };
+  });
+
+  // 设置激活模型
+  ipcMain.handle("desktop-pet:set-active-model", (_event, modelId: string) => {
+    const config = loadModelConfig();
+    if (!config.models.some((item) => item.id === modelId)) {
+      throw new Error("Model not found");
+    }
+
+    config.activeModelId = modelId;
+    saveModelConfig(config);
+
+    // 清除聊天设置缓存
+    clearChatSettingsCache();
+
+    notifyModelChanged();
+
+    return {
+      activeModelId: config.activeModelId,
+    };
+  });
+
+  // 打开设置窗口
+  ipcMain.on("desktop-pet:open-settings-window", () => {
+    openSettingsWindow();
+  });
+
+  // 最小化当前窗口
+  ipcMain.on("desktop-pet:minimize-current-window", (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    win?.minimize();
+  });
+
+  // 关闭当前窗口
+  ipcMain.on("desktop-pet:close-current-window", (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    win?.close();
+  });
+
+  // 聊天请求
+  ipcMain.handle(
+    "desktop-pet:chat",
+    async (event, payload: string | { message: string; sessionId?: string; requestId?: string }) => {
+      const message = typeof payload === "string" ? payload : payload.message;
+      const sessionId = typeof payload === "string" ? undefined : payload.sessionId;
+      const requestId = typeof payload === "string" ? undefined : payload.requestId;
+      const body: { message: string; session_id?: string } = { message };
+      if (sessionId) {
+        body.session_id = sessionId;
+      }
+      const abortController = new AbortController();
+      const timeoutTimer = setTimeout(() => {
+        abortController.abort();
+      }, CHAT_REQUEST_TIMEOUT_MS);
+
+      try {
+        const res = await net.fetch(`${BACKEND_BASE_URL}/chat`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(body),
+          signal: abortController.signal,
+        });
+
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(text || `请求失败: ${res.status}`);
+        }
+
+        if (!res.body) {
+          throw new Error("Chat API error: missing response stream");
+        }
+
+        const decoder = new TextDecoder("utf-8");
+        const reader = res.body.getReader();
+        let streamBuffer = "";
+        let aggregatedResponse = "";
+
+        const processEventBlock = (block: string): { done: boolean } => {
+          const lines = block
+            .split("\n")
+            .map((line) => line.trim())
+            .filter((line) => line.length > 0);
+
+          let eventName = "message";
+          const dataLines: string[] = [];
+
+          for (const line of lines) {
+            if (line.startsWith("event:")) {
+              eventName = line.slice(6).trim();
+            } else if (line.startsWith("data:")) {
+              dataLines.push(line.slice(5).trim());
+            }
+          }
+
+          if (dataLines.length === 0) {
+            return { done: false };
+          }
+
+          const dataText = dataLines.join("\n");
+          if (dataText === "[DONE]") {
+            return { done: true };
+          }
+
+          const parsed = JSON.parse(dataText) as { response?: string; detail?: string };
+          if (eventName === "error") {
+            throw new Error(parsed.detail || "聊天流返回错误事件");
+          }
+
+          if (typeof parsed.response === "string" && parsed.response.length > 0) {
+            aggregatedResponse += parsed.response;
+            if (requestId) {
+              const chunkPayload: ChatChunkPayload = {
+                requestId,
+                chunk: parsed.response,
+                aggregated: aggregatedResponse,
+              };
+              event.sender.send("desktop-pet:chat-chunk", chunkPayload);
+            }
+          }
+
+          return { done: false };
+        };
+
+        let streamEnded = false;
+        while (!streamEnded) {
+          const readResult = await reader.read();
+          if (readResult.done) {
+            streamEnded = true;
+            break;
+          }
+
+          streamBuffer += decoder.decode(readResult.value, { stream: true });
+          const normalized = streamBuffer.replaceAll("\r\n", "\n");
+          const eventBlocks = normalized.split("\n\n");
+          streamBuffer = eventBlocks.pop() ?? "";
+
+          for (const block of eventBlocks) {
+            const state = processEventBlock(block);
+            if (state.done) {
+              streamEnded = true;
+              break;
+            }
+          }
+        }
+
+        const remaining = streamBuffer.trim();
+        if (remaining.length > 0) {
+          processEventBlock(remaining);
+        }
+
+        return {
+          response: aggregatedResponse,
+          model: "",
+        };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        if (error instanceof Error && error.name === "AbortError") {
+          throw new Error("Chat request timeout (900s), please try again later");
+        }
+        if (
+          errorMessage.includes("UND_ERR_BODY_TIMEOUT") ||
+          errorMessage.toLowerCase().includes("body timeout") ||
+          errorMessage.toLowerCase().includes("terminated")
+        ) {
+          throw new Error("Chat request timeout (900s), please try again later");
+        }
+        throw error;
+      } finally {
+        clearTimeout(timeoutTimer);
+      }
+    }
+  );
+};
+
+/**
+ * 清理聊天设置缓存的辅助函数
+ */
+export { clearChatSettingsCache };
