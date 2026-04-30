@@ -11,6 +11,7 @@ import { GazeTracker, createGazeUpdateFunction } from "./live2d/gaze-tracker.js"
 import { PointerInteractiveManager } from "./live2d/pointer-interactive.js";
 import { BubbleManager } from "./chat/bubble.js";
 import { ChatClient, startLatestAiMessageBootstrap } from "./chat/chat-client.js";
+import { ChatHistoryManager } from "./chat/chat-history-manager.js";
 
 // 全局 PIXI 引用（Live2D 需要）
 (globalThis as unknown as { PIXI: typeof PIXI }).PIXI = PIXI;
@@ -25,6 +26,7 @@ class MainApp {
   private gazeTracker = new GazeTracker();
   private pointerManager: PointerInteractiveManager;
   private bubbleManager: BubbleManager;
+  private chatHistoryManager: ChatHistoryManager;
   private chatClient: ChatClient;
   private modelInfo: Awaited<ReturnType<Live2DModelLoader["loadModel"]>> | null = null;
   private stopLatestAiMessageBootstrap: (() => void) | null = null;
@@ -41,8 +43,10 @@ class MainApp {
     this.modelLoader = new Live2DModelLoader(this.app, this.elements.stageHost);
     this.pointerManager = new PointerInteractiveManager(this.app);
     this.bubbleManager = new BubbleManager(this.elements.bubble);
+    this.chatHistoryManager = new ChatHistoryManager(this.elements.chatHistoryList);
     this.chatClient = new ChatClient({
       bubble: this.bubbleManager,
+      chatHistory: this.chatHistoryManager,
       sendBtn: this.elements.sendBtn,
       input: this.elements.input,
       sessionId: "",
@@ -75,6 +79,12 @@ class MainApp {
     window.addEventListener(
       "wheel",
       (event) => {
+        const hoveredElement = document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null;
+        // 如果在聊天历史列表上，不拦截事件，让它正常滚动
+        if (hoveredElement?.closest("#chat-history-list")) {
+          return;
+        }
+
         if (!this.pointerManager.isCursorOnChatControls(event.clientX, event.clientY)) {
           return;
         }
@@ -189,6 +199,9 @@ class MainApp {
     // 更新会话 ID
     this.currentSessionId = activeModel.sessionId;
     this.chatClient.setSessionId(activeModel.sessionId);
+
+    // 加载聊天历史
+    await this.chatHistoryManager.loadHistory(activeModel.sessionId);
 
     // 启动最新消息加载
     this.stopLatestAiMessageBootstrap = startLatestAiMessageBootstrap(

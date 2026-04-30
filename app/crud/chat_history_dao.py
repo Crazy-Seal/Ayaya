@@ -51,6 +51,18 @@ class ChatHistoryDao:
             logger.warning("[ChatHistory] 无法解析 timestamp=%r", utc_timestamp_value)
             return str(utc_timestamp_value)
 
+    @staticmethod
+    def _remove_timestamp(text: str) -> str:
+        """
+        移除聊天记录字符串开头方括号内的内容（时间戳等），返回剩余的消息文本。
+        """
+
+        # 直接取第一个 ']' 之后的内容
+        if ']' in text:
+            # 分割一次，取后半部分，并去除左侧空格
+            return text.split(']', 1)[-1].lstrip()
+        return text
+
     async def list_chat_history_async(self, session_id: str, start: int = 0, limit: int = 200) -> list[dict[str, str]]:
         """查询会话历史，并把 UTC 时间转换为系统本地时区。"""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -71,11 +83,43 @@ class ChatHistoryDao:
             return [
                 {
                     "role": role,
-                    "content": content,
+                    "content": self._remove_timestamp(content),
                     "timestamp": self._to_local_time_text(timestamp_text),
                 }
                 for role, content, timestamp_text in rows
             ]
         except Exception:
             logger.exception("[ChatHistory][session=%s] 查询聊天记录失败", session_id)
+            return []
+
+    async def list_chat_history_last_n_async(self, session_id: str, n: int = 100) -> list[dict[str, str]]:
+        """查询会话最后 N 条历史记录，按时间升序返回。"""
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            async with aiosqlite.connect(str(self.db_path)) as conn:
+                cursor = await conn.execute(
+                    """
+                    SELECT role, content, timestamp
+                    FROM chat_history
+                    WHERE thread_id = ?
+                    ORDER BY timestamp DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (session_id, n),
+                )
+                rows = await cursor.fetchall()
+
+            # 反转顺序，使其按时间升序返回
+            rows = list(reversed(rows))
+
+            return [
+                {
+                    "role": role,
+                    "content": self._remove_timestamp(content),
+                    "timestamp": self._to_local_time_text(timestamp_text),
+                }
+                for role, content, timestamp_text in rows
+            ]
+        except Exception:
+            logger.exception("[ChatHistory][session=%s] 查询最后聊天记录失败", session_id)
             return []

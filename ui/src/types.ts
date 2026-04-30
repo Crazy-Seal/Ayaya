@@ -101,6 +101,15 @@ export type ToolItem = {
 };
 
 /**
+ * 聊天历史项
+ */
+export type ChatHistoryItem = {
+  role: string;
+  content: string;
+  timestamp?: string;
+};
+
+/**
  * API 响应
  */
 export type ApiResponse<T> = {
@@ -151,6 +160,8 @@ export interface DesktopPetApi {
     sessionId: string;
     latestAiMessage: string | null;
   }>;
+  getChatHistory: (sessionId: string, start: number, limit: number) => Promise<ChatHistoryItem[]>;
+  getChatHistoryLastN: (sessionId: string, n: number) => Promise<ChatHistoryItem[]>;
   openSettingsWindow: () => void;
   minimizeCurrentWindow: () => void;
   closeCurrentWindow: () => void;

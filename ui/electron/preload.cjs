@@ -31,6 +31,12 @@ contextBridge.exposeInMainWorld("desktopPetApi", {
   getLatestAiMessage: (sessionId) => {
     return ipcRenderer.invoke("desktop-pet:get-latest-ai-message", sessionId);
   },
+  getChatHistory: (sessionId, start, limit) => {
+    return ipcRenderer.invoke("desktop-pet:get-chat-history", sessionId, start, limit);
+  },
+  getChatHistoryLastN: (sessionId, n) => {
+    return ipcRenderer.invoke("desktop-pet:get-chat-history-last-n", sessionId, n);
+  },
   updateChatSettings: (payload) => {
     return ipcRenderer.invoke("desktop-pet:update-chat-settings", payload);
   },

@@ -32,6 +32,8 @@ import {
   createEmptyChatSettings,
   deleteChatSettingsBySessionId,
   fetchLatestAiMessageBySessionId,
+  fetchChatHistoryPageBySessionId,
+  fetchChatHistoryLastN,
   updateChatSettings,
   updateChatSettingsCache,
   clearChatSettingsCache,
@@ -197,6 +199,22 @@ export const registerIpcHandlers = (): void => {
       latestAiMessage: await fetchLatestAiMessageBySessionId(resolvedSessionId),
     };
   });
+
+  // 获取聊天历史
+  ipcMain.handle(
+    "desktop-pet:get-chat-history",
+    async (_event, sessionId: string, start: number, limit: number) => {
+      return await fetchChatHistoryPageBySessionId(sessionId, start, limit);
+    }
+  );
+
+  // 获取最后 N 条聊天历史
+  ipcMain.handle(
+    "desktop-pet:get-chat-history-last-n",
+    async (_event, sessionId: string, n: number) => {
+      return await fetchChatHistoryLastN(sessionId, n);
+    }
+  );
 
   // 更新聊天设置
   ipcMain.handle("desktop-pet:update-chat-settings", async (_event, payload: ChatSettingsData) => {

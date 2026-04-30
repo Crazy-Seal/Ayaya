@@ -99,6 +99,36 @@ export const fetchChatHistoryPageBySessionId = async (
 };
 
 /**
+ * 获取最后 N 条聊天历史
+ */
+export const fetchChatHistoryLastN = async (
+  sessionId: string,
+  n: number
+): Promise<ChatHistoryItem[]> => {
+  const url = `${BACKEND_BASE_URL}/chat_history_last_n/${encodeURIComponent(sessionId)}?n=${n}`;
+  const res = await fetch(url, {
+    method: "GET",
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `读取 chat_history_last_n 失败: ${res.status}`);
+  }
+
+  const result = await parseJsonSafe<ApiResponse<Array<Partial<ChatHistoryItem>>>>(res);
+
+  if (!result || result.code !== 200 || !Array.isArray(result.data)) {
+    throw new Error(result?.msg || "读取 chat_history_last_n 失败：返回格式错误");
+  }
+
+  return result.data.map((item) => ({
+    role: String(item.role ?? ""),
+    content: String(item.content ?? ""),
+    timestamp: String(item.timestamp ?? ""),
+  }));
+};
+
+/**
  * 从历史记录中获取最新的 AI 消息
  */
 const getLatestAiMessageFromHistory = (history: ChatHistoryItem[]): string | null => {
@@ -121,34 +151,9 @@ const getLatestAiMessageFromHistory = (history: ChatHistoryItem[]): string | nul
 export const fetchLatestAiMessageBySessionId = async (
   sessionId: string
 ): Promise<string | null> => {
-  let start = 0;
-  let pageCount = 0;
-  let latestAiMessage: string | null = null;
-
-  while (pageCount < CHAT_HISTORY_MAX_PAGES) {
-    const historyPage = await fetchChatHistoryPageBySessionId(
-      sessionId,
-      start,
-      CHAT_HISTORY_PAGE_SIZE
-    );
-    if (historyPage.length === 0) {
-      break;
-    }
-
-    const pageLatestAi = getLatestAiMessageFromHistory(historyPage);
-    if (pageLatestAi) {
-      latestAiMessage = pageLatestAi;
-    }
-
-    if (historyPage.length < CHAT_HISTORY_PAGE_SIZE) {
-      break;
-    }
-
-    start += CHAT_HISTORY_PAGE_SIZE;
-    pageCount += 1;
-  }
-
-  return latestAiMessage;
+  // 直接获取最后 20 条记录查找最新 AI 消息
+  const history = await fetchChatHistoryLastN(sessionId, 20);
+  return getLatestAiMessageFromHistory(history);
 };
 
 /**

@@ -244,6 +244,41 @@ data: {"detail":"OPENAI_API_KEY is not set. Please configure your API key."}
 - `timestamp` 为服务端转换后的本地时区时间（ISO 8601）
 - 当该会话暂无记录或超出范围时，`data` 返回空数组 `[]`
 
+### GET /chat_history_last_n/{session_id}
+
+#### 接收参数：
+
+- `session_id`：会话ID（path, str）
+- `n`：查询条数（query, int, 默认 `100`，且 `1 <= n <= 500`）
+
+#### 返回结果：
+成功：
+
+```json
+{
+  "data": [
+    {
+      "role": "Human",
+      "content": "你好",
+      "timestamp": "2026-03-23T10:00:00+08:00"
+    },
+    {
+      "role": "AI",
+      "content": "你好，有什么我可以帮你？",
+      "timestamp": "2026-03-23T10:00:02+08:00"
+    }
+  ],
+  "msg": "success",
+  "code": 200
+}
+```
+
+说明：
+- `data` 为聊天记录数组，返回该会话最后 `n` 条记录，按时间升序排列
+- `timestamp` 为服务端转换后的本地时区时间（ISO 8601）
+- 当该会话暂无记录时，`data` 返回空数组 `[]`
+- 适用于需要快速获取最近聊天记录的场景，无需分页
+
 ## 4.测试接口
 
 ### GET /health

@@ -3,12 +3,14 @@
  */
 
 import { BubbleManager } from "./bubble.js";
+import { ChatHistoryManager } from "./chat-history-manager.js";
 
 /**
  * 聊天客户端选项
  */
 export interface ChatClientOptions {
   bubble: BubbleManager;
+  chatHistory: ChatHistoryManager;
   sendBtn: HTMLButtonElement;
   input: HTMLInputElement;
   sessionId: string;
@@ -20,6 +22,7 @@ export interface ChatClientOptions {
  */
 export class ChatClient {
   private bubble: BubbleManager;
+  private chatHistory: ChatHistoryManager;
   private sendBtn: HTMLButtonElement;
   private input: HTMLInputElement;
   private sessionId: string;
@@ -28,6 +31,7 @@ export class ChatClient {
 
   constructor(options: ChatClientOptions) {
     this.bubble = options.bubble;
+    this.chatHistory = options.chatHistory;
     this.sendBtn = options.sendBtn;
     this.input = options.input;
     this.sessionId = options.sessionId;
@@ -73,8 +77,14 @@ export class ChatClient {
       return;
     }
 
+    // 添加用户消息到历史
+    this.chatHistory.addMessage({
+      role: "human",
+      content: message,
+      timestamp: new Date().toISOString(),
+    });
+
     this.sendBtn.disabled = true;
-    this.bubble.setText("思考中...");
 
     const requestId = `chat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     let streamedText = "";
@@ -84,6 +94,8 @@ export class ChatClient {
     const renderStreamingBubble = () => {
       const baseText = streamedText || "思考中...";
       this.bubble.setText(`${baseText}${cursorVisible ? "▋" : ""}`);
+      // 更新聊天历史中的 AI 消息
+      this.chatHistory.updateLastAiMessage(baseText);
     };
 
     const stopCursor = () => {
@@ -97,6 +109,13 @@ export class ChatClient {
       cursorVisible = !cursorVisible;
       renderStreamingBubble();
     }, 380);
+
+    // 先添加一条空的 AI 消息占位，用于流式更新
+    this.chatHistory.addMessage({
+      role: "ai",
+      content: "思考中...",
+      timestamp: new Date().toISOString(),
+    });
 
     renderStreamingBubble();
 
@@ -116,11 +135,19 @@ export class ChatClient {
 
       const result = await window.desktopPetApi.chat(message, this.sessionId || undefined, requestId);
       stopCursor();
-      this.bubble.setText(streamedText || result.response);
+      const finalResponse = streamedText || result.response;
+      this.bubble.setText(finalResponse);
+      // 更新聊天历史中的最终 AI 消息
+      this.chatHistory.updateLastAiMessage(finalResponse);
+      // 完成流式响应，分割句子渲染
+      this.chatHistory.finalizeStreamingMessage();
       this.input.value = "";
     } catch (error) {
       stopCursor();
-      this.bubble.setText(`请求失败: ${String(error)}`);
+      const errorMessage = `请求失败: ${String(error)}`;
+      this.bubble.setText(errorMessage);
+      this.chatHistory.updateLastAiMessage(errorMessage);
+      this.chatHistory.finalizeStreamingMessage();
     } finally {
       stopCursor();
 

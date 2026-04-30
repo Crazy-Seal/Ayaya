@@ -8,3 +8,6 @@ class MemoryService:
     async def get_chat_history_data(self, session_id: str, start: int = 0, limit: int = 200) -> list[dict[str, str]]:
         return await self.chat_history_dao.list_chat_history_async(session_id, start, limit)
 
+    async def get_chat_history_last_n(self, session_id: str, n: int = 100) -> list[dict[str, str]]:
+        return await self.chat_history_dao.list_chat_history_last_n_async(session_id, n)
+

@@ -34,7 +34,7 @@ body {
 
 #live2d-stage {
   width: 420px;
-  height: 600px;
+  height: 480px;
   pointer-events: auto;
 }
 
@@ -99,4 +99,83 @@ body {
   width: 18px;
   height: 18px;
   fill: #3b4b5a;
+}
+
+/* 聊天历史列表容器 */
+.chat-history-list {
+  width: 400px;
+  max-height: 200px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: auto;
+  scrollbar-width: none;
+}
+
+.chat-history-list::-webkit-scrollbar {
+  display: none;
+}
+
+/* 消息项 */
+.message-item {
+  display: flex;
+  max-width: 85%;
+}
+
+.message-item.human {
+  align-self: flex-end;
+}
+
+.message-item.ai {
+  align-self: flex-start;
+}
+
+/* 消息气泡 */
+.message-bubble {
+  padding: 8px 12px;
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.4;
+  word-break: break-word;
+  user-select: text;
+  color: #000;
+}
+
+.message-item.human .message-bubble {
+  background: rgba(173, 216, 230, 0.9);
+  border-bottom-right-radius: 4px;
+}
+
+.message-item.ai .message-bubble {
+  background: rgba(255, 182, 193, 0.9);
+  border-bottom-left-radius: 4px;
+}
+
+/* 新消息气泡动画 */
+.message-item {
+  animation: messageSlideIn 0.25s ease-out forwards;
+}
+
+@keyframes messageSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 禁用动画（用于历史消息加载） */
+.chat-history-list.no-animation .message-item {
+  animation: none;
+}
+
+/* 气泡隐藏状态 */
+.bubble[hidden] {
+  display: none;
 }
