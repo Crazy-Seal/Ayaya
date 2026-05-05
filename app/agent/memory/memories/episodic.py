@@ -147,6 +147,8 @@ class EpisodicMemory:
         if not messages.strip():
             return []
 
+        logger.info("[EpisodicMemory] 开始提取情景记忆")
+
         # 1. 使用 LLM 提取记忆（可能多条）
         memory_items = await self._extract_memories(messages, history)
 
@@ -191,6 +193,10 @@ class EpisodicMemory:
                 "[EpisodicMemory] 添加记忆成功: id=%s, event_date=%s, importance=%.2f",
                 memory_id, item["event_date"], item["importance"]
             )
+        logger.info(
+            "[EpisodicMemory] 添加记忆完成: 总共 %d 条",
+            len(memory_ids)
+        )
 
         return memory_ids
 

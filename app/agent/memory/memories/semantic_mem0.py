@@ -152,6 +152,8 @@ class Mem0SemanticMemory:
         if not messages:
             return []
 
+        logger.info("[Mem0SemanticMemory] 开始提取语义记忆")
+
         # 转换历史消息（带前情提要标记）
         mem0_history = self._convert_messages(history, mark_as_history=True) if history else []
 
@@ -177,7 +179,7 @@ class Mem0SemanticMemory:
                         memory_ids.append(memory_id)
 
             logger.info(
-                "[Mem0SemanticMemory] 处理 %d 条消息（前情提要 %d 条），提取 %d 条记忆, session_id=%s",
+                "[Mem0SemanticMemory] 添加记忆完成，处理 %d 条消息（前情提要 %d 条），提取 %d 条记忆, session_id=%s",
                 len(combined_messages), len(mem0_history), len(memory_ids), self.session_id
             )
             return memory_ids

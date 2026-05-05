@@ -196,6 +196,10 @@ class SummaryMemory:
         if not messages:
             return
 
+        logger.info(
+            "[SummaryMemory] 检测到 %s 缺少日记，开始生成",
+            last_chat_date
+        )
         await self._generate_diary(last_chat_date, messages)
 
     async def _check_and_generate_summary(self, today: date) -> None:
@@ -217,6 +221,10 @@ class SummaryMemory:
         if not messages:
             return
 
+        logger.info(
+            "[SummaryMemory] 今日用户消息数达到 %d，开始生成摘要",
+            today_count
+        )
         await self._generate_summary(today, messages)
 
     # ==================== LLM 生成 ====================
@@ -237,6 +245,10 @@ class SummaryMemory:
             response = await ainvoke_with_retry(self.llm, prompt)
             summary_content = response.content
             await self.add(target_date, summary_content, is_diary=False)
+            logger.info(
+                "[SummaryMemory] 摘要生成成功: date=%s, length=%d",
+                target_date, len(summary_content)
+            )
         except Exception:
             logger.exception("[SummaryMemory] 生成摘要失败")
 
@@ -256,6 +268,10 @@ class SummaryMemory:
             response = await ainvoke_with_retry(self.llm, prompt)
             diary_content = response.content
             await self.add(target_date, diary_content, is_diary=True)
+            logger.info(
+                "[SummaryMemory] 日记生成成功: date=%s, length=%d",
+                target_date, len(diary_content)
+            )
         except Exception:
             logger.exception("[SummaryMemory] 生成日记失败")
 
