@@ -16,7 +16,7 @@ logging.basicConfig(
 )
 
 # FastAPI 应用入口：仅负责启动和挂载路由
-app = FastAPI(title="Hiyori Agent", version="0.1.0")
+app = FastAPI(title="Ayaya server", version="0.1.0")
 # 挂载 Agent 相关 API
 app.include_router(agent_router)
 app.include_router(chat_settings_router)
@@ -26,7 +26,7 @@ app.include_router(memory_router)
 @app.get("/")
 async def root():
     # 根路径用于快速确认服务是否启动
-    return {"message": "Hiyori Agent is running"}
+    return {"message": "Ayaya server is running"}
 
 
 if __name__ == "__main__":

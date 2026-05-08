@@ -32,7 +32,7 @@ class MemoryConfig:
 
     # Mem0 配置
     mem0_qdrant_path: str = ""
-    mem0_collection_name: str = "hiyori_semantic_memory"
+    mem0_collection_name: str = "Ayaya_semantic_memory"
 
     # 嵌入配置
     embedding_api_key: str = ""
@@ -75,7 +75,7 @@ class MemoryConfig:
             neo4j_password=os.getenv("NEO4J_PASSWORD", ""),
             semantic_backend=os.getenv("SEMANTIC_BACKEND", "mem0"),
             mem0_qdrant_path=os.getenv("MEM0_QDRANT_PATH", str(base_path / "mem0" / "qdrant_data")),
-            mem0_collection_name=os.getenv("MEM0_COLLECTION_NAME", "hiyori_semantic_memory"),
+            mem0_collection_name=os.getenv("MEM0_COLLECTION_NAME", "Ayaya_semantic_memory"),
             embedding_api_key=os.getenv("EMBEDDING_API_KEY", ""),
             embedding_model=os.getenv("EMBEDDING_MODEL", ""),
             embedding_dimension=int(os.getenv("EMBEDDING_DIMENSION", "1024")),

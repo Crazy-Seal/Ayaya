@@ -1,15 +1,15 @@
 ﻿﻿[**English**](./README.md) | [**简体中文**](./README.zh-CN.md)
 
-# Hiyori Agent
+# Ayaya
 
-基于LLM和Agent技术的智能桌宠。它包含一个基于 **FastAPI + LangChain/LangGraph** 的后端，以及一个基于 **Electron + Vite + Vue/React/TS** (支持 Live2D) 的桌面端 UI。
+基于LLM和Agent技术的智能桌宠。包含一个基于 **FastAPI + LangChain/LangGraph** 的后端，以及一个基于 **Electron + Vite + Vue/React/TS** 的Live2D桌面端 UI。
 
 ##  项目结构
 
 项目采用前后端分离的架构：
 
 ```
-hiyori_agent/
+Ayaya/
 ├── app/                  # FastAPI 后端代码
 │   ├── agent/            # LangGraph Agent
 │   ├── config/           # 后端配置文件解析
@@ -31,37 +31,47 @@ hiyori_agent/
 
 ##  部署与运行方法
 
-要完整运行本项目，需要分别启动后端 API 服务和前端客户端。
-
 ### 1. 后端部署 (FastAPI)
 
-后端依赖 Python 环境，建议使用 Python 3.12。
+建议使用 Python 3.12。
 
 1. **创建并激活虚拟环境 (推荐使用miniconda)**:
    ```powershell
-   conda create -n hiyori_agent python=3.12
-   conda activate hiyori_agent
+   conda create -n Ayaya python=3.12
+   conda activate Ayaya
    ```
 2. **安装依赖**:
    ```powershell
    pip install -r requirements.txt
    ```
 3. **环境配置**:
-   在项目根目录创建或修改 `.env` 文件，并填写模型/搜索相关密钥：
+   在项目根目录创建或修改 `.env` 文件，并填写相关密钥：
    ```dotenv
-   EMBEDDING_API_KEY=your_embedding_api_key
+   # embedding配置
+   EMBEDDING_API_KEY=YOUR_API_KEY
    EMBEDDING_MODEL=text-embedding-v4
    EMBEDDING_DIMENSION=1024
    EMBEDDING_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-
-   CODING_API_KEY=your_coding_api_key
+   
+   # mem0记忆提取模型（重要：此处请选择OpenAI的模型，否则可能出现json生成错误）
+   MEM0_EXTRACTION_MODEL=gpt-5.4
+   MEM0_EXTRACTION_BASE_URL=https://www.dmxapi.cn/v1
+   MEM0_EXTRACTION_API_KEY=YOUR_API_KEY
+   
+   # 编程AI配置
+   CODING_API_KEY=YOUR_API_KEY
    CODING_MODEL=gpt-5.3-codex
    CODING_BASE_URL=https://www.dmxapi.cn/v1
    CODING_TEMPERATURE=0.3
-
-   TAVILY_API_KEY=your_tavily_api_key
+   
+   # Tavily配置
+   TAVILY_API_KEY=YOUR_API_KEY
+   
+   # 屏幕工具配置
+   SCREEN_TOOL_API_KEY=YOUR_API_KEY
+   SCREEN_TOOL_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+   SCREEN_TOOL_MODEL=qwen3-vl-plus
    ```
-   > `config/settings.yaml` 已不再参与运行时读取（当前仅保留为迁移提示文件）。
 4. **启动服务**:
    ```powershell
    uvicorn main:app --reload --reload-exclude "agent_workspace/*"
@@ -70,7 +80,7 @@ hiyori_agent/
 
 ### 2. 前端部署 (Electron + Vite)
 
-前端环境： Node.js 24.9.0
+环境： Node.js 24.9.0
 
 1. **进入前端目录**:
    ```powershell
@@ -81,16 +91,19 @@ hiyori_agent/
    npm install
    ```
 3. **下载live2d模型**
-   进入`https://cubism.live2d.com/sample-data/bin/hiyori_pro/hiyori_pro_zh.zip`下载
-   
-   将下载后的压缩包放在/ui路径下
+   进入`https://cubism.live2d.com/sample-data/bin/hiyori_pro/hiyori_pro_zh.zip`
+下载默认模型，将下载后的压缩包放在/ui路径下
+
+
 4. **开发模式运行**:
    ```powershell
    npm run dev
    ```
-   > 启动 Vite 开发服务器并拉起 Electron 客户端窗口，展示 Live2D 桌宠并与后端交互。
 
 ##  备注
 
-* **数据库**: 本项目使用本地 SQLite 进行对话历史和运行状态的记忆暂存，数据库文件会自动生成于 memory/sqlite/ 目录中。
-* **Live2D 模型**: 模型资产放在 ui/public/live2d/ 目录下，您可以根据需要，在前端的设置面板进行替换或新增。
+* **数据库**: 本项目使用本地数据库存储对话历史和记忆，数据库文件会自动生成于 memory/ 目录中。
+  - sqlite 用于存储聊天记录、日记、摘要记忆、情景记忆原文、图状态等；
+  - chroma 用于存储长期情景记忆向量；
+  - mem0使用 Qdrant 存储语义记忆原文和向量。
+* **Live2D 模型**: 模型资产放在 ui/public/live2d/ 目录下，可以在前端的设置面板进行替换或新增。
