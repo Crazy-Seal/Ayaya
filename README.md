@@ -67,10 +67,10 @@ Python 3.12 is recommended.
    # Tavily configuration
    TAVILY_API_KEY=YOUR_API_KEY
 
-   # Screen tool configuration
-   SCREEN_TOOL_API_KEY=YOUR_API_KEY
-   SCREEN_TOOL_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-   SCREEN_TOOL_MODEL=qwen3-vl-plus
+   # VLM configuration
+   VLM_API_KEY=YOUR_API_KEY
+   VLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+   VLM_MODEL=qwen3-vl-plus
    ```
 4. **Start the service**:
    ```powershell

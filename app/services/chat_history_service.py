@@ -1,7 +1,7 @@
 from app.crud.chat_history_dao import ChatHistoryDao
 
 
-class MemoryService:
+class ChatHistoryService:
     def __init__(self, chat_history_dao: ChatHistoryDao):
         self.chat_history_dao = chat_history_dao
 

@@ -12,6 +12,8 @@ import { PointerInteractiveManager } from "./live2d/pointer-interactive.js";
 import { BubbleManager } from "./chat/bubble.js";
 import { ChatClient, startLatestAiMessageBootstrap } from "./chat/chat-client.js";
 import { ChatHistoryManager } from "./chat/chat-history-manager.js";
+import { ImageManager } from "./chat/image-manager.js";
+import { setupDropHandler } from "./chat/drop-handler.js";
 
 // 全局 PIXI 引用（Live2D 需要）
 (globalThis as unknown as { PIXI: typeof PIXI }).PIXI = PIXI;
@@ -28,6 +30,8 @@ class MainApp {
   private bubbleManager: BubbleManager;
   private chatHistoryManager: ChatHistoryManager;
   private chatClient: ChatClient;
+  private imageManager = new ImageManager(5);
+  private cleanupDropHandler: (() => void) | null = null;
   private modelInfo: Awaited<ReturnType<Live2DModelLoader["loadModel"]>> | null = null;
   private stopLatestAiMessageBootstrap: (() => void) | null = null;
   private currentSessionId = "";
@@ -50,6 +54,10 @@ class MainApp {
       sendBtn: this.elements.sendBtn,
       input: this.elements.input,
       sessionId: "",
+      onChatComplete: () => {
+        // 聊天完成后清空图片
+        this.imageManager.clear();
+      },
     });
   }
 
@@ -103,6 +111,45 @@ class MainApp {
       this.modelInfo?.fitModel();
     });
 
+    // 图片选择按钮
+    this.elements.imageBtn.addEventListener("click", async () => {
+      const images = await window.desktopPetApi.selectImages();
+      if (images && images.length > 0) {
+        this.imageManager.addDataUrls(images.map((img) => img.dataUrl));
+      }
+    });
+
+    // 图片输入框变化
+    this.elements.imageInput.addEventListener("change", async () => {
+      const files = this.elements.imageInput.files;
+      if (files && files.length > 0) {
+        await this.imageManager.addFiles(files);
+      }
+      this.elements.imageInput.value = "";
+    });
+
+    // 清空图片按钮
+    this.elements.clearImagesBtn.addEventListener("click", () => {
+      this.imageManager.clear();
+    });
+
+    // 图片状态变化监听
+    this.imageManager.subscribe(() => {
+      this.updateImagePreview();
+    });
+
+    // 使用事件委托处理图片删除按钮点击
+    this.elements.imagePreviewList.addEventListener("click", (event) => {
+      const target = event.target as HTMLElement;
+      const removeBtn = target.closest(".remove-btn") as HTMLButtonElement | null;
+      if (removeBtn) {
+        const id = removeBtn.dataset.imageId;
+        if (id) {
+          this.imageManager.removeImage(id);
+        }
+      }
+    });
+
     // 表单提交
     this.elements.form.addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -110,7 +157,8 @@ class MainApp {
         this.stopLatestAiMessageBootstrap();
         this.stopLatestAiMessageBootstrap = null;
       }
-      await this.chatClient.sendMessage();
+      const images = this.imageManager.getDataUrls();
+      await this.chatClient.sendMessage(images.length > 0 ? images : undefined);
     });
 
     // 模型变化监听
@@ -170,6 +218,9 @@ class MainApp {
       if (this.persistTimer) {
         clearTimeout(this.persistTimer);
       }
+      if (this.cleanupDropHandler) {
+        this.cleanupDropHandler();
+      }
     });
   }
 
@@ -196,18 +247,38 @@ class MainApp {
     const gazeUpdate = createGazeUpdateFunction(this.modelInfo.model, this.gazeTracker);
     this.app.ticker.add(gazeUpdate, undefined, PIXI.UPDATE_PRIORITY.LOW);
 
+    // 设置拖拽处理器
+    this.cleanupDropHandler = setupDropHandler({
+      stageHost: this.elements.stageHost,
+      form: this.elements.form,
+      imageManager: this.imageManager,
+      dragOverlay: this.elements.dragOverlay,
+    });
+
     // 更新会话 ID
     this.currentSessionId = activeModel.sessionId;
     this.chatClient.setSessionId(activeModel.sessionId);
 
-    // 加载聊天历史
-    await this.chatHistoryManager.loadHistory(activeModel.sessionId);
+    // 尝试加载聊天历史（后端未开启时会失败）
+    let historyLoaded = false;
+    try {
+      await this.chatHistoryManager.loadHistory(activeModel.sessionId);
+      historyLoaded = true;
+    } catch {
+      // 后端未开启，等待轮询成功后重试
+    }
 
-    // 启动最新消息加载
+    // 启动最新消息加载（失败后会自动重试，成功后会加载聊天历史）
     this.stopLatestAiMessageBootstrap = startLatestAiMessageBootstrap(
       activeModel.sessionId,
       this.bubbleManager,
-      () => this.chatClient.hasUserSubmitted()
+      () => this.chatClient.hasUserSubmitted(),
+      () => {
+        // 首次成功连接后端时，如果历史未加载则尝试加载
+        if (!historyLoaded) {
+          void this.chatHistoryManager.loadHistory(activeModel.sessionId);
+        }
+      }
     );
   }
 
@@ -245,6 +316,43 @@ class MainApp {
       });
       this.persistTimer = null;
     }, 120);
+  }
+
+  /**
+   * 更新图片预览
+   */
+  private updateImagePreview(): void {
+    const images = this.imageManager.getImages();
+    const container = this.elements.imagePreviewContainer;
+    const list = this.elements.imagePreviewList;
+
+    if (images.length === 0) {
+      container.hidden = true;
+      list.innerHTML = "";
+      return;
+    }
+
+    container.hidden = false;
+    list.innerHTML = "";
+
+    for (const image of images) {
+      const item = document.createElement("div");
+      item.className = "image-preview-item";
+
+      const img = document.createElement("img");
+      img.src = image.dataUrl;
+      img.alt = "预览";
+
+      const removeBtn = document.createElement("button");
+      removeBtn.className = "remove-btn";
+      removeBtn.type = "button";
+      removeBtn.textContent = "×";
+      removeBtn.dataset.imageId = image.id;
+
+      item.appendChild(img);
+      item.appendChild(removeBtn);
+      list.appendChild(item);
+    }
   }
 }
 

@@ -1,5 +1,6 @@
 """聊天记录存储 - 访问 chat_history 表"""
 
+import json
 import logging
 from datetime import date, datetime, time, timezone, timedelta
 from pathlib import Path
@@ -61,13 +62,20 @@ class ChatHistoryStore:
                     thread_id TEXT NOT NULL,
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                     role TEXT NOT NULL,
-                    content TEXT NOT NULL
+                    content TEXT NOT NULL,
+                    image_description TEXT,
+                    image_filenames TEXT
                 )
             """)
             conn.execute(f"""
                 CREATE INDEX IF NOT EXISTS idx_thread_time
                 ON {self.TABLE_NAME}(thread_id, timestamp)
             """)
+            # 迁移：添加 image_filenames 列（幂等）
+            try:
+                conn.execute(f"ALTER TABLE {self.TABLE_NAME} ADD COLUMN image_filenames TEXT")
+            except sqlite3.OperationalError:
+                pass  # 列已存在
             conn.commit()
 
     def _local_date_to_utc_range(self, local_date: date) -> tuple[datetime, datetime]:
@@ -212,6 +220,8 @@ class ChatHistoryStore:
         session_id: str,
         role: str,
         content: str,
+        image_description: str | None = None,
+        image_filenames: list[str] | None = None,
     ) -> None:
         """保存单条聊天记录
 
@@ -219,14 +229,18 @@ class ChatHistoryStore:
             session_id: 会话ID
             role: 角色（Human/AI/Tool）
             content: 消息内容
+            image_description: 图片描述（可选）
+            image_filenames: 图片文件名列表（可选）
         """
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        # 序列化文件名列表为 JSON
+        filenames_json = json.dumps(image_filenames, ensure_ascii=False) if image_filenames else None
         try:
             async with aiosqlite.connect(str(self.db_path)) as conn:
                 await conn.execute("PRAGMA busy_timeout=5000")
                 await conn.execute(
-                    f"INSERT INTO {self.TABLE_NAME} (thread_id, role, content) VALUES (?, ?, ?)",
-                    (session_id, role, content),
+                    f"INSERT INTO {self.TABLE_NAME} (thread_id, role, content, image_description, image_filenames) VALUES (?, ?, ?, ?, ?)",
+                    (session_id, role, content, image_description, filenames_json),
                 )
                 await conn.commit()
         except Exception:
@@ -328,7 +342,7 @@ class ChatHistoryStore:
             effective_date: 本地日期
 
         Returns:
-            聊天记录列表，每条包含 role, content, timestamp（本地时间字符串）
+            聊天记录列表，每条包含 role, content, timestamp, image_description, images
         """
         utc_start, utc_end = self._local_date_to_utc_range(effective_date)
 
@@ -336,7 +350,7 @@ class ChatHistoryStore:
             await conn.execute("PRAGMA busy_timeout=5000")
             cursor = await conn.execute(
                 f"""
-                SELECT role, content, timestamp
+                SELECT role, content, timestamp, image_description, image_filenames
                 FROM {self.TABLE_NAME}
                 WHERE thread_id = ? AND timestamp >= ? AND timestamp < ?
                 ORDER BY timestamp ASC, id ASC
@@ -349,6 +363,8 @@ class ChatHistoryStore:
                     "role": row[0],
                     "content": row[1],
                     "timestamp": self._format_local_time(row[2]),
+                    "image_description": row[3],
+                    "images": json.loads(row[4]) if row[4] else None,
                 }
                 for row in rows
             ]
@@ -375,7 +391,7 @@ class ChatHistoryStore:
                 await conn.execute("PRAGMA busy_timeout=5000")
                 cursor = await conn.execute(
                     f"""
-                    SELECT role, content, timestamp
+                    SELECT role, content, timestamp, image_filenames
                     FROM {self.TABLE_NAME}
                     WHERE thread_id = ?
                     ORDER BY timestamp ASC, id ASC
@@ -389,6 +405,7 @@ class ChatHistoryStore:
                         "role": row[0],
                         "content": row[1],
                         "timestamp": self._format_local_time(row[2]),
+                        "images": json.loads(row[3]) if row[3] else None,
                     }
                     for row in rows
                 ]
@@ -437,8 +454,8 @@ class ChatHistoryStore:
             # 先按时间倒序取最后 N 条，再按时间正序返回
             cursor = await conn.execute(
                 f"""
-                SELECT role, content, timestamp FROM (
-                    SELECT role, content, timestamp
+                SELECT role, content, timestamp, image_filenames FROM (
+                    SELECT role, content, timestamp, image_filenames
                     FROM {self.TABLE_NAME}
                     WHERE thread_id = ? AND timestamp < ?
                     ORDER BY timestamp DESC
@@ -454,6 +471,7 @@ class ChatHistoryStore:
                     "role": row[0],
                     "content": row[1],
                     "timestamp": self._format_local_time(row[2]),
+                    "images": json.loads(row[3]) if row[3] else None,
                 }
                 for row in rows
             ]

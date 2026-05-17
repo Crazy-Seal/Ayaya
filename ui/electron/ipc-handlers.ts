@@ -4,6 +4,7 @@
 
 import { ipcMain, BrowserWindow, dialog, net } from "electron";
 import fs from "node:fs";
+import path from "node:path";
 
 import { BACKEND_BASE_URL, CHAT_REQUEST_TIMEOUT_MS, TOOLS_REGISTRY_FILE } from "./config.js";
 import type {
@@ -38,7 +39,7 @@ import {
   updateChatSettingsCache,
   clearChatSettingsCache,
 } from "./chat-settings.js";
-import { getMainWindow, getSettingsWindow, openSettingsWindow } from "./window-manager.js";
+import { getMainWindow, getSettingsWindow, openSettingsWindow, openImagePreviewWindow } from "./window-manager.js";
 
 /**
  * 通知模型已更改（同时通知主窗口和设置窗口）
@@ -431,16 +432,67 @@ export const registerIpcHandlers = (): void => {
     win?.close();
   });
 
+  // 打开图片预览窗口
+  ipcMain.on("desktop-pet:open-image-preview", (_event, imageSrc: string) => {
+    openImagePreviewWindow(imageSrc);
+  });
+
+  // 选择图片
+  ipcMain.handle("desktop-pet:select-images", async () => {
+    const chooser = getMainWindow();
+    if (!chooser) {
+      return null;
+    }
+
+    const result = await dialog.showOpenDialog(chooser, {
+      title: "选择图片",
+      properties: ["openFile", "multiSelections"],
+      filters: [{ name: "图片", extensions: ["jpg", "jpeg", "png", "gif", "bmp", "webp"] }],
+    });
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return null;
+    }
+
+    // 读取文件并返回 data URL
+    const images: Array<{ path: string; dataUrl: string }> = [];
+    for (const filePath of result.filePaths) {
+      try {
+        const buffer = fs.readFileSync(filePath);
+        const base64 = buffer.toString("base64");
+        const ext = path.extname(filePath).toLowerCase().slice(1);
+        const mimeType = ext === "jpg" ? "jpeg" : ext;
+        images.push({
+          path: filePath,
+          dataUrl: `data:image/${mimeType};base64,${base64}`,
+        });
+      } catch (error) {
+        console.warn("Failed to read image:", filePath, error);
+      }
+    }
+
+    return images;
+  });
+
   // 聊天请求
   ipcMain.handle(
     "desktop-pet:chat",
-    async (event, payload: string | { message: string; sessionId?: string; requestId?: string }) => {
+    async (
+      event,
+      payload:
+        | string
+        | { message: string; sessionId?: string; requestId?: string; images?: string[] }
+    ) => {
       const message = typeof payload === "string" ? payload : payload.message;
       const sessionId = typeof payload === "string" ? undefined : payload.sessionId;
       const requestId = typeof payload === "string" ? undefined : payload.requestId;
-      const body: { message: string; session_id?: string } = { message };
+      const images = typeof payload === "string" ? undefined : payload.images;
+      const body: { message: string; session_id?: string; images?: string[] } = { message };
       if (sessionId) {
         body.session_id = sessionId;
+      }
+      if (images && images.length > 0) {
+        body.images = images;
       }
       const abortController = new AbortController();
       const timeoutTimer = setTimeout(() => {

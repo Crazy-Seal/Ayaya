@@ -69,11 +69,11 @@ export class ChatClient {
   /**
    * 发送聊天消息
    */
-  async sendMessage(): Promise<void> {
+  async sendMessage(images?: string[]): Promise<void> {
     this.markUserSubmitted();
 
     const message = this.input.value.trim();
-    if (!message) {
+    if (!message && (!images || images.length === 0)) {
       return;
     }
 
@@ -82,14 +82,19 @@ export class ChatClient {
       role: "human",
       content: message,
       timestamp: new Date().toISOString(),
+      images: images,  // 直接传递 data URL 数组，在气泡中显示图片
     });
 
     this.sendBtn.disabled = true;
+
+    // 显示"正在输入"提示
+    this.chatHistory.showTypingIndicator();
 
     const requestId = `chat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     let streamedText = "";
     let cursorVisible = true;
     let cursorTimer: ReturnType<typeof setInterval> | null = null;
+    let firstChunkReceived = false;
 
     const renderStreamingBubble = () => {
       const baseText = streamedText || "思考中...";
@@ -124,6 +129,12 @@ export class ChatClient {
         return;
       }
 
+      // 收到第一个 chunk 时隐藏"正在输入"提示
+      if (!firstChunkReceived) {
+        firstChunkReceived = true;
+        this.chatHistory.hideTypingIndicator();
+      }
+
       streamedText += chunk;
       renderStreamingBubble();
     });
@@ -133,7 +144,12 @@ export class ChatClient {
         throw new Error("桌宠桥接未就绪，请重启桌宠程序");
       }
 
-      const result = await window.desktopPetApi.chat(message, this.sessionId || undefined, requestId);
+      const result = await window.desktopPetApi.chat(
+        message,
+        this.sessionId || undefined,
+        requestId,
+        images
+      );
       stopCursor();
       const finalResponse = streamedText || result.response;
       this.bubble.setText(finalResponse);
@@ -151,6 +167,9 @@ export class ChatClient {
     } finally {
       stopCursor();
 
+      // 确保"正在输入"提示被隐藏
+      this.chatHistory.hideTypingIndicator();
+
       unsubscribeChatChunk();
       this.sendBtn.disabled = false;
       this.input.focus();
@@ -166,7 +185,8 @@ export class ChatClient {
 export const startLatestAiMessageBootstrap = (
   sessionId: string,
   bubble: BubbleManager,
-  hasUserSubmitted: () => boolean
+  hasUserSubmitted: () => boolean,
+  onConnect?: () => void
 ): (() => void) => {
   let stopped = false;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -196,6 +216,10 @@ export const startLatestAiMessageBootstrap = (
 
     try {
       const { latestAiMessage } = await window.desktopPetApi.getLatestAiMessage(sessionId);
+      // 首次成功连接后端时触发回调（用于加载聊天历史）
+      if (onConnect) {
+        onConnect();
+      }
       if (
         !hasUserSubmitted() &&
         typeof latestAiMessage === "string" &&

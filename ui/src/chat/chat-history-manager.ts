@@ -4,6 +4,9 @@
 
 import type { ChatHistoryItem } from "../types.js";
 
+// 后端静态文件服务地址
+const BACKEND_BASE_URL = "http://127.0.0.1:8000";
+
 /**
  * 去掉句尾的句号
  */
@@ -44,9 +47,8 @@ export class ChatHistoryManager {
   private container: HTMLDivElement;
   private messages: ChatHistoryItem[] = [];
   private isStreaming = false;
-  private streamingBuffer = "";
-  private streamingBubble: HTMLDivElement | null = null;
   private outputSentenceCount = 0;
+  private typingIndicator: HTMLDivElement | null = null;
 
   // 句子队列和定时器（用于延迟输出）
   private sentenceQueue: string[] = [];
@@ -55,6 +57,33 @@ export class ChatHistoryManager {
 
   constructor(container: HTMLDivElement) {
     this.container = container;
+  }
+
+  /**
+   * 显示"正在输入"提示
+   */
+  showTypingIndicator(): void {
+    if (this.typingIndicator) {
+      return;
+    }
+
+    const indicator = document.createElement("div");
+    indicator.className = "typing-indicator";
+    indicator.textContent = "对方正在输入";
+
+    this.container.appendChild(indicator);
+    this.typingIndicator = indicator;
+    this.scrollToBottom();
+  }
+
+  /**
+   * 隐藏"正在输入"提示
+   */
+  hideTypingIndicator(): void {
+    if (this.typingIndicator) {
+      this.typingIndicator.remove();
+      this.typingIndicator = null;
+    }
   }
 
   /**
@@ -86,7 +115,9 @@ export class ChatHistoryManager {
 
     this.messages = lastNHistory.slice(startIndex);
     this.render();
-    this.scrollToBottom();
+
+    // 等待图片加载完成后再滚动到底部
+    this.scrollToBottomAfterImagesLoad();
   }
 
   /**
@@ -100,8 +131,6 @@ export class ChatHistoryManager {
     if (isAi) {
       // AI 消息开始流式响应
       this.isStreaming = true;
-      this.streamingBuffer = "";
-      this.streamingBubble = null;
       this.outputSentenceCount = 0;
       this.sentenceQueue = [];
       this.startOutputTimer();
@@ -133,11 +162,8 @@ export class ChatHistoryManager {
       return;
     }
 
-    // 追加到缓冲区
-    this.streamingBuffer = content;
-
     // 提取完整句子
-    const { complete, remaining } = extractCompleteSentences(this.streamingBuffer);
+    const { complete, remaining } = extractCompleteSentences(content);
 
     // 将新增的完整句子放入队列
     for (let i = this.outputSentenceCount; i < complete.length; i++) {
@@ -147,19 +173,6 @@ export class ChatHistoryManager {
       }
     }
     this.outputSentenceCount = complete.length;
-
-    // 更新缓冲区为剩余内容
-    this.streamingBuffer = remaining;
-
-    // 更新流式气泡显示剩余内容
-    if (remaining.length > 0) {
-      this.updateStreamingBubble(remaining);
-    } else if (this.streamingBubble) {
-      // 没有剩余内容，移除流式气泡
-      this.removeStreamingBubble();
-    }
-
-    this.scrollToBottom();
   }
 
   /**
@@ -172,16 +185,27 @@ export class ChatHistoryManager {
 
     this.isStreaming = false;
 
-    // 输出缓冲区剩余内容
-    if (this.streamingBuffer.trim().length > 0) {
-      this.sentenceQueue.push(this.streamingBuffer.trim());
+    // 处理剩余内容：如果有未输出的内容，直接作为最后一个气泡
+    const last = this.messages[this.messages.length - 1];
+    if (last && last.content) {
+      // 提取所有完整句子
+      const { complete, remaining } = extractCompleteSentences(last.content);
+
+      // 将剩余的完整句子放入队列
+      for (let i = this.outputSentenceCount; i < complete.length; i++) {
+        const sentence = complete[i];
+        if (sentence) {
+          this.sentenceQueue.push(sentence);
+        }
+      }
+
+      // 如果有不完整的剩余内容，也作为一个气泡
+      if (remaining.trim().length > 0) {
+        this.sentenceQueue.push(remaining.trim());
+      }
     }
 
-    // 移除流式气泡
-    this.removeStreamingBubble();
-
-    this.streamingBuffer = "";
-    // 不立即输出，让定时器继续运行直到队列为空
+    this.outputSentenceCount = 0;
   }
 
   /**
@@ -191,8 +215,6 @@ export class ChatHistoryManager {
     this.messages = [];
     this.container.innerHTML = "";
     this.isStreaming = false;
-    this.streamingBuffer = "";
-    this.streamingBubble = null;
     this.outputSentenceCount = 0;
     this.stopOutputTimer();
     this.sentenceQueue = [];
@@ -265,46 +287,10 @@ export class ChatHistoryManager {
   }
 
   /**
-   * 更新流式气泡内容
-   */
-  private updateStreamingBubble(content: string): void {
-    if (!this.streamingBubble) {
-      // 创建流式气泡
-      const item = document.createElement("div");
-      item.className = "message-item ai";
-
-      const bubble = document.createElement("div");
-      bubble.className = "message-bubble";
-      bubble.textContent = removeTrailingPeriod(content);
-
-      item.appendChild(bubble);
-      this.container.appendChild(item);
-
-      this.streamingBubble = bubble;
-    } else {
-      this.streamingBubble.textContent = removeTrailingPeriod(content);
-    }
-  }
-
-  /**
-   * 移除流式气泡
-   */
-  private removeStreamingBubble(): void {
-    if (this.streamingBubble) {
-      const parent = this.streamingBubble.parentElement;
-      if (parent) {
-        parent.remove();
-      }
-      this.streamingBubble = null;
-    }
-  }
-
-  /**
    * 渲染所有消息
    */
   private render(): void {
     this.container.innerHTML = "";
-    this.streamingBubble = null;
     // 渲染历史消息时禁用动画
     this.container.classList.add("no-animation");
     for (const msg of this.messages) {
@@ -317,7 +303,7 @@ export class ChatHistoryManager {
   }
 
   /**
-   * 渲染单条消息（分割句子）
+   * 渲染单条消息（文本气泡在前，图片气泡在后）
    */
   private renderMessage(msg: ChatHistoryItem): void {
     const role = msg.role.toLowerCase();
@@ -326,7 +312,7 @@ export class ChatHistoryManager {
     // 分割成句子
     const sentences = this.splitIntoSentences(msg.content);
 
-    // 每个句子创建一个气泡
+    // 1. 先渲染文本气泡（如果有文本）
     for (const sentence of sentences) {
       if (!sentence) continue;
 
@@ -335,10 +321,57 @@ export class ChatHistoryManager {
 
       const bubble = document.createElement("div");
       bubble.className = "message-bubble";
-      bubble.textContent = removeTrailingPeriod(sentence);
+
+      // 渲染文本
+      const textNode = document.createTextNode(removeTrailingPeriod(sentence));
+      bubble.appendChild(textNode);
 
       item.appendChild(bubble);
       this.container.appendChild(item);
+    }
+
+    // 2. 再渲染图片气泡（如果有图片）
+    if (msg.images && msg.images.length > 0) {
+      const imagesContainer = document.createElement("div");
+      imagesContainer.className = "message-images";
+
+      for (const imageData of msg.images) {
+        // 跳过空值
+        if (!imageData) continue;
+
+        const img = document.createElement("img");
+
+        // 判断是 data URL 还是文件名
+        if (imageData.startsWith("data:image/")) {
+          img.src = imageData;
+        } else {
+          img.src = `${BACKEND_BASE_URL}/images/${imageData}`;
+        }
+
+        img.alt = "图片";
+        img.loading = "lazy";
+        img.style.cursor = "pointer";
+
+        // 点击打开独立预览窗口
+        img.addEventListener("click", () => {
+          window.desktopPetApi.openImagePreview(img.src);
+        });
+
+        imagesContainer.appendChild(img);
+      }
+
+      // 如果有有效图片，创建独立的图片气泡
+      if (imagesContainer.children.length > 0) {
+        const item = document.createElement("div");
+        item.className = `message-item ${isHuman ? "human" : "ai"}`;
+
+        const bubble = document.createElement("div");
+        bubble.className = "message-bubble";
+        bubble.appendChild(imagesContainer);
+
+        item.appendChild(bubble);
+        this.container.appendChild(item);
+      }
     }
   }
 
@@ -372,9 +405,50 @@ export class ChatHistoryManager {
    * 滚动到底部
    */
   scrollToBottom(): void {
+    // 使用 instant 避免 smooth 滚动动画冲突导致的跳动
     this.container.scrollTo({
       top: this.container.scrollHeight,
-      behavior: "smooth",
+      behavior: "instant",
     });
+  }
+
+  /**
+   * 等待图片加载完成后滚动到底部
+   */
+  private scrollToBottomAfterImagesLoad(): void {
+    const images = this.container.querySelectorAll<HTMLImageElement>(".message-images img");
+
+    if (images.length === 0) {
+      // 没有图片，直接滚动
+      this.scrollToBottom();
+      return;
+    }
+
+    let loadedCount = 0;
+    const totalCount = images.length;
+
+    const checkAllLoaded = () => {
+      loadedCount++;
+      if (loadedCount >= totalCount) {
+        // 所有图片加载完成，滚动到底部
+        setTimeout(() => this.scrollToBottom(), 50);
+      }
+    };
+
+    images.forEach((img) => {
+      if (img.complete) {
+        // 图片已经加载完成
+        checkAllLoaded();
+      } else {
+        // 等待图片加载
+        img.addEventListener("load", checkAllLoaded);
+        img.addEventListener("error", checkAllLoaded); // 即使加载失败也继续
+      }
+    });
+
+    // 设置超时，防止图片加载过慢导致永远不滚动
+    setTimeout(() => {
+      this.scrollToBottom();
+    }, 1000);
   }
 }

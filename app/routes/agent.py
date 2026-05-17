@@ -28,8 +28,7 @@ async def chat(
     async def event_stream():
         agent_input = AgentInput(
             message=payload.message,
-            image_data=payload.image_data,
-            document_name=payload.document_name,
+            images=payload.images,
         )
         try:
             async for chunk in agent_service.stream_chat(agent_input, session_id):

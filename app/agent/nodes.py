@@ -1,7 +1,7 @@
 import logging
 from typing import Any
 
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.agent.memory.manager import MemoryManager
 from app.agent.state import (
@@ -10,6 +10,13 @@ from app.agent.state import (
     SUMMARY_EVERY_HUMAN_MESSAGES,
 )
 from app.agent.utils.background_tasks import create_background_task
+from app.agent.utils.image_utils import (
+    ImageTaskResult,
+    clear_task,
+    get_cache_key,
+    get_image_task,
+    has_image_content,
+)
 from app.agent.utils.llm_utils import ainvoke_with_retry
 from app.agent.utils.messages import normalize_messages_for_model
 from app.agent.utils.text_utils import extract_text, get_last_human_text, split_context
@@ -58,30 +65,104 @@ class MemoryFinalizeNode:
         self.chat_settings = chat_settings
         self.memory_manager = memory_manager
 
-    async def __call__(self, state: AgentState) -> dict[str, int]:
+    async def __call__(self, state: AgentState) -> dict[str, Any]:
         # 通过计数器控制记忆提取频率
         next_counter = state.summary_counter + 1
 
+        # 获取最后一条 HumanMessage，检查是否有图片描述任务
+        updated_message = None
+        image_description = None
+        image_filenames: list[str] | None = None
+
+        for msg in reversed(state.messages):
+            if isinstance(msg, HumanMessage):
+                # 检查是否有图片
+                if has_image_content(msg.content) and msg.id:
+                    cache_key = get_cache_key(state.session_id, msg.id)
+
+                    # 从缓存获取任务
+                    task = get_image_task(cache_key)
+                    if task is not None:
+                        # 等待任务完成
+                        try:
+                            result: ImageTaskResult = await task
+                            image_description = result.description
+                            image_filenames = result.filenames
+                            logger.info("[MemoryFinalize] 获取图片描述: %s", image_description)
+                        except Exception as e:
+                            logger.warning("[MemoryFinalize] 图片描述任务失败: %s", e)
+                            image_description = "图片"
+                            image_filenames = []
+                        finally:
+                            # 清理任务引用
+                            clear_task(cache_key)
+
+                    # 如果有描述，创建新的消息（带 additional_kwargs）
+                    if image_description:
+                        updated_message = HumanMessage(
+                            content=msg.content,
+                            id=msg.id,
+                            additional_kwargs={
+                                "image_description": image_description,
+                                "image_filenames": image_filenames,
+                            },
+                        )
+                elif has_image_content(msg.content):
+                    # 有图片但没有 id，无法创建 updated_message 来更新 additional_kwargs
+                    # 但 image_description 仍会传给 try_summary 保存到数据库
+                    image_description = "图片"
+                    image_filenames = []
+                    logger.warning("[MemoryFinalize] 消息有图片但没有 id，聊天记录将使用占位符")
+                break
+
+        # 构建返回值
+        result: dict[str, Any] = {"summary_counter": next_counter}
+
+        # 如果有更新的消息，返回它（LangGraph 的 add_messages reducer 会更新原消息）
+        if updated_message is not None:
+            result["messages"] = [updated_message]
+
         # try_summary 每轮都触发（保存对话 + 检查摘要/日记）
+        # 传递 image_description 和 image_filenames 参数
         create_background_task(
-            self._try_summary(list(state.messages)),
+            self._try_summary(list(state.messages), image_description, image_filenames),
             logger=logger,
             task_name="memory_finalize.try_summary",
         )
 
         # add() 每 10 轮触发一次（情景记忆 + 语义记忆提取）
         if next_counter >= SUMMARY_EVERY_HUMAN_MESSAGES:
+            # 构建消息列表：如果有更新的消息，替换原消息
+            messages_for_persist = list(state.messages)
+            if updated_message is not None and updated_message.id:
+                # 找到并替换原消息
+                for i, msg in enumerate(messages_for_persist):
+                    if isinstance(msg, HumanMessage) and msg.id == updated_message.id:
+                        messages_for_persist[i] = updated_message
+                        break
+
             create_background_task(
-                self._persist_memory(list(state.messages)),
+                self._persist_memory(messages_for_persist),
                 logger=logger,
                 task_name="memory_finalize.persist",
             )
-            return {"summary_counter": 0}
+            result["summary_counter"] = 0
 
-        return {"summary_counter": next_counter}
+        return result
 
-    async def _try_summary(self, messages: list[Any]) -> None:
-        """每轮触发：保存对话并检查摘要/日记"""
+    async def _try_summary(
+        self,
+        messages: list[Any],
+        image_description: str | None = None,
+        image_filenames: list[str] | None = None,
+    ) -> None:
+        """每轮触发：保存对话并检查摘要/日记
+
+        Args:
+            messages: 消息列表
+            image_description: 图片描述（如果有图片）
+            image_filenames: 图片文件名列表（如果有图片）
+        """
         last_human = get_last_human_text(messages)
         last_ai = None
         for msg in reversed(messages):
@@ -90,7 +171,7 @@ class MemoryFinalizeNode:
                 break
 
         if last_human and last_ai:
-            await self.memory_manager.try_summary(last_human, last_ai)
+            await self.memory_manager.try_summary(last_human, last_ai, image_description, image_filenames)
 
     async def _persist_memory(self, messages: list[Any]) -> None:
         """每 10 轮触发：提取情景记忆和语义记忆"""

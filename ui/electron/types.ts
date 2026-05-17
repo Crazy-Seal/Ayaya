@@ -53,6 +53,7 @@ export type ChatHistoryItem = {
   role: string;
   content: string;
   timestamp: string;
+  images?: string[];
 };
 
 export type ApiResponse<T> = {

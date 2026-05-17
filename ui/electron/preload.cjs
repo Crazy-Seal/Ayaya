@@ -1,8 +1,11 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("desktopPetApi", {
-  chat: async (message, sessionId, requestId) => {
-    return ipcRenderer.invoke("desktop-pet:chat", { message, sessionId, requestId });
+  chat: async (message, sessionId, requestId, images) => {
+    return ipcRenderer.invoke("desktop-pet:chat", { message, sessionId, requestId, images });
+  },
+  selectImages: () => {
+    return ipcRenderer.invoke("desktop-pet:select-images");
   },
   setMousePassthrough: (enabled) => {
     ipcRenderer.send("desktop-pet:set-mouse-passthrough", Boolean(enabled));
@@ -18,6 +21,9 @@ contextBridge.exposeInMainWorld("desktopPetApi", {
   },
   closeCurrentWindow: () => {
     ipcRenderer.send("desktop-pet:close-current-window");
+  },
+  openImagePreview: (imageSrc) => {
+    ipcRenderer.send("desktop-pet:open-image-preview", imageSrc);
   },
   getActiveModel: () => {
     return ipcRenderer.invoke("desktop-pet:get-active-model");

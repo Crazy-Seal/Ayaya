@@ -13,6 +13,12 @@ export interface MainUiElements {
   input: HTMLInputElement;
   sendBtn: HTMLButtonElement;
   settingsBtn: HTMLButtonElement;
+  imagePreviewContainer: HTMLDivElement;
+  imagePreviewList: HTMLDivElement;
+  clearImagesBtn: HTMLButtonElement;
+  dragOverlay: HTMLDivElement;
+  imageInput: HTMLInputElement;
+  imageBtn: HTMLButtonElement;
 }
 
 /**
@@ -26,8 +32,28 @@ export const getMainUiElements = (): MainUiElements => {
   const input = document.querySelector<HTMLInputElement>("#chat-input");
   const sendBtn = document.querySelector<HTMLButtonElement>("#send-btn");
   const settingsBtn = document.querySelector<HTMLButtonElement>("#settings-btn");
+  const imagePreviewContainer = document.querySelector<HTMLDivElement>("#image-preview-container");
+  const imagePreviewList = document.querySelector<HTMLDivElement>("#image-preview-list");
+  const clearImagesBtn = document.querySelector<HTMLButtonElement>("#clear-images-btn");
+  const dragOverlay = document.querySelector<HTMLDivElement>("#drag-overlay");
+  const imageInput = document.querySelector<HTMLInputElement>("#image-input");
+  const imageBtn = document.querySelector<HTMLButtonElement>("#image-btn");
 
-  if (!stageHost || !bubble || !chatHistoryList || !form || !input || !sendBtn || !settingsBtn) {
+  if (
+    !stageHost ||
+    !bubble ||
+    !chatHistoryList ||
+    !form ||
+    !input ||
+    !sendBtn ||
+    !settingsBtn ||
+    !imagePreviewContainer ||
+    !imagePreviewList ||
+    !clearImagesBtn ||
+    !dragOverlay ||
+    !imageInput ||
+    !imageBtn
+  ) {
     throw new Error("UI 初始化失败");
   }
 
@@ -39,5 +65,11 @@ export const getMainUiElements = (): MainUiElements => {
     input,
     sendBtn,
     settingsBtn,
+    imagePreviewContainer,
+    imagePreviewList,
+    clearImagesBtn,
+    dragOverlay,
+    imageInput,
+    imageBtn,
   };
 };

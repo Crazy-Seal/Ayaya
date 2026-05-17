@@ -1,5 +1,7 @@
-from typing import AsyncIterator, Any, cast
+import asyncio
 import logging
+import uuid
+from typing import AsyncIterator, Any, cast
 
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 from langchain_core.runnables import RunnableConfig
@@ -11,6 +13,13 @@ from app.agent.memory.config import MemoryConfig
 from app.agent.memory.manager import MemoryManager
 from app.agent.model_provider import get_model
 from app.agent.tools import get_tools
+from app.agent.utils.image_description import generate_multiple_image_descriptions
+from app.agent.utils.image_utils import (
+    clear_task,
+    extract_text_from_content,
+    get_cache_key,
+    set_image_task,
+)
 from app.agent.utils.log import shorten_for_log
 from app.schemas.chat import AgentInput
 from app.schemas.chat_settings import ChatSettings
@@ -55,6 +64,30 @@ class MyAgent(BaseAgent):
             chat_settings.session_id
         )
 
+    def _build_human_message(self, user_input: AgentInput) -> HumanMessage:
+        """构建 HumanMessage，支持多模态内容。
+
+        Args:
+            user_input: 用户输入，包含 message 和可选的 images 列表
+
+        Returns:
+            HumanMessage：纯文本或多模态内容
+        """
+        message_id = str(uuid.uuid4())
+
+        if not user_input.images:
+            # 无图片，返回纯文本消息
+            return HumanMessage(content=user_input.message, id=message_id)
+
+        # 有图片，构建多模态消息
+        content: list[dict] = []
+        # 添加所有图片
+        for image_data in user_input.images:
+            content.append({"type": "image_url", "image_url": {"url": image_data}})
+        # 添加文本
+        content.append({"type": "text", "text": user_input.message})
+        return HumanMessage(content=content, id=message_id)
+
     async def ainvoke_agent_stream(self, user_message: AgentInput) -> AsyncIterator[AIMessage | AIMessageChunk]:
         """流式调用入口：仅透传 chatbot 节点的 AI 输出分片。"""
         if self.graph is None:
@@ -66,10 +99,30 @@ class MyAgent(BaseAgent):
         # 每轮前刷新水位线，确保回滚范围只覆盖当前轮次写入。
         self.checkpoint_watermark = self.checkpoint_repo.get_thread_checkpoint_watermark(active_session_id)
 
+        # 构建多模态消息
+        human_msg = self._build_human_message(user_message)
+
+        # 如果有图片，启动后台任务生成图片描述
+        if user_message.images and human_msg.id:
+            cache_key = get_cache_key(active_session_id, human_msg.id)
+            # 清理可能存在的旧任务
+            clear_task(cache_key)
+            # 启动后台任务
+            context = extract_text_from_content(human_msg.content)
+            task = asyncio.create_task(
+                generate_multiple_image_descriptions(
+                    images=user_message.images,
+                    context=context,
+                    max_length=200,
+                )
+            )
+            set_image_task(cache_key, task)
+            logger.info("[Agent][session=%s] 启动图片描述生成任务: key=%s", active_session_id, cache_key)
+
         async for chunk, metadata in self.graph.astream(
             cast(Any, {
                 # 新回合输入只注入当前用户消息；记忆字段显式清空，防止跨回合复用。
-                "messages": [HumanMessage(content=user_message.message)],
+                "messages": [human_msg],
                 "session_id": active_session_id,
                 "memory_text": None,
             }),

@@ -95,6 +95,7 @@ export const fetchChatHistoryPageBySessionId = async (
     role: String(item.role ?? ""),
     content: String(item.content ?? ""),
     timestamp: String(item.timestamp ?? ""),
+    images: Array.isArray(item.images) ? item.images : undefined,
   }));
 };
 
@@ -125,6 +126,7 @@ export const fetchChatHistoryLastN = async (
     role: String(item.role ?? ""),
     content: String(item.content ?? ""),
     timestamp: String(item.timestamp ?? ""),
+    images: Array.isArray(item.images) ? item.images : undefined,
   }));
 };
 

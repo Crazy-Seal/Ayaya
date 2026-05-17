@@ -435,10 +435,16 @@ class SummaryMemory:
             else:
                 role = ai_name
 
+            # 处理图片描述
+            content = msg["content"]
+            image_description = msg.get("image_description")
+            if image_description:
+                content = f"[发送了图片：{image_description}] {content}"
+
             # 时间戳已由 ChatHistoryStore 格式化为本地时间字符串
             timestamp = msg.get("timestamp", "")
             if timestamp:
-                lines.append(f"[{timestamp}] {role}: {msg['content']}")
+                lines.append(f"[{timestamp}] {role}: {content}")
             else:
-                lines.append(f"{role}: {msg['content']}")
+                lines.append(f"{role}: {content}")
         return "\n".join(lines)

@@ -85,8 +85,7 @@ class AgentService:
 
         timed_agent_input = AgentInput(
             message=self._build_timed_user_message(agent_input.message),
-            image_data=agent_input.image_data,
-            document_name=agent_input.document_name,
+            images=agent_input.images,
         )
 
         response_parts: list[str] = []

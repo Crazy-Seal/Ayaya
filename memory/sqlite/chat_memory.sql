@@ -5,6 +5,8 @@ CREATE TABLE IF NOT EXISTS chat_history (
                                             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                                             role TEXT NOT NULL,                 -- 'Human' 或 'AI' 或 'Tool
                                             content TEXT NOT NULL
+                                            image_description TEXT,                   -- 可选，图片描述
+                                            image_filenames TEXT
 );
 
 CREATE INDEX idx_thread_time ON chat_history (thread_id, timestamp);

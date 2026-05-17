@@ -107,6 +107,7 @@ export type ChatHistoryItem = {
   role: string;
   content: string;
   timestamp?: string;
+  images?: string[];
 };
 
 /**
@@ -125,8 +126,10 @@ export interface DesktopPetApi {
   chat: (
     message: string,
     sessionId?: string,
-    requestId?: string
+    requestId?: string,
+    images?: string[]
   ) => Promise<{ response: string; model: string }>;
+  selectImages: () => Promise<Array<{ path: string; dataUrl: string }> | null>;
   getActiveModel: () => Promise<ModelInfo>;
   getModelConfig: () => Promise<ModelConfig>;
   getChatSettings: () => Promise<ChatSettingsData>;
@@ -165,6 +168,7 @@ export interface DesktopPetApi {
   openSettingsWindow: () => void;
   minimizeCurrentWindow: () => void;
   closeCurrentWindow: () => void;
+  openImagePreview: (imageSrc: string) => void;
   setPointerInteractive: (enabled: boolean) => void;
   onModelChanged?: (callback: (model: ModelInfo) => void) => () => void;
   onModelTransformChanged?: (callback: (data: ModelTransformData) => void) => () => void;

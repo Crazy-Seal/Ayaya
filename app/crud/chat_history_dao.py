@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import logging
 import aiosqlite
 from datetime import datetime, timezone
@@ -70,7 +71,7 @@ class ChatHistoryDao:
             async with aiosqlite.connect(str(self.db_path)) as conn:
                 cursor = await conn.execute(
                     """
-                    SELECT role, content, timestamp
+                    SELECT role, content, timestamp, image_filenames
                     FROM chat_history
                     WHERE thread_id = ?
                     ORDER BY timestamp ASC, id ASC
@@ -85,8 +86,9 @@ class ChatHistoryDao:
                     "role": role,
                     "content": self._remove_timestamp(content),
                     "timestamp": self._to_local_time_text(timestamp_text),
+                    "images": json.loads(image_filenames) if image_filenames else None,
                 }
-                for role, content, timestamp_text in rows
+                for role, content, timestamp_text, image_filenames in rows
             ]
         except Exception:
             logger.exception("[ChatHistory][session=%s] 查询聊天记录失败", session_id)
@@ -99,7 +101,7 @@ class ChatHistoryDao:
             async with aiosqlite.connect(str(self.db_path)) as conn:
                 cursor = await conn.execute(
                     """
-                    SELECT role, content, timestamp
+                    SELECT role, content, timestamp, image_filenames
                     FROM chat_history
                     WHERE thread_id = ?
                     ORDER BY timestamp DESC, id DESC
@@ -117,8 +119,9 @@ class ChatHistoryDao:
                     "role": role,
                     "content": self._remove_timestamp(content),
                     "timestamp": self._to_local_time_text(timestamp_text),
+                    "images": json.loads(image_filenames) if image_filenames else None,
                 }
-                for role, content, timestamp_text in rows
+                for role, content, timestamp_text, image_filenames in rows
             ]
         except Exception:
             logger.exception("[ChatHistory][session=%s] 查询最后聊天记录失败", session_id)

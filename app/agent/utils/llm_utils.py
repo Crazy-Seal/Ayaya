@@ -3,6 +3,8 @@ import asyncio
 import logging
 from typing import Any
 
+from langchain_core.language_models import BaseChatModel
+
 logger = logging.getLogger(__name__)
 
 # API 调用超时时间（秒）
@@ -12,7 +14,7 @@ API_MAX_RETRIES = 3
 
 
 async def ainvoke_with_retry(
-    llm: Any,
+    llm: BaseChatModel,
     inputs: Any,
 ) -> Any:
     """带超时重试的 LLM 调用

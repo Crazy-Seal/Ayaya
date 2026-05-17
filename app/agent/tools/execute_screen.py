@@ -10,12 +10,12 @@ from openai import AsyncOpenAI
 from app.agent.tools.screenshot import capture_screenshot_base64
 from app.agent.utils.log import log_tool_call
 
-DEFAULT_VISION_MODEL = "Qwen/Qwen2.5-VL-72B-Instruct"
-DEFAULT_BASE_URL = "https://api.siliconflow.cn/v1"
+DEFAULT_VISION_MODEL = "qwen3-vl-plus"
+DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 SYSTEM_PROMPT = (
     "你是一个PC屏幕视觉分析助手。你的任务是根据用户的文字描述，"
     "在提供的截图中定位目标元素，并以JSON格式返回该元素的2D边界框。"
-    "返回格式必须是 {\"bbox_2d\": [x1, y1, x2, y2]}，不要输出其他内容。"
+    "返回格式必须是 {\"bbox_2d\": [x1, y1, x2, y2]}，不要输出Markdown格式或其他内容。"
 )
 
 
@@ -32,12 +32,12 @@ def _require_screen_dependencies():
 
 
 def _read_screen_tool_config() -> tuple[str, str, str]:
-    api_key = os.getenv("SCREEN_TOOL_API_KEY") or os.getenv("SILICONFLOW_API_KEY")
+    api_key = os.getenv("VLM_API_KEY")
     if not api_key:
-        raise RuntimeError("缺少SCREEN_TOOL_API_KEY（或SILICONFLOW_API_KEY）环境变量。")
+        raise RuntimeError("缺少VLM_API_KEY环境变量。")
 
-    base_url = os.getenv("SCREEN_TOOL_BASE_URL", DEFAULT_BASE_URL).strip()
-    model = os.getenv("SCREEN_TOOL_MODEL", DEFAULT_VISION_MODEL).strip()
+    base_url = os.getenv("VLM_BASE_URL", DEFAULT_BASE_URL).strip()
+    model = os.getenv("VLM_MODEL", DEFAULT_VISION_MODEL).strip()
     return api_key.strip(), base_url, model
 
 
@@ -93,7 +93,7 @@ async def execute_screen(element_description: str) -> str:
     """基于当前屏幕截图识别并双击目标元素。
 
     Args:
-        element_description: 要点击的元素描述，如"屏幕中间的确定按钮"、"网页上方的灰色搜索框"、"搜索结果页的第一个www.baidu.com链接"。
+        element_description: 要点击的元素描述，如"屏幕中间的确定按钮"、"网页上方的灰色搜索框"、"搜索结果页的第一个链接"。
     """
     if not element_description or not element_description.strip():
         return "错误: 缺少元素描述参数。"

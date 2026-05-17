@@ -11,6 +11,7 @@ from app.agent.memory.memories.semantic import SemanticMemory
 from app.agent.memory.memories.semantic_mem0 import Mem0SemanticMemory
 from app.agent.memory.memories.summary import SummaryMemory
 from app.agent.memory.store.chat_history_store import ChatHistoryStore
+from app.agent.utils.image_utils import extract_text_from_content, format_message_for_memory
 from app.crud.chat_settings_dao import ChatSettingsDao
 from app.schemas.chat_settings import ChatSettings
 
@@ -139,6 +140,8 @@ class MemoryManager:
         self,
         user_message: str,
         ai_message: str,
+        image_description: str | None = None,
+        image_filenames: list[str] | None = None,
     ) -> None:
         """保存本轮对话并触发摘要/日记检查
 
@@ -147,13 +150,17 @@ class MemoryManager:
         Args:
             user_message: 用户消息
             ai_message: AI 响应
+            image_description: 图片描述（可选）
+            image_filenames: 图片文件名列表（可选）
         """
         # 计算今天的有效日期
         now = datetime.now(self.config.timezone)
         today = self._get_effective_date(now)
 
         # 1. 保存本轮对话到 chat_history
-        await self.chat_history_store.save_chat_message(self.session_id, "Human", user_message)
+        await self.chat_history_store.save_chat_message(
+            self.session_id, "Human", user_message, image_description, image_filenames
+        )
         await self.chat_history_store.save_chat_message(self.session_id, "AI", ai_message)
 
         # 2. SummaryMemory 检查并生成摘要/日记
@@ -301,6 +308,11 @@ class MemoryManager:
     def _format_messages(self, messages: list[AnyMessage]) -> str:
         """格式化 LangChain 消息列表为文本
 
+        只保留人类和 AI 的普通对话，过滤掉：
+        - ToolMessage（工具返回结果）
+
+        对于工具调用的 AI 消息，简化为 "[调用了工具: xxx]" 格式
+
         Args:
             messages: 消息列表
 
@@ -315,8 +327,20 @@ class MemoryManager:
         for msg in messages:
             if msg.type == "human":
                 role = user_name
-            else:
+                # 使用 format_message_for_memory 处理图片描述
+                content = format_message_for_memory(msg)
+            elif msg.type == "ai":
                 role = ai_name
-            content = msg.content if isinstance(msg.content, str) else str(msg.content)
+                # 检查是否包含工具调用
+                if hasattr(msg, "tool_calls") and msg.tool_calls:
+                    # 提取工具名称列表
+                    tool_names = [tc.get("name", "未知工具") for tc in msg.tool_calls]
+                    content = f"[调用了工具: {', '.join(tool_names)}]"
+                else:
+                    # 普通 AI 消息使用统一的文本提取方法
+                    content = extract_text_from_content(msg.content)
+            else:
+                # 跳过 ToolMessage 和其他类型
+                continue
             lines.append(f"{role}: {content}")
         return "\n".join(lines)

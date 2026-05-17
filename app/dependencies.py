@@ -5,7 +5,7 @@ from app.crud.chat_history_dao import ChatHistoryDao
 from app.crud.chat_settings_dao import ChatSettingsDao
 from app.services.agent_service import AgentService
 from app.services.chat_settings_service import ChatSettingsService
-from app.services.memory_service import MemoryService
+from app.services.chat_history_service import ChatHistoryService
 
 
 @lru_cache(maxsize=1)
@@ -31,5 +31,5 @@ def get_chat_settings_service(
 
 
 @lru_cache(maxsize=1)
-def get_memory_service(chat_history_dao: ChatHistoryDao = Depends(get_chat_history_dao)) -> MemoryService:
-    return MemoryService(chat_history_dao=chat_history_dao)
+def get_chat_history_service(chat_history_dao: ChatHistoryDao = Depends(get_chat_history_dao)) -> ChatHistoryService:
+    return ChatHistoryService(chat_history_dao=chat_history_dao)
