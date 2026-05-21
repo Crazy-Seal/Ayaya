@@ -4,6 +4,8 @@ import re
 
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 
+from app.agent.state import is_screenshot_message
+
 
 def extract_text(content: object) -> str:
     """从模型消息 content 中提取纯文本。"""
@@ -21,9 +23,12 @@ def extract_text(content: object) -> str:
 
 
 def get_last_human_text(messages: list[AnyMessage]) -> str:
-    """反向查找最近一条用户消息文本。"""
+    """反向查找最近一条用户消息文本。
+
+    注意：截图消息不计入用户消息。
+    """
     for msg in reversed(messages):
-        if isinstance(msg, HumanMessage):
+        if isinstance(msg, HumanMessage) and not is_screenshot_message(msg):
             return extract_text(msg.content)
     return ""
 
@@ -65,8 +70,14 @@ def split_context(
 
     Returns:
         (前情提要消息, 待提取消息)
+
+    注意：截图消息不计入人类消息计数。
     """
-    human_indices = [idx for idx, msg in enumerate(messages) if isinstance(msg, HumanMessage)]
+    # 过滤截图消息后的人类消息索引
+    human_indices = [
+        idx for idx, msg in enumerate(messages)
+        if isinstance(msg, HumanMessage) and not is_screenshot_message(msg)
+    ]
     if not human_indices:
         return [], []
 
@@ -75,7 +86,10 @@ def split_context(
     later_messages = messages[later_start_idx:]
 
     before_messages = messages[:later_start_idx]
-    before_human_indices = [idx for idx, msg in enumerate(before_messages) if isinstance(msg, HumanMessage)]
+    before_human_indices = [
+        idx for idx, msg in enumerate(before_messages)
+        if isinstance(msg, HumanMessage) and not is_screenshot_message(msg)
+    ]
     if not before_human_indices:
         return [], later_messages
 

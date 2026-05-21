@@ -64,7 +64,7 @@ export class PointerInteractiveManager {
    */
   isCursorOnChatControls(windowX: number, windowY: number): boolean {
     const hoveredElement = document.elementFromPoint(windowX, windowY) as HTMLElement | null;
-    return Boolean(hoveredElement?.closest("#chat-form, #bubble, #chat-history-list, #image-preview-container"));
+    return Boolean(hoveredElement?.closest("#chat-form, #bubble, #chat-history-list, #image-preview-container, #screenshot-confirm-dialog"));
   }
 
   /**
@@ -81,7 +81,7 @@ export class PointerInteractiveManager {
 
     const hoveredElement = document.elementFromPoint(windowX, windowY) as HTMLElement | null;
     const onControls = Boolean(
-      hoveredElement?.closest("#chat-form, #bubble, #chat-history-list, #settings-panel, #settings-btn, #image-preview-container")
+      hoveredElement?.closest("#chat-form, #bubble, #chat-history-list, #settings-panel, #settings-btn, #image-preview-container, #screenshot-confirm-dialog")
     );
 
     const onModelBounds =

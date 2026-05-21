@@ -6,7 +6,7 @@ from langgraph.prebuilt import ToolNode, tools_condition
 
 from app.agent.checkpoint_repository import get_checkpointer_async
 from app.agent.memory.manager import MemoryManager
-from app.agent.nodes import ChatNode, MemoryFinalizeNode
+from app.agent.nodes import ChatNode, MemoryFinalizeNode, ScreenshotNode
 from app.agent.state import AgentState
 from app.schemas.chat_settings import ChatSettings
 
@@ -38,24 +38,34 @@ class AgentGraphBuilder:
             chat_settings=self.chat_settings,
             memory_manager=self.memory_manager,
         )
+        screenshot_node = ScreenshotNode()
 
         async def chatbot(state: AgentState, config: RunnableConfig):
             # 统一在这里把 StateGraph 回调转发给节点对象。
             return await chat_node(state)
 
+        async def screenshot_handler(state: AgentState) -> dict[str, Any]:
+            # 处理截屏工具返回结果，注入特殊 HumanMessage
+            return await screenshot_node(state)
+
         builder = StateGraph(AgentState)
         builder.add_node("chatbot", chatbot)
         builder.add_node("tools", ToolNode(tools=self.tools))
+        builder.add_node("screenshot_handler", screenshot_handler)
         builder.add_node("memory_finalize", memory_node)
 
-        # 主流程：chatbot -> (可选 tools 循环) -> memory_finalize -> END。
+        # 主流程：
+        # chatbot -> (可选 tools 循环) -> screenshot_handler -> chatbot
+        # chatbot -> memory_finalize -> END
         builder.add_edge(START, "chatbot")
         builder.add_conditional_edges(
             "chatbot",
             tools_condition,
             {"tools": "tools", "__end__": "memory_finalize"},
         )
-        builder.add_edge("tools", "chatbot")
+        # 工具执行后先经过 screenshot_handler，再回到 chatbot
+        builder.add_edge("tools", "screenshot_handler")
+        builder.add_edge("screenshot_handler", "chatbot")
         builder.add_edge("memory_finalize", END)
 
         # 编译时仅注入 checkpoint；工具侧记忆查询统一走 memory_hub 调用链。

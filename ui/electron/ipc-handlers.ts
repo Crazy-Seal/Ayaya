@@ -14,6 +14,7 @@ import type {
   ModelChangedPayload,
   ModelTransformChangedPayload,
   ChatChunkPayload,
+  ScreenshotInterruptPayload,
 } from "./types.js";
 import {
   loadModelConfig,
@@ -523,7 +524,13 @@ export const registerIpcHandlers = (): void => {
         let streamBuffer = "";
         let aggregatedResponse = "";
 
-        const processEventBlock = (block: string): { done: boolean } => {
+        type ProcessResult = {
+          done: boolean;
+          interrupted?: boolean;
+          interruptData?: ScreenshotInterruptPayload;
+        };
+
+        const processEventBlock = (block: string): ProcessResult => {
           const lines = block
             .split("\n")
             .map((line) => line.trim())
@@ -550,6 +557,15 @@ export const registerIpcHandlers = (): void => {
           }
 
           const parsed = JSON.parse(dataText) as { response?: string; detail?: string };
+
+          // 处理 interrupt 事件
+          if (eventName === "interrupt") {
+            const interruptData = parsed as unknown as ScreenshotInterruptPayload;
+            // 发送 IPC 事件到渲染进程
+            event.sender.send("desktop-pet:chat-interrupt", interruptData);
+            return { done: true, interrupted: true, interruptData };
+          }
+
           if (eventName === "error") {
             throw new Error(parsed.detail || "聊天流返回错误事件");
           }
@@ -570,6 +586,9 @@ export const registerIpcHandlers = (): void => {
         };
 
         let streamEnded = false;
+        let interrupted = false;
+        let interruptData: ScreenshotInterruptPayload | undefined;
+
         while (!streamEnded) {
           const readResult = await reader.read();
           if (readResult.done) {
@@ -586,14 +605,28 @@ export const registerIpcHandlers = (): void => {
             const state = processEventBlock(block);
             if (state.done) {
               streamEnded = true;
+              if (state.interrupted) {
+                interrupted = true;
+                interruptData = state.interruptData;
+              }
               break;
             }
           }
         }
 
         const remaining = streamBuffer.trim();
-        if (remaining.length > 0) {
+        if (remaining.length > 0 && !interrupted) {
           processEventBlock(remaining);
+        }
+
+        // 如果被中断，返回中断信息
+        if (interrupted && interruptData) {
+          return {
+            interrupted: true,
+            interruptData,
+            response: aggregatedResponse,
+            model: "",
+          };
         }
 
         return {
@@ -611,6 +644,166 @@ export const registerIpcHandlers = (): void => {
           errorMessage.toLowerCase().includes("terminated")
         ) {
           throw new Error("Chat request timeout (900s), please try again later");
+        }
+        throw error;
+      } finally {
+        clearTimeout(timeoutTimer);
+      }
+    }
+  );
+
+  // 截屏审批响应
+  ipcMain.handle(
+    "desktop-pet:screenshot-respond",
+    async (
+      event,
+      payload: { sessionId: string; approved: boolean; requestId?: string }
+    ) => {
+      const { sessionId, approved, requestId } = payload;
+      const abortController = new AbortController();
+      const timeoutTimer = setTimeout(() => {
+        abortController.abort();
+      }, CHAT_REQUEST_TIMEOUT_MS);
+
+      try {
+        const res = await net.fetch(`${BACKEND_BASE_URL}/screenshot/respond`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            session_id: sessionId,
+            approved,
+          }),
+          signal: abortController.signal,
+        });
+
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(text || `请求失败: ${res.status}`);
+        }
+
+        if (!res.body) {
+          throw new Error("Screenshot respond API error: missing response stream");
+        }
+
+        const decoder = new TextDecoder("utf-8");
+        const reader = res.body.getReader();
+        let streamBuffer = "";
+        let aggregatedResponse = "";
+
+        type ProcessResult = {
+          done: boolean;
+          interrupted?: boolean;
+          interruptData?: ScreenshotInterruptPayload;
+        };
+
+        const processEventBlock = (block: string): ProcessResult => {
+          const lines = block
+            .split("\n")
+            .map((line) => line.trim())
+            .filter((line) => line.length > 0);
+
+          let eventName = "message";
+          const dataLines: string[] = [];
+
+          for (const line of lines) {
+            if (line.startsWith("event:")) {
+              eventName = line.slice(6).trim();
+            } else if (line.startsWith("data:")) {
+              dataLines.push(line.slice(5).trim());
+            }
+          }
+
+          if (dataLines.length === 0) {
+            return { done: false };
+          }
+
+          const dataText = dataLines.join("\n");
+          if (dataText === "[DONE]") {
+            return { done: true };
+          }
+
+          const parsed = JSON.parse(dataText) as { response?: string; detail?: string };
+
+          // 处理 interrupt 事件（连续截屏）
+          if (eventName === "interrupt") {
+            const interruptData = parsed as unknown as ScreenshotInterruptPayload;
+            event.sender.send("desktop-pet:chat-interrupt", interruptData);
+            return { done: true, interrupted: true, interruptData };
+          }
+
+          if (eventName === "error") {
+            throw new Error(parsed.detail || "截屏响应流返回错误事件");
+          }
+
+          if (typeof parsed.response === "string" && parsed.response.length > 0) {
+            aggregatedResponse += parsed.response;
+            if (requestId) {
+              const chunkPayload: ChatChunkPayload = {
+                requestId,
+                chunk: parsed.response,
+                aggregated: aggregatedResponse,
+              };
+              event.sender.send("desktop-pet:chat-chunk", chunkPayload);
+            }
+          }
+
+          return { done: false };
+        };
+
+        let streamEnded = false;
+        let interrupted = false;
+        let interruptData: ScreenshotInterruptPayload | undefined;
+
+        while (!streamEnded) {
+          const readResult = await reader.read();
+          if (readResult.done) {
+            streamEnded = true;
+            break;
+          }
+
+          streamBuffer += decoder.decode(readResult.value, { stream: true });
+          const normalized = streamBuffer.replaceAll("\r\n", "\n");
+          const eventBlocks = normalized.split("\n\n");
+          streamBuffer = eventBlocks.pop() ?? "";
+
+          for (const block of eventBlocks) {
+            const state = processEventBlock(block);
+            if (state.done) {
+              streamEnded = true;
+              if (state.interrupted) {
+                interrupted = true;
+                interruptData = state.interruptData;
+              }
+              break;
+            }
+          }
+        }
+
+        const remaining = streamBuffer.trim();
+        if (remaining.length > 0 && !interrupted) {
+          processEventBlock(remaining);
+        }
+
+        // 如果被中断，返回中断信息
+        if (interrupted && interruptData) {
+          return {
+            interrupted: true,
+            interruptData,
+            response: aggregatedResponse,
+            model: "",
+          };
+        }
+
+        return {
+          response: aggregatedResponse,
+          model: "",
+        };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        if (error instanceof Error && error.name === "AbortError") {
+          throw new Error("Screenshot respond timeout (900s), please try again later");
         }
         throw error;
       } finally {

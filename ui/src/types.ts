@@ -94,6 +94,29 @@ export type ChatChunkData = {
 };
 
 /**
+ * 截屏中断数据（内层）
+ */
+export type ScreenshotInterruptData = {
+  type: "screenshot_request";
+  request_id: string;
+  message: string;
+};
+
+/**
+ * 截屏中断载荷（外层 value 包装）
+ */
+export type ScreenshotInterruptPayload = {
+  value: ScreenshotInterruptData;
+};
+
+/**
+ * Chat 返回结果类型
+ */
+export type ChatResult =
+  | { response: string; model: string; interrupted?: false }
+  | { interrupted: true; interruptData: ScreenshotInterruptPayload; response: string; model: string };
+
+/**
  * 工具项
  */
 export type ToolItem = {
@@ -128,7 +151,7 @@ export interface DesktopPetApi {
     sessionId?: string,
     requestId?: string,
     images?: string[]
-  ) => Promise<{ response: string; model: string }>;
+  ) => Promise<ChatResult>;
   selectImages: () => Promise<Array<{ path: string; dataUrl: string }> | null>;
   getActiveModel: () => Promise<ModelInfo>;
   getModelConfig: () => Promise<ModelConfig>;
@@ -174,6 +197,13 @@ export interface DesktopPetApi {
   onModelTransformChanged?: (callback: (data: ModelTransformData) => void) => () => void;
   onCursor?: (callback: (data: CursorSyncData) => void) => () => void;
   onChatChunk: (callback: (data: ChatChunkData) => void) => () => void;
+  // 截屏相关 API
+  screenshotRespond?: (
+    sessionId: string,
+    approved: boolean,
+    requestId?: string
+  ) => Promise<ChatResult>;
+  onChatInterrupt?: (callback: (data: ScreenshotInterruptPayload) => void) => () => void;
 }
 
 declare global {

@@ -83,5 +83,15 @@ contextBridge.exposeInMainWorld("desktopPetApi", {
     const handler = (_event, payload) => listener(payload);
     ipcRenderer.on("desktop-pet:chat-chunk", handler);
     return () => ipcRenderer.removeListener("desktop-pet:chat-chunk", handler);
+  },
+  // 截屏审批响应（返回 SSE 流）
+  screenshotRespond: (sessionId, approved, requestId) => {
+    return ipcRenderer.invoke("desktop-pet:screenshot-respond", { sessionId, approved, requestId });
+  },
+  // 监听截屏中断事件
+  onChatInterrupt: (listener) => {
+    const handler = (_event, payload) => listener(payload);
+    ipcRenderer.on("desktop-pet:chat-interrupt", handler);
+    return () => ipcRenderer.removeListener("desktop-pet:chat-interrupt", handler);
   }
 });

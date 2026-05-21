@@ -210,7 +210,7 @@ data: {"detail":"OPENAI_API_KEY is not set. Please configure your API key."}
 
 用户发送的图片会被保存到后端服务器，数据库返回的 `images` 字段为**纯文件名列表**：
 
-```json
+```
 "images": ["2026-05-16_14-30-00_a1b2c3d4.png", "2026-05-16_14-30-01_e5f6g7h8.png"]
 ```
 
@@ -307,7 +307,199 @@ http://127.0.0.1:8000/images/2026-05-16_14-30-00_a1b2c3d4.png
 - 当该会话暂无记录时，`data` 返回空数组 `[]`
 - 适用于需要快速获取最近聊天记录的场景，无需分页
 
-## 4.测试接口
+---
+
+## 5.截屏确认接口
+
+### 概述
+
+当 Agent 调用截屏工具时，后端会暂停执行并请求用户确认。前端需要：
+
+1. 监听 `/chat` SSE 流中的 `interrupt` 事件
+2. 显示确认对话框让用户选择"允许"或"拒绝"
+3. 调用 `POST /screenshot/respond` 返回用户决定
+4. 继续处理 SSE 流式响应
+
+### SSE 事件：interrupt
+
+当 Agent 请求截屏时，`/chat` 接口会给前端发送 `interrupt` 事件：
+
+```text
+event: interrupt
+data: {"value": {"type": "screenshot_request", "request_id": "550e8400-e29b-41d4-a716-446655440000", "message": "Agent 请求截取屏幕，是否允许？"}}
+```
+
+#### 事件字段说明
+
+数据外层为 `value` 包装，内部包含实际中断信息：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `value` | `object` | 包装对象，包含实际的中断请求数据 |
+| `value.type` | `string` | 固定值 `"screenshot_request"`，表示截屏请求类型 |
+| `value.request_id` | `string` | 请求唯一标识（UUID格式），可用于前端日志追踪 |
+| `value.message` | `string` | 展示给用户的提示文本，可直接显示在确认对话框中 |
+
+#### 前端处理流程
+
+```
+1. 收到 event: interrupt
+2. 暂停当前 SSE 连接（不要关闭，后续会有响应）
+3. 解析 data 中的 JSON
+4. 显示确认对话框，展示 message 内容
+5. 用户点击"允许"或"拒绝"
+6. 调用 POST /screenshot/respond
+7. 继续处理后续 SSE 事件（新建立的 SSE 连接）
+```
+
+**注意**：收到 `interrupt` 事件后，**原 SSE 流会终止**（后端发送 interrupt 后立即 return）。前端需要先让用户确认，然后调用 `/screenshot/respond` 接口，该接口会返回新的 SSE 流。
+
+---
+
+### POST /screenshot/respond
+
+用户确认后恢复对话执行。
+
+#### 接收参数
+
+- `payload`（body, json）
+
+```json
+{
+  "session_id": "a9ea0407-6a54-4535-b424-b7cd454d7bcd",
+  "approved": true
+}
+```
+
+#### 字段说明
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `session_id` | `string` | 是 | 会话ID，需与之前 `/chat` 请求的 session_id 一致 |
+| `approved` | `boolean` | 是 | 用户决定：`true` = 允许截屏，`false` = 拒绝截屏 |
+
+#### 返回结果
+
+- `Content-Type`: `text/event-stream`
+- 返回 SSE 流，格式与 `/chat` 完全一致：
+
+**用户允许截屏时**：
+
+```text
+data: {"response":"好的，我已经获取到屏幕截图了"}
+
+data: {"response":"，让我看看..."}
+
+data: [DONE]
+```
+
+**用户拒绝截屏时**：
+
+```text
+data: {"response":"看起来你不想让我截屏"}
+
+data: {"response":"，没关系，有其他需要帮助的吗？"}
+
+data: [DONE]
+```
+
+#### 错误响应
+
+**会话已过期**（会话不存在或已被清理）：
+
+```text
+data: {"response":"[系统]会话已过期"}
+
+data: [DONE]
+```
+
+**恢复对话失败**：
+
+```text
+event: error
+data: {"detail":"恢复对话失败: ..."}
+```
+
+---
+
+### 完整交互示例
+
+#### 场景：用户允许截屏
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│ 前端                                                                 │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  1. POST /chat                                                       │
+│     { "message": "帮我看看屏幕上有什么", "session_id": "xxx" }        │
+│                                                                      │
+│  2. SSE 响应开始...                                                  │
+│     data: {"response":"好的，让我截个屏看看"}                         │
+│                                                                      │
+│  3. 收到 interrupt 事件：                                            │
+│     event: interrupt                                                 │
+│     data: {"type":"screenshot_request",...,"message":"Agent请求..."} │
+│                                                                      │
+│  4. 显示确认对话框：                                                  │
+│     ┌────────────────────────────────────┐                          │
+│     │  Agent 请求截取屏幕，是否允许？     │                          │
+│     │                                    │                          │
+│     │    [拒绝]         [允许]           │                          │
+│     └────────────────────────────────────┘                          │
+│                                                                      │
+│  5. 用户点击 [允许]                                                   │
+│                                                                      │
+│  6. POST /screenshot/respond                                         │
+│     { "session_id": "xxx", "approved": true }                       │
+│                                                                      │
+│  7. SSE 响应：                                                       │
+│     data: {"response":"我看到屏幕上有..."}                            │
+│     data: [DONE]                                                     │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+#### 场景：用户拒绝截屏
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│ 前端                                                                 │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  1-4. (同上)                                                         │
+│                                                                      │
+│  5. 用户点击 [拒绝]                                                   │
+│                                                                      │
+│  6. POST /screenshot/respond                                         │
+│     { "session_id": "xxx", "approved": false }                      │
+│                                                                      │
+│  7. SSE 响应：                                                       │
+│     data: {"response":"好的，您拒绝了截屏"}                             │
+│     data: {"response":"，有其他我可以帮你的吗？"}                      │
+│     data: [DONE]                                                     │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 注意事项
+
+1. **Session ID 一致性**：`/screenshot/respond` 的 `session_id` 必须与之前 `/chat` 请求的 `session_id` 完全一致，否则会话会过期。
+
+2. **超时处理**：如果用户长时间未响应（超过几分钟），后端会话可能会被清理，此时调用 `/screenshot/respond` 会返回 `[系统]会话已过期`。
+
+3. **多次截屏**：一次对话中 Agent 可能多次请求截屏，每次都会触发 `interrupt` 事件，前端需要多次处理确认流程。
+
+4. **SSE 连接管理**：
+   - 收到 `interrupt` 后原 SSE 流会终止
+   - 确认后 `/screenshot/respond` 返回新的 SSE 流
+   - 需要正确处理两个流的接续
+
+---
+
+## 6.测试接口
 
 ### GET /health
 

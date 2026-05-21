@@ -41,6 +41,24 @@
           </svg>
         </button>
       </form>
+      <!-- 截屏确认对话框 -->
+      <div id="screenshot-confirm-dialog" class="screenshot-confirm-overlay" hidden aria-hidden="true">
+        <div class="screenshot-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="screenshot-confirm-title">
+          <div class="screenshot-confirm-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false">
+              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" />
+            </svg>
+          </div>
+          <div id="screenshot-confirm-title" class="screenshot-confirm-title">截屏请求</div>
+          <div class="screenshot-confirm-message" id="screenshot-confirm-message">
+            Agent 请求截取屏幕，是否允许？
+          </div>
+          <div class="screenshot-confirm-actions">
+            <button id="screenshot-deny-btn" type="button" class="screenshot-btn screenshot-btn-deny">拒绝</button>
+            <button id="screenshot-allow-btn" type="button" class="screenshot-btn screenshot-btn-allow">允许</button>
+          </div>
+        </div>
+      </div>
     </div>
     <script src="/live2dcubismcore.min.js"></script>
     <script type="module" src="/src/main.ts"></script>

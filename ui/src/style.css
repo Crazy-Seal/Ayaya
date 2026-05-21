@@ -552,6 +552,137 @@ body {
     0 2px 8px rgba(0, 0, 0, 0.1);
 }
 
+/* ==================== Screenshot Confirm Dialog ==================== */
+.screenshot-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  z-index: 200;
+  pointer-events: auto;
+  animation: screenshotFadeIn 0.2s ease-out;
+}
+
+.screenshot-confirm-overlay[hidden] {
+  display: none !important;
+}
+
+@keyframes screenshotFadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.screenshot-confirm-modal {
+  width: min(340px, calc(100% - 32px));
+  padding: var(--spacing-xl);
+  border-radius: var(--radius-xl);
+  background: var(--color-bubble-dark);
+  color: #fff;
+  box-shadow:
+    0 20px 50px rgba(0, 0, 0, 0.3),
+    0 8px 24px rgba(0, 0, 0, 0.2);
+  text-align: center;
+  animation: screenshotSlideIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes screenshotSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(20px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.screenshot-confirm-icon {
+  width: 48px;
+  height: 48px;
+  margin: 0 auto var(--spacing-md);
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-light) 100%);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.screenshot-confirm-icon svg {
+  width: 28px;
+  height: 28px;
+  fill: var(--color-on-primary);
+}
+
+.screenshot-confirm-title {
+  font-family: "Fredoka", "Microsoft YaHei", sans-serif;
+  font-size: 18px;
+  font-weight: 600;
+  margin-bottom: var(--spacing-sm);
+  color: #fff;
+}
+
+.screenshot-confirm-message {
+  font-family: "Nunito", "Microsoft YaHei", sans-serif;
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.85);
+  margin-bottom: var(--spacing-xl);
+  line-height: 1.5;
+}
+
+.screenshot-confirm-actions {
+  display: flex;
+  gap: var(--spacing-md);
+  justify-content: center;
+}
+
+.screenshot-btn {
+  flex: 1;
+  max-width: 120px;
+  padding: var(--spacing-sm) var(--spacing-lg);
+  border: none;
+  border-radius: var(--radius-md);
+  font-family: "Fredoka", "Microsoft YaHei", sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.screenshot-btn-deny {
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.screenshot-btn-deny:hover {
+  background: rgba(255, 255, 255, 0.15);
+  transform: translateY(-1px);
+}
+
+.screenshot-btn-allow {
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-light) 100%);
+  color: var(--color-on-primary);
+  box-shadow: var(--shadow-clay-button);
+}
+
+.screenshot-btn-allow:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    4px 4px 12px rgba(249, 115, 22, 0.3),
+    -2px -2px 8px rgba(255, 255, 255, 0.2);
+}
+
+.screenshot-btn:active {
+  transform: scale(0.97);
+}
+
 /* ==================== Accessibility ==================== */
 @media (prefers-reduced-motion: reduce) {
   *,

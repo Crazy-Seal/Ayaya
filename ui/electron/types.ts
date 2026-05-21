@@ -110,3 +110,26 @@ export type ChatChunkPayload = {
   chunk: string;
   aggregated: string;
 };
+
+/**
+ * 截屏中断数据（内层数据）
+ */
+export type ScreenshotInterruptData = {
+  type: "screenshot_request";
+  request_id: string;
+  message: string;
+};
+
+/**
+ * SSE interrupt 事件载荷（外层有 value 包装）
+ */
+export type ScreenshotInterruptPayload = {
+  value: ScreenshotInterruptData;
+};
+
+/**
+ * Chat 返回结果类型
+ */
+export type ChatResult =
+  | { response: string; model: string; interrupted?: false }
+  | { interrupted: true; interruptData: ScreenshotInterruptPayload };

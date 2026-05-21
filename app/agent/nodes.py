@@ -1,14 +1,18 @@
 import logging
+import uuid
 from typing import Any
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage, BaseMessage
 
 from app.agent.memory.manager import MemoryManager
 from app.agent.state import (
     AgentState,
     RECENT_CONTEXT_HUMAN_MESSAGES,
+    SCREENSHOT_MESSAGE_NAME,
     SUMMARY_EVERY_HUMAN_MESSAGES,
+    is_screenshot_message,
 )
+from app.agent.tools.screenshot import SCREENSHOT_SUCCESS_PREFIX
 from app.agent.utils.background_tasks import create_background_task
 from app.agent.utils.image_utils import (
     ImageTaskResult,
@@ -75,7 +79,7 @@ class MemoryFinalizeNode:
         image_filenames: list[str] | None = None
 
         for msg in reversed(state.messages):
-            if isinstance(msg, HumanMessage):
+            if isinstance(msg, HumanMessage) and not is_screenshot_message(msg):
                 # 检查是否有图片
                 if has_image_content(msg.content) and msg.id:
                     cache_key = get_cache_key(state.session_id, msg.id)
@@ -184,3 +188,50 @@ class MemoryFinalizeNode:
 
         # 添加情景记忆和语义记忆
         await self.memory_manager.add(recent_messages, history_messages)
+
+
+class ScreenshotNode:
+    """处理截屏工具返回结果，注入特殊 HumanMessage
+
+    当截屏工具成功执行后，创建携带图片的特殊 HumanMessage。
+    旧截图的压缩由 state reducer 中的 compress_screenshot_messages 处理。
+    """
+
+    async def __call__(self, state: AgentState) -> dict[str, Any]:
+        messages = state.messages
+
+        # 检查最后一条 ToolMessage 是否为截屏成功
+        for msg in reversed(messages):
+            if isinstance(msg, ToolMessage) and isinstance(msg.content, str) and msg.content.startswith(SCREENSHOT_SUCCESS_PREFIX):
+                # 提取图片数据
+                image_data = msg.content[len(SCREENSHOT_SUCCESS_PREFIX):]
+
+                # 构建返回的消息列表
+                result_messages: list[BaseMessage] = []
+
+                # 更新 ToolMessage 内容（移除图片数据，只保留成功标记）
+                # 继承原消息 id 以便 add_messages reducer 正确替换
+                updated_tool_msg = ToolMessage(
+                    content="截屏成功",
+                    tool_call_id=msg.tool_call_id,
+                    name=msg.name,
+                    id=msg.id if hasattr(msg, "id") else None
+                )
+                result_messages.append(updated_tool_msg)
+
+                # 创建特殊 HumanMessage 携带截图
+                screenshot_msg = HumanMessage(
+                    content=[
+                        {"type": "text", "text": "[系统消息]屏幕截图: "},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}}
+                    ],
+                    name=SCREENSHOT_MESSAGE_NAME,
+                    id=str(uuid.uuid4())
+                )
+                result_messages.append(screenshot_msg)
+
+                logger.info("[ScreenshotNode] 注入截图消息，图片大小: %d bytes", len(image_data))
+                return {"messages": result_messages}
+
+        # 没有截屏成功，直接返回空
+        return {}

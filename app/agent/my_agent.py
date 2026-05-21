@@ -1,10 +1,11 @@
 import asyncio
 import logging
 import uuid
-from typing import AsyncIterator, Any, cast
+from typing import AsyncIterator, Any, cast, Union
 
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 from langchain_core.runnables import RunnableConfig
+from langgraph.types import Command, Interrupt
 
 from app.agent.checkpoint_repository import CheckpointRepository
 from app.agent.graph_builder import AgentGraphBuilder
@@ -88,8 +89,15 @@ class MyAgent(BaseAgent):
         content.append({"type": "text", "text": user_input.message})
         return HumanMessage(content=content, id=message_id)
 
-    async def ainvoke_agent_stream(self, user_message: AgentInput) -> AsyncIterator[AIMessage | AIMessageChunk]:
-        """流式调用入口：仅透传 chatbot 节点的 AI 输出分片。"""
+    async def ainvoke_agent_stream(
+        self, user_message: AgentInput
+    ) -> AsyncIterator[AIMessage | AIMessageChunk | Interrupt]:
+        """流式调用入口：透传 chatbot 节点的 AI 输出分片和 interrupt 事件。
+
+        Yields:
+            AIMessage | AIMessageChunk: 正常的 AI 消息
+            Interrupt: 当发生 interrupt 时（如截屏确认）
+        """
         if self.graph is None:
             self.graph = await self.graph_builder.build()
 
@@ -119,7 +127,8 @@ class MyAgent(BaseAgent):
             set_image_task(cache_key, task)
             logger.info("[Agent][session=%s] 启动图片描述生成任务: key=%s", active_session_id, cache_key)
 
-        async for chunk, metadata in self.graph.astream(
+        # 使用 messages + updates 模式，并启用 v2 版本以正确检测 interrupt
+        async for chunk in self.graph.astream(
             cast(Any, {
                 # 新回合输入只注入当前用户消息；记忆字段显式清空，防止跨回合复用。
                 "messages": [human_msg],
@@ -127,14 +136,43 @@ class MyAgent(BaseAgent):
                 "memory_text": None,
             }),
             config=self.config,
-            stream_mode="messages",
+            stream_mode=["messages", "updates"],
+            version="v2",
         ):
-            node_name = metadata.get("langgraph_node") if isinstance(metadata, dict) else None
-            # 只向上游暴露 chatbot 的自然语言输出，屏蔽工具/记忆节点中间事件。
-            if node_name != "chatbot":
-                continue
-            if isinstance(chunk, (AIMessage, AIMessageChunk)):
-                yield chunk
+
+            chunk_type = chunk.get("type")
+            chunk_data = chunk.get("data")
+            logger.debug(
+                "[Agent][session=%s] chunk_type=%s, chunk_data_type=%s",
+                active_session_id,
+                chunk_type,
+                type(chunk_data).__name__,
+            )
+
+            if chunk_type == "messages":
+                # 消息类型：检查是否来自 chatbot 节点
+                if isinstance(chunk_data, tuple) and len(chunk_data) == 2:
+                    msg, metadata = chunk_data
+                    node_name = metadata.get("langgraph_node") if isinstance(metadata, dict) else None
+                    if node_name == "chatbot" and isinstance(msg, (AIMessage, AIMessageChunk)):
+                        yield msg
+                    # else: 跳过非 chatbot 节点的消息（如 tools, screenshot_handler）
+                else:
+                    # 调试日志：记录非预期格式的 chunk
+                    logger.warning(
+                        "[Agent][session=%s] messages chunk 格式非预期: type=%s, value=%s",
+                        active_session_id,
+                        type(chunk_data).__name__,
+                        repr(chunk_data)[:200] if chunk_data else None,
+                    )
+
+            elif chunk_type == "updates":
+                # 更新类型：检查是否包含 interrupt
+                if isinstance(chunk_data, dict) and "__interrupt__" in chunk_data:
+                    interrupts = chunk_data["__interrupt__"]
+                    if interrupts:
+                        # 返回第一个 interrupt
+                        yield interrupts[0]
 
     def rollback_thread_checkpoints(self, checkpoint_ns: str = "") -> tuple[int, int]:
         """回滚本轮会话中基线之后写入的 checkpoint。"""
@@ -144,3 +182,54 @@ class MyAgent(BaseAgent):
             baseline_rowid=self.checkpoint_watermark,
             checkpoint_ns=checkpoint_ns,
         )
+
+    async def resume_with_command(
+        self,
+        command: Command
+    ) -> AsyncIterator[AIMessage | AIMessageChunk | Interrupt]:
+        """使用 Command 恢复中断的对话。
+
+        当 LangGraph 执行遇到 interrupt 时，图会暂停并保存状态。
+        通过传入 Command(resume=...) 可以恢复执行，resume 的值会成为
+        interrupt() 函数的返回值。
+
+        Args:
+            command: 包含 resume 数据的 Command 对象
+
+        Yields:
+            AI 消息或消息分片，或 Interrupt 对象
+        """
+        if self.graph is None:
+            self.graph = await self.graph_builder.build()
+
+        active_session_id = self.chat_settings.session_id
+        logger.info("[Agent][session=%s] 恢复中断的对话", active_session_id)
+
+        # 恢复前刷新水位线
+        self.checkpoint_watermark = self.checkpoint_repo.get_thread_checkpoint_watermark(active_session_id)
+
+        async for chunk in self.graph.astream(
+            command,
+            config=self.config,
+            stream_mode=["messages", "updates"],
+            version="v2",
+        ):
+            if not isinstance(chunk, dict):
+                continue
+
+            chunk_type = chunk.get("type")
+            chunk_data = chunk.get("data")
+
+            if chunk_type == "messages":
+                if isinstance(chunk_data, tuple) and len(chunk_data) == 2:
+                    msg, metadata = chunk_data
+                    node_name = metadata.get("langgraph_node") if isinstance(metadata, dict) else None
+                    if node_name == "chatbot" and isinstance(msg, (AIMessage, AIMessageChunk)):
+                        yield msg
+
+            elif chunk_type == "updates":
+                # 检查是否包含后续 interrupt（如连续截屏）
+                if isinstance(chunk_data, dict) and "__interrupt__" in chunk_data:
+                    interrupts = chunk_data["__interrupt__"]
+                    if interrupts:
+                        yield interrupts[0]

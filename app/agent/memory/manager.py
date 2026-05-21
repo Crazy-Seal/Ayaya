@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta
 from langchain_core.messages import AnyMessage
 
 from app.agent.memory.config import MemoryConfig
+from app.agent.state import is_screenshot_message
 from app.agent.memory.memories.episodic import EpisodicMemory
 from app.agent.memory.memories.semantic import SemanticMemory
 from app.agent.memory.memories.semantic_mem0 import Mem0SemanticMemory
@@ -310,6 +311,7 @@ class MemoryManager:
 
         只保留人类和 AI 的普通对话，过滤掉：
         - ToolMessage（工具返回结果）
+        - 截图消息（system_screenshot / system_screenshot_compressed）
 
         对于工具调用的 AI 消息，简化为 "[调用了工具: xxx]" 格式
 
@@ -325,7 +327,7 @@ class MemoryManager:
         ai_name = self.chat_settings.name or "AI"
         lines = []
         for msg in messages:
-            if msg.type == "human":
+            if msg.type == "human" and not is_screenshot_message(msg):
                 role = user_name
                 # 使用 format_message_for_memory 处理图片描述
                 content = format_message_for_memory(msg)
@@ -340,7 +342,7 @@ class MemoryManager:
                     # 普通 AI 消息使用统一的文本提取方法
                     content = extract_text_from_content(msg.content)
             else:
-                # 跳过 ToolMessage 和其他类型
+                # 跳过截图消息、ToolMessage 和其他类型
                 continue
             lines.append(f"{role}: {content}")
         return "\n".join(lines)

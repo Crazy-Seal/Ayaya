@@ -4,6 +4,23 @@
 
 import { BubbleManager } from "./bubble.js";
 import { ChatHistoryManager } from "./chat-history-manager.js";
+import { ScreenshotConfirmDialog } from "./screenshot-confirm-dialog.js";
+
+/**
+ * 截屏中断数据（内层）
+ */
+type ScreenshotInterruptData = {
+  type: "screenshot_request";
+  request_id: string;
+  message: string;
+};
+
+/**
+ * 截屏中断载荷（外层 value 包装）
+ */
+type ScreenshotInterruptPayload = {
+  value: ScreenshotInterruptData;
+};
 
 /**
  * 聊天客户端选项
@@ -28,6 +45,8 @@ export class ChatClient {
   private sessionId: string;
   private onChatComplete?: () => void;
   private hasUserSubmittedMessage = false;
+  private screenshotConfirmDialog: ScreenshotConfirmDialog;
+  private isWaitingForScreenshotApproval = false;
 
   constructor(options: ChatClientOptions) {
     this.bubble = options.bubble;
@@ -36,6 +55,7 @@ export class ChatClient {
     this.input = options.input;
     this.sessionId = options.sessionId;
     this.onChatComplete = options.onChatComplete;
+    this.screenshotConfirmDialog = new ScreenshotConfirmDialog();
   }
 
   /**
@@ -110,6 +130,14 @@ export class ChatClient {
       }
     };
 
+    const startCursor = () => {
+      if (cursorTimer) return;
+      cursorTimer = setInterval(() => {
+        cursorVisible = !cursorVisible;
+        renderStreamingBubble();
+      }, 380);
+    };
+
     cursorTimer = setInterval(() => {
       cursorVisible = !cursorVisible;
       renderStreamingBubble();
@@ -139,6 +167,69 @@ export class ChatClient {
       renderStreamingBubble();
     });
 
+    // 监听截屏中断事件
+    const unsubscribeChatInterrupt = window.desktopPetApi.onChatInterrupt?.(
+      async (interruptData: ScreenshotInterruptPayload) => {
+        // 停止光标动画
+        stopCursor();
+
+        // 显示确认对话框
+        const interruptMessage = interruptData.value?.message || "Agent 请求截取屏幕，是否允许？";
+        const approved = await this.screenshotConfirmDialog.open(interruptMessage);
+
+        // 用户确认后，调用 screenshot/respond 接口
+        this.isWaitingForScreenshotApproval = true;
+        this.chatHistory.hideTypingIndicator();
+
+        try {
+          // 重新开始光标动画
+          startCursor();
+
+          const respondResult = await window.desktopPetApi.screenshotRespond?.(
+            this.sessionId,
+            approved,
+            requestId
+          );
+
+          // 检查是否又有中断（连续截屏）
+          if (respondResult?.interrupted) {
+            // 递归处理，由事件监听器处理下一个中断
+            return;
+          }
+
+          // 流结束
+          stopCursor();
+          const finalResponse = streamedText || respondResult?.response || "";
+          this.bubble.setText(finalResponse);
+          this.chatHistory.updateLastAiMessage(finalResponse);
+          this.chatHistory.finalizeStreamingMessage();
+          this.input.value = "";
+
+          // 清理所有监听器
+          unsubscribeChatChunk();
+          unsubscribeChatInterrupt?.();
+          this.sendBtn.disabled = false;
+          this.input.focus();
+          this.onChatComplete?.();
+        } catch (error) {
+          stopCursor();
+          const errorMessage = `截屏响应失败: ${String(error)}`;
+          this.bubble.setText(errorMessage);
+          this.chatHistory.updateLastAiMessage(errorMessage);
+          this.chatHistory.finalizeStreamingMessage();
+
+          // 清理所有监听器
+          unsubscribeChatChunk();
+          unsubscribeChatInterrupt?.();
+          this.sendBtn.disabled = false;
+          this.input.focus();
+          this.onChatComplete?.();
+        } finally {
+          this.isWaitingForScreenshotApproval = false;
+        }
+      }
+    );
+
     try {
       if (!window.desktopPetApi || typeof window.desktopPetApi.chat !== "function") {
         throw new Error("桌宠桥接未就绪，请重启桌宠程序");
@@ -150,6 +241,13 @@ export class ChatClient {
         requestId,
         images
       );
+
+      // 检查是否被中断（截屏请求）
+      if (result.interrupted) {
+        // 中断事件会通过 onChatInterrupt 处理，这里不做任何事
+        return;
+      }
+
       stopCursor();
       const finalResponse = streamedText || result.response;
       this.bubble.setText(finalResponse);
@@ -158,23 +256,31 @@ export class ChatClient {
       // 完成流式响应，分割句子渲染
       this.chatHistory.finalizeStreamingMessage();
       this.input.value = "";
+
+      // 清理中断监听器
+      unsubscribeChatInterrupt?.();
     } catch (error) {
       stopCursor();
       const errorMessage = `请求失败: ${String(error)}`;
       this.bubble.setText(errorMessage);
       this.chatHistory.updateLastAiMessage(errorMessage);
       this.chatHistory.finalizeStreamingMessage();
+
+      unsubscribeChatInterrupt?.();
     } finally {
       stopCursor();
 
       // 确保"正在输入"提示被隐藏
       this.chatHistory.hideTypingIndicator();
 
-      unsubscribeChatChunk();
-      this.sendBtn.disabled = false;
-      this.input.focus();
-
-      this.onChatComplete?.();
+      // 只有非中断状态才清理监听器和释放发送按钮
+      // 中断状态下，监听器在 onChatInterrupt 回调中清理
+      if (!this.isWaitingForScreenshotApproval) {
+        unsubscribeChatChunk();
+        this.sendBtn.disabled = false;
+        this.input.focus();
+        this.onChatComplete?.();
+      }
     }
   }
 }

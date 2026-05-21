@@ -32,6 +32,13 @@ async def chat(
         )
         try:
             async for chunk in agent_service.stream_chat(agent_input, session_id):
+                # 检查是否是 interrupt 事件
+                if chunk.startswith("__INTERRUPT__:"):
+                    # 提取 interrupt 数据并发送为特殊事件
+                    interrupt_data = chunk[len("__INTERRUPT__:"):]
+                    yield f"event: interrupt\ndata: {interrupt_data}\n\n"
+                    continue
+
                 data = json.dumps({"response": chunk}, ensure_ascii=False)
                 yield f"data: {data}\n\n"
             yield "data: [DONE]\n\n"
