@@ -430,9 +430,15 @@ class SummaryMemory:
         lines = []
 
         for msg in messages:
-            if msg["role"] == "Human":
+            role_value = msg["role"]
+
+            # 过滤工具调用消息，摘要不需要包含工具调用信息
+            if role_value == "AI_Tool_Calling":
+                continue
+
+            if role_value == "Human":
                 role = user_name
-            else:
+            else:  # AI
                 role = ai_name
 
             # 处理图片描述

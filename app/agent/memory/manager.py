@@ -2,6 +2,7 @@
 import asyncio
 import logging
 from datetime import date, datetime, timedelta
+from typing import Any
 
 from langchain_core.messages import AnyMessage
 
@@ -140,7 +141,7 @@ class MemoryManager:
     async def try_summary(
         self,
         user_message: str,
-        ai_message: str,
+        ai_messages: list[dict[str, Any]],
         image_description: str | None = None,
         image_filenames: list[str] | None = None,
     ) -> None:
@@ -150,21 +151,38 @@ class MemoryManager:
 
         Args:
             user_message: 用户消息
-            ai_message: AI 响应
+            ai_messages: AI 消息列表，每条包含 content 和 tool_calls
             image_description: 图片描述（可选）
             image_filenames: 图片文件名列表（可选）
         """
-        # 计算今天的有效日期
         now = datetime.now(self.config.timezone)
         today = self._get_effective_date(now)
 
-        # 1. 保存本轮对话到 chat_history
+        # 1. 保存用户消息
         await self.chat_history_store.save_chat_message(
             self.session_id, "Human", user_message, image_description, image_filenames
         )
-        await self.chat_history_store.save_chat_message(self.session_id, "AI", ai_message)
 
-        # 2. SummaryMemory 检查并生成摘要/日记
+        # 2. 保存所有 AI 消息
+        for ai_msg in ai_messages:
+            tool_calls = ai_msg.get("tool_calls", [])
+            content = ai_msg.get("content", "")
+
+            # 如果有文本内容，先保存为普通 AI 消息
+            if content:
+                await self.chat_history_store.save_chat_message(
+                    self.session_id, "AI", content
+                )
+
+            # 如果有工具调用，再保存为 AI_Tool_Calling 消息
+            if tool_calls:
+                tool_names = [tc.get("name", "未知工具") for tc in tool_calls]
+                tool_content = f"[调用了工具: {', '.join(tool_names)}]"
+                await self.chat_history_store.save_chat_message(
+                    self.session_id, "AI_Tool_Calling", tool_content
+                )
+
+        # 3. SummaryMemory 检查并生成摘要/日记
         await self.summary_memory.check_and_generate(today)
 
     async def get_context(self, query: str = "") -> str:

@@ -2,7 +2,7 @@ import logging
 import uuid
 from typing import Any
 
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage, BaseMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage, BaseMessage
 
 from app.agent.memory.manager import MemoryManager
 from app.agent.state import (
@@ -168,14 +168,43 @@ class MemoryFinalizeNode:
             image_filenames: 图片文件名列表（如果有图片）
         """
         last_human = get_last_human_text(messages)
-        last_ai = None
-        for msg in reversed(messages):
-            if msg.type == "ai":
-                last_ai = extract_text(msg.content)
+        ai_messages = self._extract_new_ai_messages(messages)
+
+        if last_human and ai_messages:
+            await self.memory_manager.try_summary(last_human, ai_messages, image_description, image_filenames)
+
+    def _extract_new_ai_messages(self, messages: list[Any]) -> list[dict[str, Any]]:
+        """提取最后一条 HumanMessage 之后的 AIMessage 列表。
+
+        用于保存本轮所有 AI 消息（包括工具调用消息）到数据库。
+
+        Returns:
+            [{"content": str, "tool_calls": list}] 列表
+            tool_calls 为空表示普通消息，非空表示工具调用
+        """
+        # 找到最后一条真正的 HumanMessage（排除截图）
+        last_human_idx = -1
+        for i in range(len(messages) - 1, -1, -1):
+            msg = messages[i]
+            if isinstance(msg, HumanMessage) and not is_screenshot_message(msg):
+                last_human_idx = i
                 break
 
-        if last_human and last_ai:
-            await self.memory_manager.try_summary(last_human, last_ai, image_description, image_filenames)
+        if last_human_idx < 0:
+            return []
+
+        # 收集之后的 AIMessage
+        result: list[dict[str, Any]] = []
+        for msg in messages[last_human_idx + 1:]:
+            if isinstance(msg, AIMessage):
+                tool_calls = getattr(msg, "tool_calls", None) or []
+                content = extract_text(msg.content)
+                result.append({
+                    "content": content,
+                    "tool_calls": tool_calls,
+                })
+
+        return result
 
     async def _persist_memory(self, messages: list[Any]) -> None:
         """每 10 轮触发：提取情景记忆和语义记忆"""
