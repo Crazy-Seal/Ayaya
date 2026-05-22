@@ -170,8 +170,17 @@ class MemoryFinalizeNode:
         last_human = get_last_human_text(messages)
         ai_messages = self._extract_new_ai_messages(messages)
 
-        if last_human and ai_messages:
-            await self.memory_manager.try_summary(last_human, ai_messages, image_description, image_filenames)
+        if not last_human or not ai_messages:
+            return
+
+        # 检查是否有实际的聊天文本（无论是否伴随工具调用）
+        has_text_content = any(ai_msg.get("content") for ai_msg in ai_messages)
+
+        if not has_text_content:
+            logger.warning("[MemoryFinalize] AI 无有效文本输出，跳过保存本轮对话")
+            return
+
+        await self.memory_manager.try_summary(last_human, ai_messages, image_description, image_filenames)
 
     def _extract_new_ai_messages(self, messages: list[Any]) -> list[dict[str, Any]]:
         """提取最后一条 HumanMessage 之后的 AIMessage 列表。
@@ -193,12 +202,15 @@ class MemoryFinalizeNode:
         if last_human_idx < 0:
             return []
 
-        # 收集之后的 AIMessage
+        # 收集之后的 AIMessage（过滤空消息）
         result: list[dict[str, Any]] = []
         for msg in messages[last_human_idx + 1:]:
             if isinstance(msg, AIMessage):
                 tool_calls = getattr(msg, "tool_calls", None) or []
                 content = extract_text(msg.content)
+                # 跳过既无内容又无工具调用的空消息
+                if not content and not tool_calls:
+                    continue
                 result.append({
                     "content": content,
                     "tool_calls": tool_calls,

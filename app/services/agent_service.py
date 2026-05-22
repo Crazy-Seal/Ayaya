@@ -1,11 +1,11 @@
-import json
 import logging
 from datetime import datetime
-from typing import AsyncIterator, Callable, Union
+from typing import AsyncIterator, Callable
 
 from langchain_core.messages import AIMessage, AIMessageChunk
 from langgraph.types import Command, Interrupt
 
+from app.agent.events import StreamEvent, ToolCallEvent
 from app.agent.my_agent import MyAgent
 from app.agent.interface import BaseAgent
 from app.config.config import get_chat_settings
@@ -39,8 +39,138 @@ class AgentService:
         now_text = f"{now.strftime('%Y-%m-%d %H:%M:%S %z')} {weekday_text}"
         return f"[{now_text}] {user_message}"
 
+    def get_health_data(self, session_id: str) -> dict[str, str]:
+        chat_settings = self.chat_settings_loader(session_id)
+        return {
+            "status": "ok",
+            "model": chat_settings.model_name,
+        }
+
+    @staticmethod
+    def _rollback_checkpoints(session_id: str, agent: BaseAgent) -> tuple[int, int]:
+        try:
+            return agent.rollback_thread_checkpoints()
+        except Exception:
+            logger.exception("[AgentService][session=%s] checkpoints回滚失败", session_id)
+            return 0, 0
+
+    async def stream_chat(self, agent_input: AgentInput, session_id: str = "default") -> AsyncIterator[StreamEvent]:
+        """流式聊天，直接透传事件对象。
+
+        Args:
+            agent_input: 用户输入
+            session_id: 会话 ID
+
+        Yields:
+            StreamEvent: 流式事件对象
+        """
+        chat_settings = self.chat_settings_loader(session_id)
+        agent = self.agent_factory(chat_settings)
+
+        # 缓存 agent 实例供中断后恢复使用
+        _active_agents[session_id] = agent
+
+        timed_agent_input = AgentInput(
+            message=self._build_timed_user_message(agent_input.message),
+            images=agent_input.images,
+        )
+
+        response_parts: list[str] = []
+        chunk_count = 0
+        has_output = False
+        try:
+            async for event in agent.ainvoke_agent_stream(timed_agent_input):
+                chunk_count += 1
+
+                # 直接透传事件对象
+                yield event
+
+                # 记录文本输出用于日志
+                if isinstance(event, (AIMessage, AIMessageChunk)):
+                    # 检测 API 内容过滤
+                    metadata = getattr(event, 'response_metadata', None) or {}
+                    if metadata.get('finish_reason') == 'content_filter':
+                        raise RuntimeError("触发 API 内容过滤")
+
+                    text = self._extract_text(event.content)
+                    if text:
+                        response_parts.append(text)
+                        has_output = True
+                elif isinstance(event, ToolCallEvent):
+                    has_output = True
+
+        except Exception as e:
+            logger.exception("[AgentService][session=%s] graph运行中出现错误: %s，尝试回滚checkpoints", session_id, e)
+            self._rollback_checkpoints(session_id, agent)
+            yield ToolCallEvent(tool_name="__error__")  # 用特殊事件标记错误
+            return
+
+        ai_message = "".join(response_parts)
+        logger.info("[AgentService][session=%s] 收到 %d 个 chunks, 提取文本长度: %d", session_id, chunk_count, len(ai_message))
+
+        if not has_output:
+            deleted_checkpoints, deleted_writes = self._rollback_checkpoints(session_id, agent)
+            logger.warning(
+                "[AgentService][session=%s] 模型输出空，已回滚 checkpoints=%d, writes=%d",
+                session_id,
+                deleted_checkpoints,
+                deleted_writes,
+            )
+
+    async def resume_after_screenshot(
+        self,
+        session_id: str,
+        approved: bool
+    ) -> AsyncIterator[StreamEvent]:
+        """用户确认截屏后恢复对话。
+
+        Args:
+            session_id: 会话 ID
+            approved: 用户是否允许截屏
+
+        Yields:
+            StreamEvent: 流式事件对象
+        """
+        agent = _active_agents.get(session_id)
+        if not agent:
+            # 会话过期，返回特殊事件
+            from app.agent.events import TextChunk
+            yield TextChunk(content="[系统]会话已过期")
+            return
+
+        logger.info("[AgentService][session=%s] 用户确认截屏: approved=%s", session_id, approved)
+
+        # 使用 Command(resume=...) 恢复执行
+        command = Command(resume={"approved": approved})
+
+        response_parts: list[str] = []
+        chunk_count = 0
+        try:
+            async for event in agent.resume_with_command(command):
+                chunk_count += 1
+
+                # 直接透传事件对象
+                yield event
+
+                # 记录文本输出用于日志
+                if isinstance(event, (AIMessage, AIMessageChunk)):
+                    text = self._extract_text(event.content)
+                    if text:
+                        response_parts.append(text)
+
+        except Exception:
+            logger.exception("[AgentService][session=%s] 恢复对话失败", session_id)
+            self._rollback_checkpoints(session_id, agent)
+            from app.agent.events import TextChunk
+            yield TextChunk(content="[系统]恢复对话失败")
+            return
+
+        logger.info("[AgentService][session=%s] 恢复对话完成，收到 %d 个 chunks, 提取文本长度: %d",
+                    session_id, chunk_count, len("".join(response_parts)))
+
     @staticmethod
     def _extract_text(content: object) -> str:
+        """从消息内容中提取文本。"""
         if isinstance(content, str):
             return content
         if isinstance(content, dict):
@@ -70,151 +200,3 @@ class AgentService:
                 if isinstance(text, str):
                     return text
         return ""
-
-    def get_health_data(self, session_id: str) -> dict[str, str]:
-        chat_settings = self.chat_settings_loader(session_id)
-        return {
-            "status": "ok",
-            "model": chat_settings.model_name,
-        }
-
-    @staticmethod
-    def _rollback_checkpoints(session_id: str, agent: BaseAgent) -> tuple[int, int]:
-        try:
-            return agent.rollback_thread_checkpoints()
-        except Exception:
-            logger.exception("[AgentService][session=%s] checkpoints回滚失败", session_id)
-            return 0, 0
-
-    async def stream_chat(self, agent_input: AgentInput, session_id: str = "default") -> AsyncIterator[str]:
-        chat_settings = self.chat_settings_loader(session_id)
-        agent = self.agent_factory(chat_settings)
-
-        # 缓存 agent 实例供中断后恢复使用
-        _active_agents[session_id] = agent
-
-        timed_agent_input = AgentInput(
-            message=self._build_timed_user_message(agent_input.message),
-            images=agent_input.images,
-        )
-
-        response_parts: list[str] = []
-        chunk_count = 0
-        try:
-            async for chunk in agent.ainvoke_agent_stream(timed_agent_input):
-                chunk_count += 1
-                # 检查是否是工具调用事件
-                if isinstance(chunk, str) and chunk.startswith("__TOOL_CALL__:"):
-                    yield chunk
-                    continue
-
-                # 检查是否是 Interrupt 类型
-                if isinstance(chunk, Interrupt):
-                    # Interrupt 包含 value 字段，是传给 interrupt() 的参数
-                    interrupt_data = {
-                        "value": chunk.value if hasattr(chunk, 'value') else str(chunk)
-                    }
-                    # 发送特殊标记，让路由层转换为 SSE 事件
-                    yield f"__INTERRUPT__:{json.dumps(interrupt_data, ensure_ascii=False, default=str)}"
-                    return
-
-                # 正常消息处理
-                if isinstance(chunk, (AIMessage, AIMessageChunk)):
-                    text = self._extract_text(chunk.content)
-                    if not text:
-                        text = self._extract_text(chunk)
-                    if not text:
-                        continue
-                    response_parts.append(text)
-                    yield text
-                else:
-                    logger.warning(
-                        "[AgentService][session=%s] 收到非 AI 消息类型: %s",
-                        session_id,
-                        type(chunk).__name__,
-                    )
-        except Exception:
-            logger.exception("[AgentService][session=%s] graph运行中出现错误，尝试回滚checkpoints", session_id)
-            self._rollback_checkpoints(session_id, agent)
-            yield "[错误：agent调用异常]"
-            return
-
-        ai_message = "".join(response_parts)
-        logger.info("[AgentService][session=%s] 收到 %d 个 chunks, 提取文本长度: %d", session_id, chunk_count, len(ai_message))
-        if not ai_message.strip():
-            deleted_checkpoints, deleted_writes = self._rollback_checkpoints(session_id, agent)
-            logger.warning(
-                "[AgentService][session=%s] 模型输出空，已回滚 checkpoints=%d, writes=%d",
-                session_id,
-                deleted_checkpoints,
-                deleted_writes,
-            )
-            yield "[错误：未返回内容]"
-            return
-
-    async def resume_after_screenshot(
-        self,
-        session_id: str,
-        approved: bool
-    ) -> AsyncIterator[str]:
-        """用户确认截屏后恢复对话。
-
-        Args:
-            session_id: 会话 ID
-            approved: 用户是否允许截屏
-
-        Yields:
-            AI 响应文本
-        """
-        agent = _active_agents.get(session_id)
-        if not agent:
-            yield "[系统]会话已过期"
-            return
-
-        logger.info("[AgentService][session=%s] 用户确认截屏: approved=%s", session_id, approved)
-
-        # 使用 Command(resume=...) 恢复执行
-        command = Command(resume={"approved": approved})
-
-        response_parts: list[str] = []
-        chunk_count = 0
-        try:
-            async for chunk in agent.resume_with_command(command):
-                chunk_count += 1
-                # 检查是否是工具调用事件
-                if isinstance(chunk, str) and chunk.startswith("__TOOL_CALL__:"):
-                    yield chunk
-                    continue
-
-                # 检查是否是后续 Interrupt（连续截屏）
-                if isinstance(chunk, Interrupt):
-                    interrupt_data = {
-                        "value": chunk.value if hasattr(chunk, 'value') else str(chunk)
-                    }
-                    yield f"__INTERRUPT__:{json.dumps(interrupt_data, ensure_ascii=False, default=str)}"
-                    return
-
-                text = self._extract_text(chunk.content)
-                if text:
-                    response_parts.append(text)
-                    yield text
-        except Exception:
-            logger.exception("[AgentService][session=%s] 恢复对话失败", session_id)
-            self._rollback_checkpoints(session_id, agent)
-            yield "[系统]恢复对话失败"
-            return
-
-        logger.info("[AgentService][session=%s] 恢复对话完成，收到 %d 个 chunks, 提取文本长度: %d",
-                    session_id, chunk_count, len("".join(response_parts)))
-
-        # 检查空输出
-        ai_message = "".join(response_parts)
-        if not ai_message.strip():
-            deleted_checkpoints, deleted_writes = self._rollback_checkpoints(session_id, agent)
-            logger.warning(
-                "[AgentService][session=%s] 恢复对话后输出空，已回滚 checkpoints=%d, writes=%d",
-                session_id,
-                deleted_checkpoints,
-                deleted_writes,
-            )
-            yield "[系统]未返回内容"

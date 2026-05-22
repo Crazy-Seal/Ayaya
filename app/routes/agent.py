@@ -1,11 +1,12 @@
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
-import json
 
 from app.dependencies import get_agent_service
 from app.schemas.result import Result
 from app.schemas.chat import ChatRequest, AgentInput
 from app.services.agent_service import AgentService
+from app.utils.sse_formatter import SSEFormatter
+
 
 router = APIRouter(tags=["agent"])
 
@@ -30,26 +31,14 @@ async def chat(
             message=payload.message,
             images=payload.images,
         )
+        formatter = SSEFormatter()
         try:
-            async for chunk in agent_service.stream_chat(agent_input, session_id):
-                # 检查是否是工具调用事件
-                if chunk.startswith("__TOOL_CALL__:"):
-                    tool_data = chunk[len("__TOOL_CALL__:"):]
-                    yield f"event: tool_call\ndata: {tool_data}\n\n"
-                    continue
-
-                # 检查是否是 interrupt 事件
-                if chunk.startswith("__INTERRUPT__:"):
-                    # 提取 interrupt 数据并发送为特殊事件
-                    interrupt_data = chunk[len("__INTERRUPT__:"):]
-                    yield f"event: interrupt\ndata: {interrupt_data}\n\n"
-                    continue
-
-                data = json.dumps({"response": chunk}, ensure_ascii=False)
-                yield f"data: {data}\n\n"
-            yield "data: [DONE]\n\n"
+            async for event in agent_service.stream_chat(agent_input, session_id):
+                formatted = formatter.format(event)
+                if formatted:
+                    yield formatted
+            yield formatter.done()
         except RuntimeError as exc:
-            data = json.dumps({"detail": str(exc)}, ensure_ascii=False)
-            yield f"event: error\ndata: {data}\n\n"
+            yield formatter.error(str(exc))
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")

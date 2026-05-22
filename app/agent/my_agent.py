@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 import uuid
 from typing import AsyncIterator, Any, cast, Union
@@ -9,6 +8,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command, Interrupt
 
 from app.agent.checkpoint_repository import CheckpointRepository
+from app.agent.events import StreamEvent, ToolCallEvent
 from app.agent.graph_builder import AgentGraphBuilder
 from app.agent.interface import BaseAgent
 from app.agent.memory.config import MemoryConfig
@@ -92,12 +92,11 @@ class MyAgent(BaseAgent):
 
     async def ainvoke_agent_stream(
         self, user_message: AgentInput
-    ) -> AsyncIterator[AIMessage | AIMessageChunk | Interrupt]:
-        """流式调用入口：透传 chatbot 节点的 AI 输出分片和 interrupt 事件。
+    ) -> AsyncIterator[StreamEvent]:
+        """流式调用入口：透传 chatbot 节点的 AI 输出分片和事件。
 
         Yields:
-            AIMessage | AIMessageChunk: 正常的 AI 消息
-            Interrupt: 当发生 interrupt 时（如截屏确认）
+            StreamEvent: 流式事件（AIMessage、AIMessageChunk、ToolCallEvent、Interrupt）
         """
         if self.graph is None:
             self.graph = await self.graph_builder.build()
@@ -184,7 +183,7 @@ class MyAgent(BaseAgent):
                         if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
                             for tc in last_msg.tool_calls:
                                 tool_name = tc.get("name", "未知工具")
-                                yield f"__TOOL_CALL__:{json.dumps({'tool_name': tool_name}, ensure_ascii=False)}"
+                                yield ToolCallEvent(tool_name=tool_name)
 
     def rollback_thread_checkpoints(self, checkpoint_ns: str = "") -> tuple[int, int]:
         """回滚本轮会话中基线之后写入的 checkpoint。"""
@@ -198,7 +197,7 @@ class MyAgent(BaseAgent):
     async def resume_with_command(
         self,
         command: Command
-    ) -> AsyncIterator[AIMessage | AIMessageChunk | Interrupt]:
+    ) -> AsyncIterator[StreamEvent]:
         """使用 Command 恢复中断的对话。
 
         当 LangGraph 执行遇到 interrupt 时，图会暂停并保存状态。
@@ -209,7 +208,7 @@ class MyAgent(BaseAgent):
             command: 包含 resume 数据的 Command 对象
 
         Yields:
-            AI 消息或消息分片，或 Interrupt 对象
+            StreamEvent: 流式事件
         """
         if self.graph is None:
             self.graph = await self.graph_builder.build()
@@ -255,4 +254,4 @@ class MyAgent(BaseAgent):
                         if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
                             for tc in last_msg.tool_calls:
                                 tool_name = tc.get("name", "未知工具")
-                                yield f"__TOOL_CALL__:{json.dumps({'tool_name': tool_name}, ensure_ascii=False)}"
+                                yield ToolCallEvent(tool_name=tool_name)

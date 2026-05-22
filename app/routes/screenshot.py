@@ -1,5 +1,4 @@
 """截屏确认路由"""
-import json
 import logging
 
 from fastapi import APIRouter, Depends
@@ -8,6 +7,7 @@ from pydantic import BaseModel
 
 from app.dependencies import get_agent_service
 from app.services.agent_service import AgentService
+from app.utils.sse_formatter import SSEFormatter
 
 
 logger = logging.getLogger(__name__)
@@ -40,29 +40,18 @@ async def respond_to_screenshot(
                 payload.session_id, payload.approved)
 
     async def event_stream():
+        formatter = SSEFormatter()
         try:
-            async for chunk in agent_service.resume_after_screenshot(
+            async for event in agent_service.resume_after_screenshot(
                 payload.session_id,
                 payload.approved
             ):
-                # 检查是否是工具调用事件
-                if chunk.startswith("__TOOL_CALL__:"):
-                    tool_data = chunk[len("__TOOL_CALL__:"):]
-                    yield f"event: tool_call\ndata: {tool_data}\n\n"
-                    continue
-
-                # 检查是否是后续 interrupt（连续截屏）
-                if chunk.startswith("__INTERRUPT__:"):
-                    interrupt_data = chunk[len("__INTERRUPT__:"):]
-                    yield f"event: interrupt\ndata: {interrupt_data}\n\n"
-                    return
-
-                data = json.dumps({"response": chunk}, ensure_ascii=False)
-                yield f"data: {data}\n\n"
-            yield "data: [DONE]\n\n"
+                formatted = formatter.format(event)
+                if formatted:
+                    yield formatted
+            yield formatter.done()
         except Exception as e:
             logger.exception("[ScreenshotRoute] 恢复对话失败")
-            error_data = json.dumps({"detail": str(e)}, ensure_ascii=False)
-            yield f"event: error\ndata: {error_data}\n\n"
+            yield formatter.error(str(e))
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
