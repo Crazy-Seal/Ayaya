@@ -93,5 +93,11 @@ contextBridge.exposeInMainWorld("desktopPetApi", {
     const handler = (_event, payload) => listener(payload);
     ipcRenderer.on("desktop-pet:chat-interrupt", handler);
     return () => ipcRenderer.removeListener("desktop-pet:chat-interrupt", handler);
+  },
+  // 监听工具调用事件
+  onToolCall: (listener) => {
+    const handler = (_event, payload) => listener(payload);
+    ipcRenderer.on("desktop-pet:chat-tool-call", handler);
+    return () => ipcRenderer.removeListener("desktop-pet:chat-tool-call", handler);
   }
 });

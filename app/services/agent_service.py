@@ -103,6 +103,11 @@ class AgentService:
         try:
             async for chunk in agent.ainvoke_agent_stream(timed_agent_input):
                 chunk_count += 1
+                # 检查是否是工具调用事件
+                if isinstance(chunk, str) and chunk.startswith("__TOOL_CALL__:"):
+                    yield chunk
+                    continue
+
                 # 检查是否是 Interrupt 类型
                 if isinstance(chunk, Interrupt):
                     # Interrupt 包含 value 字段，是传给 interrupt() 的参数
@@ -176,6 +181,11 @@ class AgentService:
         try:
             async for chunk in agent.resume_with_command(command):
                 chunk_count += 1
+                # 检查是否是工具调用事件
+                if isinstance(chunk, str) and chunk.startswith("__TOOL_CALL__:"):
+                    yield chunk
+                    continue
+
                 # 检查是否是后续 Interrupt（连续截屏）
                 if isinstance(chunk, Interrupt):
                     interrupt_data = {

@@ -117,6 +117,14 @@ export type ChatResult =
   | { interrupted: true; interruptData: ScreenshotInterruptPayload; response: string; model: string };
 
 /**
+ * 工具调用事件数据
+ */
+export type ToolCallEventData = {
+  requestId: string;
+  toolName: string;
+};
+
+/**
  * 工具项
  */
 export type ToolItem = {
@@ -204,6 +212,8 @@ export interface DesktopPetApi {
     requestId?: string
   ) => Promise<ChatResult>;
   onChatInterrupt?: (callback: (data: ScreenshotInterruptPayload) => void) => () => void;
+  // 工具调用事件
+  onToolCall?: (callback: (data: ToolCallEventData) => void) => () => void;
 }
 
 declare global {

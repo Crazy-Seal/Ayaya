@@ -5,6 +5,7 @@
 import { BubbleManager } from "./bubble.js";
 import { ChatHistoryManager } from "./chat-history-manager.js";
 import { ScreenshotConfirmDialog } from "./screenshot-confirm-dialog.js";
+import { ToolCallToastManager } from "./tool-call-toast.js";
 
 /**
  * 截屏中断数据（内层）
@@ -46,6 +47,7 @@ export class ChatClient {
   private onChatComplete?: () => void;
   private hasUserSubmittedMessage = false;
   private screenshotConfirmDialog: ScreenshotConfirmDialog;
+  private toolCallToast: ToolCallToastManager;
   private isWaitingForScreenshotApproval = false;
 
   constructor(options: ChatClientOptions) {
@@ -56,6 +58,7 @@ export class ChatClient {
     this.sessionId = options.sessionId;
     this.onChatComplete = options.onChatComplete;
     this.screenshotConfirmDialog = new ScreenshotConfirmDialog();
+    this.toolCallToast = new ToolCallToastManager();
   }
 
   /**
@@ -157,10 +160,11 @@ export class ChatClient {
         return;
       }
 
-      // 收到第一个 chunk 时隐藏"正在输入"提示
+      // 收到第一个 chunk 时隐藏"正在输入"提示，并将工具调用改为完成状态
       if (!firstChunkReceived) {
         firstChunkReceived = true;
         this.chatHistory.hideTypingIndicator();
+        this.chatHistory.finalizeToolCallIndicator();
       }
 
       streamedText += chunk;
@@ -208,6 +212,7 @@ export class ChatClient {
           // 清理所有监听器
           unsubscribeChatChunk();
           unsubscribeChatInterrupt?.();
+          unsubscribeToolCall?.();
           this.sendBtn.disabled = false;
           this.input.focus();
           this.onChatComplete?.();
@@ -221,6 +226,7 @@ export class ChatClient {
           // 清理所有监听器
           unsubscribeChatChunk();
           unsubscribeChatInterrupt?.();
+          unsubscribeToolCall?.();
           this.sendBtn.disabled = false;
           this.input.focus();
           this.onChatComplete?.();
@@ -229,6 +235,17 @@ export class ChatClient {
         }
       }
     );
+
+    // 监听工具调用事件
+    const unsubscribeToolCall = window.desktopPetApi.onToolCall?.((data) => {
+      if (data.requestId !== requestId) {
+        return;
+      }
+      // 在聊天历史中显示工具调用消息
+      this.chatHistory.showToolCallMessage(data.toolName);
+      // 在 Live2D 右侧显示提示框
+      this.toolCallToast.show(data.toolName);
+    });
 
     try {
       if (!window.desktopPetApi || typeof window.desktopPetApi.chat !== "function") {
@@ -257,8 +274,9 @@ export class ChatClient {
       this.chatHistory.finalizeStreamingMessage();
       this.input.value = "";
 
-      // 清理中断监听器
+      // 清理监听器
       unsubscribeChatInterrupt?.();
+      unsubscribeToolCall?.();
     } catch (error) {
       stopCursor();
       const errorMessage = `请求失败: ${String(error)}`;
@@ -267,6 +285,7 @@ export class ChatClient {
       this.chatHistory.finalizeStreamingMessage();
 
       unsubscribeChatInterrupt?.();
+      unsubscribeToolCall?.();
     } finally {
       stopCursor();
 

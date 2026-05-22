@@ -45,6 +45,12 @@ async def respond_to_screenshot(
                 payload.session_id,
                 payload.approved
             ):
+                # 检查是否是工具调用事件
+                if chunk.startswith("__TOOL_CALL__:"):
+                    tool_data = chunk[len("__TOOL_CALL__:"):]
+                    yield f"event: tool_call\ndata: {tool_data}\n\n"
+                    continue
+
                 # 检查是否是后续 interrupt（连续截屏）
                 if chunk.startswith("__INTERRUPT__:"):
                     interrupt_data = chunk[len("__INTERRUPT__:"):]

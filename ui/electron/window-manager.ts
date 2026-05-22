@@ -95,6 +95,8 @@ export const createMainWindow = (): BrowserWindow => {
   const devServerUrl = process.env.VITE_DEV_SERVER_URL;
   if (devServerUrl) {
     win.loadURL(devServerUrl);
+    // 开发模式下打开开发者工具
+    win.webContents.openDevTools({ mode: "detach" });
   } else {
     win.loadFile(path.resolve(__dirname, "../dist/index.html"));
   }

@@ -15,6 +15,7 @@ import type {
   ModelTransformChangedPayload,
   ChatChunkPayload,
   ScreenshotInterruptPayload,
+  ToolCallPayload,
 } from "./types.js";
 import {
   loadModelConfig,
@@ -566,6 +567,18 @@ export const registerIpcHandlers = (): void => {
             return { done: true, interrupted: true, interruptData };
           }
 
+          // 处理 tool_call 事件
+          if (eventName === "tool_call") {
+            const toolCallData = parsed as unknown as ToolCallPayload;
+            if (requestId) {
+              event.sender.send("desktop-pet:chat-tool-call", {
+                requestId,
+                toolName: toolCallData.tool_name,
+              });
+            }
+            return { done: false };
+          }
+
           if (eventName === "error") {
             throw new Error(parsed.detail || "聊天流返回错误事件");
           }
@@ -731,6 +744,18 @@ export const registerIpcHandlers = (): void => {
             const interruptData = parsed as unknown as ScreenshotInterruptPayload;
             event.sender.send("desktop-pet:chat-interrupt", interruptData);
             return { done: true, interrupted: true, interruptData };
+          }
+
+          // 处理 tool_call 事件
+          if (eventName === "tool_call") {
+            const toolCallData = parsed as unknown as ToolCallPayload;
+            if (requestId) {
+              event.sender.send("desktop-pet:chat-tool-call", {
+                requestId,
+                toolName: toolCallData.tool_name,
+              });
+            }
+            return { done: false };
           }
 
           if (eventName === "error") {

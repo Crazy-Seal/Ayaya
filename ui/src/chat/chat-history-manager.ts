@@ -49,6 +49,7 @@ export class ChatHistoryManager {
   private isStreaming = false;
   private outputSentenceCount = 0;
   private typingIndicator: HTMLDivElement | null = null;
+  private toolCallIndicator: HTMLDivElement | null = null;
 
   // 句子队列和定时器（用于延迟输出）
   private sentenceQueue: string[] = [];
@@ -83,6 +84,38 @@ export class ChatHistoryManager {
     if (this.typingIndicator) {
       this.typingIndicator.remove();
       this.typingIndicator = null;
+    }
+  }
+
+  /**
+   * 显示工具调用提示（作为消息记录）
+   * 显示为"正在调用工具: xxx"，带闪烁效果
+   */
+  showToolCallMessage(toolName: string): void {
+    // 先隐藏"对方正在输入中"提示
+    this.hideTypingIndicator();
+
+    const indicator = document.createElement("div");
+    indicator.className = "typing-indicator";
+    indicator.textContent = `正在调用工具: ${toolName}`;
+    indicator.setAttribute("data-tool-call", "pending");
+
+    this.container.appendChild(indicator);
+    this.scrollToBottom();
+  }
+
+  /**
+   * 将工具调用提示从"正在调用"改为"调用完成"状态
+   * 停止闪烁，改为"调用工具: xxx"
+   */
+  finalizeToolCallIndicator(): void {
+    const pendingIndicator = this.container.querySelector('.typing-indicator[data-tool-call="pending"]');
+    if (pendingIndicator) {
+      const text = pendingIndicator.textContent || "";
+      // 从"正在调用工具: xxx" 改为 "调用工具: xxx"
+      const toolName = text.replace("正在调用工具: ", "");
+      pendingIndicator.textContent = `调用工具: ${toolName}`;
+      pendingIndicator.setAttribute("data-tool-call", "true");
     }
   }
 
@@ -308,6 +341,19 @@ export class ChatHistoryManager {
   private renderMessage(msg: ChatHistoryItem): void {
     const role = msg.role.toLowerCase();
     const isHuman = role === "human" || role === "user";
+    const isToolCalling = role === "ai_tool_calling";
+
+    // 工具调用消息使用特殊样式
+    if (isToolCalling) {
+      const indicator = document.createElement("div");
+      indicator.className = "typing-indicator";
+      // 确保 content 有效，否则显示默认文本
+      indicator.textContent = msg.content || "调用工具中...";
+      // 历史消息显示为完成状态（不闪烁）
+      indicator.setAttribute("data-tool-call", "true");
+      this.container.appendChild(indicator);
+      return;
+    }
 
     // 分割成句子
     const sentences = this.splitIntoSentences(msg.content);

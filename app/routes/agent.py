@@ -32,6 +32,12 @@ async def chat(
         )
         try:
             async for chunk in agent_service.stream_chat(agent_input, session_id):
+                # 检查是否是工具调用事件
+                if chunk.startswith("__TOOL_CALL__:"):
+                    tool_data = chunk[len("__TOOL_CALL__:"):]
+                    yield f"event: tool_call\ndata: {tool_data}\n\n"
+                    continue
+
                 # 检查是否是 interrupt 事件
                 if chunk.startswith("__INTERRUPT__:"):
                     # 提取 interrupt 数据并发送为特殊事件

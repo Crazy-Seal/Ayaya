@@ -177,7 +177,7 @@ class MemoryManager:
             # 如果有工具调用，再保存为 AI_Tool_Calling 消息
             if tool_calls:
                 tool_names = [tc.get("name", "未知工具") for tc in tool_calls]
-                tool_content = f"[调用了工具: {', '.join(tool_names)}]"
+                tool_content = f"调用了工具: {', '.join(tool_names)}"
                 await self.chat_history_store.save_chat_message(
                     self.session_id, "AI_Tool_Calling", tool_content
                 )

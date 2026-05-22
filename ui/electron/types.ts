@@ -133,3 +133,18 @@ export type ScreenshotInterruptPayload = {
 export type ChatResult =
   | { response: string; model: string; interrupted?: false }
   | { interrupted: true; interruptData: ScreenshotInterruptPayload };
+
+/**
+ * 工具调用事件载荷
+ */
+export type ToolCallPayload = {
+  tool_name: string;
+};
+
+/**
+ * 工具调用 IPC 事件载荷
+ */
+export type ToolCallEventPayload = {
+  requestId: string;
+  toolName: string;
+};

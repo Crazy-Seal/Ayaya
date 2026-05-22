@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import uuid
 from typing import AsyncIterator, Any, cast, Union
@@ -174,6 +175,17 @@ class MyAgent(BaseAgent):
                         # 返回第一个 interrupt
                         yield interrupts[0]
 
+                # 检查是否包含 chatbot 节点的工具调用
+                if isinstance(chunk_data, dict) and "chatbot" in chunk_data:
+                    chatbot_update = chunk_data["chatbot"]
+                    if isinstance(chatbot_update, dict) and "messages" in chatbot_update:
+                        messages = chatbot_update["messages"]
+                        last_msg = messages[-1]
+                        if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
+                            for tc in last_msg.tool_calls:
+                                tool_name = tc.get("name", "未知工具")
+                                yield f"__TOOL_CALL__:{json.dumps({'tool_name': tool_name}, ensure_ascii=False)}"
+
     def rollback_thread_checkpoints(self, checkpoint_ns: str = "") -> tuple[int, int]:
         """回滚本轮会话中基线之后写入的 checkpoint。"""
         # 回滚细节下沉到 repository，保持 Agent 接口稳定且可替换。
@@ -233,3 +245,14 @@ class MyAgent(BaseAgent):
                     interrupts = chunk_data["__interrupt__"]
                     if interrupts:
                         yield interrupts[0]
+
+                # 检查是否包含 chatbot 节点的工具调用
+                if isinstance(chunk_data, dict) and "chatbot" in chunk_data:
+                    chatbot_update = chunk_data["chatbot"]
+                    if isinstance(chatbot_update, dict) and "messages" in chatbot_update:
+                        messages = chatbot_update["messages"]
+                        last_msg = messages[-1]
+                        if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
+                            for tc in last_msg.tool_calls:
+                                tool_name = tc.get("name", "未知工具")
+                                yield f"__TOOL_CALL__:{json.dumps({'tool_name': tool_name}, ensure_ascii=False)}"

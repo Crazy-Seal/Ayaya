@@ -198,12 +198,42 @@ data: [DONE]
 - 当收到 `data: [DONE]` 时表示本轮回答结束
 - 前端应按顺序拼接 `response` 字段得到完整回复
 
+#### SSE 事件类型
+
+| 事件类型 | 格式 | 说明 |
+|---------|------|------|
+| message（默认） | `data: {"response": "..."}\n\n` | AI 文本响应流 |
+| tool_call | `event: tool_call\ndata: {"tool_name": "..."}\n\n` | Agent 调用工具时推送 |
+| interrupt | `event: interrupt\ndata: {...}\n\n` | 截屏请求（详见第5节） |
+| error | `event: error\ndata: {"detail": "..."}\n\n` | 错误事件 |
+
+#### tool_call 事件
+
+当 Agent 调用工具时，会在工具执行前推送：
+
+```text
+event: tool_call
+data: {"tool_name": "screenshot"}
+```
+
+字段说明：
+- `tool_name`：工具名称，如 `screenshot`、`search_memory`、`plan_and_coding` 等
+
+用途：
+- 前端可显示"调用工具: xxx"的提示
+- 让用户了解 Agent 当前在做什么
+
+#### 错误事件
+
 失败（模型调用异常）可能返回错误事件：
 
 ```text
 event: error
 data: {"detail":"OPENAI_API_KEY is not set. Please configure your API key."}
 ```
+
+---
+
 ## 3.聊天记录查询
 
 ### 图片存储说明
@@ -266,8 +296,35 @@ http://127.0.0.1:8000/images/2026-05-16_14-30-00_a1b2c3d4.png
 - `data` 为聊天记录数组，按时间升序返回
 - 分页语义：从第 `start` 条开始，返回最多 `limit` 条（start从0开始计数）
 - `timestamp` 为服务端转换后的本地时区时间（ISO 8601）
-- `images` 为图片文件名列表（纯文件名，非完整路径），仅 Human 消息可能有值，AI 消息为 `null`
+- `images` 为图片文件名列表（纯文件名，非完整路径），仅 Human 消息可能有值，其他消息为 `null`
 - 当该会话暂无记录或超出范围时，`data` 返回空数组 `[]`
+
+**`role` 字段说明**：
+
+| role 值 | 含义 | content 示例 |
+|---------|------|-------------|
+| `Human` | 用户消息 | `"帮我截个屏"` |
+| `AI` | 普通 AI 消息 | `"我来截个屏"` |
+| `AI_Tool_Calling` | 工具调用消息 | `"调用了工具: screenshot"` |
+
+**完整对话示例**：
+
+```json
+{
+  "data": [
+    {"role": "Human", "content": "帮我截个屏", "timestamp": "2026-03-23T10:00:00+08:00", "images": null},
+    {"role": "AI", "content": "我来截个屏", "timestamp": "2026-03-23T10:00:01+08:00", "images": null},
+    {"role": "AI_Tool_Calling", "content": "调用了工具: screenshot", "timestamp": "2026-03-23T10:00:02+08:00", "images": null},
+    {"role": "AI", "content": "我看到截屏了！你当前正在...", "timestamp": "2026-03-23T10:00:05+08:00", "images": null}
+  ],
+  "msg": "success",
+  "code": 200
+}
+```
+
+**前端使用建议**：
+- `AI_Tool_Calling` 消息可用于显示"正在调用工具"的状态提示
+- 如果只想显示对话内容，可以选择不渲染 `AI_Tool_Calling` 消息
 
 ### GET /chat_history_last_n/{session_id}
 
@@ -289,10 +346,17 @@ http://127.0.0.1:8000/images/2026-05-16_14-30-00_a1b2c3d4.png
       "images": null
     },
     {
-      "role": "AI",
-      "content": "你好，有什么我可以帮你？",
-      "timestamp": "2026-03-23T10:00:02+08:00",
-      "images": null
+      "role": "AI", 
+      "content": "我来截个屏", 
+      "timestamp": "2026-03-23T10:00:01+08:00", "images": null
+    },
+    {
+      "role": "AI_Tool_Calling", 
+      "content": "[调用了工具: screenshot]", "timestamp": "2026-03-23T10:00:02+08:00", "images": null
+    },
+    {
+      "role": "AI", 
+      "content": "我看到截屏了！你当前正在...", "timestamp": "2026-03-23T10:00:05+08:00", "images": null
     }
   ],
   "msg": "success",
@@ -303,9 +367,10 @@ http://127.0.0.1:8000/images/2026-05-16_14-30-00_a1b2c3d4.png
 说明：
 - `data` 为聊天记录数组，返回该会话最后 `n` 条记录，按时间升序排列
 - `timestamp` 为服务端转换后的本地时区时间（ISO 8601）
-- `images` 为图片文件路径列表，仅 Human 消息可能有值，AI 消息为 `null`
+- `images` 为图片文件路径列表，仅 Human 消息可能有值，其他消息为 `null`
 - 当该会话暂无记录时，`data` 返回空数组 `[]`
 - 适用于需要快速获取最近聊天记录的场景，无需分页
+- `role` 字段类型说明见上表（Human / AI / AI_Tool_Calling）
 
 ---
 
@@ -381,7 +446,13 @@ data: {"value": {"type": "screenshot_request", "request_id": "550e8400-e29b-41d4
 #### 返回结果
 
 - `Content-Type`: `text/event-stream`
-- 返回 SSE 流，格式与 `/chat` 完全一致：
+- 返回 SSE 流，格式与 `/chat` 完全一致
+
+**事件类型**：
+- `message`（默认）：AI 文本响应
+- `tool_call`：工具调用通知
+- `interrupt`：后续截屏请求（连续截屏场景）
+- `error`：错误事件
 
 **用户允许截屏时**：
 
