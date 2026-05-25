@@ -144,7 +144,7 @@ class SummaryMemory:
         """获取当前对话上下文
 
         组装规则：
-        1. 前两天有日记则用日记，否则用摘要
+        1. 从今天往前数，取最近的 2 条日记，并生成缺失日期说明
         2. 今日有摘要则用摘要，没有则为空
 
         Args:
@@ -155,15 +155,24 @@ class SummaryMemory:
         """
         parts = []
 
-        # 获取前两天的内容
-        for i in range(2, 0, -1):
-            target_date = today - timedelta(days=i)
-            # 优先用日记
-            content = await self.search(target_date, is_diary=True)
-            if not content:
-                content = await self.search(target_date, is_diary=False)
-            if content:
-                parts.append(f"【{target_date}】\n{content}")
+        # 获取今天之前的最近 2 条日记
+        previous_diaries = await self.store.get_recent_before_date(
+            session_id=self.session_id,
+            before_date=today,
+            n=2,
+            is_diary=True,
+        )
+
+        # 使用 _format_diaries_with_gaps 格式化日记并生成缺失日期说明
+        diary_text, diary_gaps = self._format_diaries_with_gaps(
+            previous_diaries, today
+        )
+
+        # 如果有日记内容，添加到 parts（格式已包含【日期】标题）
+        if previous_diaries:
+            parts.append(diary_text)
+            if diary_gaps.strip():
+                parts.append(diary_gaps.strip())
 
         # 获取今日摘要
         today_content = await self.search(today, is_diary=False)
