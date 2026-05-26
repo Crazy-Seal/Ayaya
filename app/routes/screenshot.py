@@ -3,7 +3,7 @@ import logging
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from app.dependencies import get_agent_service
 from app.services.agent_service import AgentService
@@ -19,6 +19,15 @@ class ScreenshotResponseRequest(BaseModel):
     """用户响应截屏请求的请求体"""
     session_id: str
     approved: bool
+    screenshot_data: str | None = None  # 完整 data URL 格式，如 data:image/png;base64,xxx
+    width: int | None = None            # 截屏宽度（像素）
+    height: int | None = None           # 截屏高度（像素）
+
+    @model_validator(mode='after')
+    def validate_screenshot_data(self) -> 'ScreenshotResponseRequest':
+        if self.approved and not self.screenshot_data:
+            raise ValueError('screenshot_data is required when approved=True')
+        return self
 
 
 @router.post("/respond")
@@ -28,23 +37,26 @@ async def respond_to_screenshot(
 ) -> StreamingResponse:
     """用户响应截屏请求，恢复对话执行。
 
-    用户确认后，Agent 会继续执行截屏工具并返回结果。
+    用户确认后，前端截取屏幕并发送截图数据，Agent 继续执行。
 
     Args:
-        payload: 包含 session_id 和 approved 的请求体
+        payload: 包含 session_id、approved、screenshot_data、width、height 的请求体
 
     Returns:
         SSE 流式响应，格式与 /chat 相同
     """
-    logger.info("[ScreenshotRoute] 收到截屏响应: session_id=%s, approved=%s",
-                payload.session_id, payload.approved)
+    logger.info("[ScreenshotRoute] 收到截屏响应: session_id=%s, approved=%s, has_data=%s",
+                payload.session_id, payload.approved, payload.screenshot_data is not None)
 
     async def event_stream():
         formatter = SSEFormatter()
         try:
             async for event in agent_service.resume_after_screenshot(
                 payload.session_id,
-                payload.approved
+                payload.approved,
+                payload.screenshot_data,
+                payload.width,
+                payload.height
             ):
                 formatted = formatter.format(event)
                 if formatted:

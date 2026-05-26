@@ -21,7 +21,6 @@ from app.agent.utils.image_utils import (
     get_image_task,
     has_image_content,
 )
-from app.agent.utils.llm_utils import ainvoke_with_retry
 from app.agent.utils.messages import normalize_messages_for_model
 from app.agent.utils.text_utils import extract_text, get_last_human_text, split_context
 from app.agent.utils.work_memory import slice_recent_messages_by_human
@@ -57,7 +56,7 @@ class ChatNode:
             system_prompt = f"{system_prompt}\n\n以下文本是你的记忆，其中，[你的历史日记和摘要]是你对前段时间和当前对话的记忆，[相关情景记忆]和[相关语义知识]是系统根据用户输入检索到的，你记忆的更早之前的事情。\n\n{state.memory_text}"
 
         messages = [SystemMessage(content=system_prompt)] + recent_messages
-        response = await ainvoke_with_retry(self.model, messages)
+        response = await self.model.ainvoke(messages)
         return {
             "messages": [response],
             "memory_text": state.memory_text,
@@ -261,17 +260,18 @@ class ScreenshotNode:
                 result_messages.append(updated_tool_msg)
 
                 # 创建特殊 HumanMessage 携带截图
+                # image_data 是完整的 data URL 格式，如 "data:image/png;base64,xxx"
                 screenshot_msg = HumanMessage(
                     content=[
                         {"type": "text", "text": "[系统消息]屏幕截图: "},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}}
+                        {"type": "image_url", "image_url": {"url": image_data}}
                     ],
                     name=SCREENSHOT_MESSAGE_NAME,
                     id=str(uuid.uuid4())
                 )
                 result_messages.append(screenshot_msg)
 
-                logger.info("[ScreenshotNode] 注入截图消息，图片大小: %d bytes", len(image_data))
+                logger.info("[ScreenshotNode] 注入截图消息，数据长度: %d", len(image_data))
                 return {"messages": result_messages}
 
         # 没有截屏成功，直接返回空

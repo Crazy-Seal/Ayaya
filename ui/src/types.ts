@@ -125,6 +125,13 @@ export type ToolCallEventData = {
 };
 
 /**
+ * Agent 错误事件数据
+ */
+export type AgentErrorEventData = {
+  requestId: string;
+};
+
+/**
  * 工具项
  */
 export type ToolItem = {
@@ -209,11 +216,17 @@ export interface DesktopPetApi {
   screenshotRespond?: (
     sessionId: string,
     approved: boolean,
-    requestId?: string
+    requestId?: string,
+    screenshotData?: string,
+    width?: number,
+    height?: number
   ) => Promise<ChatResult>;
+  captureScreen?: () => Promise<{ dataUrl: string; width: number; height: number }>;
   onChatInterrupt?: (callback: (data: ScreenshotInterruptPayload) => void) => () => void;
   // 工具调用事件
   onToolCall?: (callback: (data: ToolCallEventData) => void) => () => void;
+  // Agent 错误事件
+  onChatAgentError?: (callback: (data: AgentErrorEventData) => void) => () => void;
 }
 
 declare global {

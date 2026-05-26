@@ -85,8 +85,14 @@ contextBridge.exposeInMainWorld("desktopPetApi", {
     return () => ipcRenderer.removeListener("desktop-pet:chat-chunk", handler);
   },
   // 截屏审批响应（返回 SSE 流）
-  screenshotRespond: (sessionId, approved, requestId) => {
-    return ipcRenderer.invoke("desktop-pet:screenshot-respond", { sessionId, approved, requestId });
+  screenshotRespond: (sessionId, approved, requestId, screenshotData, width, height) => {
+    return ipcRenderer.invoke("desktop-pet:screenshot-respond", {
+      sessionId, approved, requestId, screenshotData, width, height
+    });
+  },
+  // 截取屏幕
+  captureScreen: () => {
+    return ipcRenderer.invoke("desktop-pet:capture-screen");
   },
   // 监听截屏中断事件
   onChatInterrupt: (listener) => {
@@ -99,5 +105,11 @@ contextBridge.exposeInMainWorld("desktopPetApi", {
     const handler = (_event, payload) => listener(payload);
     ipcRenderer.on("desktop-pet:chat-tool-call", handler);
     return () => ipcRenderer.removeListener("desktop-pet:chat-tool-call", handler);
+  },
+  // 监听 Agent 错误事件
+  onChatAgentError: (listener) => {
+    const handler = (_event, payload) => listener(payload);
+    ipcRenderer.on("desktop-pet:chat-agent-error", handler);
+    return () => ipcRenderer.removeListener("desktop-pet:chat-agent-error", handler);
   }
 });

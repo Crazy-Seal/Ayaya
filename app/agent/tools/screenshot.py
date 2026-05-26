@@ -1,9 +1,7 @@
 # -*- coding: utf-8 -*-
-"""截屏工具 - 使用 interrupt 等待用户确认"""
-import base64
-import io
+"""截屏工具 - 使用 interrupt 等待用户确认，接收前端传来的截图数据"""
+import logging
 import uuid
-from typing import Any
 
 from langchain.tools import tool
 from langgraph.types import interrupt
@@ -11,24 +9,7 @@ from langgraph.types import interrupt
 from app.agent.utils.log import log_tool_call
 
 
-def _require_image_grab_dependency():
-    """Lazy import to avoid hard GUI dependency at module import time."""
-    try:
-        from PIL import ImageGrab  # type: ignore
-    except ImportError as exc:
-        raise RuntimeError("缺少依赖，请安装: pip install pillow") from exc
-    return ImageGrab
-
-
-def capture_screenshot_base64(image_grab_cls: Any | None = None) -> tuple[str, Any]:
-    """Capture the current screen and return base64 data with original image object."""
-    grab_cls = image_grab_cls or _require_image_grab_dependency()
-    screenshot = grab_cls.grab()
-    buffer = io.BytesIO()
-    screenshot.save(buffer, format="JPEG")
-    image_data = base64.b64encode(buffer.getvalue()).decode("utf-8")
-    return image_data, screenshot
-
+logger = logging.getLogger(__name__)
 
 # 截屏成功返回值的前缀
 SCREENSHOT_SUCCESS_PREFIX = "SCREENSHOT_SUCCESS:"
@@ -51,10 +32,17 @@ def screenshot() -> str:
     if not user_response.get("approved"):
         return "截屏请求被用户阻止"
 
-    # 用户允许，执行截屏
-    try:
-        image_data, _ = capture_screenshot_base64()
-        # 返回成功标记 + 图片数据，由 ScreenshotNode 处理
-        return f"{SCREENSHOT_SUCCESS_PREFIX}{image_data}"
-    except Exception as e:
-        return f"截屏失败: {e}"
+    # 获取前端传来的截图数据
+    screenshot_data = user_response.get("screenshot_data")
+    if not screenshot_data:
+        return "截屏失败: 未收到截图数据"
+
+    # 记录尺寸信息
+    width = user_response.get("width")
+    height = user_response.get("height")
+    if width and height:
+        logger.info("[screenshot] 收到截图: %dx%d, 数据长度: %d", width, height, len(screenshot_data))
+
+    # screenshot_data 应为完整的 data URL 格式，如 "data:image/png;base64,xxx"
+    # 直接传递完整数据，保留格式信息
+    return f"{SCREENSHOT_SUCCESS_PREFIX}{screenshot_data}"

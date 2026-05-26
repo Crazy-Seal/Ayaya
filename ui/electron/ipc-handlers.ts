@@ -2,7 +2,7 @@
  * IPC 处理器注册
  */
 
-import { ipcMain, BrowserWindow, dialog, net } from "electron";
+import { ipcMain, BrowserWindow, dialog, net, desktopCapturer } from "electron";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -570,6 +570,15 @@ export const registerIpcHandlers = (): void => {
           // 处理 tool_call 事件
           if (eventName === "tool_call") {
             const toolCallData = parsed as unknown as ToolCallPayload;
+            // 检查是否是特殊错误标记
+            if (toolCallData.tool_name === "__error__") {
+              if (requestId) {
+                event.sender.send("desktop-pet:chat-agent-error", {
+                  requestId,
+                });
+              }
+              return { done: true }; // 错误标记后流会结束
+            }
             if (requestId) {
               event.sender.send("desktop-pet:chat-tool-call", {
                 requestId,
@@ -670,29 +679,60 @@ export const registerIpcHandlers = (): void => {
     "desktop-pet:screenshot-respond",
     async (
       event,
-      payload: { sessionId: string; approved: boolean; requestId?: string }
+      payload: {
+        sessionId: string;
+        approved: boolean;
+        requestId?: string;
+        screenshotData?: string;
+        width?: number;
+        height?: number;
+      }
     ) => {
-      const { sessionId, approved, requestId } = payload;
+      const { sessionId, approved, requestId, screenshotData, width, height } = payload;
+      console.log("[ScreenshotRespond] 收到请求:", {
+        sessionId,
+        approved,
+        requestId,
+        hasScreenshotData: !!screenshotData,
+        screenshotDataLength: screenshotData?.length,
+        width,
+        height,
+      });
+
       const abortController = new AbortController();
       const timeoutTimer = setTimeout(() => {
         abortController.abort();
       }, CHAT_REQUEST_TIMEOUT_MS);
 
       try {
+        // 构建请求体
+        const requestBody: Record<string, unknown> = {
+          session_id: sessionId,
+          approved,
+        };
+        // 如果允许且有截图数据，添加到请求体
+        if (approved && screenshotData) {
+          requestBody.screenshot_data = screenshotData;
+          if (width !== undefined) requestBody.width = width;
+          if (height !== undefined) requestBody.height = height;
+        }
+
+        console.log("[ScreenshotRespond] 发送请求到后端...");
+
         const res = await net.fetch(`${BACKEND_BASE_URL}/screenshot/respond`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({
-            session_id: sessionId,
-            approved,
-          }),
+          body: JSON.stringify(requestBody),
           signal: abortController.signal,
         });
 
+        console.log("[ScreenshotRespond] 后端响应状态:", res.status);
+
         if (!res.ok) {
           const text = await res.text();
+          console.error("[ScreenshotRespond] 后端返回错误:", text);
           throw new Error(text || `请求失败: ${res.status}`);
         }
 
@@ -704,6 +744,7 @@ export const registerIpcHandlers = (): void => {
         const reader = res.body.getReader();
         let streamBuffer = "";
         let aggregatedResponse = "";
+        let eventCount = 0;
 
         type ProcessResult = {
           done: boolean;
@@ -712,6 +753,7 @@ export const registerIpcHandlers = (): void => {
         };
 
         const processEventBlock = (block: string): ProcessResult => {
+          eventCount++;
           const lines = block
             .split("\n")
             .map((line) => line.trim())
@@ -733,7 +775,10 @@ export const registerIpcHandlers = (): void => {
           }
 
           const dataText = dataLines.join("\n");
+          console.log(`[ScreenshotRespond] 事件 #${eventCount}: eventName=${eventName}, data=${dataText.substring(0, 100)}...`);
+
           if (dataText === "[DONE]") {
+            console.log("[ScreenshotRespond] 收到 [DONE] 标记");
             return { done: true };
           }
 
@@ -749,6 +794,15 @@ export const registerIpcHandlers = (): void => {
           // 处理 tool_call 事件
           if (eventName === "tool_call") {
             const toolCallData = parsed as unknown as ToolCallPayload;
+            // 检查是否是特殊错误标记
+            if (toolCallData.tool_name === "__error__") {
+              if (requestId) {
+                event.sender.send("desktop-pet:chat-agent-error", {
+                  requestId,
+                });
+              }
+              return { done: true }; // 错误标记后流会结束
+            }
             if (requestId) {
               event.sender.send("desktop-pet:chat-tool-call", {
                 requestId,
@@ -759,6 +813,7 @@ export const registerIpcHandlers = (): void => {
           }
 
           if (eventName === "error") {
+            console.error("[ScreenshotRespond] 收到错误事件:", parsed.detail);
             throw new Error(parsed.detail || "截屏响应流返回错误事件");
           }
 
@@ -811,8 +866,11 @@ export const registerIpcHandlers = (): void => {
           processEventBlock(remaining);
         }
 
+        console.log("[ScreenshotRespond] 流结束, 总事件数:", eventCount, ", 响应长度:", aggregatedResponse.length);
+
         // 如果被中断，返回中断信息
         if (interrupted && interruptData) {
+          console.log("[ScreenshotRespond] 返回中断状态");
           return {
             interrupted: true,
             interruptData,
@@ -821,11 +879,13 @@ export const registerIpcHandlers = (): void => {
           };
         }
 
+        console.log("[ScreenshotRespond] 返回正常响应");
         return {
           response: aggregatedResponse,
           model: "",
         };
       } catch (error) {
+        console.error("[ScreenshotRespond] 处理失败:", error);
         const errorMessage = error instanceof Error ? error.message : String(error);
         if (error instanceof Error && error.name === "AbortError") {
           throw new Error("Screenshot respond timeout (900s), please try again later");
@@ -836,6 +896,36 @@ export const registerIpcHandlers = (): void => {
       }
     }
   );
+
+  // 截取屏幕
+  ipcMain.handle("desktop-pet:capture-screen", async () => {
+    console.log("[CaptureScreen] 开始截屏...");
+    try {
+      const sources = await desktopCapturer.getSources({
+        types: ["screen"],
+        thumbnailSize: { width: 1920, height: 1080 },
+      });
+
+      if (sources.length === 0) {
+        throw new Error("未找到屏幕");
+      }
+
+      const primaryScreen = sources[0];
+      const size = primaryScreen.thumbnail.getSize();
+      const dataUrl = primaryScreen.thumbnail.toDataURL();
+
+      console.log("[CaptureScreen] 截屏成功, 尺寸:", size.width, "x", size.height, ", 数据长度:", dataUrl.length);
+
+      return {
+        dataUrl,
+        width: size.width,
+        height: size.height,
+      };
+    } catch (error) {
+      console.error("[CaptureScreen] 截屏失败:", error);
+      throw error;
+    }
+  });
 };
 
 /**

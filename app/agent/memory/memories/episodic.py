@@ -12,7 +12,7 @@ from app.agent.memory.base import MemoryItem
 from app.agent.memory.config import MemoryConfig
 from app.agent.memory.store.episodic_chroma_store import EpisodicChromaStore
 from app.agent.memory.store.episodic_sqlite_store import EpisodicSqliteStore
-from app.agent.utils.llm_utils import ainvoke_with_retry
+from app.agent.model_provider import HTTP_TIMEOUT, MAX_RETRIES
 from app.schemas.chat_settings import ChatSettings
 
 logger = logging.getLogger(__name__)
@@ -128,6 +128,8 @@ class EpisodicMemory:
             api_key=SecretStr(chat_settings.openai_api_key),
             base_url=chat_settings.openai_base_url,
             temperature=0.1,
+            timeout=HTTP_TIMEOUT,
+            max_retries=MAX_RETRIES,
         )
 
     # ==================== 核心方法 ====================
@@ -372,7 +374,7 @@ class EpisodicMemory:
         try:
             # 使用扁平化 schema（兼容更多 API 提供商，避免 $defs/$ref）
             structured_llm = self.llm.with_structured_output(EPISODIC_MEMORY_SCHEMA)
-            result: dict = await ainvoke_with_retry(structured_llm, prompt)
+            result: dict = await structured_llm.ainvoke(prompt)
 
             # 使用 Pydantic 验证返回数据
             validated = EpisodicMemoryOutput.model_validate(result)

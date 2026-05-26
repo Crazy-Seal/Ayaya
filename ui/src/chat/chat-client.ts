@@ -118,6 +118,7 @@ export class ChatClient {
     let cursorVisible = true;
     let cursorTimer: ReturnType<typeof setInterval> | null = null;
     let firstChunkReceived = false;
+    let hasPendingToolCallIndicator = false; // 追踪是否有待最终化的工具调用指示器
 
     const renderStreamingBubble = () => {
       const baseText = streamedText || "思考中...";
@@ -160,11 +161,16 @@ export class ChatClient {
         return;
       }
 
-      // 收到第一个 chunk 时隐藏"正在输入"提示，并将工具调用改为完成状态
+      // 收到第一个 chunk 时隐藏"正在输入"提示
       if (!firstChunkReceived) {
         firstChunkReceived = true;
         this.chatHistory.hideTypingIndicator();
+      }
+
+      // 如果有待最终化的工具调用指示器，将其改为完成状态
+      if (hasPendingToolCallIndicator) {
         this.chatHistory.finalizeToolCallIndicator();
+        hasPendingToolCallIndicator = false;
       }
 
       streamedText += chunk;
@@ -189,11 +195,27 @@ export class ChatClient {
           // 重新开始光标动画
           startCursor();
 
-          const respondResult = await window.desktopPetApi.screenshotRespond?.(
-            this.sessionId,
-            approved,
-            requestId
-          );
+          let respondResult;
+
+          if (approved) {
+            // 用户允许，先截取屏幕
+            const screenshot = await window.desktopPetApi.captureScreen?.();
+            respondResult = await window.desktopPetApi.screenshotRespond?.(
+              this.sessionId,
+              true,
+              requestId,
+              screenshot?.dataUrl,
+              screenshot?.width,
+              screenshot?.height
+            );
+          } else {
+            // 用户拒绝
+            respondResult = await window.desktopPetApi.screenshotRespond?.(
+              this.sessionId,
+              false,
+              requestId
+            );
+          }
 
           // 检查是否又有中断（连续截屏）
           if (respondResult?.interrupted) {
@@ -245,7 +267,37 @@ export class ChatClient {
       this.chatHistory.showToolCallMessage(data.toolName);
       // 在 Live2D 右侧显示提示框
       this.toolCallToast.show(data.toolName);
+      // 标记有待最终化的工具调用指示器
+      hasPendingToolCallIndicator = true;
     });
+
+    // 监听 Agent 错误事件
+    const unsubscribeAgentError = window.desktopPetApi.onChatAgentError?.((data) => {
+      if (data.requestId !== requestId) {
+        return;
+      }
+      // 停止光标动画
+      stopCursor();
+      // 在聊天历史中显示错误消息
+      this.chatHistory.showErrorMessage();
+      // 在 Live2D 右侧显示错误提示框
+      this.toolCallToast.showError();
+      // 更新 AI 消息为错误状态
+      this.chatHistory.updateLastAiMessage("出现错误，请重试");
+      this.chatHistory.finalizeStreamingMessage();
+
+      // 清理监听器
+      unsubscribeChatChunk();
+      unsubscribeChatInterrupt?.();
+      unsubscribeToolCall?.();
+      unsubscribeAgentError?.();
+      this.sendBtn.disabled = false;
+      this.input.focus();
+      this.onChatComplete?.();
+    });
+
+    // 标记是否被中断（用于 finally 块判断）
+    let wasInterrupted = false;
 
     try {
       if (!window.desktopPetApi || typeof window.desktopPetApi.chat !== "function") {
@@ -261,6 +313,7 @@ export class ChatClient {
 
       // 检查是否被中断（截屏请求）
       if (result.interrupted) {
+        wasInterrupted = true;
         // 中断事件会通过 onChatInterrupt 处理，这里不做任何事
         return;
       }
@@ -294,7 +347,7 @@ export class ChatClient {
 
       // 只有非中断状态才清理监听器和释放发送按钮
       // 中断状态下，监听器在 onChatInterrupt 回调中清理
-      if (!this.isWaitingForScreenshotApproval) {
+      if (!wasInterrupted) {
         unsubscribeChatChunk();
         this.sendBtn.disabled = false;
         this.input.focus();

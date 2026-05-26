@@ -120,13 +120,19 @@ class AgentService:
     async def resume_after_screenshot(
         self,
         session_id: str,
-        approved: bool
+        approved: bool,
+        screenshot_data: str | None = None,
+        width: int | None = None,
+        height: int | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """用户确认截屏后恢复对话。
 
         Args:
             session_id: 会话 ID
             approved: 用户是否允许截屏
+            screenshot_data: 截图数据（完整 data URL 格式）
+            width: 截图宽度（像素）
+            height: 截图高度（像素）
 
         Yields:
             StreamEvent: 流式事件对象
@@ -138,10 +144,20 @@ class AgentService:
             yield TextChunk(content="[系统]会话已过期")
             return
 
-        logger.info("[AgentService][session=%s] 用户确认截屏: approved=%s", session_id, approved)
+        logger.info("[AgentService][session=%s] 用户确认截屏: approved=%s, has_data=%s",
+                    session_id, approved, screenshot_data is not None)
+
+        # 构建恢复数据
+        resume_data: dict = {"approved": approved}
+        if screenshot_data:
+            resume_data["screenshot_data"] = screenshot_data
+        if width is not None:
+            resume_data["width"] = width
+        if height is not None:
+            resume_data["height"] = height
 
         # 使用 Command(resume=...) 恢复执行
-        command = Command(resume={"approved": approved})
+        command = Command(resume=resume_data)
 
         response_parts: list[str] = []
         chunk_count = 0

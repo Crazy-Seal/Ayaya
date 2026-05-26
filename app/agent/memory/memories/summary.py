@@ -8,9 +8,9 @@ from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
 from app.agent.memory.config import MemoryConfig
+from app.agent.model_provider import HTTP_TIMEOUT, MAX_RETRIES
 from app.agent.memory.store.chat_history_store import ChatHistoryStore
 from app.agent.memory.store.diary_sqlite_store import DiarySqliteStore
-from app.agent.utils.llm_utils import ainvoke_with_retry
 from app.schemas.chat_settings import ChatSettings
 
 logger = logging.getLogger(__name__)
@@ -53,6 +53,8 @@ class SummaryMemory:
             api_key=SecretStr(chat_settings.openai_api_key),
             base_url=chat_settings.openai_base_url,
             temperature=0.2,
+            timeout=HTTP_TIMEOUT,
+            max_retries=MAX_RETRIES,
         )
 
     # ==================== 核心方法 ====================
@@ -251,7 +253,7 @@ class SummaryMemory:
         """
         prompt = await self._build_system_prompt(messages, target_date, "对话摘要")
         try:
-            response = await ainvoke_with_retry(self.llm, prompt)
+            response = await self.llm.ainvoke(prompt)
             summary_content = response.content
             await self.add(target_date, summary_content, is_diary=False)
             logger.info(
@@ -274,7 +276,7 @@ class SummaryMemory:
         """
         prompt = await self._build_system_prompt(messages, target_date, "日记")
         try:
-            response = await ainvoke_with_retry(self.llm, prompt)
+            response = await self.llm.ainvoke(prompt)
             diary_content = response.content
             await self.add(target_date, diary_content, is_diary=True)
             logger.info(

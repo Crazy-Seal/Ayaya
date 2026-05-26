@@ -107,16 +107,33 @@ export class ChatHistoryManager {
   /**
    * 将工具调用提示从"正在调用"改为"调用完成"状态
    * 停止闪烁，改为"调用工具: xxx"
+   * 处理所有 pending 状态的指示器（支持一轮对话中多次工具调用）
    */
   finalizeToolCallIndicator(): void {
-    const pendingIndicator = this.container.querySelector('.typing-indicator[data-tool-call="pending"]');
-    if (pendingIndicator) {
-      const text = pendingIndicator.textContent || "";
+    const pendingIndicators = this.container.querySelectorAll('.typing-indicator[data-tool-call="pending"]');
+    pendingIndicators.forEach((indicator) => {
+      const text = indicator.textContent || "";
       // 从"正在调用工具: xxx" 改为 "调用工具: xxx"
       const toolName = text.replace("正在调用工具: ", "");
-      pendingIndicator.textContent = `调用工具: ${toolName}`;
-      pendingIndicator.setAttribute("data-tool-call", "true");
-    }
+      indicator.textContent = `调用工具: ${toolName}`;
+      indicator.setAttribute("data-tool-call", "true");
+    });
+  }
+
+  /**
+   * 显示错误提示
+   * 显示为"出现错误"，带错误样式
+   */
+  showErrorMessage(): void {
+    // 先隐藏"对方正在输入中"提示
+    this.hideTypingIndicator();
+
+    const indicator = document.createElement("div");
+    indicator.className = "typing-indicator error-indicator";
+    indicator.textContent = "出现错误";
+
+    this.container.appendChild(indicator);
+    this.scrollToBottom();
   }
 
   /**

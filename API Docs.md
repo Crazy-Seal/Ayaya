@@ -382,8 +382,9 @@ http://127.0.0.1:8000/images/2026-05-16_14-30-00_a1b2c3d4.png
 
 1. 监听 `/chat` SSE 流中的 `interrupt` 事件
 2. 显示确认对话框让用户选择"允许"或"拒绝"
-3. 调用 `POST /screenshot/respond` 返回用户决定
-4. 继续处理 SSE 流式响应
+3. 如果允许，前端截取屏幕并获取图片数据
+4. 调用 `POST /screenshot/respond` 发送用户决定和截图数据
+5. 继续处理 SSE 流式响应
 
 ### SSE 事件：interrupt
 
@@ -413,11 +414,12 @@ data: {"value": {"type": "screenshot_request", "request_id": "550e8400-e29b-41d4
 3. 解析 data 中的 JSON
 4. 显示确认对话框，展示 message 内容
 5. 用户点击"允许"或"拒绝"
-6. 调用 POST /screenshot/respond
-7. 继续处理后续 SSE 事件（新建立的 SSE 连接）
+6. 如果允许：前端截取屏幕，转换为 data URL 格式
+7. 调用 POST /screenshot/respond（携带截图数据）
+8. 继续处理后续 SSE 事件（新建立的 SSE 连接）
 ```
 
-**注意**：收到 `interrupt` 事件后，**原 SSE 流会终止**（后端发送 interrupt 后立即 return）。前端需要先让用户确认，然后调用 `/screenshot/respond` 接口，该接口会返回新的 SSE 流。
+**注意**：收到 `interrupt` 事件后，**原 SSE 流会终止**（后端发送 interrupt 后立即 return）。前端需要先让用户确认并截屏，然后调用 `/screenshot/respond` 接口，该接口会返回新的 SSE 流。
 
 ---
 
@@ -429,10 +431,24 @@ data: {"value": {"type": "screenshot_request", "request_id": "550e8400-e29b-41d4
 
 - `payload`（body, json）
 
+**用户允许截屏时：**
+
 ```json
 {
   "session_id": "a9ea0407-6a54-4535-b424-b7cd454d7bcd",
-  "approved": true
+  "approved": true,
+  "screenshot_data": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAA...",
+  "width": 1920,
+  "height": 1080
+}
+```
+
+**用户拒绝截屏时：**
+
+```json
+{
+  "session_id": "a9ea0407-6a54-4535-b424-b7cd454d7bcd",
+  "approved": false
 }
 ```
 
@@ -442,6 +458,9 @@ data: {"value": {"type": "screenshot_request", "request_id": "550e8400-e29b-41d4
 |------|------|------|------|
 | `session_id` | `string` | 是 | 会话ID，需与之前 `/chat` 请求的 session_id 一致 |
 | `approved` | `boolean` | 是 | 用户决定：`true` = 允许截屏，`false` = 拒绝截屏 |
+| `screenshot_data` | `string` | 允许时必填 | 完整的 data URL 格式截图数据，如 `data:image/png;base64,xxx` 或 `data:image/jpeg;base64,xxx` |
+| `width` | `integer` | 否 | 截图宽度（像素） |
+| `height` | `integer` | 否 | 截图高度（像素） |
 
 #### 返回结果
 
@@ -475,6 +494,13 @@ data: [DONE]
 ```
 
 #### 错误响应
+
+**请求参数错误**（允许时未提供 screenshot_data）：
+
+```text
+event: error
+data: {"detail":"screenshot_data is required when approved=True"}
+```
 
 **会话已过期**（会话不存在或已被清理）：
 

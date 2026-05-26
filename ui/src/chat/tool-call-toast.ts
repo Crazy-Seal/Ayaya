@@ -42,6 +42,32 @@ export class ToolCallToastManager {
   }
 
   /**
+   * 显示错误提示
+   */
+  showError(): void {
+    const toast = document.createElement("div");
+    toast.className = "tool-call-toast error-toast";
+    toast.textContent = "出现错误";
+
+    // 添加到容器顶部
+    this.container.appendChild(toast);
+    this.toasts.push(toast);
+
+    // 限制最大数量
+    if (this.toasts.length > ToolCallToastManager.MAX_TOASTS) {
+      const oldestToast = this.toasts.shift();
+      if (oldestToast) {
+        oldestToast.remove();
+      }
+    }
+
+    // 设置淡出定时器
+    setTimeout(() => {
+      this.fadeOut(toast);
+    }, ToolCallToastManager.FADE_OUT_DELAY_MS);
+  }
+
+  /**
    * 淡出并移除提示框
    */
   private fadeOut(toast: HTMLDivElement): void {
