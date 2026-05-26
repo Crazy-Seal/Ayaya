@@ -8,7 +8,6 @@ from langgraph.types import Command, Interrupt
 from app.agent.events import StreamEvent, ToolCallEvent
 from app.agent.my_agent import MyAgent
 from app.agent.interface import BaseAgent
-from app.config.config import get_chat_settings
 from app.crud.chat_history_dao import ChatHistoryDao
 from app.schemas.chat import AgentInput
 from app.schemas.chat_settings import ChatSettings
@@ -24,7 +23,7 @@ class AgentService:
     def __init__(
         self,
         chat_history_dao: ChatHistoryDao,
-        chat_settings_loader: Callable[[str], ChatSettings] = get_chat_settings,
+        chat_settings_loader: Callable[[str], ChatSettings],
         agent_factory: Callable[[ChatSettings], BaseAgent] | None = None,
     ):
         self.chat_history_dao = chat_history_dao

@@ -4,28 +4,24 @@ import yaml
 
 from app.schemas.chat_settings import ChatSettings
 
-APIKEY_FILE = Path(__file__).resolve().parents[2] / "config" / "chat_settings.yaml"
+CONFIG_FILE = Path(__file__).resolve().parents[2] / "config" / "chat_settings.yaml"
 
 
 class ChatSettingsDao:
-    def __init__(self, apikey_file: Path = APIKEY_FILE):
-        self.apikey_file = apikey_file
+    def __init__(self, config_file: Path = CONFIG_FILE):
+        self.config_file = config_file
+        self._cache: dict[str, ChatSettings] = {}
 
-    def _load_apikey_file(self) -> dict:
-        if not self.apikey_file.exists():
-            raise RuntimeError(f"Config file not found: {self.apikey_file}")
+    def _load_chat_settings_file(self) -> dict:
+        if not self.config_file.exists():
+            raise RuntimeError(f"Config file not found: {self.config_file}")
 
-        with self.apikey_file.open("r", encoding="utf-8") as file:
+        with self.config_file.open("r", encoding="utf-8") as file:
             return yaml.safe_load(file)
 
-    def _save_apikey_file(self, data: dict) -> None:
-        with self.apikey_file.open("w", encoding="utf-8") as file:
+    def _save_chat_settings_file(self, data: dict) -> None:
+        with self.config_file.open("w", encoding="utf-8") as file:
             yaml.safe_dump(data, file, allow_unicode=True, sort_keys=False)
-
-    def _clear_caches(self) -> None:
-        from app.config.config import get_chat_settings
-
-        get_chat_settings.cache_clear()
 
     @staticmethod
     def _to_chat_settings(item: dict) -> ChatSettings:
@@ -48,7 +44,7 @@ class ChatSettingsDao:
         )
 
     def add_chat_settings(self, chat_settings: ChatSettings) -> ChatSettings:
-        data = self._load_apikey_file()
+        data = self._load_chat_settings_file()
         chat_models = data["chat_models"]
         session_id = chat_settings.session_id
 
@@ -56,42 +52,45 @@ class ChatSettingsDao:
             raise ValueError(f"session_id already exists: {session_id}")
 
         chat_models.append(chat_settings.model_dump())
-        self._save_apikey_file(data)
-        self._clear_caches()
+        self._save_chat_settings_file(data)
+        self._cache.clear()
         return chat_settings
 
     def get_chat_settings(self, session_id: str) -> ChatSettings:
-        data = self._load_apikey_file()
-        chat_models = data["chat_models"]
+        if session_id in self._cache:
+            return self._cache[session_id]
 
-        for item in chat_models:
+        data = self._load_chat_settings_file()
+        for item in data["chat_models"]:
             if item["session_id"] == session_id:
-                return self._to_chat_settings(item)
+                result = self._to_chat_settings(item)
+                self._cache[session_id] = result
+                return result
 
         raise KeyError(f"session_id not found: {session_id}")
 
     def delete_chat_settings(self, session_id: str) -> None:
-        data = self._load_apikey_file()
+        data = self._load_chat_settings_file()
         chat_models = data["chat_models"]
 
         for index, item in enumerate(chat_models):
             if item["session_id"] == session_id:
                 del chat_models[index]
-                self._save_apikey_file(data)
-                self._clear_caches()
+                self._save_chat_settings_file(data)
+                self._cache.clear()
                 return
 
         raise KeyError(f"session_id not found: {session_id}")
 
     def update_chat_settings(self, session_id: str, chat_settings: ChatSettings) -> ChatSettings:
-        data = self._load_apikey_file()
+        data = self._load_chat_settings_file()
         chat_models = data["chat_models"]
 
         for index, item in enumerate(chat_models):
             if item["session_id"] == session_id:
                 chat_models[index] = chat_settings.model_dump()
-                self._save_apikey_file(data)
-                self._clear_caches()
+                self._save_chat_settings_file(data)
+                self._cache.clear()
                 return chat_settings
 
         raise KeyError(f"session_id not found: {session_id}")
