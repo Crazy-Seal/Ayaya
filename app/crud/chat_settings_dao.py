@@ -23,6 +23,13 @@ class ChatSettingsDao:
         with self.config_file.open("w", encoding="utf-8") as file:
             yaml.safe_dump(data, file, allow_unicode=True, sort_keys=False)
 
+    def _clear_caches(self) -> None:
+        """清除所有相关缓存"""
+        self._cache.clear()
+        # 清除 MemoryManager 工厂缓存
+        from app.agent.memory import get_memory_manager
+        get_memory_manager.cache_clear()
+
     @staticmethod
     def _to_chat_settings(item: dict) -> ChatSettings:
         return ChatSettings(
@@ -53,7 +60,7 @@ class ChatSettingsDao:
 
         chat_models.append(chat_settings.model_dump())
         self._save_chat_settings_file(data)
-        self._cache.clear()
+        self._clear_caches()
         return chat_settings
 
     def get_chat_settings(self, session_id: str) -> ChatSettings:
@@ -77,7 +84,7 @@ class ChatSettingsDao:
             if item["session_id"] == session_id:
                 del chat_models[index]
                 self._save_chat_settings_file(data)
-                self._cache.clear()
+                self._clear_caches()
                 return
 
         raise KeyError(f"session_id not found: {session_id}")
@@ -90,7 +97,7 @@ class ChatSettingsDao:
             if item["session_id"] == session_id:
                 chat_models[index] = chat_settings.model_dump()
                 self._save_chat_settings_file(data)
-                self._cache.clear()
+                self._clear_caches()
                 return chat_settings
 
         raise KeyError(f"session_id not found: {session_id}")

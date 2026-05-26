@@ -3,9 +3,7 @@ from datetime import date
 from langchain.tools import tool
 from langgraph.prebuilt import ToolRuntime
 
-from app.agent.memory.config import MemoryConfig
-from app.agent.memory.manager import MemoryManager
-from app.crud.chat_settings_dao import ChatSettingsDao
+from app.agent.memory import get_memory_manager
 from app.agent.utils.log import log_tool_call
 
 
@@ -25,23 +23,15 @@ async def search_diary(
     try:
         state = runtime.state
         session_id = state.get("session_id") if isinstance(state, dict) else getattr(state, "session_id", None)
+
         if session_id is None:
             return "错误: 缺少会话id信息，无法查找日记。"
 
-        # 解析日期
+        memory_manager = get_memory_manager(session_id)
+
         start_date = date.fromisoformat(start)
         end_date = date.fromisoformat(end)
 
-        # 初始化记忆管理器
-        config = MemoryConfig.from_env()
-        chat_settings = ChatSettingsDao().get_chat_settings(session_id)
-        memory_manager = MemoryManager(
-            session_id=session_id,
-            config=config,
-            chat_settings=chat_settings,
-        )
-
-        # 搜索日记
         return await memory_manager.search_diary(start_date, end_date)
 
     except ValueError as e:

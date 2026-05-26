@@ -38,7 +38,6 @@ class ChatSettings(BaseModel):
                      self.openai_api_key,
                      self.openai_base_url,
                      self.temperature,
-                     # 不管system_prompt内容，只要配置和工具列表相同就认为是同一个模型配置（因为系统提示词经常调整）
-                     # self.system_prompt,
+                     self.system_prompt,
                      tuple(self.tools_list),
                      tuple(self.memory_plugins or [])))

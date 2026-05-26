@@ -1,9 +1,7 @@
 from langchain.tools import tool
 from langgraph.prebuilt import ToolRuntime
 
-from app.agent.memory.config import MemoryConfig
-from app.agent.memory.manager import MemoryManager
-from app.crud.chat_settings_dao import ChatSettingsDao
+from app.agent.memory import get_memory_manager
 from app.agent.utils.log import log_tool_call
 
 
@@ -21,21 +19,13 @@ async def search_memory(
     try:
         state = runtime.state
         session_id = state.get("session_id") if isinstance(state, dict) else getattr(state, "session_id", None)
+
         if not query or not query.strip():
             return "错误: query不能为空。"
         if session_id is None:
             return "错误: 缺少会话id信息，无法定位长期记忆。"
 
-        # 初始化新记忆管理器
-        config = MemoryConfig.from_env()
-        chat_settings = ChatSettingsDao().get_chat_settings(session_id)
-        memory_manager = MemoryManager(
-            session_id=session_id,
-            config=config,
-            chat_settings=chat_settings,
-        )
-
-        # 使用新系统搜索记忆
+        memory_manager = get_memory_manager(session_id)
         result = await memory_manager.search(
             query=query.strip(),
             memory_type="all",

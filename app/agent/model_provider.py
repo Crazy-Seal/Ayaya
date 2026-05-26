@@ -12,7 +12,7 @@ HTTP_TIMEOUT = 60
 MAX_RETRIES = 3
 
 
-@lru_cache
+@lru_cache(maxsize=1)
 def get_model(chat_settings: ChatSettings) -> ChatOpenAI:
     """按会话配置创建并缓存主对话模型实例。"""
     # 模型构建集中在 provider，避免在多个模块重复初始化参数。

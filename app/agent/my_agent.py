@@ -11,8 +11,7 @@ from app.agent.checkpoint_repository import CheckpointRepository
 from app.agent.events import StreamEvent, ToolCallEvent
 from app.agent.graph_builder import AgentGraphBuilder
 from app.agent.interface import BaseAgent
-from app.agent.memory.config import MemoryConfig
-from app.agent.memory.manager import MemoryManager
+from app.agent.memory import get_memory_manager
 from app.agent.model_provider import get_model
 from app.agent.tools import get_tools
 from app.agent.utils.image_description import generate_multiple_image_descriptions
@@ -47,11 +46,8 @@ class MyAgent(BaseAgent):
         }
 
         self.checkpoint_repo = CheckpointRepository()
-        self.memory_manager = MemoryManager(
-            session_id=chat_settings.session_id,
-            config=MemoryConfig.from_env(),
-            chat_settings=chat_settings,
-        )
+        # 使用工厂函数获取 MemoryManager（带缓存）
+        self.memory_manager = get_memory_manager(chat_settings.session_id)
 
         # 图构建由独立 builder 负责，MyAgent 只做装配。
         self.graph_builder = AgentGraphBuilder(

@@ -2,6 +2,7 @@
 import asyncio
 import logging
 from datetime import date, datetime, timedelta
+from functools import lru_cache
 from typing import Any
 
 from langchain_core.messages import AnyMessage
@@ -364,3 +365,23 @@ class MemoryManager:
                 continue
             lines.append(f"{role}: {content}")
         return "\n".join(lines)
+
+
+# ==================== 工厂函数 ====================
+
+@lru_cache(maxsize=32)
+def get_memory_manager(session_id: str) -> MemoryManager:
+    """获取或创建 MemoryManager 实例（带缓存）
+
+    同一个 session_id 会返回同一个 MemoryManager 实例，
+    避免重复初始化。
+
+    Args:
+        session_id: 会话 ID
+
+    Returns:
+        MemoryManager 实例
+    """
+    config = MemoryConfig.from_env()
+    chat_settings = ChatSettingsDao().get_chat_settings(session_id)
+    return MemoryManager(session_id, config, chat_settings)
