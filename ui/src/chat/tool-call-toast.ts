@@ -44,10 +44,10 @@ export class ToolCallToastManager {
   /**
    * 显示错误提示
    */
-  showError(): void {
+  showError(message?: string): void {
     const toast = document.createElement("div");
     toast.className = "tool-call-toast error-toast";
-    toast.textContent = "出现错误";
+    toast.textContent = message || "出现错误";
 
     // 添加到容器顶部
     this.container.appendChild(toast);

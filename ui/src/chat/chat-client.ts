@@ -147,12 +147,8 @@ export class ChatClient {
       renderStreamingBubble();
     }, 380);
 
-    // 先添加一条空的 AI 消息占位，用于流式更新
-    this.chatHistory.addMessage({
-      role: "ai",
-      content: "思考中...",
-      timestamp: new Date().toISOString(),
-    });
+    // 启动流式响应状态
+    this.chatHistory.startStreaming();
 
     renderStreamingBubble();
 
@@ -298,13 +294,17 @@ export class ChatClient {
       }
       // 停止光标动画
       stopCursor();
-      // 在聊天历史中显示错误消息
-      this.chatHistory.showErrorMessage();
+      // 隐藏正在输入提示
+      this.chatHistory.hideTypingIndicator();
+      // 停止流式状态
+      this.chatHistory.stopStreaming();
+      // 清空气泡
+      this.bubble.setText("");
+      // 在聊天历史中显示错误消息（灰色小框）
+      const errorMsg = data.errorMessage ? `出现错误: ${data.errorMessage}` : "出现错误";
+      this.chatHistory.showErrorMessage(errorMsg);
       // 在 Live2D 右侧显示错误提示框
-      this.toolCallToast.showError();
-      // 更新 AI 消息为错误状态
-      this.chatHistory.updateLastAiMessage("出现错误，请重试");
-      this.chatHistory.finalizeStreamingMessage();
+      this.toolCallToast.showError(errorMsg);
 
       // 清理监听器
       unsubscribeChatChunk();

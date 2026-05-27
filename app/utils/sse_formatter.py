@@ -26,7 +26,10 @@ class SSEFormatter:
             SSE 格式字符串，如果事件不需要输出则返回 None
         """
         if isinstance(event, ToolCallEvent):
-            data = json.dumps({"tool_name": event.tool_name}, ensure_ascii=False)
+            payload = {"tool_name": event.tool_name}
+            if event.error_message:
+                payload["error_message"] = event.error_message
+            data = json.dumps(payload, ensure_ascii=False)
             return f"event: tool_call\ndata: {data}\n\n"
 
         if isinstance(event, Interrupt):

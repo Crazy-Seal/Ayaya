@@ -139,6 +139,7 @@ export type ChatResult =
  */
 export type ToolCallPayload = {
   tool_name: string;
+  error_message?: string;
 };
 
 /**

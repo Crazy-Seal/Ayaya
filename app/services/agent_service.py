@@ -101,7 +101,7 @@ class AgentService:
         except Exception as e:
             logger.exception("[AgentService][session=%s] graph运行中出现错误: %s，尝试回滚checkpoints", session_id, e)
             self._rollback_checkpoints(session_id, agent)
-            yield ToolCallEvent(tool_name="__error__")  # 用特殊事件标记错误
+            yield ToolCallEvent(tool_name="__error__", error_message=str(e))  # 用特殊事件标记错误
             return
 
         ai_message = "".join(response_parts)

@@ -47,6 +47,7 @@ export class ChatHistoryManager {
   private container: HTMLDivElement;
   private messages: ChatHistoryItem[] = [];
   private isStreaming = false;
+  private streamingContent = "";
   private outputSentenceCount = 0;
   private typingIndicator: HTMLDivElement | null = null;
   private toolCallIndicator: HTMLDivElement | null = null;
@@ -122,15 +123,15 @@ export class ChatHistoryManager {
 
   /**
    * 显示错误提示
-   * 显示为"出现错误"，带错误样式
+   * 显示为"出现错误"或具体错误信息，带错误样式
    */
-  showErrorMessage(): void {
+  showErrorMessage(message?: string): void {
     // 先隐藏"对方正在输入中"提示
     this.hideTypingIndicator();
 
     const indicator = document.createElement("div");
     indicator.className = "typing-indicator error-indicator";
-    indicator.textContent = "出现错误";
+    indicator.textContent = message || "出现错误";
 
     this.container.appendChild(indicator);
     this.scrollToBottom();
@@ -175,47 +176,51 @@ export class ChatHistoryManager {
    */
   addMessage(message: ChatHistoryItem): void {
     this.messages.push(message);
-    const role = message.role.toLowerCase();
-    const isAi = role === "ai" || role === "assistant";
-
-    if (isAi) {
-      // AI 消息开始流式响应
-      this.isStreaming = true;
-      this.outputSentenceCount = 0;
-      this.sentenceQueue = [];
-      this.startOutputTimer();
-    } else {
-      // 人类消息直接分割渲染
-      this.renderMessage(message);
-    }
+    // 所有消息直接渲染
+    this.renderMessage(message);
     this.scrollToBottom();
+  }
+
+  /**
+   * 启动流式响应状态
+   */
+  startStreaming(): void {
+    this.streamingContent = "";
+    this.isStreaming = true;
+    this.outputSentenceCount = 0;
+    this.sentenceQueue = [];
+    this.startOutputTimer();
+  }
+
+  /**
+   * 停止流式响应状态
+   */
+  stopStreaming(): void {
+    this.isStreaming = false;
+    this.stopOutputTimer();
+    this.sentenceQueue = [];
+    this.outputSentenceCount = 0;
+    this.streamingContent = "";
   }
 
   /**
    * 更新最后一条AI消息（流式响应）
    */
   updateLastAiMessage(content: string): void {
-    if (this.messages.length === 0) {
-      return;
-    }
-
-    const last = this.messages[this.messages.length - 1];
-    const role = last.role.toLowerCase();
-    if (role !== "ai" && role !== "assistant") {
-      return;
-    }
-
-    last.content = content;
+    this.streamingContent = content;
 
     if (!this.isStreaming) {
-      this.render();
+      // 非流式模式，直接添加消息
+      this.addMessage({
+        role: "ai",
+        content,
+        timestamp: new Date().toISOString(),
+      });
       return;
     }
 
-    // 提取完整句子
-    const { complete, remaining } = extractCompleteSentences(content);
-
-    // 将新增的完整句子放入队列
+    // 提取完整句子放入队列
+    const { complete } = extractCompleteSentences(content);
     for (let i = this.outputSentenceCount; i < complete.length; i++) {
       const sentence = complete[i];
       if (sentence) {
@@ -235,26 +240,28 @@ export class ChatHistoryManager {
 
     this.isStreaming = false;
 
-    // 处理剩余内容：如果有未输出的内容，直接作为最后一个气泡
-    const last = this.messages[this.messages.length - 1];
-    if (last && last.content) {
-      // 提取所有完整句子
-      const { complete, remaining } = extractCompleteSentences(last.content);
-
-      // 将剩余的完整句子放入队列
-      for (let i = this.outputSentenceCount; i < complete.length; i++) {
-        const sentence = complete[i];
-        if (sentence) {
-          this.sentenceQueue.push(sentence);
-        }
-      }
-
-      // 如果有不完整的剩余内容，也作为一个气泡
-      if (remaining.trim().length > 0) {
-        this.sentenceQueue.push(remaining.trim());
+    // 处理剩余内容
+    const { complete, remaining } = extractCompleteSentences(this.streamingContent);
+    for (let i = this.outputSentenceCount; i < complete.length; i++) {
+      const sentence = complete[i];
+      if (sentence) {
+        this.sentenceQueue.push(sentence);
       }
     }
+    if (remaining.trim().length > 0) {
+      this.sentenceQueue.push(remaining.trim());
+    }
 
+    // 存入 messages 数组（用于历史记录和重新渲染）
+    if (this.streamingContent) {
+      this.messages.push({
+        role: "ai",
+        content: this.streamingContent,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    this.streamingContent = "";
     this.outputSentenceCount = 0;
   }
 
