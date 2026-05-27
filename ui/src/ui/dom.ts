@@ -10,7 +10,7 @@ export interface MainUiElements {
   bubble: HTMLDivElement;
   chatHistoryList: HTMLDivElement;
   form: HTMLFormElement;
-  input: HTMLInputElement;
+  input: HTMLTextAreaElement;
   sendBtn: HTMLButtonElement;
   settingsBtn: HTMLButtonElement;
   imagePreviewContainer: HTMLDivElement;
@@ -29,7 +29,7 @@ export const getMainUiElements = (): MainUiElements => {
   const bubble = document.querySelector<HTMLDivElement>("#bubble");
   const chatHistoryList = document.querySelector<HTMLDivElement>("#chat-history-list");
   const form = document.querySelector<HTMLFormElement>("#chat-form");
-  const input = document.querySelector<HTMLInputElement>("#chat-input");
+  const input = document.querySelector<HTMLTextAreaElement>("#chat-input");
   const sendBtn = document.querySelector<HTMLButtonElement>("#send-btn");
   const settingsBtn = document.querySelector<HTMLButtonElement>("#settings-btn");
   const imagePreviewContainer = document.querySelector<HTMLDivElement>("#image-preview-container");

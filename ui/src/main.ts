@@ -83,13 +83,26 @@ class MainApp {
       window.desktopPetApi.openSettingsWindow();
     });
 
+    // 输入框自动调整高度
+    this.elements.input.addEventListener("input", () => {
+      this.autoResizeInput();
+    });
+
+    // 输入框键盘事件：Enter 发送，Shift+Enter 换行
+    this.elements.input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        this.elements.form.requestSubmit();
+      }
+    });
+
     // 滚轮缩放
     window.addEventListener(
       "wheel",
       (event) => {
         const hoveredElement = document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null;
-        // 如果在聊天历史列表上，不拦截事件，让它正常滚动
-        if (hoveredElement?.closest("#chat-history-list")) {
+        // 如果在聊天历史列表或输入框上，不拦截事件，让它正常滚动
+        if (hoveredElement?.closest("#chat-history-list, #chat-input")) {
           return;
         }
 
@@ -319,6 +332,23 @@ class MainApp {
   }
 
   /**
+   * 自动调整输入框高度
+   */
+  private autoResizeInput(): void {
+    const input = this.elements.input;
+    // 如果没有内容，重置为默认高度
+    if (!input.value) {
+      input.style.height = "44px";
+      return;
+    }
+    // 先重置高度以获取正确的 scrollHeight
+    input.style.height = "auto";
+    // 设置新高度，限制在 44px 和 max-height 之间
+    const newHeight = Math.min(input.scrollHeight, 120);
+    input.style.height = `${newHeight}px`;
+  }
+
+  /**
    * 更新图片预览
    */
   private updateImagePreview(): void {
@@ -355,6 +385,47 @@ class MainApp {
     }
   }
 }
+
+/**
+ * 截屏时需要隐藏的元素选择器
+ */
+const HIDE_ELEMENTS_ON_SCREENSHOT = [
+  "#live2d-stage",
+  "#chat-form",
+  "#bubble",
+  "#chat-history-list",
+  "#tool-call-toasts",
+  "#image-preview-container",
+];
+
+/**
+ * 被隐藏的元素列表（用于恢复）
+ */
+let hiddenElementsByScreenshot: HTMLElement[] = [];
+
+/**
+ * 隐藏界面元素（截屏前调用）
+ */
+window.hideElementsForScreenshot = () => {
+  hiddenElementsByScreenshot = [];
+  for (const selector of HIDE_ELEMENTS_ON_SCREENSHOT) {
+    const el = document.querySelector<HTMLElement>(selector);
+    if (el && !el.hidden) {
+      el.hidden = true;
+      hiddenElementsByScreenshot.push(el);
+    }
+  }
+};
+
+/**
+ * 恢复界面元素（截屏后调用）
+ */
+window.restoreElementsAfterScreenshot = () => {
+  for (const el of hiddenElementsByScreenshot) {
+    el.hidden = false;
+  }
+  hiddenElementsByScreenshot = [];
+};
 
 // 启动应用
 void new MainApp().init();

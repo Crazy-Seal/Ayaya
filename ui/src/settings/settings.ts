@@ -8,6 +8,7 @@ import { ConfirmDialog } from "./components/confirm-dialog.js";
 import { ModelPage } from "./pages/model-page.js";
 import { LlmPage } from "./pages/llm-page.js";
 import { ToolsPage } from "./pages/tools-page.js";
+import { MultimodalPage } from "./pages/multimodal-page.js";
 import type { ChatSettingsState } from "./types.js";
 
 /**
@@ -21,6 +22,7 @@ class SettingsApp {
   private modelPage: ModelPage;
   private llmPage: LlmPage;
   private toolsPage: ToolsPage;
+  private multimodalPage: MultimodalPage;
   private confirmDialog: ConfirmDialog;
 
   private currentPage = "model";
@@ -78,6 +80,11 @@ class SettingsApp {
       this.getElement("#tools-table-body"),
       this.getElement("#tools-empty"),
       this.getElement("#tools-confirm-btn")
+    );
+
+    // 初始化多模态配置页面
+    this.multimodalPage = new MultimodalPage(
+      this.getElement("#checkbox-hide-on-screenshot")
     );
 
     this.setupEventListeners();
@@ -167,6 +174,11 @@ class SettingsApp {
 
     if (page === "tools") {
       this.toolsPage.render(this.chatSettingsState, forceUpdate);
+      return;
+    }
+
+    if (page === "multimodal") {
+      void this.multimodalPage.render();
     }
   }
 
@@ -197,6 +209,7 @@ class SettingsApp {
       this.toolsPage.refreshTools(),
       this.modelPage.refreshModelConfig(),
       this.initChatSettings(),
+      this.multimodalPage.render(),
     ]);
 
     this.applyPageEnterRender(this.currentPage);

@@ -158,6 +158,13 @@ export type ApiResponse<T> = {
 };
 
 /**
+ * 前端设置
+ */
+export type FrontendSettings = {
+  hide_on_screenshot: boolean;
+};
+
+/**
  * 桌宠 API 接口
  */
 export interface DesktopPetApi {
@@ -227,10 +234,15 @@ export interface DesktopPetApi {
   onToolCall?: (callback: (data: ToolCallEventData) => void) => () => void;
   // Agent 错误事件
   onChatAgentError?: (callback: (data: AgentErrorEventData) => void) => () => void;
+  // 前端设置
+  getFrontendSettings: () => Promise<FrontendSettings>;
+  updateFrontendSettings: (settings: Partial<FrontendSettings>) => Promise<FrontendSettings>;
 }
 
 declare global {
   interface Window {
     desktopPetApi: DesktopPetApi;
+    hideElementsForScreenshot: () => void;
+    restoreElementsAfterScreenshot: () => void;
   }
 }

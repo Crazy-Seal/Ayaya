@@ -870,3 +870,30 @@ textarea:focus-visible {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--color-text-muted);
 }
+
+/* ==================== Multimodal Panel ==================== */
+.multimodal-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xl);
+  padding: var(--spacing-lg);
+}
+
+.multimodal-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+}
+
+.multimodal-section-title {
+  font-size: 15px;
+  font-weight: 600;
+  font-family: "Fredoka", "Microsoft YaHei", sans-serif;
+  color: var(--color-text-primary);
+}
+
+.multimodal-hint {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  margin-top: var(--spacing-xs);
+}

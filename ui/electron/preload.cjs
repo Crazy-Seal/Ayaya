@@ -111,5 +111,13 @@ contextBridge.exposeInMainWorld("desktopPetApi", {
     const handler = (_event, payload) => listener(payload);
     ipcRenderer.on("desktop-pet:chat-agent-error", handler);
     return () => ipcRenderer.removeListener("desktop-pet:chat-agent-error", handler);
+  },
+  // 获取前端设置
+  getFrontendSettings: () => {
+    return ipcRenderer.invoke("desktop-pet:get-frontend-settings");
+  },
+  // 更新前端设置
+  updateFrontendSettings: (settings) => {
+    return ipcRenderer.invoke("desktop-pet:update-frontend-settings", settings);
   }
 });

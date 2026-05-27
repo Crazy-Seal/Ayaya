@@ -135,7 +135,18 @@
             </div>
           </div>
           <div class="settings-page" data-page="mcp"><div class="page-placeholder">功能开发中</div></div>
-          <div class="settings-page" data-page="multimodal"><div class="page-placeholder">功能开发中</div></div>
+          <div class="settings-page" data-page="multimodal">
+            <div class="multimodal-panel">
+              <div class="multimodal-section">
+                <div class="multimodal-section-title">截图设置</div>
+                <label class="checkbox-row" for="checkbox-hide-on-screenshot">
+                  <span>截屏时隐藏界面</span>
+                  <input id="checkbox-hide-on-screenshot" type="checkbox" checked />
+                </label>
+                <div class="multimodal-hint">开启后，截屏时会暂时隐藏 Live2D 模型、对话框和聊天界面</div>
+              </div>
+            </div>
+          </div>
         </section>
       </div>
       <div id="delete-confirm-dialog" class="confirm-overlay" hidden aria-hidden="true">

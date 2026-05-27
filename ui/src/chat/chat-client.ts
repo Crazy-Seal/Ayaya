@@ -198,8 +198,23 @@ export class ChatClient {
           let respondResult;
 
           if (approved) {
-            // 用户允许，先截取屏幕
+            // 获取前端设置，判断是否需要隐藏界面
+            const frontendSettings = await window.desktopPetApi.getFrontendSettings();
+            const hideOnScreenshot = frontendSettings.hide_on_screenshot;
+
+            // 用户允许，如果配置为隐藏则先隐藏界面
+            if (hideOnScreenshot) {
+              window.hideElementsForScreenshot?.();
+            }
+
+            // 截取屏幕
             const screenshot = await window.desktopPetApi.captureScreen?.();
+
+            // 截屏完成后恢复界面
+            if (hideOnScreenshot) {
+              window.restoreElementsAfterScreenshot?.();
+            }
+
             respondResult = await window.desktopPetApi.screenshotRespond?.(
               this.sessionId,
               true,
@@ -209,7 +224,7 @@ export class ChatClient {
               screenshot?.height
             );
           } else {
-            // 用户拒绝
+            // 用户拒绝，直接响应
             respondResult = await window.desktopPetApi.screenshotRespond?.(
               this.sessionId,
               false,
@@ -230,6 +245,8 @@ export class ChatClient {
           this.chatHistory.updateLastAiMessage(finalResponse);
           this.chatHistory.finalizeStreamingMessage();
           this.input.value = "";
+          // 重置输入框高度
+          this.input.style.height = "auto";
 
           // 清理所有监听器
           unsubscribeChatChunk();
@@ -239,6 +256,9 @@ export class ChatClient {
           this.input.focus();
           this.onChatComplete?.();
         } catch (error) {
+          // 出错时确保恢复界面
+          window.restoreElementsAfterScreenshot?.();
+
           stopCursor();
           const errorMessage = `截屏响应失败: ${String(error)}`;
           this.bubble.setText(errorMessage);
@@ -326,6 +346,8 @@ export class ChatClient {
       // 完成流式响应，分割句子渲染
       this.chatHistory.finalizeStreamingMessage();
       this.input.value = "";
+      // 重置输入框高度
+      this.input.style.height = "auto";
 
       // 清理监听器
       unsubscribeChatInterrupt?.();

@@ -58,6 +58,13 @@ export type ToolItem = {
 };
 
 /**
+ * 前端设置
+ */
+export type FrontendSettings = {
+  hide_on_screenshot: boolean;
+};
+
+/**
  * 模型变换数据
  */
 export type ModelTransformData = {
@@ -99,6 +106,8 @@ export interface DesktopPetApi {
   closeCurrentWindow: () => void;
   onModelChanged?: (callback: (model: unknown) => void) => () => void;
   onModelTransformChanged?: (callback: (data: ModelTransformData) => void) => () => void;
+  getFrontendSettings: () => Promise<FrontendSettings>;
+  updateFrontendSettings: (settings: Partial<FrontendSettings>) => Promise<FrontendSettings>;
 }
 
 declare global {

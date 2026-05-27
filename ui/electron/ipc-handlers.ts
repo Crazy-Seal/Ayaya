@@ -6,7 +6,7 @@ import { ipcMain, BrowserWindow, dialog, net, desktopCapturer } from "electron";
 import fs from "node:fs";
 import path from "node:path";
 
-import { BACKEND_BASE_URL, CHAT_REQUEST_TIMEOUT_MS, TOOLS_REGISTRY_FILE } from "./config.js";
+import { BACKEND_BASE_URL, CHAT_REQUEST_TIMEOUT_MS, TOOLS_REGISTRY_FILE, FRONTEND_SETTINGS_PATH } from "./config.js";
 import type {
   ChatSettingsData,
   ModelTransformPayload,
@@ -16,6 +16,7 @@ import type {
   ChatChunkPayload,
   ScreenshotInterruptPayload,
   ToolCallPayload,
+  FrontendSettings,
 } from "./types.js";
 import {
   loadModelConfig,
@@ -925,6 +926,44 @@ export const registerIpcHandlers = (): void => {
       console.error("[CaptureScreen] 截屏失败:", error);
       throw error;
     }
+  });
+
+  // 获取前端设置
+  ipcMain.handle("desktop-pet:get-frontend-settings", () => {
+    const defaultSettings: FrontendSettings = {
+      hide_on_screenshot: true,
+    };
+
+    try {
+      if (!fs.existsSync(FRONTEND_SETTINGS_PATH)) {
+        return defaultSettings;
+      }
+      const content = fs.readFileSync(FRONTEND_SETTINGS_PATH, "utf-8");
+      const settings = JSON.parse(content) as Partial<FrontendSettings>;
+      return { ...defaultSettings, ...settings };
+    } catch {
+      return defaultSettings;
+    }
+  });
+
+  // 更新前端设置
+  ipcMain.handle("desktop-pet:update-frontend-settings", (_event, settings: Partial<FrontendSettings>) => {
+    let current: FrontendSettings;
+    try {
+      if (fs.existsSync(FRONTEND_SETTINGS_PATH)) {
+        const content = fs.readFileSync(FRONTEND_SETTINGS_PATH, "utf-8");
+        current = JSON.parse(content) as FrontendSettings;
+      } else {
+        current = { hide_on_screenshot: true };
+      }
+    } catch {
+      current = { hide_on_screenshot: true };
+    }
+
+    const updated = { ...current, ...settings };
+    fs.mkdirSync(path.dirname(FRONTEND_SETTINGS_PATH), { recursive: true });
+    fs.writeFileSync(FRONTEND_SETTINGS_PATH, JSON.stringify(updated, null, 2), "utf-8");
+    return updated;
   });
 };
 

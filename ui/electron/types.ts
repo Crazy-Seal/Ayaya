@@ -148,3 +148,10 @@ export type ToolCallEventPayload = {
   requestId: string;
   toolName: string;
 };
+
+/**
+ * 前端设置
+ */
+export type FrontendSettings = {
+  hide_on_screenshot: boolean;
+};
