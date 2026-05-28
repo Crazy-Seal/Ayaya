@@ -11,6 +11,7 @@ from app.routes.agent import router as agent_router
 from app.routes.chat_settings import router as chat_settings_router
 from app.routes.chat_history import router as memory_router
 from app.routes.screenshot import router as screenshot_router
+from app.routes.tools import router as tools_router
 
 # 控制台日志基础配置：让 Agent 的收发日志在本地启动时可见
 logging.basicConfig(
@@ -25,6 +26,7 @@ app.include_router(agent_router)
 app.include_router(chat_settings_router)
 app.include_router(memory_router)
 app.include_router(screenshot_router)
+app.include_router(tools_router)
 
 # 静态文件服务：用于访问保存的图片
 SCREENSHOT_DIR = os.path.join("memory", "screenshot")

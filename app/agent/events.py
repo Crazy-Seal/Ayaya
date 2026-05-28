@@ -14,7 +14,6 @@ from langgraph.types import Interrupt
 class ToolCallEvent:
     """工具调用事件"""
     tool_name: str
-    error_message: str | None = None
 
 
 @dataclass

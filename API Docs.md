@@ -225,12 +225,19 @@ data: {"tool_name": "screenshot"}
 
 #### 错误事件
 
-失败（模型调用异常）可能返回错误事件：
+当发生错误时，返回 SSE error 事件：
 
 ```text
 event: error
-data: {"detail":"OPENAI_API_KEY is not set. Please configure your API key."}
+data: {"detail":"错误信息"}
 ```
+
+**常见错误场景**：
+
+| 错误信息 | 说明 |
+|---------|------|
+| `Agent 执行出错: ...` | Agent 运行过程中发生异常 |
+| `触发 API 内容过滤` | LLM API 返回内容过滤标记 |
 
 ---
 
@@ -322,10 +329,6 @@ http://127.0.0.1:8000/images/2026-05-16_14-30-00_a1b2c3d4.png
 }
 ```
 
-**前端使用建议**：
-- `AI_Tool_Calling` 消息可用于显示"正在调用工具"的状态提示
-- 如果只想显示对话内容，可以选择不渲染 `AI_Tool_Calling` 消息
-
 ### GET /chat_history_last_n/{session_id}
 
 #### 接收参数：
@@ -352,7 +355,8 @@ http://127.0.0.1:8000/images/2026-05-16_14-30-00_a1b2c3d4.png
     },
     {
       "role": "AI_Tool_Calling", 
-      "content": "[调用了工具: screenshot]", "timestamp": "2026-03-23T10:00:02+08:00", "images": null
+      "content": "调用了工具: screenshot",
+      "timestamp": "2026-03-23T10:00:02+08:00","images": null
     },
     {
       "role": "AI", 
@@ -374,7 +378,7 @@ http://127.0.0.1:8000/images/2026-05-16_14-30-00_a1b2c3d4.png
 
 ---
 
-## 5.截屏确认接口
+## 4.截屏确认接口
 
 ### 概述
 
@@ -405,19 +409,6 @@ data: {"value": {"type": "screenshot_request", "request_id": "550e8400-e29b-41d4
 | `value.type` | `string` | 固定值 `"screenshot_request"`，表示截屏请求类型 |
 | `value.request_id` | `string` | 请求唯一标识（UUID格式），可用于前端日志追踪 |
 | `value.message` | `string` | 展示给用户的提示文本，可直接显示在确认对话框中 |
-
-#### 前端处理流程
-
-```
-1. 收到 event: interrupt
-2. 暂停当前 SSE 连接（不要关闭，后续会有响应）
-3. 解析 data 中的 JSON
-4. 显示确认对话框，展示 message 内容
-5. 用户点击"允许"或"拒绝"
-6. 如果允许：前端截取屏幕，转换为 data URL 格式
-7. 调用 POST /screenshot/respond（携带截图数据）
-8. 继续处理后续 SSE 事件（新建立的 SSE 连接）
-```
 
 **注意**：收到 `interrupt` 事件后，**原 SSE 流会终止**（后端发送 interrupt 后立即 return）。前端需要先让用户确认并截屏，然后调用 `/screenshot/respond` 接口，该接口会返回新的 SSE 流。
 
@@ -473,8 +464,6 @@ data: {"value": {"type": "screenshot_request", "request_id": "550e8400-e29b-41d4
 - `interrupt`：后续截屏请求（连续截屏场景）
 - `error`：错误事件
 
-**用户允许截屏时**：
-
 ```text
 data: {"response":"好的，我已经获取到屏幕截图了"}
 
@@ -483,43 +472,42 @@ data: {"response":"，让我看看..."}
 data: [DONE]
 ```
 
-**用户拒绝截屏时**：
-
-```text
-data: {"response":"看起来你不想让我截屏"}
-
-data: {"response":"，没关系，有其他需要帮助的吗？"}
-
-data: [DONE]
-```
-
 #### 错误响应
 
 **请求参数错误**（允许时未提供 screenshot_data）：
 
-```text
-event: error
-data: {"detail":"screenshot_data is required when approved=True"}
+返回 HTTP 422 状态码，格式为 JSON（非 SSE）：
+
+```json
+{
+  "detail": [
+    {
+      "type": "value_error",
+      "msg": "允许截屏但未提供图像",
+      "input": {"session_id": "xxx", "approved": true},
+      "loc": ["body"]
+    }
+  ]
+}
 ```
 
 **会话已过期**（会话不存在或已被清理）：
 
 ```text
-data: {"response":"[系统]会话已过期"}
-
-data: [DONE]
+event: error
+data: {"detail":"会话已过期"}
 ```
 
 **恢复对话失败**：
 
 ```text
 event: error
-data: {"detail":"恢复对话失败: ..."}
+data: {"detail":"恢复对话失败: <原始异常信息>"}
 ```
 
 ---
 
-## 6.测试接口
+## 5.测试接口
 
 ### GET /health
 
@@ -540,3 +528,57 @@ data: {"detail":"恢复对话失败: ..."}
   "code": 200
 }
 ```
+
+---
+
+## 6.工具列表接口
+
+### GET /tools
+
+获取所有可用工具的名称和描述。
+
+#### 接收参数
+
+无
+
+#### 返回结果
+
+成功：
+
+```json
+{
+  "data": {
+    "tools": [
+      {
+        "name": "search_memory",
+        "description": "在长期记忆中搜索相关信息，并返回最相近的10条。"
+      },
+      {
+        "name": "search_diary",
+        "description": "在日记中搜索相关内容。"
+      },
+      {
+        "name": "access_the_internet",
+        "description": "访问互联网获取信息。"
+      },
+      {
+        "name": "plan_and_coding",
+        "description": "规划和编码工具。"
+      },
+      {
+        "name": "read_file",
+        "description": "读取指定路径的文件内容，并返回字符串结果。最多返回50000字符。"
+      }
+    ]
+  },
+  "msg": "success",
+  "code": 200
+}
+```
+
+#### 字段说明
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `name` | `string` | 工具名称，用于 `tools_list` 配置 |
+| `description` | `string` | 工具功能描述，可用于前端展示 |

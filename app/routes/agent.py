@@ -38,7 +38,7 @@ async def chat(
                 if formatted:
                     yield formatted
             yield formatter.done()
-        except RuntimeError as exc:
+        except Exception as exc:
             yield formatter.error(str(exc))
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")

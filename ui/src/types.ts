@@ -129,7 +129,7 @@ export type ToolCallEventData = {
  */
 export type AgentErrorEventData = {
   requestId: string;
-  errorMessage?: string;
+  errorMessage: string;
 };
 
 /**
@@ -137,6 +137,7 @@ export type AgentErrorEventData = {
  */
 export type ToolItem = {
   name: string;
+  description: string;
 };
 
 /**

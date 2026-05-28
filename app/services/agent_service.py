@@ -101,8 +101,7 @@ class AgentService:
         except Exception as e:
             logger.exception("[AgentService][session=%s] graph运行中出现错误: %s，尝试回滚checkpoints", session_id, e)
             self._rollback_checkpoints(session_id, agent)
-            yield ToolCallEvent(tool_name="__error__", error_message=str(e))  # 用特殊事件标记错误
-            return
+            raise RuntimeError(f"Agent 执行出错: {e}") from e
 
         ai_message = "".join(response_parts)
         logger.info("[AgentService][session=%s] 收到 %d 个 chunks, 提取文本长度: %d", session_id, chunk_count, len(ai_message))
@@ -138,10 +137,7 @@ class AgentService:
         """
         agent = _active_agents.get(session_id)
         if not agent:
-            # 会话过期，返回特殊事件
-            from app.agent.events import TextChunk
-            yield TextChunk(content="[系统]会话已过期")
-            return
+            raise RuntimeError("会话已过期")
 
         logger.info("[AgentService][session=%s] 用户确认截屏: approved=%s, has_data=%s",
                     session_id, approved, screenshot_data is not None)
@@ -173,12 +169,10 @@ class AgentService:
                     if text:
                         response_parts.append(text)
 
-        except Exception:
+        except Exception as e:
             logger.exception("[AgentService][session=%s] 恢复对话失败", session_id)
             self._rollback_checkpoints(session_id, agent)
-            from app.agent.events import TextChunk
-            yield TextChunk(content="[系统]恢复对话失败")
-            return
+            raise RuntimeError(f"恢复对话失败: {e}") from e
 
         logger.info("[AgentService][session=%s] 恢复对话完成，收到 %d 个 chunks, 提取文本长度: %d",
                     session_id, chunk_count, len("".join(response_parts)))

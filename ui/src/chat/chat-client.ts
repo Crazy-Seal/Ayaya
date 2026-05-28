@@ -301,7 +301,7 @@ export class ChatClient {
       // 清空气泡
       this.bubble.setText("");
       // 在聊天历史中显示错误消息（灰色小框）
-      const errorMsg = data.errorMessage ? `出现错误: ${data.errorMessage}` : "出现错误";
+      const errorMsg = `出现错误: ${data.errorMessage}`;
       this.chatHistory.showErrorMessage(errorMsg);
       // 在 Live2D 右侧显示错误提示框
       this.toolCallToast.showError(errorMsg);

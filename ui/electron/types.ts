@@ -31,6 +31,7 @@ export type ImportPreview = {
 
 export type ToolItem = {
   name: string;
+  description: string;
 };
 
 export type ChatSettingsData = {
@@ -139,7 +140,6 @@ export type ChatResult =
  */
 export type ToolCallPayload = {
   tool_name: string;
-  error_message?: string;
 };
 
 /**

@@ -26,7 +26,7 @@ class ScreenshotResponseRequest(BaseModel):
     @model_validator(mode='after')
     def validate_screenshot_data(self) -> 'ScreenshotResponseRequest':
         if self.approved and not self.screenshot_data:
-            raise ValueError('screenshot_data is required when approved=True')
+            raise ValueError('允许截屏但未提供图像')
         return self
 
 

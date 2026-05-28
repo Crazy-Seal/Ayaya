@@ -27,8 +27,6 @@ class SSEFormatter:
         """
         if isinstance(event, ToolCallEvent):
             payload = {"tool_name": event.tool_name}
-            if event.error_message:
-                payload["error_message"] = event.error_message
             data = json.dumps(payload, ensure_ascii=False)
             return f"event: tool_call\ndata: {data}\n\n"
 
@@ -63,42 +61,3 @@ class SSEFormatter:
         """错误事件"""
         data = json.dumps({"detail": message}, ensure_ascii=False)
         return f"event: error\ndata: {data}\n\n"
-
-    @staticmethod
-    def extract_text(content: Any) -> str:
-        """从消息内容中提取文本。
-
-        Args:
-            content: 消息内容（字符串、字典或列表）
-
-        Returns:
-            提取的文本
-        """
-        if isinstance(content, str):
-            return content
-        if isinstance(content, dict):
-            text = content.get("text")
-            if isinstance(text, str):
-                return text
-            return ""
-        if isinstance(content, list):
-            text_parts: list[str] = []
-            for item in content:
-                if isinstance(item, str):
-                    text_parts.append(item)
-                elif isinstance(item, dict):
-                    text = item.get("text")
-                    if isinstance(text, str):
-                        text_parts.append(text)
-            return "".join(text_parts)
-
-        # 兼容 LangChain message/chunk 的 text 属性/方法
-        if hasattr(content, "text"):
-            text_attr = getattr(content, "text")
-            if isinstance(text_attr, str):
-                return text_attr
-            if callable(text_attr):
-                text = text_attr()
-                if isinstance(text, str):
-                    return text
-        return ""

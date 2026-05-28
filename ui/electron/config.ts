@@ -21,7 +21,6 @@ const __dirname = path.dirname(__filename);
 
 export const UI_ROOT = path.resolve(__dirname, "..");
 export const WORKSPACE_ROOT = path.resolve(UI_ROOT, "..");
-export const TOOLS_REGISTRY_FILE = path.join(WORKSPACE_ROOT, "app", "agent", "tools", "__init__.py");
 export const USER_DATA_DIR = path.join(UI_ROOT, "user_data");
 export const IMPORTED_MODELS_DIR = path.join(USER_DATA_DIR, "live2d_models");
 export const LEGACY_IMPORTED_MODELS_DIR = path.join(UI_ROOT, "dist", "live2d");

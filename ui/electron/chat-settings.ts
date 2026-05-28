@@ -7,7 +7,7 @@ import {
   CHAT_HISTORY_PAGE_SIZE,
   CHAT_HISTORY_MAX_PAGES,
 } from "./config.js";
-import type { ChatSettingsData, ChatHistoryItem, ApiResponse } from "./types.js";
+import type { ChatSettingsData, ChatHistoryItem, ApiResponse, ToolItem } from "./types.js";
 import { getActiveModelRecord } from "./model-manager.js";
 
 /**
@@ -282,4 +282,27 @@ export const updateChatSettings = async (
     msg: result.msg ?? "success",
     code: 200,
   };
+};
+
+/**
+ * 获取可用工具列表
+ */
+export const fetchAvailableTools = async (): Promise<ToolItem[]> => {
+  const url = `${BACKEND_BASE_URL}/tools`;
+  const res = await fetch(url, { method: "GET" });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `获取工具列表失败: ${res.status}`);
+  }
+
+  const result = await parseJsonSafe<ApiResponse<{ tools: ToolItem[] }>>(res);
+  if (!result || result.code !== 200 || !result.data?.tools) {
+    throw new Error(result?.msg || "获取工具列表失败：返回格式错误");
+  }
+
+  return result.data.tools.map((item) => ({
+    name: String(item.name ?? ""),
+    description: String(item.description ?? ""),
+  }));
 };

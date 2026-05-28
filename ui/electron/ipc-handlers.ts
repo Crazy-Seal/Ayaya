@@ -6,7 +6,7 @@ import { ipcMain, BrowserWindow, dialog, net, desktopCapturer } from "electron";
 import fs from "node:fs";
 import path from "node:path";
 
-import { BACKEND_BASE_URL, CHAT_REQUEST_TIMEOUT_MS, TOOLS_REGISTRY_FILE, FRONTEND_SETTINGS_PATH } from "./config.js";
+import { BACKEND_BASE_URL, CHAT_REQUEST_TIMEOUT_MS, FRONTEND_SETTINGS_PATH } from "./config.js";
 import type {
   ChatSettingsData,
   ModelTransformPayload,
@@ -41,6 +41,7 @@ import {
   updateChatSettings,
   updateChatSettingsCache,
   clearChatSettingsCache,
+  fetchAvailableTools,
 } from "./chat-settings.js";
 import { getMainWindow, getSettingsWindow, openSettingsWindow, openImagePreviewWindow } from "./window-manager.js";
 
@@ -97,38 +98,6 @@ const notifyModelTransformChanged = (model: {
   };
 
   mainWindow.webContents.send("desktop-pet:model-transform-changed", payload);
-};
-
-/**
- * 加载可用工具列表
- */
-const loadAvailableTools = (): ToolItem[] => {
-  if (!fs.existsSync(TOOLS_REGISTRY_FILE)) {
-    return [];
-  }
-
-  const content = fs.readFileSync(TOOLS_REGISTRY_FILE, "utf-8");
-  const blockMatch = content.match(/TOOLS_REGISTRY\s*=\s*\{([\s\S]*?)\}/m);
-  if (!blockMatch) {
-    return [];
-  }
-
-  const block = blockMatch[1];
-  const keyPattern = /["']([^"']+)["']\s*:/g;
-  const tools: ToolItem[] = [];
-  const seen = new Set<string>();
-  let matched: RegExpExecArray | null = keyPattern.exec(block);
-
-  while (matched) {
-    const name = matched[1].trim();
-    if (name && !seen.has(name)) {
-      seen.add(name);
-      tools.push({ name });
-    }
-    matched = keyPattern.exec(block);
-  }
-
-  return tools;
 };
 
 /**
@@ -242,10 +211,9 @@ export const registerIpcHandlers = (): void => {
   });
 
   // 获取可用工具
-  ipcMain.handle("desktop-pet:get-available-tools", () => {
-    return {
-      tools: loadAvailableTools(),
-    };
+  ipcMain.handle("desktop-pet:get-available-tools", async () => {
+    const tools = await fetchAvailableTools();
+    return { tools };
   });
 
   // 更新模型变换
@@ -571,16 +539,6 @@ export const registerIpcHandlers = (): void => {
           // 处理 tool_call 事件
           if (eventName === "tool_call") {
             const toolCallData = parsed as unknown as ToolCallPayload;
-            // 检查是否是特殊错误标记
-            if (toolCallData.tool_name === "__error__") {
-              if (requestId) {
-                event.sender.send("desktop-pet:chat-agent-error", {
-                  requestId,
-                  errorMessage: toolCallData.error_message,
-                });
-              }
-              return { done: true }; // 错误标记后流会结束
-            }
             if (requestId) {
               event.sender.send("desktop-pet:chat-tool-call", {
                 requestId,
@@ -591,7 +549,14 @@ export const registerIpcHandlers = (): void => {
           }
 
           if (eventName === "error") {
-            throw new Error(parsed.detail || "聊天流返回错误事件");
+            // 发送错误事件到渲染进程
+            if (requestId) {
+              event.sender.send("desktop-pet:chat-agent-error", {
+                requestId,
+                errorMessage: parsed.detail || "聊天流返回错误事件",
+              });
+            }
+            return { done: true };
           }
 
           if (typeof parsed.response === "string" && parsed.response.length > 0) {
@@ -780,16 +745,6 @@ export const registerIpcHandlers = (): void => {
           // 处理 tool_call 事件
           if (eventName === "tool_call") {
             const toolCallData = parsed as unknown as ToolCallPayload;
-            // 检查是否是特殊错误标记
-            if (toolCallData.tool_name === "__error__") {
-              if (requestId) {
-                event.sender.send("desktop-pet:chat-agent-error", {
-                  requestId,
-                  errorMessage: toolCallData.error_message,
-                });
-              }
-              return { done: true }; // 错误标记后流会结束
-            }
             if (requestId) {
               event.sender.send("desktop-pet:chat-tool-call", {
                 requestId,
@@ -800,7 +755,14 @@ export const registerIpcHandlers = (): void => {
           }
 
           if (eventName === "error") {
-            throw new Error(parsed.detail || "截屏响应流返回错误事件");
+            // 发送错误事件到渲染进程
+            if (requestId) {
+              event.sender.send("desktop-pet:chat-agent-error", {
+                requestId,
+                errorMessage: parsed.detail || "截屏响应流返回错误事件",
+              });
+            }
+            return { done: true };
           }
 
           if (typeof parsed.response === "string" && parsed.response.length > 0) {
