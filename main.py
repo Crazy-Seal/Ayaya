@@ -29,9 +29,9 @@ app.include_router(screenshot_router)
 app.include_router(tools_router)
 
 # 静态文件服务：用于访问保存的图片
-SCREENSHOT_DIR = os.path.join("memory", "screenshot")
-os.makedirs(SCREENSHOT_DIR, exist_ok=True)
-app.mount("/images", StaticFiles(directory=SCREENSHOT_DIR), name="images")
+IMAGES_DIR = os.path.join("memory", "images")
+os.makedirs(IMAGES_DIR, exist_ok=True)
+app.mount("/images", StaticFiles(directory=IMAGES_DIR), name="images")
 
 
 @app.get("/")

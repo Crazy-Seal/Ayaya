@@ -259,7 +259,7 @@ data: {"detail":"错误信息"}
 http://127.0.0.1:8000/images/2026-05-16_14-30-00_a1b2c3d4.png
 ```
 
-**后端存储位置**：项目根目录下的 `memory/screenshot/` 文件夹
+**后端存储位置**：项目根目录下的 `memory/images/` 文件夹
 
 ### GET /chat_history/{session_id}
 

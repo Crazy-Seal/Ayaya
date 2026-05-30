@@ -14,7 +14,7 @@ from langchain_core.messages import HumanMessage, AnyMessage
 logger = logging.getLogger(__name__)
 
 # 图片保存目录
-SCREENSHOT_DIR = os.path.join("memory", "screenshot")
+IMAGES_DIR = os.path.join("memory", "images")
 
 
 # ==================== 数据类 ====================
@@ -91,7 +91,7 @@ def save_image_to_disk(image_data: str) -> str | None:
     """
     try:
         # 确保目录存在
-        os.makedirs(SCREENSHOT_DIR, exist_ok=True)
+        os.makedirs(IMAGES_DIR, exist_ok=True)
 
         # 解析 data URL
         if image_data.startswith("data:image"):
@@ -112,7 +112,7 @@ def save_image_to_disk(image_data: str) -> str | None:
         timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
         unique_id = uuid.uuid4().hex[:8]
         filename = f"{timestamp}_{unique_id}.png"
-        filepath = os.path.join(SCREENSHOT_DIR, filename)
+        filepath = os.path.join(IMAGES_DIR, filename)
 
         # 保存文件
         with open(filepath, "wb") as f:
