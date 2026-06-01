@@ -9,10 +9,20 @@ import { ModelPage } from "./pages/model-page.js";
 import { LlmPage } from "./pages/llm-page.js";
 import { ToolsPage } from "./pages/tools-page.js";
 import { MultimodalPage } from "./pages/multimodal-page.js";
-import type { ChatSettingsState } from "./types.js";
+import { MotionPage } from "./pages/motion-page.js";
+import type {
+  ChatSettingsState,
+  ModelConfig,
+  EditingState,
+  ISettingsPage,
+  PageRenderData,
+  PageEventCallback,
+  PageEvent,
+  ToolItem,
+} from "./types.js";
 
 /**
- * 设置窗口应用
+ * 设置窗口应用（Controller）
  */
 class SettingsApp {
   private sidebar: HTMLDivElement;
@@ -20,13 +30,21 @@ class SettingsApp {
   private closeBtn: HTMLButtonElement;
 
   private modelPage: ModelPage;
-  private llmPage: LlmPage;
-  private toolsPage: ToolsPage;
+  private llmPage: ISettingsPage;
+  private toolsPage: ISettingsPage;
   private multimodalPage: MultimodalPage;
+  private motionPage: ISettingsPage;
   private confirmDialog: ConfirmDialog;
 
   private currentPage = "model";
-  private chatSettingsState: ChatSettingsState | null = null;
+
+  /** 已保存状态（来自后端，不可变） */
+  private savedState: ChatSettingsState | null = null;
+  /** 模型配置（已保存） */
+  private modelConfig: ModelConfig | null = null;
+
+  /** 页面映射 */
+  private pages: Map<string, ISettingsPage | null> = new Map();
 
   constructor() {
     // 获取 DOM 元素
@@ -87,6 +105,27 @@ class SettingsApp {
       this.getElement("#checkbox-hide-on-screenshot")
     );
 
+    // 初始化动作控制页面
+    this.motionPage = new MotionPage(
+      this.getElement("#motion-table-body"),
+      this.getElement("#motion-empty"),
+      this.getElement("#motion-confirm-btn"),
+      this.getElement("#motion-system-prompt")
+    );
+
+    // 注册页面到映射
+    this.pages.set("llm", this.llmPage);
+    this.pages.set("tools", this.toolsPage);
+    this.pages.set("motion", this.motionPage);
+
+    // 设置事件回调
+    const eventCallback: PageEventCallback = (event) => {
+      void this.handlePageEvent(event);
+    };
+    this.llmPage.onEvent(eventCallback);
+    this.toolsPage.onEvent(eventCallback);
+    this.motionPage.onEvent(eventCallback);
+
     this.setupEventListeners();
   }
 
@@ -114,21 +153,11 @@ class SettingsApp {
       }
 
       const page = tab.dataset.page;
-      if (!page) {
+      if (!page || page === this.currentPage) {
         return;
       }
 
-      this.currentPage = page;
-
-      document.querySelectorAll<HTMLButtonElement>(".settings-tab").forEach((item) => {
-        item.classList.toggle("active", item === tab);
-      });
-
-      document.querySelectorAll<HTMLDivElement>(".settings-page").forEach((item) => {
-        item.classList.toggle("active", item.dataset.page === page);
-      });
-
-      this.applyPageEnterRender(page);
+      this.switchPage(page);
     });
 
     // 最小化按钮
@@ -163,30 +192,303 @@ class SettingsApp {
   }
 
   /**
-   * 应用页面进入渲染
-   * @param forceUpdate 是否强制更新页面内部状态（模型切换时需要）
+   * 切换页面
    */
-  private applyPageEnterRender(page: string, forceUpdate = false): void {
-    if (page === "llm") {
-      this.llmPage.render(this.chatSettingsState, forceUpdate);
+  private switchPage(newPage: string): void {
+    // 更新当前页面
+    this.currentPage = newPage;
+
+    // 更新 UI
+    document.querySelectorAll<HTMLButtonElement>(".settings-tab").forEach((item) => {
+      item.classList.toggle("active", item.dataset.page === newPage);
+    });
+
+    document.querySelectorAll<HTMLDivElement>(".settings-page").forEach((item) => {
+      item.classList.toggle("active", item.dataset.page === newPage);
+    });
+
+    // 渲染新页面（只显示已保存状态）
+    void this.renderPage(newPage);
+  }
+
+  /**
+   * 渲染页面
+   */
+  private async renderPage(pageName: string): Promise<void> {
+    if (!this.savedState) {
       return;
     }
 
-    if (page === "tools") {
-      this.toolsPage.render(this.chatSettingsState, forceUpdate);
+    const page = this.pages.get(pageName);
+    if (!page) {
+      // model 页面特殊处理
+      if (pageName === "model") {
+        void this.modelPage.refreshModelConfig();
+      } else if (pageName === "multimodal") {
+        void this.multimodalPage.render();
+      }
       return;
     }
 
-    if (page === "multimodal") {
-      void this.multimodalPage.render();
+    const renderData: PageRenderData = {
+      saved: this.savedState,
+      dependencies: await this.getPageDependencies(pageName),
+    };
+
+    page.render(renderData);
+  }
+
+  /**
+   * 获取页面依赖数据
+   */
+  private async getPageDependencies(pageName: string): Promise<PageRenderData["dependencies"]> {
+    const deps: PageRenderData["dependencies"] = {};
+
+    if (pageName === "llm" || pageName === "motion") {
+      deps.expressionLabels = this.getExpressionLabels();
     }
+
+    if (pageName === "motion") {
+      deps.modelConfig = this.modelConfig || undefined;
+      if (this.modelConfig) {
+        const activeModel = this.modelConfig.models.find(
+          (m) => m.id === this.modelConfig!.activeModelId
+        );
+        if (activeModel) {
+          deps.availableMotions = await this.loadMotionsFromModel(
+            activeModel.modelUrl || activeModel.entry || ""
+          );
+        }
+      }
+    }
+
+    if (pageName === "tools") {
+      const result = await window.desktopPetApi.getAvailableTools();
+      deps.availableTools = result.tools;
+    }
+
+    return deps;
+  }
+
+  /**
+   * 从模型加载动作列表
+   */
+  private async loadMotionsFromModel(modelUrl: string): Promise<string[]> {
+    if (!modelUrl) {
+      return [];
+    }
+    try {
+      const response = await fetch(modelUrl);
+      if (!response.ok) {
+        return [];
+      }
+      const model3Json = await response.json();
+      const motions = model3Json.FileReferences?.Motions;
+      if (!motions) {
+        return [];
+      }
+      return Object.keys(motions);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * 获取表情标签列表（从已保存状态）
+   */
+  private getExpressionLabels(): string[] {
+    if (this.modelConfig) {
+      const activeModel = this.modelConfig.models.find(
+        (m) => m.id === this.modelConfig!.activeModelId
+      );
+      if (activeModel?.motionConfig) {
+        return activeModel.motionConfig
+          .filter((c) => c.setting === "expression" && c.label)
+          .map((c) => c.label!);
+      }
+    }
+    return [];
+  }
+
+  /**
+   * 处理页面事件
+   */
+  private async handlePageEvent(event: PageEvent): Promise<void> {
+    if (event.type === "submit") {
+      await this.handleSubmit(event.page);
+    }
+  }
+
+  /**
+   * 提交保存
+   */
+  private async handleSubmit(pageName: string): Promise<void> {
+    const page = this.pages.get(pageName);
+    if (!page || !this.savedState) {
+      return;
+    }
+
+    // 获取当前表单数据
+    const editingData = page.getEditingData();
+
+    // 构建并保存
+    if (pageName === "llm" && editingData.llm) {
+      await this.saveLlmSettings(editingData.llm);
+    } else if (pageName === "motion" && editingData.motion) {
+      await this.saveMotionSettings(editingData.motion);
+    } else if (pageName === "tools" && editingData.tools) {
+      await this.saveToolsSettings(editingData.tools);
+    }
+
+    // 重新渲染当前页面
+    await this.renderPage(pageName);
+  }
+
+  /**
+   * 保存 LLM 设置
+   */
+  private async saveLlmSettings(llmData: NonNullable<EditingState["llm"]>): Promise<void> {
+    if (!this.savedState) {
+      return;
+    }
+
+    // 构建系统提示词
+    const expressionLabels = this.getExpressionLabels();
+    const system_prompt = this.buildSystemPrompt(llmData, expressionLabels);
+
+    const newState: ChatSettingsState = {
+      ...this.savedState,
+      openai_base_url: llmData.openai_base_url,
+      openai_api_key: llmData.openai_api_key,
+      model_name: llmData.model_name,
+      temperature: llmData.temperature,
+      system_prompt,
+      name: llmData.name || undefined,
+      feature: llmData.feature || undefined,
+      character: llmData.character || undefined,
+      address: llmData.address || undefined,
+      characteristic: llmData.characteristic || undefined,
+      constraint: llmData.constraint || undefined,
+    };
+
+    await window.desktopPetApi.updateChatSettings(newState);
+    this.savedState = newState;
+  }
+
+  /**
+   * 保存动作设置
+   */
+  private async saveMotionSettings(motionData: NonNullable<EditingState["motion"]>): Promise<void> {
+    if (!this.modelConfig) {
+      return;
+    }
+
+    const activeModelId = this.modelConfig.activeModelId;
+    const motionConfigs = motionData.motionConfigs;
+
+    // 保存动作配置
+    await window.desktopPetApi.updateModelMotionConfig?.({
+      modelId: activeModelId,
+      motionConfig: motionConfigs,
+    });
+
+    // 重新获取模型配置
+    this.modelConfig = await window.desktopPetApi.getModelConfig();
+
+    // 更新系统提示词
+    if (this.savedState) {
+      const expressionLabels = this.getExpressionLabels();
+      const system_prompt = this.buildSystemPromptFromSaved(expressionLabels);
+
+      const newState: ChatSettingsState = {
+        ...this.savedState,
+        system_prompt,
+      };
+
+      await window.desktopPetApi.updateChatSettings(newState);
+      this.savedState = newState;
+    }
+  }
+
+  /**
+   * 保存工具设置
+   */
+  private async saveToolsSettings(toolsData: NonNullable<EditingState["tools"]>): Promise<void> {
+    if (!this.savedState) {
+      return;
+    }
+
+    const newState: ChatSettingsState = {
+      ...this.savedState,
+      tools_list: toolsData.tools_list,
+    };
+
+    await window.desktopPetApi.updateChatSettings(newState);
+    this.savedState = newState;
+  }
+
+  /**
+   * 构建系统提示词
+   */
+  private buildSystemPrompt(
+    llmData: NonNullable<EditingState["llm"]>,
+    expressionLabels: string[]
+  ): string {
+    const name = llmData.name || "日和";
+    const feature = llmData.feature || "可爱";
+    const character = llmData.character || "AI少女";
+    const address = llmData.address || "主人";
+
+    let prompt = `你是${name}，一个${feature}的${character}，称呼用户为${address}。`;
+    if (llmData.characteristic) {
+      prompt += `\n${llmData.characteristic}`;
+    }
+    if (llmData.constraint) {
+      prompt += `\n${llmData.constraint}`;
+    }
+
+    if (expressionLabels.length > 0) {
+      const tagsList = expressionLabels.map((l) => `<${l}>`).join("");
+      prompt += `\n你可以在对话中使用以下表情标签:${tagsList}使用时必须像示例一样使用尖括号<>包裹`;
+    }
+
+    return prompt;
+  }
+
+  /**
+   * 从已保存状态构建系统提示词
+   */
+  private buildSystemPromptFromSaved(expressionLabels: string[]): string {
+    if (!this.savedState) {
+      return "";
+    }
+
+    const name = this.savedState.name || "日和";
+    const feature = this.savedState.feature || "可爱";
+    const character = this.savedState.character || "AI少女";
+    const address = this.savedState.address || "主人";
+
+    let prompt = `你是${name}，一个${feature}的${character}，称呼用户为${address}。`;
+    if (this.savedState.characteristic) {
+      prompt += `\n${this.savedState.characteristic}`;
+    }
+    if (this.savedState.constraint) {
+      prompt += `\n${this.savedState.constraint}`;
+    }
+
+    if (expressionLabels.length > 0) {
+      const tagsList = expressionLabels.map((l) => `<${l}>`).join("");
+      prompt += `\n你可以在对话中使用以下表情标签:${tagsList}使用时必须像示例一样使用尖括号<>包裹`;
+    }
+
+    return prompt;
   }
 
   /**
    * 初始化聊天设置
    */
   private async initChatSettings(): Promise<void> {
-    this.chatSettingsState = await window.desktopPetApi.getChatSettings();
+    this.savedState = await window.desktopPetApi.getChatSettings();
   }
 
   /**
@@ -194,11 +496,10 @@ class SettingsApp {
    */
   private async refreshAfterModelChanged(): Promise<void> {
     await Promise.all([this.modelPage.refreshModelConfig(), this.initChatSettings()]);
-    // 模型变化后强制更新所有页面的内部状态
-    this.llmPage.render(this.chatSettingsState, true);
-    this.toolsPage.render(this.chatSettingsState, true);
-    // 当前页面重新渲染
-    this.applyPageEnterRender(this.currentPage, true);
+    // 获取最新的模型配置
+    this.modelConfig = await window.desktopPetApi.getModelConfig();
+    // 渲染当前页面
+    await this.renderPage(this.currentPage);
   }
 
   /**
@@ -206,13 +507,16 @@ class SettingsApp {
    */
   async init(): Promise<void> {
     await Promise.all([
-      this.toolsPage.refreshTools(),
       this.modelPage.refreshModelConfig(),
       this.initChatSettings(),
       this.multimodalPage.render(),
     ]);
 
-    this.applyPageEnterRender(this.currentPage);
+    // 获取模型配置
+    this.modelConfig = await window.desktopPetApi.getModelConfig();
+
+    // 渲染初始页面
+    await this.renderPage(this.currentPage);
   }
 }
 

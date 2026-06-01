@@ -62,6 +62,13 @@ export class ChatHistoryManager {
   }
 
   /**
+   * 清理消息内容中的表情标签
+   */
+  private cleanExpressionTags(content: string): string {
+    return content.replace(/<[^<>]+>/g, "").trim();
+  }
+
+  /**
    * 显示"正在输入"提示
    */
   showTypingIndicator(): void {
@@ -379,8 +386,9 @@ export class ChatHistoryManager {
       return;
     }
 
-    // 分割成句子
-    const sentences = this.splitIntoSentences(msg.content);
+    // 清理表情标签后再分割成句子
+    const cleanContent = this.cleanExpressionTags(msg.content);
+    const sentences = this.splitIntoSentences(cleanContent);
 
     // 1. 先渲染文本气泡（如果有文本）
     for (const sentence of sentences) {

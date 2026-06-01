@@ -14,6 +14,7 @@ import { ChatClient, startLatestAiMessageBootstrap } from "./chat/chat-client.js
 import { ChatHistoryManager } from "./chat/chat-history-manager.js";
 import { ImageManager } from "./chat/image-manager.js";
 import { setupDropHandler } from "./chat/drop-handler.js";
+import type { MotionConfig } from "./types.js";
 
 // 全局 PIXI 引用（Live2D 需要）
 (globalThis as unknown as { PIXI: typeof PIXI }).PIXI = PIXI;
@@ -33,6 +34,8 @@ class MainApp {
   private imageManager = new ImageManager(5);
   private cleanupDropHandler: (() => void) | null = null;
   private modelInfo: Awaited<ReturnType<Live2DModelLoader["loadModel"]>> | null = null;
+  private live2dModel: unknown = null;
+  private motionConfig: MotionConfig[] = [];
   private stopLatestAiMessageBootstrap: (() => void) | null = null;
   private currentSessionId = "";
   private activeModelId = "";
@@ -41,6 +44,10 @@ class MainApp {
   private offsetY = 0;
   private followCursor = true;
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // 动作队列
+  private motionQueue: string[] = [];
+  private isPlayingMotion = false;
 
   constructor() {
     this.app = Live2DModelLoader.createApp(this.elements.stageHost);
@@ -212,6 +219,22 @@ class MainApp {
       }
     );
 
+    // 动作播放请求监听（从设置窗口发来）
+    const unsubscribePlayMotion = window.desktopPetApi?.onPlayMotionRequest?.((motionName) => {
+      this.playMotionByName(motionName);
+    });
+
+    // 动作配置变化监听
+    const unsubscribeMotionConfigChanged = window.desktopPetApi?.onMotionConfigChanged?.(
+      (payload) => {
+        if (payload.modelId !== this.activeModelId) {
+          return;
+        }
+        this.motionConfig = payload.motionConfig;
+        this.setIdleMotion();
+      }
+    );
+
     // 页面卸载清理
     window.addEventListener("beforeunload", () => {
       if (this.stopLatestAiMessageBootstrap) {
@@ -227,6 +250,12 @@ class MainApp {
       }
       if (typeof unsubscribeModelTransformChanged === "function") {
         unsubscribeModelTransformChanged();
+      }
+      if (typeof unsubscribePlayMotion === "function") {
+        unsubscribePlayMotion();
+      }
+      if (typeof unsubscribeMotionConfigChanged === "function") {
+        unsubscribeMotionConfigChanged();
       }
       if (this.persistTimer) {
         clearTimeout(this.persistTimer);
@@ -251,6 +280,7 @@ class MainApp {
     this.followCursor = activeModel.followCursor;
 
     this.modelInfo = await this.modelLoader.loadModel(activeModel);
+    this.live2dModel = this.modelInfo.model;
 
     // 初始缩放
     this.modelInfo.fitModel();
@@ -271,6 +301,19 @@ class MainApp {
     // 更新会话 ID
     this.currentSessionId = activeModel.sessionId;
     this.chatClient.setSessionId(activeModel.sessionId);
+
+    // 加载动作配置并设置空闲动作
+    if (activeModel.motionConfig) {
+      this.motionConfig = activeModel.motionConfig;
+    } else {
+      // 尝试从后端获取配置
+      try {
+        this.motionConfig = await window.desktopPetApi.getMotionConfig?.(this.activeModelId) ?? [];
+      } catch {
+        this.motionConfig = [];
+      }
+    }
+    this.setIdleMotion();
 
     // 尝试加载聊天历史（后端未开启时会失败）
     let historyLoaded = false;
@@ -293,6 +336,99 @@ class MainApp {
         }
       }
     );
+  }
+
+  /**
+   * 设置空闲动作
+   */
+  private setIdleMotion(): void {
+    const idleConfig = this.motionConfig.find((c) => c.setting === "idle");
+    const idleMotionName = idleConfig?.motionName || "Idle";
+
+    // 设置模型的空闲动作组
+    // 注意：需要修改 groups.idle 而不是 idleMotionGroup（后者只是初始化选项）
+    if (this.live2dModel && (this.live2dModel as any).internalModel?.motionManager) {
+      const motionManager = (this.live2dModel as any).internalModel.motionManager;
+      if (motionManager.groups) {
+        motionManager.groups.idle = idleMotionName;
+      }
+    }
+
+    // 使用 IDLE 优先级播放空闲动作
+    this.playMotionByName(idleMotionName, 1); // MotionPriority.IDLE = 1
+  }
+
+  /**
+   * 通过名称播放动作
+   * @param motionName 动作名称（组名）
+   * @param priority 优先级：1=IDLE, 2=NORMAL, 3=FORCE
+   */
+  private playMotionByName(motionName: string, priority: number = 2): void {
+    if (!this.live2dModel || typeof (this.live2dModel as any).motion !== "function") {
+      return;
+    }
+    try {
+      (this.live2dModel as any).motion(motionName, undefined, priority);
+    } catch (error) {
+      console.error(`Failed to play motion ${motionName}:`, error);
+    }
+  }
+
+  /**
+   * 通过标签播放动作（加入队列）
+   */
+  playMotionByLabel(label: string): void {
+    const config = this.motionConfig.find((c) => c.setting === "expression" && c.label === label);
+    if (config) {
+      this.queueMotion(config.motionName);
+    }
+  }
+
+  /**
+   * 添加动作到队列
+   */
+  private queueMotion(motionName: string): void {
+    this.motionQueue.push(motionName);
+    if (!this.isPlayingMotion) {
+      this.playNextMotion();
+    }
+  }
+
+  /**
+   * 播放下一个动作
+   */
+  private async playNextMotion(): Promise<void> {
+    if (this.motionQueue.length === 0) {
+      this.isPlayingMotion = false;
+      // 队列结束后重新设置空闲动作
+      this.setIdleMotion();
+      return;
+    }
+
+    this.isPlayingMotion = true;
+    const motionName = this.motionQueue.shift()!;
+
+    // 播放动作并等待 Promise 完成
+    // 使用 FORCE 优先级 (3) 确保覆盖空闲动作和其他状态
+    try {
+      await (this.live2dModel as any).motion(motionName, undefined, 3);
+    } catch (error) {
+      console.error(`Failed to play motion ${motionName}:`, error);
+    }
+
+    // 等待动作播放一段时间
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    this.playNextMotion();
+  }
+
+  /**
+   * 获取表达式标签列表
+   */
+  getExpressionLabels(): string[] {
+    return this.motionConfig
+      .filter((c) => c.setting === "expression" && c.label)
+      .map((c) => c.label!);
   }
 
   /**
@@ -427,5 +563,23 @@ window.restoreElementsAfterScreenshot = () => {
   hiddenElementsByScreenshot = [];
 };
 
+// 全局主应用实例引用
+let mainAppInstance: MainApp | null = null;
+
+/**
+ * 通过标签播放动作（供聊天模块调用）
+ */
+window.playMotionByLabel = (label: string) => {
+  mainAppInstance?.playMotionByLabel(label);
+};
+
+/**
+ * 获取表达式标签列表（供聊天模块调用）
+ */
+window.getExpressionLabels = () => {
+  return mainAppInstance?.getExpressionLabels() ?? [];
+};
+
 // 启动应用
-void new MainApp().init();
+mainAppInstance = new MainApp();
+void mainAppInstance.init();

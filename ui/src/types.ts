@@ -2,6 +2,11 @@
  * 渲染进程类型定义
  */
 
+// 从共享类型导入并重新导出
+import type { MotionConfig as MotionConfigType, MotionSettingType as MotionSettingTypeEnum } from '../shared-types.js';
+export type MotionConfig = MotionConfigType;
+export type MotionSettingType = MotionSettingTypeEnum;
+
 /**
  * 模型信息
  */
@@ -14,6 +19,8 @@ export type ModelInfo = {
   offsetY: number;
   userScale: number;
   followCursor: boolean;
+  motionConfig?: MotionConfig[];
+  entry?: string;
 };
 
 /**
@@ -239,6 +246,14 @@ export interface DesktopPetApi {
   // 前端设置
   getFrontendSettings: () => Promise<FrontendSettings>;
   updateFrontendSettings: (settings: Partial<FrontendSettings>) => Promise<FrontendSettings>;
+  // 动作控制
+  getMotionConfig: (modelId: string) => Promise<MotionConfig[]>;
+  updateModelMotionConfig: (payload: { modelId: string; motionConfig: MotionConfig[] }) => Promise<void>;
+  playMotion: (motionName: string) => void;
+  getExpressionLabels: () => Promise<string[]>;
+  // IPC 事件监听
+  onPlayMotionRequest?: (callback: (motionName: string) => void) => () => void;
+  onMotionConfigChanged?: (callback: (payload: { modelId: string; motionConfig: MotionConfig[] }) => void) => () => void;
 }
 
 declare global {
@@ -246,5 +261,7 @@ declare global {
     desktopPetApi: DesktopPetApi;
     hideElementsForScreenshot: () => void;
     restoreElementsAfterScreenshot: () => void;
+    playMotionByLabel?: (label: string) => void;
+    getExpressionLabels?: () => string[];
   }
 }

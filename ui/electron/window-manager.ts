@@ -81,7 +81,7 @@ export const createMainWindow = (): BrowserWindow => {
     alwaysOnTop: true,
     fullscreenable: false,
     webPreferences: {
-      preload: path.resolve(__dirname, "../electron/preload.cjs"),
+      preload: path.resolve(__dirname, "../../electron/preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
     },
@@ -98,7 +98,7 @@ export const createMainWindow = (): BrowserWindow => {
     // 开发模式下打开开发者工具
     win.webContents.openDevTools({ mode: "detach" });
   } else {
-    win.loadFile(path.resolve(__dirname, "../dist/index.html"));
+    win.loadFile(path.resolve(__dirname, "../../dist/index.html"));
   }
 
   return win;
@@ -131,7 +131,7 @@ export const openSettingsWindow = (): void => {
     fullscreenable: false,
     backgroundColor: "#141722",
     webPreferences: {
-      preload: path.resolve(__dirname, "../electron/preload.cjs"),
+      preload: path.resolve(__dirname, "../../electron/preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
     },
@@ -141,7 +141,7 @@ export const openSettingsWindow = (): void => {
   if (devServerUrl) {
     win.loadURL(`${devServerUrl}/settings.html`);
   } else {
-    win.loadFile(path.resolve(__dirname, "../dist/settings.html"));
+    win.loadFile(path.resolve(__dirname, "../../dist/settings.html"));
   }
 
   win.once("ready-to-show", () => {

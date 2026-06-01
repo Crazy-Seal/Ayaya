@@ -4,6 +4,11 @@
 
 export type ModelSource = "builtin" | "custom";
 
+// 从共享类型导入并重新导出
+import type { MotionConfig as MotionConfigType, MotionSettingType as MotionSettingTypeEnum } from '../shared-types.js';
+export type MotionConfig = MotionConfigType;
+export type MotionSettingType = MotionSettingTypeEnum;
+
 export type ModelRecord = {
   id: string;
   name: string;
@@ -15,6 +20,7 @@ export type ModelRecord = {
   offsetY?: number;
   userScale?: number;
   followCursor?: boolean;
+  motionConfig?: MotionConfig[];
 };
 
 export type ModelConfig = {

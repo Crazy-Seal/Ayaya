@@ -2,18 +2,24 @@
  * 工具配置页面
  */
 
-import type { ChatSettingsState, ToolItem } from "../types.js";
+import type {
+  ChatSettingsState,
+  ToolItem,
+  ISettingsPage,
+  PageRenderData,
+  PageEditingData,
+  PageEventCallback,
+} from "../types.js";
 
 /**
- * 工具配置页面管理器
+ * 工具配置页面管理器（纯视图组件）
  */
-export class ToolsPage {
+export class ToolsPage implements ISettingsPage {
   private toolsTableBody: HTMLTableSectionElement;
   private toolsEmpty: HTMLDivElement;
   private confirmBtn: HTMLButtonElement;
 
-  private chatSettingsState: ChatSettingsState | null = null;
-  private availableTools: ToolItem[] = [];
+  private eventCallback?: PageEventCallback;
 
   constructor(
     toolsTableBody: HTMLTableSectionElement,
@@ -28,27 +34,49 @@ export class ToolsPage {
   }
 
   /**
+   * 设置事件回调
+   */
+  onEvent(callback: PageEventCallback): void {
+    this.eventCallback = callback;
+  }
+
+  /**
    * 设置事件监听
    */
   private setupEventListeners(): void {
-    this.confirmBtn.addEventListener("click", async () => {
-      if (!this.chatSettingsState) {
-        return;
-      }
-
-      this.chatSettingsState = {
-        ...this.chatSettingsState,
-        tools_list: this.collectSelectedTools(),
-      };
-
-      await window.desktopPetApi.updateChatSettings(this.chatSettingsState);
+    this.confirmBtn.addEventListener("click", () => {
+      this.eventCallback?.({ type: "submit", page: "tools" });
     });
+  }
+
+  /**
+   * 渲染页面
+   */
+  render(data: PageRenderData): void {
+    // 获取可用工具列表
+    const availableTools = data.dependencies?.availableTools || [];
+
+    // 获取选中的工具列表（只使用已保存状态）
+    const selectedTools = data.saved.tools_list;
+
+    this.renderToolsTable(availableTools, selectedTools);
+  }
+
+  /**
+   * 获取当前编辑数据
+   */
+  getEditingData(): PageEditingData {
+    return {
+      tools: {
+        tools_list: this.collectSelectedTools(),
+      },
+    };
   }
 
   /**
    * 渲染工具表格
    */
-  private renderToolsTable(tools: ToolItem[]): void {
+  private renderToolsTable(tools: ToolItem[], selectedTools: string[]): void {
     this.toolsTableBody.innerHTML = "";
 
     if (tools.length === 0) {
@@ -65,7 +93,7 @@ export class ToolsPage {
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
       checkbox.dataset.toolName = tool.name;
-      checkbox.checked = Boolean(this.chatSettingsState?.tools_list.includes(tool.name));
+      checkbox.checked = selectedTools.includes(tool.name);
       checkCell.appendChild(checkbox);
 
       const nameCell = document.createElement("td");
@@ -88,34 +116,5 @@ export class ToolsPage {
       }
     });
     return selected;
-  }
-
-  /**
-   * 刷新工具列表
-   */
-  async refreshTools(): Promise<void> {
-    const result = await window.desktopPetApi.getAvailableTools();
-    this.availableTools = result.tools;
-    this.renderToolsTable(this.availableTools);
-  }
-
-  /**
-   * 渲染工具选择
-   * @param state 聊天设置状态
-   * @param forceUpdate 是否强制更新内部状态（模型切换时需要）
-   */
-  render(state: ChatSettingsState | null, forceUpdate = false): void {
-    // 首次加载或强制更新时设置内部状态
-    if (state && (!this.chatSettingsState || forceUpdate)) {
-      this.chatSettingsState = state;
-    }
-    this.renderToolsTable(this.availableTools);
-  }
-
-  /**
-   * 获取聊天设置状态
-   */
-  getChatSettingsState(): ChatSettingsState | null {
-    return this.chatSettingsState;
   }
 }

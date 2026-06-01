@@ -49,6 +49,42 @@ export class ChatClient {
   private screenshotConfirmDialog: ScreenshotConfirmDialog;
   private toolCallToast: ToolCallToastManager;
   private isWaitingForScreenshotApproval = false;
+  private playedLabels: Set<string> = new Set(); // 追踪已播放的标签
+
+  /**
+   * 解析消息中的表情标签
+   * 返回 { text: 清理后的文本, tags: 标签数组（去重后） }
+   */
+  private parseExpressionTags(text: string): { text: string; tags: string[] } {
+    const tagRegex = /<([^<>]+)>/g;
+    const tags: string[] = [];
+    const seen = new Set<string>(); // 本次解析已见过的标签
+    let match: RegExpExecArray | null;
+
+    while ((match = tagRegex.exec(text)) !== null) {
+      const tag = match[1];
+      if (!seen.has(tag)) {
+        seen.add(tag);
+        tags.push(tag);
+      }
+    }
+
+    // 移除标签后的文本
+    const cleanText = text.replace(tagRegex, "").trim();
+    return { text: cleanText, tags };
+  }
+
+  /**
+   * 播放标签对应的动作
+   */
+  private playMotionForTag(tag: string): void {
+    // 避免同一个标签重复播放
+    if (this.playedLabels.has(tag)) {
+      return;
+    }
+    this.playedLabels.add(tag);
+    window.playMotionByLabel?.(tag);
+  }
 
   constructor(options: ChatClientOptions) {
     this.bubble = options.bubble;
@@ -119,11 +155,20 @@ export class ChatClient {
     let cursorTimer: ReturnType<typeof setInterval> | null = null;
     let firstChunkReceived = false;
     let hasPendingToolCallIndicator = false; // 追踪是否有待最终化的工具调用指示器
+    this.playedLabels.clear(); // 清空已播放标签
 
     const renderStreamingBubble = () => {
-      const baseText = streamedText || "思考中...";
+      // 解析表情标签
+      const { text: cleanText, tags } = this.parseExpressionTags(streamedText);
+
+      // 播放标签对应的动作
+      for (const tag of tags) {
+        this.playMotionForTag(tag);
+      }
+
+      const baseText = cleanText || "思考中...";
       this.bubble.setText(`${baseText}${cursorVisible ? "▋" : ""}`);
-      // 更新聊天历史中的 AI 消息
+      // 更新聊天历史中的 AI 消息（使用清理后的文本）
       this.chatHistory.updateLastAiMessage(baseText);
     };
 
@@ -236,9 +281,15 @@ export class ChatClient {
 
           // 流结束
           stopCursor();
-          const finalResponse = streamedText || respondResult?.response || "";
-          this.bubble.setText(finalResponse);
-          this.chatHistory.updateLastAiMessage(finalResponse);
+          // 解析表情标签并清理文本
+          const rawResponse = streamedText || respondResult?.response || "";
+          const { text: cleanText, tags } = this.parseExpressionTags(rawResponse);
+          // 播放标签对应的动作
+          for (const tag of tags) {
+            this.playMotionForTag(tag);
+          }
+          this.bubble.setText(cleanText);
+          this.chatHistory.updateLastAiMessage(cleanText);
           this.chatHistory.finalizeStreamingMessage();
           this.input.value = "";
           // 重置输入框高度
@@ -339,10 +390,15 @@ export class ChatClient {
       }
 
       stopCursor();
-      const finalResponse = streamedText || result.response;
-      this.bubble.setText(finalResponse);
+      // 解析表情标签并清理文本
+      const { text: cleanText, tags } = this.parseExpressionTags(streamedText || result.response);
+      // 播放标签对应的动作
+      for (const tag of tags) {
+        this.playMotionForTag(tag);
+      }
+      this.bubble.setText(cleanText);
       // 更新聊天历史中的最终 AI 消息
-      this.chatHistory.updateLastAiMessage(finalResponse);
+      this.chatHistory.updateLastAiMessage(cleanText);
       // 完成流式响应，分割句子渲染
       this.chatHistory.finalizeStreamingMessage();
       this.input.value = "";

@@ -2,12 +2,17 @@
  * LLM 配置页面
  */
 
-import type { ChatSettingsState } from "../types.js";
+import type {
+  ISettingsPage,
+  PageRenderData,
+  PageEditingData,
+  PageEventCallback,
+} from "../types.js";
 
 /**
- * LLM 配置页面管理器
+ * LLM 配置页面管理器（纯视图组件）
  */
-export class LlmPage {
+export class LlmPage implements ISettingsPage {
   private baseUrlInput: HTMLInputElement;
   private apiKeyInput: HTMLInputElement;
   private modelNameInput: HTMLInputElement;
@@ -23,7 +28,10 @@ export class LlmPage {
   private characteristicInput: HTMLTextAreaElement;
   private constraintInput: HTMLTextAreaElement;
 
-  private chatSettingsState: ChatSettingsState | null = null;
+  private eventCallback?: PageEventCallback;
+
+  /** 表情标签列表（从 motion 配置获取） */
+  private expressionLabels: string[] = [];
 
   constructor(
     baseUrlInput: HTMLInputElement,
@@ -56,6 +64,13 @@ export class LlmPage {
   }
 
   /**
+   * 设置事件回调
+   */
+  onEvent(callback: PageEventCallback): void {
+    this.eventCallback = callback;
+  }
+
+  /**
    * 设置事件监听
    */
   private setupEventListeners(): void {
@@ -74,32 +89,70 @@ export class LlmPage {
     });
 
     // 确认按钮
-    this.confirmBtn.addEventListener("click", async () => {
-      if (!this.chatSettingsState) {
-        return;
-      }
+    this.confirmBtn.addEventListener("click", () => {
+      this.eventCallback?.({ type: "submit", page: "llm" });
+    });
+  }
 
-      const system_prompt = this.buildSystemPrompt();
+  /**
+   * 渲染页面
+   */
+  render(data: PageRenderData): void {
+    // 保存表情标签列表
+    this.expressionLabels = data.dependencies?.expressionLabels || [];
 
-      this.chatSettingsState = {
-        ...this.chatSettingsState,
+    // 只使用已保存状态
+    const llmData = {
+      openai_base_url: data.saved.openai_base_url,
+      openai_api_key: data.saved.openai_api_key,
+      model_name: data.saved.model_name,
+      temperature: data.saved.temperature,
+      name: data.saved.name || "",
+      feature: data.saved.feature || "",
+      character: data.saved.character || "",
+      address: data.saved.address || "",
+      characteristic: data.saved.characteristic || "",
+      constraint: data.saved.constraint || "",
+    };
+
+    // 渲染表单
+    this.baseUrlInput.value = llmData.openai_base_url;
+    this.apiKeyInput.value = llmData.openai_api_key;
+    this.modelNameInput.value = llmData.model_name;
+    this.temperatureInput.value = String(llmData.temperature);
+
+    // 渲染提示词模板字段
+    this.nameInput.value = llmData.name;
+    this.featureInput.value = llmData.feature;
+    this.characterInput.value = llmData.character;
+    this.addressInput.value = llmData.address;
+    this.characteristicInput.value = llmData.characteristic;
+    this.constraintInput.value = llmData.constraint;
+
+    // 更新系统提示词预览
+    this.updateSystemPromptPreview();
+  }
+
+  /**
+   * 获取当前编辑数据
+   */
+  getEditingData(): PageEditingData {
+    return {
+      llm: {
         openai_base_url: this.baseUrlInput.value.trim(),
         openai_api_key: this.apiKeyInput.value.trim(),
         model_name: this.modelNameInput.value.trim(),
         temperature: Number.isFinite(Number(this.temperatureInput.value))
           ? Number(this.temperatureInput.value)
-          : this.chatSettingsState.temperature,
-        system_prompt,
-        name: this.nameInput.value.trim() || undefined,
-        feature: this.featureInput.value.trim() || undefined,
-        character: this.characterInput.value.trim() || undefined,
-        address: this.addressInput.value.trim() || undefined,
-        characteristic: this.characteristicInput.value.trim() || undefined,
-        constraint: this.constraintInput.value.trim() || undefined,
-      };
-
-      await window.desktopPetApi.updateChatSettings(this.chatSettingsState);
-    });
+          : 0.7,
+        name: this.nameInput.value.trim(),
+        feature: this.featureInput.value.trim(),
+        character: this.characterInput.value.trim(),
+        address: this.addressInput.value.trim(),
+        characteristic: this.characteristicInput.value.trim(),
+        constraint: this.constraintInput.value.trim(),
+      },
+    };
   }
 
   /**
@@ -120,6 +173,13 @@ export class LlmPage {
     if (constraint) {
       prompt += `\n${constraint}`;
     }
+
+    // 添加表情标签说明
+    if (this.expressionLabels.length > 0) {
+      const tagsList = this.expressionLabels.map((l) => `<${l}>`).join("");
+      prompt += `\n你可以在对话中使用以下表情标签:${tagsList}使用时必须像示例一样使用尖括号<>包裹`;
+    }
+
     return prompt;
   }
 
@@ -128,45 +188,5 @@ export class LlmPage {
    */
   private updateSystemPromptPreview(): void {
     this.systemPromptInput.value = this.buildSystemPrompt();
-  }
-
-  /**
-   * 渲染 LLM 设置
-   * @param state 聊天设置状态
-   * @param forceUpdate 是否强制更新内部状态（模型切换时需要）
-   */
-  render(state: ChatSettingsState | null, forceUpdate = false): void {
-    // 首次加载或强制更新时设置内部状态
-    if (state && (!this.chatSettingsState || forceUpdate)) {
-      this.chatSettingsState = state;
-    }
-
-    // 使用内部状态渲染
-    if (!this.chatSettingsState) {
-      return;
-    }
-
-    this.baseUrlInput.value = this.chatSettingsState.openai_base_url;
-    this.apiKeyInput.value = this.chatSettingsState.openai_api_key;
-    this.modelNameInput.value = this.chatSettingsState.model_name;
-    this.temperatureInput.value = String(this.chatSettingsState.temperature);
-
-    // 渲染提示词模板字段
-    this.nameInput.value = this.chatSettingsState.name || "";
-    this.featureInput.value = this.chatSettingsState.feature || "";
-    this.characterInput.value = this.chatSettingsState.character || "";
-    this.addressInput.value = this.chatSettingsState.address || "";
-    this.characteristicInput.value = this.chatSettingsState.characteristic || "";
-    this.constraintInput.value = this.chatSettingsState.constraint || "";
-
-    // 更新系统提示词预览
-    this.updateSystemPromptPreview();
-  }
-
-  /**
-   * 获取聊天设置状态
-   */
-  getChatSettingsState(): ChatSettingsState | null {
-    return this.chatSettingsState;
   }
 }

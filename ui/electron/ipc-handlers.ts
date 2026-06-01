@@ -136,6 +136,8 @@ export const registerIpcHandlers = (): void => {
       offsetY: active.offsetY ?? 0,
       userScale: active.userScale ?? 1,
       followCursor: active.followCursor ?? true,
+      motionConfig: active.motionConfig ?? [],
+      entry: active.entry,
     };
   });
 
@@ -154,6 +156,9 @@ export const registerIpcHandlers = (): void => {
         offsetY: item.offsetY ?? 0,
         userScale: item.userScale ?? 1,
         followCursor: item.followCursor ?? true,
+        motionConfig: item.motionConfig ?? [],
+        entry: item.entry,
+        modelUrl: resolveModelUrl(item),
       })),
     };
   });
@@ -907,6 +912,45 @@ export const registerIpcHandlers = (): void => {
     fs.mkdirSync(path.dirname(FRONTEND_SETTINGS_PATH), { recursive: true });
     fs.writeFileSync(FRONTEND_SETTINGS_PATH, JSON.stringify(updated, null, 2), "utf-8");
     return updated;
+  });
+
+  // 获取模型动作配置
+  ipcMain.handle("desktop-pet:get-motion-config", (_event, modelId: string) => {
+    const config = loadModelConfig();
+    const model = config.models.find((item) => item.id === modelId);
+    return model?.motionConfig ?? [];
+  });
+
+  // 更新模型动作配置
+  ipcMain.handle(
+    "desktop-pet:update-model-motion-config",
+    (_event, payload: { modelId: string; motionConfig: import("./types.js").MotionConfig[] }) => {
+      const config = loadModelConfig();
+      const target = config.models.find((item) => item.id === payload.modelId);
+      if (!target) {
+        throw new Error("Model not found");
+      }
+
+      target.motionConfig = payload.motionConfig;
+      saveModelConfig(config);
+
+      // 通知主窗口动作配置已更新
+      const mainWindow = getMainWindow();
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("desktop-pet:motion-config-changed", {
+          modelId: payload.modelId,
+          motionConfig: payload.motionConfig,
+        });
+      }
+    }
+  );
+
+  // 播放动作（转发到主窗口）
+  ipcMain.on("desktop-pet:play-motion", (_event, motionName: string) => {
+    const mainWindow = getMainWindow();
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("desktop-pet:play-motion-request", motionName);
+    }
   });
 };
 

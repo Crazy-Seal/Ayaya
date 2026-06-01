@@ -119,5 +119,26 @@ contextBridge.exposeInMainWorld("desktopPetApi", {
   // 更新前端设置
   updateFrontendSettings: (settings) => {
     return ipcRenderer.invoke("desktop-pet:update-frontend-settings", settings);
+  },
+  // 动作控制
+  getMotionConfig: (modelId) => {
+    return ipcRenderer.invoke("desktop-pet:get-motion-config", modelId);
+  },
+  updateModelMotionConfig: (payload) => {
+    return ipcRenderer.invoke("desktop-pet:update-model-motion-config", payload);
+  },
+  playMotion: (motionName) => {
+    ipcRenderer.send("desktop-pet:play-motion", motionName);
+  },
+  // 动作控制事件监听
+  onPlayMotionRequest: (listener) => {
+    const handler = (_event, motionName) => listener(motionName);
+    ipcRenderer.on("desktop-pet:play-motion-request", handler);
+    return () => ipcRenderer.removeListener("desktop-pet:play-motion-request", handler);
+  },
+  onMotionConfigChanged: (listener) => {
+    const handler = (_event, payload) => listener(payload);
+    ipcRenderer.on("desktop-pet:motion-config-changed", handler);
+    return () => ipcRenderer.removeListener("desktop-pet:motion-config-changed", handler);
   }
 });

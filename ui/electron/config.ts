@@ -19,7 +19,7 @@ import path from "node:path";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-export const UI_ROOT = path.resolve(__dirname, "..");
+export const UI_ROOT = path.resolve(__dirname, "..", "..");
 export const WORKSPACE_ROOT = path.resolve(UI_ROOT, "..");
 export const USER_DATA_DIR = path.join(UI_ROOT, "user_data");
 export const IMPORTED_MODELS_DIR = path.join(USER_DATA_DIR, "live2d_models");

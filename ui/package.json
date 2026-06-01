@@ -3,13 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "main": "dist-electron/main.js",
+  "main": "dist-electron/electron/main.js",
   "scripts": {
     "prepare:live2d": "node scripts/prepare-live2d.mjs",
     "build:electron": "tsc -p tsconfig.electron.json",
     "dev": "npm run prepare:live2d && npm run build:electron && run-p dev:renderer dev:electron",
     "dev:renderer": "vite",
-    "dev:electron": "wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron dist-electron/main.js",
+    "dev:electron": "wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron dist-electron/electron/main.js",
     "build": "npm run prepare:live2d && vite build && npm run build:electron",
     "start": "cross-env NODE_ENV=production electron ."
   },
