@@ -93,8 +93,21 @@ def save_image_to_disk(image_data: str) -> str | None:
         # 确保目录存在
         os.makedirs(IMAGES_DIR, exist_ok=True)
 
-        # 解析 data URL
+        # 解析 data URL 并提取格式
+        ext = "png"  # 默认后缀
         if image_data.startswith("data:image"):
+            # 提取 MIME 类型：data:image/jpeg;base64,xxx
+            mime_start = 5  # "data:" 之后
+            mime_end = image_data.find(";")
+            if mime_end > mime_start:
+                mime_type = image_data[mime_start:mime_end]  # "image/jpeg"
+                mime_ext = mime_type.split("/")[1] if "/" in mime_type else "png"
+                # 标准化后缀名
+                if mime_ext == "jpeg":
+                    ext = "jpg"
+                else:
+                    ext = mime_ext
+
             # 提取 base64 部分
             base64_start = image_data.find(",") + 1
             if base64_start == 0:
@@ -107,11 +120,11 @@ def save_image_to_disk(image_data: str) -> str | None:
         # 解码 base64
         image_bytes = base64.b64decode(base64_data)
 
-        # 生成文件名：日期+时间+UUID
+        # 生成文件名：日期+时间+UUID+后缀
         now = datetime.now()
         timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
         unique_id = uuid.uuid4().hex[:8]
-        filename = f"{timestamp}_{unique_id}.png"
+        filename = f"{timestamp}_{unique_id}.{ext}"
         filepath = os.path.join(IMAGES_DIR, filename)
 
         # 保存文件

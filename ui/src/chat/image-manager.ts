@@ -12,9 +12,11 @@ export interface PendingImage {
 }
 
 /**
- * 将图片文件转换为 PNG data URL
+ * 将图片文件转换为 JPEG data URL
+ * @param file 图片文件
+ * @param quality JPEG 压缩质量 (0-1)，默认 0.8
  */
-export const convertToPngDataUrl = async (file: File): Promise<string> => {
+export const convertToJpegDataUrl = async (file: File, quality = 0.8): Promise<string> => {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
@@ -27,7 +29,7 @@ export const convertToPngDataUrl = async (file: File): Promise<string> => {
         return;
       }
       ctx.drawImage(img, 0, 0);
-      const dataUrl = canvas.toDataURL("image/png");
+      const dataUrl = canvas.toDataURL("image/jpeg", quality);
       URL.revokeObjectURL(img.src);
       resolve(dataUrl);
     };
@@ -77,12 +79,8 @@ export class ImageManager {
       if (!file.type.startsWith("image/")) continue;
 
       try {
-        let dataUrl: string;
-        if (file.type === "image/png") {
-          dataUrl = await this.fileToDataUrl(file);
-        } else {
-          dataUrl = await convertToPngDataUrl(file);
-        }
+        // 所有图片统一转换为 JPEG 格式以减小体积
+        const dataUrl = await convertToJpegDataUrl(file);
 
         this.images.push({
           id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
