@@ -44,5 +44,5 @@ CLAUDE.md
 app/agent/memory/diary_demo.py
 app/agent/memory/import_demo.py
 
-# ===== memory =====
-memory
+# ===== memory data =====
+/memory/
