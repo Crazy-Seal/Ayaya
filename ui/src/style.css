@@ -102,7 +102,9 @@ body {
 }
 
 #live2d-stage[hidden] {
-  display: none !important;
+  /* 截屏时用 visibility 隐藏而非 display:none，避免 WebGL 上下文丢失导致模型概率性不重现 */
+  display: block !important; /* 覆盖 UA 默认的 [hidden]{display:none} */
+  visibility: hidden !important;
 }
 
 #live2d-stage canvas {
