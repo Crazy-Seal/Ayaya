@@ -1,14 +1,28 @@
 """access_the_internet 工具 - 通过 Tavily 进行互联网检索"""
-
+import asyncio
 import os
+from pathlib import Path
+
+from dotenv import dotenv_values
 
 from app.agent_v2.context import BaseTool, ToolContext, ToolResult
 from app.agent_v2.utils.log import log_tool_call_result, shorten_for_log
 
+# 项目根目录下的 .env（access_the_internet.py 位于 app/agent_v2/tools/ 下，向上 3 级即根）
+_ENV_PATH = Path(__file__).resolve().parents[3] / ".env"
+
 
 def _load_tavily_api_key() -> str | None:
-    """读取 Tavily API Key：从 TAVILY_API_KEY 读取。"""
-    key = (os.getenv("TAVILY_API_KEY") or "").strip()
+    """读取 Tavily API Key。
+
+    优先从项目根 .env 读取，再回退到进程环境变量。
+    （系统环境变量里可能没有该键，或残留了过期的旧值，故显式加载 .env。）
+    """
+    key = ""
+    if _ENV_PATH.exists():
+        key = (dotenv_values(_ENV_PATH).get("TAVILY_API_KEY") or "").strip()
+    if not key:
+        key = (os.getenv("TAVILY_API_KEY") or "").strip()
     return key or None
 
 
@@ -82,20 +96,43 @@ class AccessTheInternetTool(BaseTool):
         if not api_key:
             return "错误: 未找到 Tavily API Key。请设置环境变量 TAVILY_API_KEY。"
 
-        # 仅在当前进程设置环境变量，供 langchain-tavily 底层客户端读取。
-        os.environ["TAVILY_API_KEY"] = api_key
+        try:
+            import httpx
+        except ModuleNotFoundError:
+            return "错误: 缺少 httpx 依赖，请先安装: pip install httpx"
+
+        # 直接调用 Tavily REST API（POST https://api.tavily.com/search），不依赖任何 SDK。
+        payload = {
+            "query": query.strip(),
+            "search_depth": "basic",
+            "topic": "general",
+            "max_results": 5,
+            "include_answer": True,
+        }
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
 
         try:
-            from langchain_tavily import TavilySearch
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    "https://api.tavily.com/search",
+                    json=payload,
+                    headers=headers,
+                )
+        except httpx.TimeoutException:
+            return "错误: Tavily检索超时。"
+        except httpx.HTTPError as e:
+            return f"错误: Tavily检索请求失败: {e}"
 
-            search_tool = TavilySearch(
-                max_results=5,
-                search_depth="advanced",
-                include_answer=True,
-            )
-            result = await search_tool.ainvoke({"query": query.strip()})
-            return _format_search_output(result)
-        except ModuleNotFoundError:
-            return "错误: 缺少 langchain-tavily 依赖，请先安装: pip install langchain-tavily"
-        except Exception as e:
-            return f"错误: Tavily检索失败: {e}"
+        if response.status_code != 200:
+            detail = shorten_for_log(response.text.replace("\n", " "), max_len=300)
+            return f"错误: Tavily检索失败 (HTTP {response.status_code}): {detail}"
+
+        try:
+            data = response.json()
+        except ValueError:
+            return "错误: Tavily返回的响应无法解析为JSON。"
+
+        return _format_search_output(data)
