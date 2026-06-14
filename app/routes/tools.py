@@ -1,24 +1,9 @@
-import os
-
 from fastapi import APIRouter
 
 from app.schemas.result import Result
 from app.schemas.tool import ToolInfo
 
 router = APIRouter(tags=["tools"])
-
-
-def _list_tools_v1() -> list[ToolInfo]:
-    """v1(LangGraph) 工具：get_tools() 返回已实例化的工具对象。"""
-    from app.agent.tools import get_tools
-
-    return [
-        ToolInfo(
-            name=tool.name,
-            description=tool.description.strip() if tool.description else "",
-        )
-        for tool in get_tools()
-    ]
 
 
 def _list_tools_v2() -> list[ToolInfo]:
@@ -37,10 +22,6 @@ def _list_tools_v2() -> list[ToolInfo]:
 
 @router.get("/tools", response_model=Result)
 def list_tools() -> Result:
-    """获取所有可用工具的名称和描述。
-
-    按 AGENT_BACKEND 选择 v1(默认) 或 v2 后端，与 /chat 保持一致。
-    """
-    backend = os.getenv("AGENT_BACKEND", "v1").strip().lower()
-    tool_list = _list_tools_v2() if backend == "v2" else _list_tools_v1()
+    """获取所有可用工具的名称和描述"""
+    tool_list = _list_tools_v2()
     return Result(data={"tools": [t.model_dump() for t in tool_list]}, msg="success", code=200)

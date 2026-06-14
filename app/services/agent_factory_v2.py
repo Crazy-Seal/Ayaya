@@ -1,7 +1,4 @@
-"""agent_v2 工厂 - 把 ChatSettings 映射为 v2 Agent。
-
-仅供 AGENT_BACKEND=v2 时使用；不改动旧 app/agent。
-"""
+"""agent_v2 工厂 - 把 ChatSettings 映射为 v2 Agent。"""
 
 from app.agent_v2.agent import Agent, AgentConfig
 from app.schemas.chat_settings import ChatSettings
