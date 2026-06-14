@@ -1,3 +1,4 @@
+import os
 from typing import Callable
 
 from fastapi import Depends
@@ -32,7 +33,15 @@ def get_chat_settings_loader(
 def get_agent_service(
     chat_history_dao: ChatHistoryDao = Depends(get_chat_history_dao),
     chat_settings_loader: Callable[[str], ChatSettings] = Depends(get_chat_settings_loader),
-) -> AgentService:
+):
+    """按 AGENT_BACKEND 选择 v1(默认) 或 v2 后端。v1 路径完全不触及 agent_v2。"""
+    backend = os.getenv("AGENT_BACKEND", "v1").strip().lower()
+    if backend == "v2":
+        from app.services.agent_service_v2 import AgentServiceV2
+        return AgentServiceV2(
+            chat_history_dao=chat_history_dao,
+            chat_settings_loader=chat_settings_loader,
+        )
     return AgentService(
         chat_history_dao=chat_history_dao,
         chat_settings_loader=chat_settings_loader,

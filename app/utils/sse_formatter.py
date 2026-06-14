@@ -25,6 +25,16 @@ class SSEFormatter:
         Returns:
             SSE 格式字符串，如果事件不需要输出则返回 None
         """
+        # agent_v2 的 AgentEvent：直接复用其 to_sse()。DONE 由路由 done() 收尾，这里过滤。
+        try:
+            from app.agent_v2.core.event_router import AgentEvent as _V2Event, EventType as _V2Type
+        except Exception:
+            _V2Event = None
+        if _V2Event is not None and isinstance(event, _V2Event):
+            if event.type == _V2Type.DONE:
+                return None
+            return event.to_sse()
+
         if isinstance(event, ToolCallEvent):
             payload = {"tool_name": event.tool_name}
             data = json.dumps(payload, ensure_ascii=False)
