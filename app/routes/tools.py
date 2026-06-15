@@ -7,8 +7,8 @@ router = APIRouter(tags=["tools"])
 
 
 def _list_tools_v2() -> list[ToolInfo]:
-    """v2(自建框架) 工具：从 ToolRegistry 解析每个工具类读取类属性。"""
-    from app.agent_v2.tools.registry import ToolRegistry
+    """从 ToolRegistry 解析每个工具类读取类属性。"""
+    from app.agent.tools.registry import ToolRegistry
 
     infos: list[ToolInfo] = []
     for name in ToolRegistry.list_tools():

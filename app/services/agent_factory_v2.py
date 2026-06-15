@@ -1,11 +1,11 @@
-"""agent_v2 工厂 - 把 ChatSettings 映射为 v2 Agent。"""
+"""agent 工厂 - 把 ChatSettings 映射为 Agent。"""
 
-from app.agent_v2.agent import Agent, AgentConfig
+from app.agent.agent import Agent, AgentConfig
 from app.schemas.chat_settings import ChatSettings
 
 
 def build_agent_v2(chat_settings: ChatSettings) -> Agent:
-    """根据会话配置构造一个 v2 Agent。"""
+    """根据会话配置构造一个 Agent。"""
     plugins = ["context_window", "image"]
     # 记忆默认随 memory_plugins 开启（与旧语义一致：未配置则不挂记忆）
     if chat_settings.memory_plugins:

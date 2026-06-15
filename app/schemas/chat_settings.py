@@ -17,7 +17,7 @@ class ChatSettings(BaseModel):
     tools_list: list[str]
     # 可选：启用的记忆插件列表（按顺序执行）
     memory_plugins: list[str] | None = None
-    # 可选：启用的能力包（Skill）列表（仅 agent_v2 使用）
+    # 可选：启用的能力包（Skill）列表（仅 agent 使用）
     skills: list[str] | None = None
 
     # === 提示词模板字段 ===

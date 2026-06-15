@@ -5,7 +5,7 @@
 
 import json
 
-from app.agent_v2.core.event_router import AgentEvent, EventType
+from app.agent.core.event_router import AgentEvent, EventType
 
 
 class SSEFormatter:
@@ -16,7 +16,7 @@ class SSEFormatter:
         """将事件转换为 SSE 格式字符串。
 
         Args:
-            event: 流式事件对象（agent_v2 的 AgentEvent）
+            event: 流式事件对象（agent 的 AgentEvent）
 
         Returns:
             SSE 格式字符串，如果事件不需要输出则返回 None

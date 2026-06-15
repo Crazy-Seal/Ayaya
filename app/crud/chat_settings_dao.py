@@ -27,7 +27,7 @@ class ChatSettingsDao:
         """清除所有相关缓存"""
         self._cache.clear()
         # 清除 MemoryManager 工厂缓存
-        from app.agent_v2.memory import get_memory_manager
+        from app.agent.memory import get_memory_manager
         get_memory_manager.cache_clear()
 
     @staticmethod

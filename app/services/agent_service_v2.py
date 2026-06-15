@@ -1,16 +1,14 @@
-"""AgentServiceV2 - 驱动 agent_v2.Agent，对外暴露与 AgentService 相同的方法签名。
+"""AgentService 
 
-产出 v2 AgentEvent（非 DONE/ERROR）；DONE 交给路由的 done() 收尾，ERROR 转为异常
-（与 v1 行为一致：路由 except 分支输出 error 事件）。SSEFormatter 已扩展支持 AgentEvent，
-故路由无需改动，SSE 字节与 v1 兼容。
+产出 AgentEvent（非 DONE/ERROR）；DONE 交给路由的 done() 收尾，ERROR 转为异常
 """
 
 import logging
 from datetime import datetime
 from typing import AsyncIterator, Callable
 
-from app.agent_v2.agent import Agent
-from app.agent_v2.core.event_router import EventType
+from app.agent.agent import Agent
+from app.agent.core.event_router import EventType
 from app.crud.chat_history_dao import ChatHistoryDao
 from app.schemas.chat import AgentInput
 from app.schemas.chat_settings import ChatSettings
@@ -18,7 +16,7 @@ from app.services.agent_factory_v2 import build_agent_v2
 
 logger = logging.getLogger(__name__)
 
-# 中断后恢复用的活跃 agent 缓存（独立于 v1）
+# 中断后恢复用的活跃 agent 缓存
 _active_agents_v2: dict[str, Agent] = {}
 
 

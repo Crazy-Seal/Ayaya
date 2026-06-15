@@ -28,7 +28,7 @@ Thumbs.db
 
 # ===== Logs =====
 app/agent/tools/tools.log
-app/agent_v2/tools/tools.log
+app/agent/tools/tools.log
 
 # ===== Environment files =====
 .env
