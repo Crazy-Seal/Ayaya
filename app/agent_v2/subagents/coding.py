@@ -12,8 +12,8 @@ import os
 from app.agent_v2.agent import Agent, AgentConfig
 from app.agent_v2.context import BasePlugin, PluginHook, HookContext
 from app.agent_v2.state import AgentState
-from app.agent_v2.utils.text_utils import extract_text
-from app.agent_v2.utils.todo_manager import TodoManager
+from app.agent_v2.utils.domain.text import extract_text
+from app.agent_v2.subagents.todo_manager import TodoManager
 
 logger = logging.getLogger(__name__)
 

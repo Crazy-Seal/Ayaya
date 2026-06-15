@@ -1,12 +1,11 @@
 """access_the_internet 工具 - 通过 Tavily 进行互联网检索"""
-import asyncio
 import os
 from pathlib import Path
 
 from dotenv import dotenv_values
 
 from app.agent_v2.context import BaseTool, ToolContext, ToolResult
-from app.agent_v2.utils.log import log_tool_call_result, shorten_for_log
+from app.agent_v2.utils.infra.log import log_tool_call_result, shorten_for_log
 
 # 项目根目录下的 .env（access_the_internet.py 位于 app/agent_v2/tools/ 下，向上 3 级即根）
 _ENV_PATH = Path(__file__).resolve().parents[3] / ".env"

@@ -6,7 +6,7 @@ from typing import Any
 
 import chromadb
 
-from app.agent_v2.utils.embedding_client import EmbeddingClient, EmbeddingConfig
+from app.agent_v2.models.embedding_client import EmbeddingClient, EmbeddingConfig
 
 logger = logging.getLogger(__name__)
 

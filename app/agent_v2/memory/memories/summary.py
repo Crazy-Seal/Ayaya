@@ -7,7 +7,7 @@ from typing import Any
 from app.agent_v2.memory.config import MemoryConfig
 from app.agent_v2.memory.store.chat_history_store import ChatHistoryStore
 from app.agent_v2.memory.store.diary_sqlite_store import DiarySqliteStore
-from app.agent_v2.utils.llm_client import LLMClient, LLMConfig
+from app.agent_v2.models.llm_client import LLMClient, LLMConfig
 from app.schemas.chat_settings import ChatSettings
 
 logger = logging.getLogger(__name__)

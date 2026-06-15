@@ -4,8 +4,8 @@ import logging
 
 from app.agent_v2.context import BaseTool, ToolContext, ToolResult
 from app.agent_v2.subagents.coding import run_coding_subagent
-from app.agent_v2.utils.background_tasks import create_background_task
-from app.agent_v2.utils.log import log_tool_call_result
+from app.agent_v2.utils.infra.background_tasks import create_background_task
+from app.agent_v2.utils.infra.log import log_tool_call_result
 
 logger = logging.getLogger(__name__)
 

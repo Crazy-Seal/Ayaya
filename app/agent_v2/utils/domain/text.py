@@ -1,38 +1,34 @@
-"""文本处理工具函数
+"""消息文本处理（OpenAI dict 版）。
 
 适配 agent_v2：消息为 OpenAI 风格的 dict（含 "role"/"content"/"name" 等字段），
-不再依赖 LangChain 消息类型。
+不依赖 LangChain 消息类型。包含：
+- 文本提取（extract_text，兼容 dict 项与带 .text 的对象）
+- 人类消息定位/上下文切分（截图不计入人类消息）
+- 模型消息规范化（normalize_messages_for_model）
 """
 
-# 截图消息的 name 标识（与 core/pipeline.py 中 SCREENSHOT_MESSAGE_NAME 保持一致）
-SCREENSHOT_MESSAGE_NAME = "system_screenshot"
+import logging
 
+# 截图判定与"真实人类消息"谓词统一在 domain.window，避免重复定义与语义分歧
+from app.agent_v2.utils.domain.window import is_user, is_real_human
 
-def is_screenshot_message(message: dict) -> bool:
-    """判断一条消息是否为截图消息。"""
-    if not isinstance(message, dict):
-        return False
-    return message.get("name") == SCREENSHOT_MESSAGE_NAME
-
-
-def _is_human(message: dict) -> bool:
-    """判断一条消息是否为用户消息。"""
-    if not isinstance(message, dict):
-        return False
-    return message.get("role") == "user"
+logger = logging.getLogger(__name__)
 
 
 def extract_text(content: object) -> str:
-    """从模型消息 content 中提取纯文本。"""
+    """从模型消息 content 中提取纯文本。
+
+    兼容三种输入：纯字符串、OpenAI 风格 dict 列表（取 "text" 字段）、
+    以及带 `.text` 属性的对象列表（如 ContentPart）。
+    """
     if isinstance(content, str):
         return content
     if isinstance(content, list):
         text_parts: list[str] = []
         for item in content:
-            if isinstance(item, dict):
-                text = item.get("text")
-                if isinstance(text, str):
-                    text_parts.append(text)
+            text = item.get("text") if isinstance(item, dict) else getattr(item, "text", None)
+            if isinstance(text, str) and text:
+                text_parts.append(text)
         return "".join(text_parts)
     return ""
 
@@ -43,7 +39,7 @@ def get_last_human_text(messages: list[dict]) -> str:
     注意：截图消息不计入用户消息。
     """
     for msg in reversed(messages):
-        if _is_human(msg) and not is_screenshot_message(msg):
+        if is_real_human(msg):
             return extract_text(msg.get("content"))
     return ""
 
@@ -68,7 +64,7 @@ def split_context(
     # 过滤截图消息后的人类消息索引
     human_indices = [
         idx for idx, msg in enumerate(messages)
-        if _is_human(msg) and not is_screenshot_message(msg)
+        if is_real_human(msg)
     ]
     if not human_indices:
         return [], []
@@ -80,7 +76,7 @@ def split_context(
     before_messages = messages[:later_start_idx]
     before_human_indices = [
         idx for idx, msg in enumerate(before_messages)
-        if _is_human(msg) and not is_screenshot_message(msg)
+        if is_real_human(msg)
     ]
     if not before_human_indices:
         return [], later_messages
@@ -95,7 +91,7 @@ def extract_multimodal_signals(messages: list[dict]) -> list[str]:
     """从消息中提取可持久化的多模态信号文本。"""
     signals: list[str] = []
     for msg in messages:
-        if not _is_human(msg):
+        if not is_user(msg):
             continue
         content = msg.get("content")
         if not isinstance(content, list):
@@ -109,3 +105,45 @@ def extract_multimodal_signals(messages: list[dict]) -> list[str]:
             payload = {k: v for k, v in item.items() if k != "text"}
             signals.append(f"多模态输入[{item_type}]：{payload}")
     return signals
+
+
+def normalize_messages_for_model(messages: list[dict]) -> list[dict]:
+    """规范化消息：修正/丢弃非法的 tool 消息，避免被部分网关（如 Gemini 兼容层）拒绝。
+
+    - 为缺 name 的 tool 消息回填工具名（从前面的 assistant.tool_calls 推断）
+    - 实在无法确定工具名的 tool 消息直接丢弃
+    """
+    normalized: list[dict] = []
+    tool_call_names: dict[str, str] = {}
+
+    for message in messages:
+        role = message.get("role")
+
+        if role == "assistant":
+            for tool_call in message.get("tool_calls") or []:
+                tc_id = tool_call.get("id")
+                fn = tool_call.get("function") or {}
+                fn_name = fn.get("name")
+                if tc_id and fn_name:
+                    tool_call_names[tc_id] = fn_name
+            normalized.append(message)
+            continue
+
+        if role == "tool":
+            tool_name = message.get("name")
+            if not tool_name and message.get("tool_call_id"):
+                tool_name = tool_call_names.get(message["tool_call_id"])
+
+            if not tool_name:
+                logger.warning(
+                    "[Agent] 丢弃无 name 的 tool 消息，tool_call_id=%s",
+                    message.get("tool_call_id"),
+                )
+                continue
+
+            if tool_name != message.get("name"):
+                message = {**message, "name": tool_name}
+
+        normalized.append(message)
+
+    return normalized

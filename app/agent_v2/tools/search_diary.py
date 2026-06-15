@@ -3,7 +3,7 @@
 from datetime import date
 
 from app.agent_v2.context import BaseTool, ToolContext, ToolResult
-from app.agent_v2.utils.log import log_tool_call_result
+from app.agent_v2.utils.infra.log import log_tool_call_result
 
 
 class SearchDiaryTool(BaseTool):

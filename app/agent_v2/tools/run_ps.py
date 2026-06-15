@@ -10,8 +10,8 @@ import subprocess
 from typing import Tuple
 
 from app.agent_v2.context import BaseTool, ToolContext, ToolResult
-from app.agent_v2.utils.log import log_tool_call_result
-from app.agent_v2.utils.safe_path import WORKDIR
+from app.agent_v2.utils.infra.log import log_tool_call_result
+from app.agent_v2.utils.infra.safe_path import WORKDIR
 
 # 默认把 run_ps 放到独立 conda 环境执行，避免污染主项目环境。
 RUN_PS_CONDA_ENV = os.getenv("RUN_PS_CONDA_ENV", "agent_workspace")

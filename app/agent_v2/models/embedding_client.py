@@ -1,6 +1,5 @@
 """Embedding API 客户端"""
 
-import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any

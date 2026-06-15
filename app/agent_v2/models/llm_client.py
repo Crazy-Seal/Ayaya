@@ -2,11 +2,6 @@
 LLM API 客户端
 
 基于官方 openai SDK（AsyncOpenAI）实现。
-
-设计原则：只拥有控制流，租用 IO。
-- 流式解析、工具调用 delta 累积由 SDK 负责，本模块不再手搓 SSE。
-- 对外保持稳定接口（astream / ainvoke / ainvoke_structured），
-  使 pipeline 与 memory 模块无需改动。
 """
 
 import json

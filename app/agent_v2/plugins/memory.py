@@ -11,10 +11,11 @@ import logging
 from app.agent_v2.context import BasePlugin, PluginHook, HookContext
 from app.agent_v2.memory.manager import get_memory_manager
 from app.agent_v2.message import messages_from_openai_format
-from app.agent_v2.utils.background_tasks import create_background_task
-from app.agent_v2.utils.context_window import SUMMARY_EVERY_HUMAN_MESSAGES, _is_real_human
-from app.agent_v2.utils.image_utils import ImageTaskResult, clear_task, get_image_task
-from app.agent_v2.utils.text_utils import extract_text, get_last_human_text, split_context
+from app.agent_v2.utils.infra.background_tasks import create_background_task
+from app.agent_v2.utils.domain.window import is_real_human
+from app.agent_v2.utils.infra.constants import SUMMARY_EVERY_HUMAN_MESSAGES
+from app.agent_v2.utils.domain.images import ImageTaskResult, clear_task, get_image_task
+from app.agent_v2.utils.domain.text import extract_text, get_last_human_text, split_context
 
 logger = logging.getLogger(__name__)
 
@@ -128,7 +129,7 @@ class MemoryPlugin(BasePlugin):
         """
         last_human_idx = -1
         for i in range(len(messages) - 1, -1, -1):
-            if _is_real_human(messages[i]):
+            if is_real_human(messages[i]):
                 last_human_idx = i
                 break
         if last_human_idx < 0:

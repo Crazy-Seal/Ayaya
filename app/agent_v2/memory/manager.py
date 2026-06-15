@@ -13,6 +13,7 @@ from app.agent_v2.memory.memories.semantic_mem0 import Mem0SemanticMemory
 from app.agent_v2.memory.memories.summary import SummaryMemory
 from app.agent_v2.memory.store.chat_history_store import ChatHistoryStore
 from app.agent_v2.message import Message, MessageRole
+from app.agent_v2.utils.domain.text import extract_text
 from app.crud.chat_settings_dao import ChatSettingsDao
 from app.schemas.chat_settings import ChatSettings
 
@@ -326,7 +327,7 @@ class MemoryManager:
             if msg.role == MessageRole.USER:
                 role = user_name
                 # 提取文本内容
-                content = self._extract_text_from_content(msg.content)
+                content = extract_text(msg.content)
             elif msg.role == MessageRole.ASSISTANT:
                 role = ai_name
                 # 检查是否有工具调用
@@ -334,30 +335,12 @@ class MemoryManager:
                     tool_names = [tc.name for tc in msg.tool_calls]
                     content = f"[调用了工具: {', '.join(tool_names)}]"
                 else:
-                    content = self._extract_text_from_content(msg.content)
+                    content = extract_text(msg.content)
             else:
                 # 跳过 system、tool 等其他类型
                 continue
             lines.append(f"{role}: {content}")
         return "\n".join(lines)
-
-    def _extract_text_from_content(self, content: str | list) -> str:
-        """从消息内容中提取文本"""
-        if isinstance(content, str):
-            return content
-
-        if isinstance(content, list):
-            text_parts = []
-            for part in content:
-                if hasattr(part, 'text') and part.text:
-                    text_parts.append(part.text)
-                elif isinstance(part, dict) and part.get("type") == "text":
-                    text_val = part.get("text")
-                    if text_val:
-                        text_parts.append(text_val)
-            return " ".join(text_parts)
-
-        return ""
 
 
 # ==================== 工厂函数 ====================

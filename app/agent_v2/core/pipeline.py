@@ -25,14 +25,13 @@ from app.agent_v2.message import (
     AssistantMessageWithTools,
 )
 from app.agent_v2.state import AgentState
+# 注入截屏/屏幕图片时使用的消息名（ContextWindowPlugin 据此做 TTL 压缩）
+from app.agent_v2.utils.infra.constants import SCREENSHOT_MESSAGE_NAME
 
 if TYPE_CHECKING:
     from app.agent_v2.agent import Agent
 
 logger = logging.getLogger(__name__)
-
-# 注入截屏/屏幕图片时使用的消息名（ContextWindowPlugin 据此做 TTL 压缩）
-SCREENSHOT_MESSAGE_NAME = "system_screenshot"
 
 
 class ExecutionPipeline:

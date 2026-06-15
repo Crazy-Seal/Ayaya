@@ -12,13 +12,15 @@
 import logging
 
 from app.agent_v2.context import BasePlugin, PluginHook, HookContext
-from app.agent_v2.utils.context_window import (
+from app.agent_v2.utils.domain.window import (
     compress_screenshot_messages,
     slice_recent_messages_by_human,
+)
+from app.agent_v2.utils.infra.constants import (
     MAX_HUMAN_MESSAGES_IN_CHECKPOINT,
     RECENT_CONTEXT_HUMAN_MESSAGES,
 )
-from app.agent_v2.utils.messages import normalize_messages_for_model
+from app.agent_v2.utils.domain.text import normalize_messages_for_model
 
 logger = logging.getLogger(__name__)
 

@@ -1,8 +1,8 @@
 """delete_file 工具 - 删除工作区内文件"""
 
 from app.agent_v2.context import BaseTool, ToolContext, ToolResult
-from app.agent_v2.utils.log import log_tool_call_result
-from app.agent_v2.utils.safe_path import safe_path
+from app.agent_v2.utils.infra.log import log_tool_call_result
+from app.agent_v2.utils.infra.safe_path import safe_path
 
 
 class DeleteFileTool(BaseTool):

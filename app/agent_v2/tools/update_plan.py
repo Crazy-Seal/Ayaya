@@ -1,8 +1,8 @@
 """update_plan 工具 - 更新编程任务的编码计划列表"""
 
 from app.agent_v2.context import BaseTool, ToolContext, ToolResult
-from app.agent_v2.utils.log import log_tool_call_result
-from app.agent_v2.utils.todo_manager import TodoManager
+from app.agent_v2.utils.infra.log import log_tool_call_result
+from app.agent_v2.subagents.todo_manager import TodoManager
 
 
 class UpdatePlanTool(BaseTool):

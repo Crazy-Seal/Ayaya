@@ -13,7 +13,7 @@ from app.agent_v2.memory.config import MemoryConfig
 from app.agent_v2.memory.store.episodic_chroma_store import EpisodicChromaStore
 from app.agent_v2.memory.store.neo4j_store import Neo4jStore
 from app.agent_v2.memory.store.semantic_sqlite_store import SemanticSqliteStore
-from app.agent_v2.utils.llm_client import LLMClient, LLMConfig
+from app.agent_v2.models.llm_client import LLMClient, LLMConfig
 from app.schemas.chat_settings import ChatSettings
 
 logger = logging.getLogger(__name__)

@@ -10,10 +10,10 @@ import logging
 import uuid
 
 from app.agent_v2.context import BasePlugin, PluginHook, HookContext
-from app.agent_v2.utils.context_window import _is_real_human
-from app.agent_v2.utils.image_description import generate_multiple_image_descriptions
-from app.agent_v2.utils.image_utils import has_image_content, set_image_task
-from app.agent_v2.utils.text_utils import extract_text
+from app.agent_v2.utils.domain.window import is_real_human
+from app.agent_v2.models.vlm import generate_multiple_image_descriptions
+from app.agent_v2.utils.domain.images import has_image_content, set_image_task
+from app.agent_v2.utils.domain.text import extract_text
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ class ImagePlugin(BasePlugin):
         # 找最新一条真实用户消息
         target = None
         for msg in reversed(state.messages):
-            if _is_real_human(msg):
+            if is_real_human(msg):
                 target = msg
                 break
         if target is None:

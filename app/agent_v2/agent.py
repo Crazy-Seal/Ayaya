@@ -4,7 +4,6 @@ Agent 核心类
 门面类，协调各管理器，提供统一的接口。
 """
 
-import asyncio
 import logging
 from dataclasses import dataclass, field
 from typing import AsyncIterator, Any
@@ -17,7 +16,7 @@ from app.agent_v2.core.plugin_manager import PluginManager
 from app.agent_v2.core.state_manager import StateManager
 from app.agent_v2.core.event_router import EventRouter, EventType, AgentEvent
 from app.agent_v2.core.pipeline import ExecutionPipeline
-from app.agent_v2.utils.llm_client import LLMClient, LLMConfig
+from app.agent_v2.models.llm_client import LLMClient, LLMConfig
 
 logger = logging.getLogger(__name__)
 

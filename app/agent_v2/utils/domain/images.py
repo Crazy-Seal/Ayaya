@@ -173,27 +173,3 @@ def has_image_content(content: object) -> bool:
                 return True
 
     return False
-
-
-def extract_text_from_content(content: object) -> str:
-    """从消息内容中提取文本。
-
-    Args:
-        content: 消息内容
-
-    Returns:
-        文本内容
-    """
-    if isinstance(content, str):
-        return content
-
-    if isinstance(content, list):
-        text_parts: list[str] = []
-        for item in content:
-            if isinstance(item, dict) and item.get("type") == "text":
-                text = item.get("text", "")
-                if text:
-                    text_parts.append(text)
-        return " ".join(text_parts)
-
-    return ""
