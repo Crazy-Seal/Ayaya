@@ -17,6 +17,8 @@ import types
 import typing
 from typing import Any, Callable, Type, Union, Literal, get_args, get_origin
 
+from pydantic import BaseModel
+
 from app.agent.context import BaseTool, ToolContext, ToolResult
 from app.agent.utils.infra.log import log_tool_call_result
 
@@ -42,6 +44,39 @@ def _unwrap_annotated(ann: Any) -> tuple[Any, str | None]:
     return ann, None
 
 
+def _strip_titles(node: Any) -> None:
+    """递归去掉 Pydantic 注入的 "title" 键（工具 schema 用不到）。"""
+    if isinstance(node, dict):
+        node.pop("title", None)
+        for v in node.values():
+            _strip_titles(v)
+    elif isinstance(node, list):
+        for v in node:
+            _strip_titles(v)
+
+
+def _inline_defs(node: Any, defs: dict) -> Any:
+    """递归把 {"$ref": "#/$defs/X"} 替换为 defs[X]，使 schema 自包含（多网关更兼容）。"""
+    if isinstance(node, dict):
+        ref = node.get("$ref")
+        if isinstance(ref, str) and ref.startswith("#/$defs/"):
+            target = defs.get(ref.split("/")[-1], {})
+            return _inline_defs(dict(target), defs)
+        return {k: _inline_defs(v, defs) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_inline_defs(v, defs) for v in node]
+    return node
+
+
+def _model_schema(model: type[BaseModel]) -> dict:
+    """从 Pydantic 模型生成自包含的 JSON Schema：内联 $defs + 去 title。"""
+    schema = model.model_json_schema()
+    defs = schema.pop("$defs", {})
+    schema = _inline_defs(schema, defs)
+    _strip_titles(schema)
+    return schema
+
+
 def _json_type(tp: Any) -> dict:
     """把一个 Python 类型映射成 JSON Schema 片段（{"type": ...} 等）。"""
     origin = get_origin(tp)
@@ -60,11 +95,18 @@ def _json_type(tp: Any) -> dict:
         scalar = _SCALAR_JSON.get(type(values[0]), "string") if values else "string"
         return {"type": scalar, "enum": values}
 
-    # list[X] / dict
+    # list[X] / tuple[X] → array，带上元素 schema
     if origin in (list, tuple):
+        args = get_args(tp)
+        if args:
+            return {"type": "array", "items": _json_type(args[0])}
         return {"type": "array"}
     if origin is dict:
         return {"type": "object"}
+
+    # Pydantic 模型 → 嵌套 object schema
+    if isinstance(tp, type) and issubclass(tp, BaseModel):
+        return _model_schema(tp)
 
     return {"type": _SCALAR_JSON.get(tp, "string")}
 
