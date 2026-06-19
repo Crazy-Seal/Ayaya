@@ -7,10 +7,9 @@ import asyncio
 import os
 import re
 import subprocess
-from typing import Tuple
+from typing import Annotated, Tuple
 
-from app.agent.context import BaseTool, ToolContext, ToolResult
-from app.agent.utils.infra.log import log_tool_call_result
+from app.agent.tools.decorator import tool
 from app.agent.utils.infra.safe_path import WORKDIR
 
 # 默认把 run_ps 放到独立 conda 环境执行，避免污染主项目环境。
@@ -109,64 +108,50 @@ def _select_timeout_sec(command: str) -> Tuple[int, str]:
     return RUN_PS_TIMEOUT_SEC, "命令执行时间长"
 
 
-class RunPsTool(BaseTool):
-    name = "run_ps"
-    description = (
-        "运行 PowerShell 命令并返回输出结果。警告：绝对禁止运行可能对系统造成损害的命令，"
-        "如删除文件、操作磁盘或注册表、重启或关闭计算机等。"
-    )
-    parameters_schema = {
-        "type": "object",
-        "properties": {
-            "command": {"type": "string", "description": "PowerShell 命令字符串。"}
-        },
-        "required": ["command"],
-    }
+async def _run_command(command: str) -> str:
+    cmd_lower = command.lower()
+    if any(d in cmd_lower for d in DANGEROUS_PATTERNS):
+        return "错误: 检测到潜在危险命令，已阻止执行。"
 
-    async def execute(self, args: dict, context: ToolContext) -> ToolResult:
-        command = args.get("command", "")
-        result = await self._run(command)
-        await log_tool_call_result(self.name, {"command": command}, result)
-        if result.startswith("错误:"):
-            return ToolResult(content=result)
-        return ToolResult.success(result)
+    final_cmd = await _build_command(command)
+    if final_cmd is None:
+        return "错误: 未找到 conda 可执行文件，无法使用独立环境执行命令。"
 
-    async def _run(self, command: str) -> str:
-        cmd_lower = command.lower()
-        if any(d in cmd_lower for d in DANGEROUS_PATTERNS):
-            return "错误: 检测到潜在危险命令，已阻止执行。"
+    timeout_sec, report = _select_timeout_sec(command)
 
-        final_cmd = await _build_command(command)
-        if final_cmd is None:
-            return "错误: 未找到 conda 可执行文件，无法使用独立环境执行命令。"
-
-        timeout_sec, report = _select_timeout_sec(command)
-
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *final_cmd,
+            cwd=WORKDIR,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *final_cmd,
-                cwd=WORKDIR,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout_sec
             )
-            try:
-                stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                    proc.communicate(), timeout=timeout_sec
-                )
-                stdout = stdout_bytes.decode("utf-8", errors="replace")
-                stderr = stderr_bytes.decode("utf-8", errors="replace")
-            except asyncio.TimeoutError:
-                if RUN_PS_TIMEOUT_BEHAVIOR == "kill":
-                    await _kill_process_tree(proc.pid)
-                    return f"命令执行超时（{timeout_sec}s），已终止进程树。"
-                return (
-                    report
-                    + f"，超过{timeout_sec}s，已停止等待并保持后台运行，PID={proc.pid}。"
-                    "如需结束该任务，可使用 taskkill /PID <pid> /T /F。"
-                )
+            stdout = stdout_bytes.decode("utf-8", errors="replace")
+            stderr = stderr_bytes.decode("utf-8", errors="replace")
+        except asyncio.TimeoutError:
+            if RUN_PS_TIMEOUT_BEHAVIOR == "kill":
+                await _kill_process_tree(proc.pid)
+                return f"命令执行超时（{timeout_sec}s），已终止进程树。"
+            return (
+                report
+                + f"，超过{timeout_sec}s，已停止等待并保持后台运行，PID={proc.pid}。"
+                "如需结束该任务，可使用 taskkill /PID <pid> /T /F。"
+            )
 
-            out = (stdout + stderr).strip()
-            return out[:50000] if out else "(无输出)"
-        except Exception as e:
-            return f"错误: 命令执行失败: {e}"
+        out = (stdout + stderr).strip()
+        return out[:50000] if out else "(无输出)"
+    except Exception as e:
+        return f"错误: 命令执行失败: {e}"
+
+
+@tool
+async def run_ps(
+    command: Annotated[str, "PowerShell 命令字符串。"],
+) -> str:
+    """运行 PowerShell 命令并返回输出结果。警告：绝对禁止运行可能对系统造成损害的命令，如删除文件、操作磁盘或注册表、重启或关闭计算机等。"""
+    return await _run_command(command)

@@ -1,10 +1,12 @@
 """
 工具注册表
 
-支持延迟加载，避免循环依赖。
+支持延迟加载，避免循环依赖。工具清单由「自动扫描 tools/ 目录」生成，无需手维护。
 """
 
-from typing import Callable, Type
+import os
+import pkgutil
+from typing import Type
 import logging
 
 from app.agent.context import BaseTool
@@ -20,27 +22,6 @@ class ToolRegistry:
 
     # 延迟加载注册表：名称 -> "模块路径:符号名"
     _lazy_tools: dict[str, str] = {}
-
-    @classmethod
-    def register(cls, name: str | None = None) -> Callable[[Type[BaseTool]], Type[BaseTool]]:
-        """注册工具的装饰器
-
-        Usage:
-            @ToolRegistry.register()
-            class MyTool(BaseTool):
-                name = "my_tool"
-                ...
-
-            @ToolRegistry.register("custom_name")
-            class MyTool(BaseTool):
-                ...
-        """
-        def decorator(tool_class: Type[BaseTool]) -> Type[BaseTool]:
-            tool_name = name or tool_class.name
-            cls._tools[tool_name] = tool_class
-            logger.debug(f"注册工具: {tool_name}")
-            return tool_class
-        return decorator
 
     @classmethod
     def register_lazy(cls, name: str, spec: str) -> None:
@@ -78,7 +59,13 @@ class ToolRegistry:
 
     @classmethod
     def _resolve_lazy(cls, name: str) -> Type[BaseTool] | None:
-        """解析延迟加载的工具"""
+        """解析延迟加载的工具。
+
+        spec 支持两种形式：
+        - "模块路径:符号名"：直接取该符号（显式 register_lazy 用）。
+        - "模块路径"：导入后在模块内查找唯一的 BaseTool 子类（自动扫描用，
+          同时兼容 @tool 产出的子类与手写的 BaseTool 子类）。
+        """
         from importlib import import_module
 
         spec = cls._lazy_tools.get(name)
@@ -86,14 +73,33 @@ class ToolRegistry:
             return None
 
         try:
-            module_path, symbol = spec.split(":", 1)
-            module = import_module(module_path)
-            tool_class = getattr(module, symbol)
+            if ":" in spec:
+                module_path, symbol = spec.split(":", 1)
+                module = import_module(module_path)
+                tool_class = getattr(module, symbol)
+            else:
+                module = import_module(spec)
+                tool_class = cls._find_tool_class(module, name)
+            if tool_class is None:
+                logger.error(f"延迟加载工具 '{name}' 失败：模块内未找到 BaseTool 子类")
+                return None
             logger.info(f"延迟加载工具: {name}")
             return tool_class
         except Exception as e:
             logger.error(f"延迟加载工具 '{name}' 失败: {e}")
             return None
+
+    @staticmethod
+    def _find_tool_class(module, name: str) -> Type[BaseTool] | None:
+        """在模块成员里挑出工具类：优先 .name 匹配，否则取唯一的 BaseTool 子类。"""
+        candidates = [
+            obj for obj in vars(module).values()
+            if isinstance(obj, type) and issubclass(obj, BaseTool) and obj is not BaseTool
+        ]
+        for obj in candidates:
+            if getattr(obj, "name", None) == name:
+                return obj
+        return candidates[0] if len(candidates) == 1 else None
 
     @classmethod
     def list_tools(cls) -> list[str]:
@@ -113,29 +119,20 @@ class ToolRegistry:
         cls._lazy_tools.clear()
 
 
-# ==================== 预注册的延迟加载工具 ====================
+# ==================== 自动扫描发现工具 ====================
 
-# 在这里添加需要延迟加载的工具
-LAZY_TOOLS = {
-    # 文件操作工具
-    "read_file": "app.agent.tools.read_file:ReadFileTool",
-    "write_file": "app.agent.tools.write_file:WriteFileTool",
-    "edit_file": "app.agent.tools.edit_file:EditFileTool",
-    "delete_file": "app.agent.tools.delete_file:DeleteFileTool",
-    # 互联网检索
-    "access_the_internet": "app.agent.tools.access_the_internet:AccessTheInternetTool",
-    # 编码计划
-    "update_plan": "app.agent.tools.update_plan:UpdatePlanTool",
-    "plan_and_coding": "app.agent.tools.plan_and_coding:PlanAndCodingTool",
-    # 记忆检索
-    "search_memory": "app.agent.tools.search_memory:SearchMemoryTool",
-    "search_diary": "app.agent.tools.search_diary:SearchDiaryTool",
-    # PowerShell命令
-    "run_ps": "app.agent.tools.run_ps:RunPsTool",
-    # 截屏
-    "screenshot": "app.agent.tools.screenshot:ScreenshotTool",
+# 约定：tools/ 下每个 .py 文件 = 一个工具，文件名即工具名；下列模块不是工具，跳过。
+_NON_TOOL_MODULES = {"registry", "base", "decorator"}
 
-}
 
-for name, spec in LAZY_TOOLS.items():
-    ToolRegistry.register_lazy(name, spec)
+def _discover_tools() -> None:
+    """扫描 tools/ 目录，把每个工具模块按文件名延迟注册（不导入工具模块）。"""
+    tools_dir = os.path.dirname(__file__)
+    for module_info in pkgutil.iter_modules([tools_dir]):
+        mod_name = module_info.name
+        if mod_name.startswith("_") or mod_name in _NON_TOOL_MODULES:
+            continue
+        ToolRegistry.register_lazy(mod_name, f"app.agent.tools.{mod_name}")
+
+
+_discover_tools()
