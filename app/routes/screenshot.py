@@ -6,7 +6,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, model_validator
 
 from app.dependencies import get_agent_service
-from app.services.agent_service_v2 import AgentServiceV2
+from app.services.agent_service import AgentService
 from app.utils.sse_formatter import SSEFormatter
 
 
@@ -33,7 +33,7 @@ class ScreenshotResponseRequest(BaseModel):
 @router.post("/respond")
 async def respond_to_screenshot(
     payload: ScreenshotResponseRequest,
-    agent_service: AgentServiceV2 = Depends(get_agent_service),
+    agent_service: AgentService = Depends(get_agent_service),
 ) -> StreamingResponse:
     """用户响应截屏请求，恢复对话执行。
 

@@ -27,7 +27,7 @@ class StateManager:
     def __init__(
         self,
         session_id: str,
-        db_path: str = "memory/sqlite/agent_v2_checkpoints.sqlite3"
+        db_path: str = "memory/sqlite/agent_checkpoints.sqlite3"
     ):
         self.session_id = session_id
         self.db_path = db_path

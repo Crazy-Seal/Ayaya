@@ -16,7 +16,7 @@ from app.agent.subagents.todo_manager import TodoManager
 
 logger = logging.getLogger(__name__)
 
-CODING_DB_PATH = "memory/sqlite/agent_v2_coding.sqlite3"
+CODING_DB_PATH = "memory/sqlite/agent_coding.sqlite3"
 
 CODING_TOOLS = ["run_ps", "read_file", "write_file", "edit_file", "delete_file", "update_plan"]
 

@@ -4,7 +4,7 @@ from fastapi.responses import StreamingResponse
 from app.dependencies import get_agent_service
 from app.schemas.result import Result
 from app.schemas.chat import ChatRequest, AgentInput
-from app.services.agent_service_v2 import AgentServiceV2
+from app.services.agent_service import AgentService
 from app.utils.sse_formatter import SSEFormatter
 
 
@@ -14,7 +14,7 @@ router = APIRouter(tags=["agent"])
 @router.get("/health")
 def health_check(
     session_id: str,
-    agent_service: AgentServiceV2 = Depends(get_agent_service),
+    agent_service: AgentService = Depends(get_agent_service),
 ) -> Result:
     return Result(data=agent_service.get_health_data(session_id), msg="success", code=200)
 
@@ -22,7 +22,7 @@ def health_check(
 @router.post("/chat")
 async def chat(
     payload: ChatRequest,
-    agent_service: AgentServiceV2 = Depends(get_agent_service),
+    agent_service: AgentService = Depends(get_agent_service),
 ) -> StreamingResponse:
     session_id = payload.session_id
 
