@@ -217,8 +217,13 @@ class Agent:
 
         # 3. 执行管道
         errored = False
+        # 本轮是否产生了有效输出（任一文本分片或工具调用），与 v1 的 has_output 语义一致
+        produced_output = False
         async for event in self.pipeline.execute(state):
             yield event
+
+            if event.type in (EventType.TEXT_CHUNK, EventType.TOOL_CALL):
+                produced_output = True
 
             if event.type == EventType.ERROR:
                 # 出错：丢弃本轮坏状态，不写 checkpoint（等价于回滚）
@@ -232,6 +237,12 @@ class Agent:
 
         if errored:
             logger.warning("本轮执行出错，已丢弃坏状态，未写入 checkpoint: %s", self.config.session_id)
+            return
+
+        # 模型输出为空（无文本、无工具调用）：丢弃本轮（含用户消息），不写 checkpoint。
+        # v2 一轮仅在末尾写一次 checkpoint，故"跳过保存"即等价于 v1 的回滚本轮。
+        if not produced_output:
+            logger.warning("模型输出为空，已丢弃本轮，未写入 checkpoint: %s", self.config.session_id)
             return
 
         # 4. 保存最终状态

@@ -189,6 +189,10 @@ class ExecutionPipeline:
                 yield chunk.content
             if chunk.tool_call:
                 yield chunk.tool_call
+            if chunk.finish_reason == "content_filter":
+                # 内容被 API 过滤：抛出，由 _run_loop 的 try/except 统一转成 ERROR 事件
+                # （本轮不写 checkpoint，且前端能看到明确报错）
+                raise RuntimeError("触发 API 内容过滤")
 
     def _build_messages(self, state: AgentState) -> list[dict]:
         """构建发送给 LLM 的消息列表
