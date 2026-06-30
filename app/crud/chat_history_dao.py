@@ -4,13 +4,12 @@ import logging
 import aiosqlite
 from datetime import datetime, timezone
 
+from app.runtime import get_chat_history_db
+
 logger = logging.getLogger(__name__)
-DB_PATH = Path(__file__).resolve().parents[2] / "memory" / "sqlite" / "chat_history.sqlite3"
-
-
 class ChatHistoryDao:
-    def __init__(self, db_path: Path = DB_PATH):
-        self.db_path = db_path
+    def __init__(self, db_path: Path | None = None):
+        self.db_path = db_path or get_chat_history_db()
 
     @staticmethod
     def _to_local_time_text(utc_timestamp_value: object) -> str:

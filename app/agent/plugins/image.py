@@ -12,7 +12,7 @@ import uuid
 from app.agent.context import BasePlugin, PluginHook, HookContext
 from app.agent.utils.domain.window import is_real_human
 from app.agent.models.vlm import generate_multiple_image_descriptions
-from app.agent.utils.domain.images import has_image_content, set_image_task
+from app.agent.utils.domain.images import cancel_task, has_image_content, set_image_task
 from app.agent.utils.domain.text import extract_text
 
 logger = logging.getLogger(__name__)
@@ -22,6 +22,9 @@ class ImagePlugin(BasePlugin):
     name = "image"
     version = "1.0.0"
     priority = 50
+
+    def __init__(self) -> None:
+        self._task_keys: set[str] = set()
 
     @property
     def hooks(self) -> list[PluginHook]:
@@ -55,6 +58,12 @@ class ImagePlugin(BasePlugin):
         key = uuid.uuid4().hex
         task = asyncio.create_task(generate_multiple_image_descriptions(images, text, 200))
         set_image_task(key, task)
+        self._task_keys.add(key)
         state.extra["image_task_key"] = key
         logger.info("[ImagePlugin] 启动图片描述任务: %s (%d 张)", key, len(images))
         return context
+
+    async def on_unregister(self) -> None:
+        for key in self._task_keys:
+            cancel_task(key)
+        self._task_keys.clear()

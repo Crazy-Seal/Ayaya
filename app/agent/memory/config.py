@@ -5,11 +5,9 @@
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
-# 项目根目录
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+from app.runtime import get_mem0_qdrant_dir, get_memory_base_dir, is_test_environment
 
 
 def get_system_timezone() -> ZoneInfo:
@@ -53,8 +51,7 @@ class MemoryConfig:
     @classmethod
     def from_env(cls) -> "MemoryConfig":
         """从环境变量加载配置"""
-        env_base = os.getenv("MEMORY_BASE_PATH")
-        base_path = Path(env_base) if env_base else PROJECT_ROOT / "memory"
+        base_path = get_memory_base_dir()
 
         tz_name = os.getenv("MEMORY_TIMEZONE")
         if tz_name:
@@ -64,14 +61,24 @@ class MemoryConfig:
 
         day_boundary_hour = int(os.getenv("MEMORY_DAY_BOUNDARY_HOUR", "4"))
 
+        if is_test_environment():
+            # 测试不得继承生产 Neo4j 地址；集成测试可通过 TEST_NEO4J_* 指定专用实例。
+            neo4j_uri = os.getenv("TEST_NEO4J_URI", "bolt://127.0.0.1:0")
+            neo4j_user = os.getenv("TEST_NEO4J_USER", "neo4j")
+            neo4j_password = os.getenv("TEST_NEO4J_PASSWORD", "")
+        else:
+            neo4j_uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+            neo4j_user = os.getenv("NEO4J_USER", "neo4j")
+            neo4j_password = os.getenv("NEO4J_PASSWORD", "")
+
         return cls(
             sqlite_path=str(base_path / "sqlite" / "memory.sqlite3"),
             chroma_path=str(base_path / "chroma"),
-            neo4j_uri=os.getenv("NEO4J_URI", "bolt://localhost:7687"),
-            neo4j_user=os.getenv("NEO4J_USER", "neo4j"),
-            neo4j_password=os.getenv("NEO4J_PASSWORD", ""),
+            neo4j_uri=neo4j_uri,
+            neo4j_user=neo4j_user,
+            neo4j_password=neo4j_password,
             semantic_backend=os.getenv("SEMANTIC_BACKEND", "mem0"),
-            mem0_qdrant_path=os.getenv("MEM0_QDRANT_PATH", str(base_path / "mem0" / "qdrant_data")),
+            mem0_qdrant_path=str(get_mem0_qdrant_dir(base_path)),
             mem0_collection_name=os.getenv("MEM0_COLLECTION_NAME", "Ayaya_semantic_memory"),
             embedding_api_key=os.getenv("EMBEDDING_API_KEY", ""),
             embedding_model=os.getenv("EMBEDDING_MODEL", ""),

@@ -14,6 +14,7 @@ from typing import Any
 import aiosqlite
 
 from app.agent.state import AgentState
+from app.runtime import get_checkpoint_db
 
 logger = logging.getLogger(__name__)
 
@@ -27,10 +28,10 @@ class StateManager:
     def __init__(
         self,
         session_id: str,
-        db_path: str = "memory/sqlite/agent_checkpoints.sqlite3"
+        db_path: str | None = None,
     ):
         self.session_id = session_id
-        self.db_path = db_path
+        self.db_path = str(db_path or get_checkpoint_db())
         self._db: aiosqlite.Connection | None = None
         self._watermark: int | None = None  # 用于回滚的水位线
 
@@ -109,7 +110,6 @@ class StateManager:
         await db.commit()
 
         checkpoint_id = cursor.lastrowid
-        self._watermark = checkpoint_id
         logger.info(f"保存 checkpoint {checkpoint_id}: {self.session_id}")
 
         await self._prune(db)
@@ -143,30 +143,30 @@ class StateManager:
 
         db = await self._get_db()
 
-        # 删除 watermark 之后的所有 checkpoint（保留 watermark 本身——它是最后一个良好状态）
+        # watermark 是本轮开始前 load() 记录的良好状态；删除本轮新增版本。
+        async with db.execute(
+            """
+            SELECT COUNT(*) FROM checkpoints
+            WHERE session_id = ? AND id > ?
+            """,
+            (self.session_id, self._watermark),
+        ) as cursor:
+            row = await cursor.fetchone()
+
+        if not row or row[0] == 0:
+            logger.warning("水位线之后没有可回滚的检查点: %s", self.session_id)
+            return False
+
         await db.execute(
             """
             DELETE FROM checkpoints
             WHERE session_id = ? AND id > ?
             """,
-            (self.session_id, self._watermark)
+            (self.session_id, self._watermark),
         )
         await db.commit()
 
-        logger.info(f"回滚 checkpoint: {self.session_id} (watermark={self._watermark})")
-
-        # 更新 watermark 到上一个 checkpoint
-        async with db.execute(
-            """
-            SELECT id FROM checkpoints
-            WHERE session_id = ?
-            ORDER BY created_at DESC
-            LIMIT 1
-            """,
-            (self.session_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
-            self._watermark = row[0] if row else None
+        logger.info("回滚检查点: %s（水位线=%s）", self.session_id, self._watermark)
 
         return True
 

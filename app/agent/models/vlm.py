@@ -52,6 +52,7 @@ async def generate_multiple_image_descriptions(
     """
     filenames: list[str] = []
 
+    client: AsyncOpenAI | None = None
     try:
         # 保存所有图片到磁盘
         filenames = save_multiple_images(images)
@@ -111,6 +112,9 @@ async def generate_multiple_image_descriptions(
     except Exception as e:
         logger.warning("[ImageDescription] 图片描述生成失败: %s", e)
         return ImageTaskResult(description="图片", filenames=filenames)
+    finally:
+        if client is not None:
+            await client.close()
 
 
 def extract_bbox(content: Any) -> list[int]:

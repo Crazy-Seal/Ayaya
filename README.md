@@ -78,6 +78,29 @@ Python 3.12 is recommended.
    ```
    > The backend will run at http://127.0.0.1:8000 by default.
 
+### Backend environment isolation
+
+Production uses the repository's `memory/` directory and
+`config/chat_settings.yaml` by default:
+
+```dotenv
+AYAYA_ENV=production
+```
+
+Tests must provide a separate data directory. The backend fails fast instead
+of falling back to production storage:
+
+```powershell
+$env:AYAYA_ENV="test"
+$env:AYAYA_DATA_DIR="$env:TEMP\ayaya-test-data"
+conda run -n my_agent python -m pytest tests -q
+```
+
+In test mode SQLite, checkpoints, Chroma, Mem0/Qdrant, images, and chat
+settings stay under `AYAYA_DATA_DIR`, and the production `.env` is not loaded.
+Neo4j integration tests must use a dedicated `TEST_NEO4J_URI`; `NEO4J_URI` is
+not inherited.
+
 ### 2. Frontend Deployment (Electron + Vite)
 
 Frontend environment: Node.js 24.9.0

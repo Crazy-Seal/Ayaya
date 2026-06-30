@@ -3,13 +3,12 @@ from pathlib import Path
 import yaml
 
 from app.schemas.chat_settings import ChatSettings
-
-CONFIG_FILE = Path(__file__).resolve().parents[2] / "config" / "chat_settings.yaml"
+from app.runtime import get_chat_settings_file
 
 
 class ChatSettingsDao:
-    def __init__(self, config_file: Path = CONFIG_FILE):
-        self.config_file = config_file
+    def __init__(self, config_file: Path | None = None):
+        self.config_file = config_file or get_chat_settings_file()
         self._cache: dict[str, ChatSettings] = {}
 
     def _load_chat_settings_file(self) -> dict:
@@ -41,6 +40,7 @@ class ChatSettingsDao:
             system_prompt=item["system_prompt"],
             tools_list=item["tools_list"],
             memory_plugins=item.get("memory_plugins"),
+            skills=item.get("skills"),
             # 提示词模板字段
             name=item.get("name"),
             feature=item.get("feature"),

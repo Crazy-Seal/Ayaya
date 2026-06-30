@@ -66,12 +66,11 @@ class AgentService:
                 yield event
         except Exception as e:
             logger.exception("[AgentService][session=%s] 运行出错: %s", session_id, e)
-            await self._close(session_id, agent)
             raise RuntimeError(f"Agent 执行出错: {e}") from e
-
-        # 中断时保留 agent 供恢复；否则关闭释放连接
-        if not interrupted:
-            await self._close(session_id, agent)
+        finally:
+            # 中断时保留 agent 供恢复；客户端取消和异常路径都必须释放资源。
+            if not interrupted:
+                await self._close(session_id, agent)
 
     async def resume_after_screenshot(
         self,
@@ -105,8 +104,7 @@ class AgentService:
                 yield event
         except Exception as e:
             logger.exception("[AgentService][session=%s] 恢复对话失败", session_id)
-            await self._close(session_id, agent)
             raise RuntimeError(f"恢复对话失败: {e}") from e
-
-        if not interrupted:
-            await self._close(session_id, agent)
+        finally:
+            if not interrupted:
+                await self._close(session_id, agent)

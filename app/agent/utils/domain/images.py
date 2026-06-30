@@ -8,11 +8,9 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
+from app.runtime import get_images_dir
+
 logger = logging.getLogger(__name__)
-
-# 图片保存目录
-IMAGES_DIR = os.path.join("memory", "images")
-
 
 # ==================== 数据类 ====================
 
@@ -75,6 +73,13 @@ def clear_task(key: str) -> None:
     _image_description_tasks.pop(key, None)
 
 
+def cancel_task(key: str) -> None:
+    """取消并移除后续不会再被消费的图片任务。"""
+    task = _image_description_tasks.pop(key, None)
+    if task is not None and not task.done():
+        task.cancel()
+
+
 # ==================== 图片保存函数 ====================
 
 def save_image_to_disk(image_data: str) -> str | None:
@@ -88,7 +93,8 @@ def save_image_to_disk(image_data: str) -> str | None:
     """
     try:
         # 确保目录存在
-        os.makedirs(IMAGES_DIR, exist_ok=True)
+        images_dir = get_images_dir()
+        os.makedirs(images_dir, exist_ok=True)
 
         # 解析 data URL 并提取格式
         ext = "png"  # 默认后缀
@@ -122,7 +128,7 @@ def save_image_to_disk(image_data: str) -> str | None:
         timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
         unique_id = uuid.uuid4().hex[:8]
         filename = f"{timestamp}_{unique_id}.{ext}"
-        filepath = os.path.join(IMAGES_DIR, filename)
+        filepath = images_dir / filename
 
         # 保存文件
         with open(filepath, "wb") as f:

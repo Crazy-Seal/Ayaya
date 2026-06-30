@@ -78,6 +78,26 @@ Ayaya/
    ```
    > 默认后端将在 http://127.0.0.1:8000 运行。
 
+### 后端运行环境隔离
+
+生产环境默认使用项目下的 `memory/` 和 `config/chat_settings.yaml`：
+
+```dotenv
+AYAYA_ENV=production
+```
+
+测试环境必须显式提供独立数据目录，否则后端会直接拒绝启动或创建存储：
+
+```powershell
+$env:AYAYA_ENV="test"
+$env:AYAYA_DATA_DIR="$env:TEMP\ayaya-test-data"
+conda run -n my_agent python -m pytest tests -q
+```
+
+测试模式下 SQLite、checkpoint、Chroma、Mem0/Qdrant、图片和会话配置均位于
+`AYAYA_DATA_DIR` 内，并且不会加载生产 `.env`。Neo4j 集成测试需使用独立的
+`TEST_NEO4J_URI`，不会继承 `NEO4J_URI`。
+
 ### 2. 前端部署 (Electron + Vite)
 
 环境： Node.js 24.9.0

@@ -1,7 +1,13 @@
-from dotenv import load_dotenv
-load_dotenv()
 import logging
 import os
+
+from dotenv import load_dotenv
+
+from app.runtime import get_images_dir, is_test_environment
+
+# 测试环境不得从生产 .env 文件继承凭据。
+if not is_test_environment():
+    load_dotenv()
 
 import uvicorn
 from fastapi import FastAPI
@@ -29,7 +35,7 @@ app.include_router(screenshot_router)
 app.include_router(tools_router)
 
 # 静态文件服务：用于访问保存的图片
-IMAGES_DIR = os.path.join("memory", "images")
+IMAGES_DIR = get_images_dir()
 os.makedirs(IMAGES_DIR, exist_ok=True)
 app.mount("/images", StaticFiles(directory=IMAGES_DIR), name="images")
 
@@ -43,7 +49,7 @@ async def root():
 if __name__ == "__main__":
     uvicorn.run(
         "main:app",
-        host="0.0.0.0",
+        host="127.0.0.1",
         port=8000,
         reload=True,
         reload_excludes=["agent_workspace/*"]

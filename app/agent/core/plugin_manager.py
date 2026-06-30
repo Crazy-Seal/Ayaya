@@ -140,6 +140,14 @@ class PluginManager:
         self._plugins.clear()
         logger.info("已清空所有插件")
 
+    async def close(self) -> None:
+        """执行插件清理钩子，并移除所有已注册插件。"""
+        for name in reversed(self.list_plugins()):
+            try:
+                await self.unregister(name)
+            except Exception:
+                logger.exception("插件 '%s' 清理失败", name)
+
     def __len__(self) -> int:
         return len(self._plugins)
 

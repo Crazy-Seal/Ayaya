@@ -1,0 +1,26 @@
+from pathlib import Path
+
+from app.crud.chat_settings_dao import ChatSettingsDao
+from app.schemas.chat_settings import ChatSettings
+
+
+def test_skills_survive_round_trip(tmp_path: Path) -> None:
+    config_file = tmp_path / "chat_settings.yaml"
+    config_file.write_text("chat_models: []\n", encoding="utf-8")
+    dao = ChatSettingsDao(config_file=config_file)
+    settings = ChatSettings(
+        session_id="test-session",
+        model_name="test-model",
+        openai_api_key="test-key",
+        openai_base_url="http://127.0.0.1:1/v1",
+        temperature=0.1,
+        system_prompt="test",
+        tools_list=[],
+        memory_plugins=None,
+        skills=["coding"],
+    )
+
+    dao.add_chat_settings(settings)
+    reloaded = ChatSettingsDao(config_file=config_file).get_chat_settings("test-session")
+
+    assert reloaded.skills == ["coding"]

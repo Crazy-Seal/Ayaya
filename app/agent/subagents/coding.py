@@ -13,10 +13,9 @@ from app.agent.context import BasePlugin, PluginHook, HookContext
 from app.agent.state import AgentState
 from app.agent.utils.domain.text import extract_text
 from app.agent.subagents.todo_manager import TodoManager
+from app.runtime import get_coding_checkpoint_db
 
 logger = logging.getLogger(__name__)
-
-CODING_DB_PATH = "memory/sqlite/agent_coding.sqlite3"
 
 CODING_TOOLS = ["run_ps", "read_file", "write_file", "edit_file", "delete_file", "update_plan"]
 
@@ -74,7 +73,7 @@ async def run_coding_subagent(command: str, todo_items: list[dict], session_id: 
         tools=CODING_TOOLS,
         plugins=["context_window"],
     )
-    agent = Agent(config, db_path=CODING_DB_PATH)
+    agent = Agent(config, db_path=str(get_coding_checkpoint_db()))
     await agent.initialize()
     await agent.plugin_manager.register(CodingPromptPlugin(), agent)
 

@@ -11,11 +11,9 @@ from zoneinfo import ZoneInfo
 
 import aiosqlite
 
+from app.runtime import get_chat_history_db
+
 logger = logging.getLogger(__name__)
-
-# 默认数据库路径
-DEFAULT_DB_PATH = Path(__file__).resolve().parents[4] / "memory" / "sqlite" / "chat_history.sqlite3"
-
 
 class ChatHistoryStore:
     """聊天记录存储类
@@ -40,7 +38,7 @@ class ChatHistoryStore:
         timezone: ZoneInfo | None = None,
         day_boundary_hour: int = 4,
     ):
-        self.db_path = Path(db_path) if db_path else DEFAULT_DB_PATH
+        self.db_path = Path(db_path) if db_path else get_chat_history_db()
         self.timezone = timezone or datetime.now().astimezone().tzinfo
         self.day_boundary_hour = day_boundary_hour
         self._ensure_table()

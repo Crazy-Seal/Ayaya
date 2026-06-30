@@ -337,6 +337,7 @@ class Agent:
 
     async def close(self) -> None:
         """关闭 Agent"""
+        await self.plugin_manager.close()
         await self.llm_client.close()
         await self.state_manager.close()
         logger.info(f"Agent 已关闭: {self.config.session_id}")

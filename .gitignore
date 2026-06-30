@@ -34,9 +34,6 @@ app/agent/tools/tools.log
 .env
 config/chat_settings.yaml
 
-# ===== tests =====
-tests
-
 # ===== Claude =====
 .claude
 CLAUDE.md
