@@ -1,9 +1,8 @@
 """agent 引擎回归测试（离线，无需网络）。
 
-覆盖重构计划中点名的 4 个核心 bug：
+覆盖 Agent 引擎重构中的核心回归场景：
 - Bug #1：助手消息带 tool_calls 时用枚举 role，不再崩溃
 - Bug #2：流式工具调用在流末仅产出一次（不重复执行）
-- Bug #3：StateManager 回滚保留 watermark（最后一个良好状态）
 - Bug #4：中断恢复能用持久化路由信息重入同一工具，并注入截屏图片
 """
 
@@ -15,7 +14,6 @@ from app.agent.context import BaseTool, ToolResult
 from app.agent.core.event_router import EventRouter, EventType
 from app.agent.core.pipeline import ExecutionPipeline, SCREENSHOT_MESSAGE_NAME
 from app.agent.core.plugin_manager import PluginManager
-from app.agent.core.state_manager import StateManager
 from app.agent.core.tool_manager import ToolManager
 from app.agent.message import ToolCall, MessageRole, AssistantMessageWithTools
 from app.agent.state import AgentState
@@ -120,46 +118,6 @@ def test_assistant_message_with_tools_serializes():
     d = msg.to_openai_format()  # 旧代码传 role="assistant" 字符串会在此 .value 崩溃
     assert d["role"] == "assistant"
     assert d["tool_calls"][0]["function"]["name"] == "screenshot"
-
-
-# ==================== Bug #3：回滚保留 watermark ====================
-
-def test_rollback_keeps_watermark(tmp_path):
-    async def run():
-        sm = StateManager("s1", db_path=str(tmp_path / "ck.sqlite3"))
-        a = AgentState.create_new("s1"); a.add_assistant_message("A")
-        id_a = await sm.save(a)
-        b = AgentState.create_new("s1"); b.add_assistant_message("B")
-        await sm.save(b)
-        # 模拟「本轮开始前 load 记录的良好水位线」指向 A
-        sm._watermark = id_a
-        ok = await sm.rollback()        # 删除 id > id_a（即 B），保留 watermark A
-        loaded = await sm.load()
-        await sm.close()
-        return ok, loaded
-
-    ok, loaded = asyncio.run(run())
-    assert ok is True
-    # 旧的 `id >= watermark` bug 会把 A 也删掉；修复后必须保留 A
-    last = loaded.messages[-1]
-    assert last["content"] == "A", f"回滚后应保留良好状态 A，实得 {last}"
-
-
-def test_rollback_to_watermark_deletes_after_only(tmp_path):
-    async def run():
-        sm = StateManager("s1", db_path=str(tmp_path / "ck.sqlite3"))
-        a = AgentState.create_new("s1"); a.add_assistant_message("A")
-        id_a = await sm.save(a)
-        b = AgentState.create_new("s1"); b.add_assistant_message("B")
-        await sm.save(b)
-        deleted = await sm.rollback_to_watermark(id_a)  # 删除 > id_a，即 B
-        loaded = await sm.load()
-        await sm.close()
-        return deleted, loaded
-
-    deleted, loaded = asyncio.run(run())
-    assert deleted == 1
-    assert loaded.messages[-1]["content"] == "A"
 
 
 # ==================== Bug #4：可恢复工具 + 图片注入 完整往返 ====================

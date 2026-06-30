@@ -16,9 +16,6 @@ from app.services.agent_factory import build_agent
 
 logger = logging.getLogger(__name__)
 
-# 中断后恢复用的活跃 agent 缓存
-_active_agents: dict[str, Agent] = {}
-
 
 class AgentService:
     def __init__(
@@ -43,7 +40,6 @@ class AgentService:
         return {"status": "ok", "model": chat_settings.model_name}
 
     async def _close(self, session_id: str, agent: Agent) -> None:
-        _active_agents.pop(session_id, None)
         try:
             await agent.close()
         except Exception:
@@ -51,26 +47,21 @@ class AgentService:
     async def stream_chat(self, agent_input: AgentInput, session_id: str = "default") -> AsyncIterator:
         chat_settings = self.chat_settings_loader(session_id)
         agent = self.agent_factory(chat_settings)
-        _active_agents[session_id] = agent
 
         message = self._build_timed_user_message(agent_input.message)
-        interrupted = False
         try:
             async for event in agent.run(message, images=agent_input.images):
                 if event.type == EventType.ERROR:
                     raise RuntimeError(event.data)
                 if event.type == EventType.DONE:
                     continue
-                if event.type == EventType.INTERRUPT:
-                    interrupted = True
                 yield event
         except Exception as e:
             logger.exception("[AgentService][session=%s] 运行出错: %s", session_id, e)
             raise RuntimeError(f"Agent 执行出错: {e}") from e
         finally:
-            # 中断时保留 agent 供恢复；客户端取消和异常路径都必须释放资源。
-            if not interrupted:
-                await self._close(session_id, agent)
+            # checkpoint 是跨请求恢复的唯一数据源，不保留活跃 Agent。
+            await self._close(session_id, agent)
 
     async def resume_after_screenshot(
         self,
@@ -80,9 +71,8 @@ class AgentService:
         width: int | None = None,
         height: int | None = None,
     ) -> AsyncIterator:
-        agent = _active_agents.get(session_id)
-        if not agent:
-            raise RuntimeError("会话已过期")
+        chat_settings = self.chat_settings_loader(session_id)
+        agent = self.agent_factory(chat_settings)
 
         resume_data: dict = {"approved": approved}
         if screenshot_data:
@@ -92,19 +82,15 @@ class AgentService:
         if height is not None:
             resume_data["height"] = height
 
-        interrupted = False
         try:
             async for event in agent.resume(resume_data):
                 if event.type == EventType.ERROR:
                     raise RuntimeError(event.data)
                 if event.type == EventType.DONE:
                     continue
-                if event.type == EventType.INTERRUPT:
-                    interrupted = True
                 yield event
         except Exception as e:
             logger.exception("[AgentService][session=%s] 恢复对话失败", session_id)
             raise RuntimeError(f"恢复对话失败: {e}") from e
         finally:
-            if not interrupted:
-                await self._close(session_id, agent)
+            await self._close(session_id, agent)

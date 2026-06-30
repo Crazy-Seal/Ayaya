@@ -9,7 +9,7 @@ tool_call_id/tool_args/resume_state）写入 state.interrupt_data，使恢复能
 """
 
 import logging
-from typing import AsyncIterator, TYPE_CHECKING
+from typing import AsyncIterator, Protocol, TYPE_CHECKING
 
 from app.agent.context import (
     ToolContext,
@@ -25,6 +25,7 @@ from app.agent.message import (
     AssistantMessageWithTools,
 )
 from app.agent.state import AgentState
+from app.agent.core.state_manager import CheckpointType
 # 注入截屏/屏幕图片时使用的消息名（ContextWindowPlugin 据此做 TTL 压缩）
 from app.agent.utils.infra.constants import SCREENSHOT_MESSAGE_NAME
 
@@ -32,6 +33,17 @@ if TYPE_CHECKING:
     from app.agent.agent import Agent
 
 logger = logging.getLogger(__name__)
+
+
+class CheckpointCallback(Protocol):
+    """持久化回调必须显式声明 checkpoint 类型。"""
+
+    async def __call__(
+        self,
+        state: AgentState,
+        *,
+        checkpoint_type: CheckpointType,
+    ) -> int: ...
 
 
 class ExecutionPipeline:
@@ -42,20 +54,25 @@ class ExecutionPipeline:
 
     # ==================== 主入口 ====================
 
-    async def execute(self, state: AgentState) -> AsyncIterator[AgentEvent]:
+    async def execute(
+        self,
+        state: AgentState,
+        checkpoint: CheckpointCallback | None = None,
+    ) -> AsyncIterator[AgentEvent]:
         """执行主循环（一轮对话的起点）"""
         # ON_INVOKE 钩子 - 每轮仅在此触发一次
         state = await self.agent.plugin_manager.run_hooks(
             PluginHook.ON_INVOKE, state
         )
 
-        async for event in self._run_loop(state):
+        async for event in self._run_loop(state, checkpoint):
             yield event
 
     async def resume_tools(
         self,
         state: AgentState,
         resume_data: dict,
+        checkpoint: CheckpointCallback | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """从中断恢复：先跑完被中断的工具与剩余待执行工具，再回到 LLM 循环。
 
@@ -65,14 +82,20 @@ class ExecutionPipeline:
         pending_actions = list(state.pending_actions)
         state.clear_interrupt()
 
-        # 1. 重入被中断的工具（用持久化的路由信息重建 ToolCall）
+        resumed_calls: list[ToolCall] = []
         tool_name = interrupt_data.get("tool_name")
         if tool_name:
-            interrupted_call = ToolCall(
+            resumed_calls.append(ToolCall(
                 id=interrupt_data.get("tool_call_id", ""),
                 name=tool_name,
                 args=interrupt_data.get("tool_args", {}),
-            )
+            ))
+        resumed_calls.extend(ToolCall.from_dict(item) for item in pending_actions)
+        state.set_pending_tool_calls(resumed_calls)
+
+        # 1. 重入被中断的工具（用持久化的路由信息重建 ToolCall）
+        if tool_name:
+            interrupted_call = resumed_calls[0]
             result = await self._execute_tool(
                 state,
                 interrupted_call,
@@ -83,10 +106,13 @@ class ExecutionPipeline:
             # 恢复执行时又触发了新的中断
             if result.interrupt:
                 self._persist_interrupt(state, interrupted_call, result, pending_actions)
+                await self._checkpoint(state, checkpoint)
                 yield AgentEvent(EventType.INTERRUPT, result.interrupt.to_client())
                 return
 
             self._append_tool_result(state, interrupted_call, result)
+            state.remove_pending_tool_call(interrupted_call.id)
+            await self._checkpoint(state, checkpoint)
 
         # 2. 执行中断时尚未轮到的剩余工具
         for i, tc_dict in enumerate(pending_actions):
@@ -96,18 +122,25 @@ class ExecutionPipeline:
             result = await self._execute_tool(state, tool_call)
             if result.interrupt:
                 self._persist_interrupt(state, tool_call, result, pending_actions[i + 1:])
+                await self._checkpoint(state, checkpoint)
                 yield AgentEvent(EventType.INTERRUPT, result.interrupt.to_client())
                 return
 
             self._append_tool_result(state, tool_call, result)
+            state.remove_pending_tool_call(tool_call.id)
+            await self._checkpoint(state, checkpoint)
 
         # 3. 回到 LLM 循环（不重跑 ON_INVOKE）
-        async for event in self._run_loop(state):
+        async for event in self._run_loop(state, checkpoint):
             yield event
 
     # ==================== 核心循环 ====================
 
-    async def _run_loop(self, state: AgentState) -> AsyncIterator[AgentEvent]:
+    async def _run_loop(
+        self,
+        state: AgentState,
+        checkpoint: CheckpointCallback | None = None,
+    ) -> AsyncIterator[AgentEvent]:
         """LLM ↔ 工具循环主体（不含 ON_INVOKE）"""
         while True:
             # 1. BEFORE_LLM 钩子
@@ -144,6 +177,10 @@ class ExecutionPipeline:
             if accumulated_content or tool_calls:
                 self._add_assistant_message(state, accumulated_content, tool_calls)
 
+            if tool_calls:
+                state.set_pending_tool_calls(tool_calls)
+                await self._checkpoint(state, checkpoint)
+
             # 5. 无工具调用 → 本轮结束
             if not tool_calls:
                 break
@@ -162,10 +199,13 @@ class ExecutionPipeline:
                         PluginHook.ON_INTERRUPT, state,
                         data={"interrupt": result.interrupt},
                     )
+                    await self._checkpoint(state, checkpoint)
                     yield AgentEvent(EventType.INTERRUPT, result.interrupt.to_client())
                     return
 
                 self._append_tool_result(state, tool_call, result)
+                state.remove_pending_tool_call(tool_call.id)
+                await self._checkpoint(state, checkpoint)
 
             # 7. 清空待处理工具，继续循环
             state.clear_pending_tool_calls()
@@ -176,6 +216,15 @@ class ExecutionPipeline:
         )
 
         yield AgentEvent(EventType.DONE, None)
+
+    @staticmethod
+    async def _checkpoint(
+        state: AgentState,
+        checkpoint: CheckpointCallback | None,
+    ) -> None:
+        """在启用持久化的执行入口中保存工具进度。"""
+        if checkpoint is not None:
+            await checkpoint(state, checkpoint_type="intermediate")
 
     # ==================== LLM 调用 ====================
 
@@ -302,6 +351,7 @@ class ExecutionPipeline:
             interrupt_data=interrupt.to_state(),
             pending_actions=pending_actions,
         )
+        state.clear_pending_tool_calls()
 
     # ==================== 助手消息 ====================
 

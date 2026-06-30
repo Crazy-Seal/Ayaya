@@ -20,6 +20,11 @@ from app.agent.models.llm_client import LLMClient, LLMConfig
 
 logger = logging.getLogger(__name__)
 
+INTERRUPTED_TOOL_RESULT = (
+    "上次工具链中断，未获得该工具的可靠结果；"
+    "为避免重复副作用，本次未自动重试。"
+)
+
 
 @dataclass
 class AgentConfig:
@@ -203,6 +208,25 @@ class Agent:
         # 1. 加载或创建状态
         state = await self.state_manager.load()
 
+        if state.is_interrupted():
+            yield AgentEvent(
+                EventType.ERROR,
+                "存在待处理的截屏确认，请先允许或拒绝",
+            )
+            return
+
+        # 上次普通工具链若异常中止，为未完成调用补齐结果，避免自动重试副作用。
+        pending_tool_calls = state.get_pending_tool_calls()
+        if pending_tool_calls:
+            for tool_call in pending_tool_calls:
+                state.add_tool_message(
+                    content=INTERRUPTED_TOOL_RESULT,
+                    tool_name=tool_call.name,
+                    tool_call_id=tool_call.id,
+                )
+            state.clear_pending_tool_calls()
+            await self.state_manager.save(state, checkpoint_type="completed")
+
         # 每轮起始重置一次性的记忆上下文（由 MemoryPlugin 在 BEFORE_LLM 重新注入）
         state.memory_context = None
 
@@ -219,34 +243,41 @@ class Agent:
         errored = False
         # 本轮是否产生了有效输出（任一文本分片或工具调用），与 v1 的 has_output 语义一致
         produced_output = False
-        async for event in self.pipeline.execute(state):
-            yield event
-
+        async for event in self.pipeline.execute(
+            state,
+            checkpoint=self.state_manager.save,
+        ):
             if event.type in (EventType.TEXT_CHUNK, EventType.TOOL_CALL):
                 produced_output = True
 
             if event.type == EventType.ERROR:
-                # 出错：丢弃本轮坏状态，不写 checkpoint（等价于回滚）
+                # 出错时不写最终 checkpoint，已经提交的工具进度继续保留。
                 errored = True
+                yield event
                 break
 
             if event.type == EventType.INTERRUPT:
-                # 保存中断状态，等待用户恢复
-                await self.state_manager.save(state)
+                # Pipeline 已先保存中断状态，再向上游发送事件。
+                yield event
                 return
 
+            yield event
+
         if errored:
-            logger.warning("本轮执行出错，已丢弃坏状态，未写入 checkpoint: %s", self.config.session_id)
+            logger.warning(
+                "本轮执行出错，已保留最近工具进度，未写入最终 checkpoint: %s",
+                self.config.session_id,
+            )
             return
 
         # 模型输出为空（无文本、无工具调用）：丢弃本轮（含用户消息），不写 checkpoint。
-        # v2 一轮仅在末尾写一次 checkpoint，故"跳过保存"即等价于 v1 的回滚本轮。
+        # 本轮没有工具调用，也就没有写入中间态；跳过完成态保存即可丢弃新消息。
         if not produced_output:
             logger.warning("模型输出为空，已丢弃本轮，未写入 checkpoint: %s", self.config.session_id)
             return
 
         # 4. 保存最终状态
-        await self.state_manager.save(state)
+        await self.state_manager.save(state, checkpoint_type="completed")
 
     async def resume(
         self,
@@ -273,24 +304,33 @@ class Agent:
 
         # 3. 恢复执行
         errored = False
-        async for event in self.pipeline.resume_tools(state, resume_data):
-            yield event
-
+        async for event in self.pipeline.resume_tools(
+            state,
+            resume_data,
+            checkpoint=self.state_manager.save,
+        ):
             if event.type == EventType.ERROR:
                 errored = True
+                yield event
                 break
 
             # 检查新的中断
             if event.type == EventType.INTERRUPT:
-                await self.state_manager.save(state)
+                # Pipeline 已先保存新的中断状态，再向上游发送事件。
+                yield event
                 return
 
+            yield event
+
         if errored:
-            logger.warning("恢复执行出错，已丢弃坏状态: %s", self.config.session_id)
+            logger.warning(
+                "恢复执行出错，已保留最近工具进度，未写入最终 checkpoint: %s",
+                self.config.session_id,
+            )
             return
 
         # 4. 保存最终状态
-        await self.state_manager.save(state)
+        await self.state_manager.save(state, checkpoint_type="completed")
 
     # ==================== 运行时操作 ====================
 
@@ -328,10 +368,6 @@ class Agent:
     async def clear_state(self) -> int:
         """清空状态"""
         return await self.state_manager.clear_session()
-
-    async def rollback(self) -> bool:
-        """回滚到上一个 checkpoint"""
-        return await self.state_manager.rollback()
 
     # ==================== 生命周期 ====================
 

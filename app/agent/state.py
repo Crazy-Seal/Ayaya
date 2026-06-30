@@ -86,6 +86,19 @@ class AgentState(BaseModel):
         self.pending_tool_calls.append(tool_call.to_dict())
         self.updated_at = datetime.now()
 
+    def set_pending_tool_calls(self, tool_calls: list[ToolCall]) -> None:
+        """用一组新的工具调用替换当前待执行列表。"""
+        self.pending_tool_calls = [tool_call.to_dict() for tool_call in tool_calls]
+        self.updated_at = datetime.now()
+
+    def remove_pending_tool_call(self, tool_call_id: str) -> None:
+        """按调用 ID 移除一个已经获得结果的工具调用。"""
+        self.pending_tool_calls = [
+            item for item in self.pending_tool_calls
+            if item.get("id") != tool_call_id
+        ]
+        self.updated_at = datetime.now()
+
     def clear_pending_tool_calls(self) -> None:
         """清空待执行的工具调用"""
         self.pending_tool_calls = []
