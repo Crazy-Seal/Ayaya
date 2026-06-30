@@ -23,7 +23,7 @@ class LLMConfig:
     api_key: str
     base_url: str = "https://api.openai.com/v1"
     temperature: float = 0.7
-    max_tokens: int | None = None
+    max_tokens: int = 4096
     timeout: float = 120.0
 
 
@@ -88,10 +88,45 @@ class LLMClient:
         return payload
 
     @staticmethod
-    def _accumulate_tool_call(acc: dict[int, dict], tc_delta: Any) -> None:
-        """把流式工具调用 delta 累积进 acc（按 index 聚合）"""
+    def _accumulate_tool_call(
+        acc: list[dict],
+        active_by_index: dict[int, int],
+        tc_delta: Any,
+    ) -> None:
+        """按 call id 聚合工具 delta，并兼容网关重复使用同一 index。"""
         idx = tc_delta.index if tc_delta.index is not None else 0
-        slot = acc.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+        incoming_id = tc_delta.id or ""
+
+        slot_position: int | None = None
+        if incoming_id:
+            slot_position = next(
+                (
+                    position for position, candidate in enumerate(acc)
+                    if candidate["id"] == incoming_id
+                ),
+                None,
+            )
+
+        if slot_position is None:
+            active_position = active_by_index.get(idx)
+            if active_position is not None and not incoming_id:
+                slot_position = active_position
+            elif (
+                active_position is not None
+                and not acc[active_position]["id"]
+            ):
+                slot_position = active_position
+            else:
+                slot_position = len(acc)
+                acc.append({
+                    "id": "",
+                    "name": "",
+                    "arguments": "",
+                    "extra_content": None,
+                })
+
+        active_by_index[idx] = slot_position
+        slot = acc[slot_position]
         if tc_delta.id:
             slot["id"] = tc_delta.id
         if tc_delta.function:
@@ -99,16 +134,44 @@ class LLMClient:
                 slot["name"] = tc_delta.function.name
             if tc_delta.function.arguments:
                 slot["arguments"] += tc_delta.function.arguments
+        extra_content = getattr(tc_delta, "extra_content", None)
+        if extra_content:
+            if hasattr(extra_content, "model_dump"):
+                extra_content = extra_content.model_dump(exclude_none=True, mode="json")
+            slot["extra_content"] = extra_content
 
     @staticmethod
-    def _build_tool_call(slot: dict) -> ToolCall:
-        """从累积的工具调用 slot 构造 ToolCall（容错解析参数）"""
+    def _parse_tool_arguments(raw_arguments: str) -> dict:
+        """解析单个完整的 JSON 对象形式工具参数。"""
+        if not raw_arguments.strip():
+            return {}
+
         try:
-            args = json.loads(slot["arguments"]) if slot["arguments"] else {}
-        except json.JSONDecodeError:
-            logger.warning("工具参数解析失败，回退为空对象: %s", slot["arguments"])
-            args = {}
-        return ToolCall(id=slot["id"], name=slot["name"], args=args)
+            value = json.loads(raw_arguments)
+        except json.JSONDecodeError as exc:
+            logger.warning(
+                "工具参数解析失败（长度=%d，错误位置=%d）",
+                len(raw_arguments),
+                exc.pos,
+            )
+            raise ValueError("工具参数解析失败：不是单个完整的 JSON 对象") from exc
+
+        if not isinstance(value, dict):
+            logger.warning("工具参数解析失败：顶层类型=%s", type(value).__name__)
+            raise ValueError("工具参数解析失败：必须是 JSON 对象")
+
+        return value
+
+    @classmethod
+    def _build_tool_call(cls, slot: dict) -> ToolCall:
+        """从累积的工具调用 slot 构造 ToolCall。"""
+        args = cls._parse_tool_arguments(slot["arguments"])
+        return ToolCall(
+            id=slot["id"],
+            name=slot["name"],
+            args=args,
+            extra_content=slot.get("extra_content"),
+        )
 
     # ==================== 流式调用 ====================
 
@@ -127,8 +190,9 @@ class LLMClient:
         if tools:
             payload["tools"] = tools
 
-        # 按 index 累积工具调用，唯一在流末 flush
-        tool_acc: dict[int, dict] = {}
+        # 按 call id 累积工具调用，index 仅用于路由缺少 id 的后续分片。
+        tool_acc: list[dict] = []
+        active_tool_by_index: dict[int, int] = {}
         final_reason: str | None = None
 
         try:
@@ -144,14 +208,18 @@ class LLMClient:
 
                 if delta and delta.tool_calls:
                     for tc_delta in delta.tool_calls:
-                        self._accumulate_tool_call(tool_acc, tc_delta)
+                        self._accumulate_tool_call(
+                            tool_acc,
+                            active_tool_by_index,
+                            tc_delta,
+                        )
 
                 if choice.finish_reason:
                     final_reason = choice.finish_reason
 
             # 流结束：一次性产出完整工具调用
-            for idx in sorted(tool_acc.keys()):
-                yield StreamChunk(tool_call=self._build_tool_call(tool_acc[idx]))
+            for slot in tool_acc:
+                yield StreamChunk(tool_call=self._build_tool_call(slot))
 
             yield StreamChunk(finish_reason=final_reason or "stop")
 
@@ -184,11 +252,16 @@ class LLMClient:
         tool_calls: list[ToolCall] = []
         if message.tool_calls:
             for tc in message.tool_calls:
-                try:
-                    args = json.loads(tc.function.arguments) if tc.function.arguments else {}
-                except json.JSONDecodeError:
-                    args = {}
-                tool_calls.append(ToolCall(id=tc.id, name=tc.function.name, args=args))
+                args = self._parse_tool_arguments(tc.function.arguments or "")
+                extra_content = getattr(tc, "extra_content", None)
+                if extra_content and hasattr(extra_content, "model_dump"):
+                    extra_content = extra_content.model_dump(exclude_none=True, mode="json")
+                tool_calls.append(ToolCall(
+                    id=tc.id,
+                    name=tc.function.name,
+                    args=args,
+                    extra_content=extra_content,
+                ))
 
         return LLMResponse(
             content=message.content or "",
@@ -234,7 +307,7 @@ def create_llm_client(
     api_key: str,
     base_url: str = "https://api.openai.com/v1",
     temperature: float = 0.7,
-    max_tokens: int | None = None,
+    max_tokens: int = 4096,
     timeout: float = 120.0,
 ) -> LLMClient:
     """创建 LLM 客户端的便捷函数"""

@@ -9,6 +9,8 @@
 import asyncio
 import types
 
+import pytest
+
 from app.agent.agent import AgentConfig
 from app.agent.context import BaseTool, ToolResult
 from app.agent.core.event_router import EventRouter, EventType
@@ -48,14 +50,29 @@ class _FakeScreenshotTool(BaseTool):
         return ToolResult.success("截屏成功", image_url=context.resume_data.get("screenshot_data"))
 
 
+class _FakeSearchTool(BaseTool):
+    name = "search_memory"
+    description = "搜索记忆"
+    parameters_schema = {
+        "type": "object",
+        "properties": {"query": {"type": "string"}},
+        "required": ["query"],
+    }
+
+    async def execute(self, args, context):
+        return ToolResult.success(f"检索结果: {args['query']}")
+
+
 class _FakeLLM:
     """按调用次序回放脚本的伪 LLM 客户端。"""
 
     def __init__(self, scripts):
         self.scripts = scripts
         self.calls = 0
+        self.messages = []
 
     async def astream(self, messages, tools=None):
+        self.messages.append(messages)
         script = self.scripts[self.calls]
         self.calls += 1
         for chunk in script:
@@ -107,6 +124,142 @@ def test_astream_emits_each_tool_call_once():
     assert tool_calls[0].args == {}
 
 
+def test_astream_accumulates_fragmented_arguments_and_signature():
+    async def run():
+        client = LLMClient(LLMConfig(model="m", api_key="k", base_url="http://x/v1"))
+
+        async def fake_create(**kwargs):
+            async def gen():
+                first_delta = _tc_delta(
+                    0,
+                    id="call_1",
+                    name="search_memory",
+                    arguments='{"query":',
+                )
+                first_delta.extra_content = {
+                    "google": {"thought_signature": "signature-value"}
+                }
+                yield _delta(tool_calls=[
+                    first_delta
+                ])
+                yield _delta(tool_calls=[
+                    _tc_delta(0, arguments='"代码优化"}')
+                ])
+                yield _delta(finish_reason="tool_calls")
+            return gen()
+
+        client._client.chat.completions.create = fake_create
+        try:
+            return [
+                chunk async for chunk in client.astream(
+                    [{"role": "user", "content": "hi"}], tools=[{}]
+                )
+            ]
+        finally:
+            await client.close()
+
+    chunks = asyncio.run(run())
+    tool_calls = [chunk.tool_call for chunk in chunks if chunk.tool_call is not None]
+    assert len(tool_calls) == 1
+    assert tool_calls[0].args == {"query": "代码优化"}
+    assert tool_calls[0].extra_content == {
+        "google": {"thought_signature": "signature-value"}
+    }
+
+
+def test_astream_separates_different_calls_that_reuse_index():
+    async def run():
+        client = LLMClient(LLMConfig(model="m", api_key="k", base_url="http://x/v1"))
+
+        async def fake_create(**kwargs):
+            async def gen():
+                screenshot = _tc_delta(
+                    0,
+                    id="call_screenshot",
+                    name="screenshot",
+                    arguments="",
+                )
+                screenshot.extra_content = {
+                    "google": {"thought_signature": "screenshot-signature"}
+                }
+                yield _delta(tool_calls=[screenshot])
+
+                screenshot_args = _tc_delta(0, arguments="{}")
+                screenshot_args.extra_content = {
+                    "google": {"thought_signature": "screenshot-signature"}
+                }
+                yield _delta(tool_calls=[screenshot_args])
+
+                yield _delta(tool_calls=[_tc_delta(
+                    0,
+                    id="call_diary",
+                    name="search_diary",
+                    arguments='{"end":"2026-06-19","start":"2026-06-15"}',
+                )])
+                yield _delta(finish_reason="tool_calls")
+            return gen()
+
+        client._client.chat.completions.create = fake_create
+        try:
+            return [
+                chunk async for chunk in client.astream(
+                    [{"role": "user", "content": "测试多个工具"}], tools=[{}]
+                )
+            ]
+        finally:
+            await client.close()
+
+    chunks = asyncio.run(run())
+    tool_calls = [chunk.tool_call for chunk in chunks if chunk.tool_call is not None]
+    assert [(call.id, call.name, call.args) for call in tool_calls] == [
+        ("call_screenshot", "screenshot", {}),
+        (
+            "call_diary",
+            "search_diary",
+            {"end": "2026-06-19", "start": "2026-06-15"},
+        ),
+    ]
+    assert tool_calls[0].extra_content == {
+        "google": {"thought_signature": "screenshot-signature"}
+    }
+    assert tool_calls[1].extra_content is None
+
+
+@pytest.mark.parametrize(
+    "raw_arguments",
+    ['{"query":', "[]", '{} trailing', '{}{"query":"代码优化"}'],
+)
+def test_astream_rejects_invalid_tool_arguments(raw_arguments):
+    async def run():
+        client = LLMClient(LLMConfig(model="m", api_key="k", base_url="http://x/v1"))
+
+        async def fake_create(**kwargs):
+            async def gen():
+                yield _delta(tool_calls=[
+                    _tc_delta(
+                        0,
+                        id="call_1",
+                        name="search_memory",
+                        arguments=raw_arguments,
+                    )
+                ])
+                yield _delta(finish_reason="tool_calls")
+            return gen()
+
+        client._client.chat.completions.create = fake_create
+        try:
+            return [
+                chunk async for chunk in client.astream(
+                    [{"role": "user", "content": "hi"}], tools=[{}]
+                )
+            ]
+        finally:
+            await client.close()
+
+    with pytest.raises(ValueError, match="工具参数解析失败"):
+        asyncio.run(run())
+
+
 # ==================== Bug #1：带工具调用的助手消息不崩溃 ====================
 
 def test_assistant_message_with_tools_serializes():
@@ -118,6 +271,45 @@ def test_assistant_message_with_tools_serializes():
     d = msg.to_openai_format()  # 旧代码传 role="assistant" 字符串会在此 .value 崩溃
     assert d["role"] == "assistant"
     assert d["tool_calls"][0]["function"]["name"] == "screenshot"
+
+
+def test_tool_call_extra_content_roundtrips_into_followup_request():
+    async def run():
+        signature = {"google": {"thought_signature": "signature-value"}}
+        llm = _FakeLLM(scripts=[
+            [StreamChunk(tool_call=ToolCall(
+                id="c1",
+                name="search_memory",
+                args={"query": "测试"},
+                extra_content=signature,
+            ))],
+            [StreamChunk(content="搜索功能正常")],
+        ])
+        agent = _FakeAgent(llm, tools=[_FakeSearchTool()])
+        state = AgentState.create_new("t")
+        state.add_user_message("测试搜索")
+        events = await _drain(agent.pipeline.execute(state))
+        return llm, state, events
+
+    llm, state, events = asyncio.run(run())
+    assert events[-1].type == EventType.DONE
+
+    assistant_call = next(
+        message for message in llm.messages[1]
+        if message.get("role") == "assistant" and message.get("tool_calls")
+    )
+    assert assistant_call["tool_calls"][0]["extra_content"] == {
+        "google": {"thought_signature": "signature-value"}
+    }
+
+    restored = AgentState.from_checkpoint(state.to_checkpoint())
+    restored_call = next(
+        message for message in restored.messages
+        if message.get("role") == "assistant" and message.get("tool_calls")
+    )
+    assert restored_call["tool_calls"][0]["extra_content"] == {
+        "google": {"thought_signature": "signature-value"}
+    }
 
 
 # ==================== Bug #4：可恢复工具 + 图片注入 完整往返 ====================
@@ -187,6 +379,39 @@ def test_context_window_plugin_builds_and_pops_window():
     # state.messages 仍含完整对话
     roles = [m.get("role") for m in state.messages]
     assert roles == ["user", "assistant"]
+
+
+@pytest.mark.parametrize("content", [None, "", "   \n\t"])
+def test_pipeline_rejects_empty_final_response(content):
+    async def run():
+        script = [StreamChunk(finish_reason="stop")]
+        if content is not None:
+            script.insert(0, StreamChunk(content=content))
+        agent = _FakeAgent(_FakeLLM(scripts=[script]), tools=[])
+        state = AgentState.create_new("t")
+        state.add_user_message("在吗")
+        return state, await _drain(agent.pipeline.execute(state))
+
+    state, events = asyncio.run(run())
+    assert events[-1].type == EventType.ERROR
+    assert events[-1].data == "模型未返回有效文本（finish_reason=stop）"
+    assert all(event.type != EventType.DONE for event in events)
+    assert [message["role"] for message in state.messages] == ["user"]
+
+
+def test_pipeline_keeps_content_filter_error():
+    async def run():
+        agent = _FakeAgent(
+            _FakeLLM(scripts=[[StreamChunk(finish_reason="content_filter")]]),
+            tools=[],
+        )
+        state = AgentState.create_new("t")
+        state.add_user_message("在吗")
+        return await _drain(agent.pipeline.execute(state))
+
+    events = asyncio.run(run())
+    assert events[-1].type == EventType.ERROR
+    assert events[-1].data == "触发 API 内容过滤"
 
 
 def test_extract_new_ai_messages_dict():

@@ -25,6 +25,7 @@ from app.agent.message import (
     AssistantMessageWithTools,
 )
 from app.agent.state import AgentState
+from app.agent.models.llm_client import StreamChunk
 from app.agent.core.state_manager import CheckpointType
 # 注入截屏/屏幕图片时使用的消息名（ContextWindowPlugin 据此做 TTL 压缩）
 from app.agent.utils.infra.constants import SCREENSHOT_MESSAGE_NAME
@@ -151,14 +152,21 @@ class ExecutionPipeline:
             # 2. 调用 LLM（流式）
             accumulated_content = ""
             tool_calls: list[ToolCall] = []
+            finish_reason: str | None = None
 
             try:
                 async for chunk in self._call_llm(state):
-                    if isinstance(chunk, str):
-                        accumulated_content += chunk
-                        yield AgentEvent(EventType.TEXT_CHUNK, chunk)
-                    elif isinstance(chunk, ToolCall):
-                        tool_calls.append(chunk)
+                    if chunk.content:
+                        accumulated_content += chunk.content
+                        yield AgentEvent(EventType.TEXT_CHUNK, chunk.content)
+                    if chunk.tool_call:
+                        tool_calls.append(chunk.tool_call)
+                    if chunk.finish_reason:
+                        finish_reason = chunk.finish_reason
+
+                if not tool_calls and not accumulated_content.strip():
+                    reason = finish_reason or "unknown"
+                    raise RuntimeError(f"模型未返回有效文本（finish_reason={reason}）")
             except Exception as e:
                 logger.error("LLM 调用失败: %s", e)
                 await self.agent.plugin_manager.run_hooks(
@@ -228,20 +236,17 @@ class ExecutionPipeline:
 
     # ==================== LLM 调用 ====================
 
-    async def _call_llm(self, state: AgentState) -> AsyncIterator[str | ToolCall]:
-        """调用 LLM，产出文本或工具调用"""
+    async def _call_llm(self, state: AgentState) -> AsyncIterator[StreamChunk]:
+        """调用 LLM，保留文本、工具调用和终止原因。"""
         messages = self._build_messages(state)
         tools = self.agent.tool_manager.get_openai_tools()
 
         async for chunk in self.agent.llm_client.astream(messages, tools=tools or None):
-            if chunk.content:
-                yield chunk.content
-            if chunk.tool_call:
-                yield chunk.tool_call
             if chunk.finish_reason == "content_filter":
                 # 内容被 API 过滤：抛出，由 _run_loop 的 try/except 统一转成 ERROR 事件
                 # （本轮不写 checkpoint，且前端能看到明确报错）
                 raise RuntimeError("触发 API 内容过滤")
+            yield chunk
 
     def _build_messages(self, state: AgentState) -> list[dict]:
         """构建发送给 LLM 的消息列表

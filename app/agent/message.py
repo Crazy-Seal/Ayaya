@@ -60,10 +60,11 @@ class ToolCall:
     id: str
     name: str
     args: dict
+    extra_content: dict | None = None
 
     def to_dict(self) -> dict:
         """转换为 OpenAI 格式"""
-        return {
+        result = {
             "id": self.id,
             "type": "function",
             "function": {
@@ -71,6 +72,9 @@ class ToolCall:
                 "arguments": json.dumps(self.args, ensure_ascii=False)
             }
         }
+        if self.extra_content:
+            result["extra_content"] = self.extra_content
+        return result
 
     @classmethod
     def from_dict(cls, data: dict) -> "ToolCall":
@@ -78,7 +82,8 @@ class ToolCall:
         return cls(
             id=data["id"],
             name=data["function"]["name"],
-            args=json.loads(data["function"]["arguments"])
+            args=json.loads(data["function"]["arguments"]),
+            extra_content=data.get("extra_content"),
         )
 
 

@@ -142,6 +142,51 @@ def test_completed_tool_results_survive_later_llm_failure(tmp_path: Path) -> Non
     asyncio.run(scenario())
 
 
+def test_initial_empty_response_is_error_without_checkpoint(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        agent = await make_agent(
+            tmp_path / "checkpoints.sqlite3",
+            [[StreamChunk(finish_reason="stop")]],
+            StepTool(),
+        )
+        try:
+            events = await drain(agent.run("在吗"))
+            assert events[-1].type == EventType.ERROR
+            assert "finish_reason=stop" in events[-1].data
+            assert await checkpoint_types(agent.state_manager) == []
+        finally:
+            await agent.close()
+
+    asyncio.run(scenario())
+
+
+def test_empty_response_after_tool_keeps_intermediate_checkpoint(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        tool = StepTool()
+        agent = await make_agent(
+            tmp_path / "checkpoints.sqlite3",
+            [
+                [tool_call("call-a", label="A")],
+                [StreamChunk(finish_reason="stop")],
+            ],
+            tool,
+        )
+        try:
+            events = await drain(agent.run("执行一步"))
+            assert events[-1].type == EventType.ERROR
+            assert "finish_reason=stop" in events[-1].data
+
+            state = await agent.state_manager.load()
+            tool_messages = [item for item in state.messages if item.get("role") == "tool"]
+            assert [item["content"] for item in tool_messages] == ["完成 A"]
+            assert state.pending_tool_calls == []
+            assert await checkpoint_types(agent.state_manager) == ["intermediate"]
+        finally:
+            await agent.close()
+
+    asyncio.run(scenario())
+
+
 def test_tool_error_result_is_checkpointed(tmp_path: Path) -> None:
     async def scenario() -> None:
         agent = await make_agent(
