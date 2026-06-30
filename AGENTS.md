@@ -1,13 +1,33 @@
-- 该项目的后端需要在conda环境中运行，环境名为my_agent
-- 该项目的代码注释和控制台打印信息应尽量使用中文书写
+# Repository Guidelines
 
-## 生产环境与测试环境切换
+## Project Structure & Module Organization
 
-- 未设置 `AYAYA_ENV` 时默认使用生产环境，等价于 `AYAYA_ENV=production`。
-- 生产环境使用项目下的 `memory/` 目录和 `config/chat_settings.yaml`，并加载项目根目录的 `.env`。
-- 切换到生产环境：设置 `AYAYA_ENV=production`，并删除可能遗留的 `AYAYA_DATA_DIR`。
-- 切换到测试环境：设置 `AYAYA_ENV=test`，同时必须把 `AYAYA_DATA_DIR` 设置为生产 `memory/` 目录之外的独立目录。
-- 测试环境的 SQLite、checkpoint、Chroma、Mem0/Qdrant、图片和会话配置都必须位于 `AYAYA_DATA_DIR` 内；测试环境不会加载生产 `.env`。
-- 自动化测试通过 `tests/conftest.py` 在导入后端模块前创建一次性测试目录，不得连接、写入或删除生产数据库。
-- 在 PowerShell 中运行自动化测试：`conda run -n my_agent python -B -m pytest tests -q -p no:cacheprovider`。
-- 手动启动测试后端前，需要在 `$env:AYAYA_DATA_DIR\config\chat_settings.yaml` 准备独立测试配置。
+The FastAPI backend starts in `main.py`. Application code lives under `app/`: HTTP endpoints are in `routes/`, request and response models in `schemas/`, persistence in `crud/`, orchestration in `services/`, and agent, tool, plugin, and memory implementations in `agent/`. Backend tests are in `tests/`. The Electron/Vite frontend is under `ui/`; renderer code is in `ui/src/`, Electron main-process code in `ui/electron/`, and static Live2D assets in `ui/public/`. Runtime state belongs in `memory/`, not source control. Configuration samples live in `config/` and `.env.sample`.
+
+## Build, Test, and Development Commands
+
+Run the backend in the `my_agent` Conda environment:
+
+```powershell
+conda run -n my_agent pip install -r requirements.txt
+conda run -n my_agent uvicorn main:app --reload --reload-exclude "agent_workspace/*"
+conda run -n my_agent python -B -m pytest tests -q -p no:cacheprovider
+```
+
+For the desktop UI, run `npm install` from `ui/`, then use `npm run dev` for Vite and Electron development, `npm run build` for production bundles and TypeScript checks, and `npm run start` to launch the built application.
+
+## Coding Style & Naming Conventions
+
+Use four spaces in Python and two spaces in TypeScript, matching surrounding files. Prefer `snake_case` for Python modules and functions, `PascalCase` for classes and TypeScript types, and `kebab-case.ts` for frontend modules. TypeScript must remain compatible with `strict: true`. Keep modules focused and preserve route/service/DAO boundaries. Write code comments and console or log messages in Chinese where practical.
+
+## Testing Guidelines
+
+Pytest is the backend test framework. Name files `test_<feature>.py` and tests `test_<behavior>`. Add regression coverage for changed behavior; no numeric coverage threshold is configured. `tests/conftest.py` creates a disposable data directory before backend imports. Tests must never access, modify, or delete production storage.
+
+## Environment & Security
+
+Unset `AYAYA_ENV` means production: use repository `memory/`, `config/chat_settings.yaml`, and root `.env`. For explicit production runs, set `AYAYA_ENV=production` and remove `AYAYA_DATA_DIR`. For tests, set `AYAYA_ENV=test` and point `AYAYA_DATA_DIR` outside production `memory/`; all SQLite, checkpoint, Chroma, Mem0/Qdrant, image, and session configuration must remain there. Test mode does not load production `.env`. Before manually starting a test backend, create `$env:AYAYA_DATA_DIR\config\chat_settings.yaml`. Never commit credentials or generated runtime data.
+
+## Commit & Pull Request Guidelines
+
+Follow the existing history: concise Chinese, imperative summaries describing one logical change, such as `隔离测试环境并修复后端资源管理`. Pull requests should explain purpose, implementation impact, test commands and results, configuration changes, and linked issues. Include screenshots or a short recording for visible UI changes.
