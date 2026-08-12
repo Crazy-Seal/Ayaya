@@ -11,6 +11,10 @@ from mem0 import Memory
 
 from app.agent.memory.base import MemoryItem
 from app.agent.memory.config import MemoryConfig
+from app.agent.memory.memories.mem0_llm_compat import (
+    MEM0_FACT_EXTRACTION_MARKER,
+    Mem0FactExtractionLLMAdapter,
+)
 from app.agent.message import Message, MessageRole
 from app.agent.message_time import render_timed_text
 from app.schemas.chat_settings import ChatSettings
@@ -59,11 +63,13 @@ def _get_cached_mem0(
         "version": "v1.1",
     }
 
-    return Memory.from_config(mem0_config)
+    memory = Memory.from_config(mem0_config)
+    memory.llm = Mem0FactExtractionLLMAdapter(memory.llm)
+    return memory
 
 
 # Mem0 自定义提示词
-MEM0_CUSTOM_INSTRUCTIONS = """
+MEM0_CUSTOM_INSTRUCTIONS = MEM0_FACT_EXTRACTION_MARKER + """
 请根据给定的对话历史记录和对话内容，以**AI助手的第一人称视角**，仅提取**语义记忆**。
 
 **语义记忆**是指关于用户或AI助手的既定事实、偏好、属性、重要经历等信息。包括：
@@ -92,6 +98,12 @@ MEM0_CUSTOM_INSTRUCTIONS = """
 
 ## 前情提要
 - **注意**：标有[前情提要]的对话是之前的对话，仅作为上下文补充使用，无需提取其中的信息
+
+## 输出格式
+- 只返回合法 JSON 对象，不要添加解释、Markdown 或代码块。
+- 顶层字段必须命名为 `facts`，其值必须是字符串数组，不得使用 `memories` 等其他字段名。
+- 有记忆时严格返回：{"facts": ["记忆1", "记忆2"]}
+- 没有可提取记忆时严格返回：{"facts": []}
 """
 
 
