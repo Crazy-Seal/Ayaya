@@ -4,11 +4,13 @@
 包含工具执行上下文、插件钩子上下文、中断事件等。
 """
 
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Awaitable
-import uuid
+from typing import Any, Awaitable, Callable
+
+from app.agent.tool_schema_compat import normalize_tool_schema_for_model
 
 
 # ==================== 中断事件 ====================
@@ -212,7 +214,7 @@ class BaseTool(ABC):
             "function": {
                 "name": self.name,
                 "description": self.description,
-                "parameters": self.parameters_schema
+                "parameters": normalize_tool_schema_for_model(self.parameters_schema)
             }
         }
 
