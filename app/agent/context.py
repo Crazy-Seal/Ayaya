@@ -242,7 +242,7 @@ class BasePlugin(ABC):
         """执行插件逻辑，返回可能修改后的上下文"""
         pass
 
-    async def on_register(self, agent: Any) -> None:
+    async def on_register(self) -> None:
         """注册时的初始化"""
         pass
 

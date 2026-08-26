@@ -65,6 +65,8 @@ class Agent:
         db_path: str | None = None,
         mcp_connection_manager: "MCPConnectionManager | None" = None,
         mcp_policy_resolver: "MCPPolicyResolver | None" = None,
+        *,
+        llm_client: LLMClient | None = None,
     ):
         self.config = config
         self.mcp_connection_manager = mcp_connection_manager
@@ -81,16 +83,25 @@ class Agent:
         self.context_strategy = ContextStrategyManager(config.context_strategy)
 
         # LLM 客户端
-        self.llm_client = LLMClient(LLMConfig(
-            model=config.model_name,
-            api_key=config.api_key,
-            base_url=config.base_url,
-            temperature=config.temperature,
-            max_tokens=config.max_tokens,
-        ))
+        self.llm_client = llm_client
+        if self.llm_client is None:
+            self.llm_client = LLMClient(LLMConfig(
+                model=config.model_name,
+                api_key=config.api_key,
+                base_url=config.base_url,
+                temperature=config.temperature,
+                max_tokens=config.max_tokens,
+            ))
 
         # 执行管道
-        self.pipeline = ExecutionPipeline(self)
+        self.pipeline = ExecutionPipeline(
+            prompt_source=self.config,
+            llm_client=self.llm_client,
+            tool_manager=self.tool_manager,
+            plugin_manager=self.plugin_manager,
+            context_strategy=self.context_strategy,
+            emit_event=self.event_router.emit,
+        )
 
         # 初始化标志
         self._initialized = False
@@ -145,7 +156,7 @@ class Agent:
             plugin_class = PluginRegistry.get(plugin_name)
             if plugin_class:
                 plugin = plugin_class(**plugin_params)
-                await self.plugin_manager.register(plugin, self)
+                await self.plugin_manager.register(plugin)
                 logger.info(f"加载插件: {plugin_name}")
             else:
                 logger.warning(f"插件 '{plugin_name}' 不存在于注册表中")
@@ -182,7 +193,7 @@ class Agent:
                     continue
                 plugin_cls = PluginRegistry.get(plugin_name)
                 if plugin_cls:
-                    await self.plugin_manager.register(plugin_cls(), self)
+                    await self.plugin_manager.register(plugin_cls())
                 else:
                     logger.warning("Skill '%s' 引用的插件 '%s' 不存在", skill_name, plugin_name)
 
@@ -194,7 +205,7 @@ class Agent:
                     else skill.system_prompt_fragment
                 )
 
-            await skill.on_load(self)
+            await skill.on_load()
             logger.info("加载 Skill: %s", skill_name)
 
     async def _setup_mcp(self) -> None:
@@ -290,7 +301,7 @@ class Agent:
 
             state.clear_interrupt()
             state.clear_pending_tool_calls()
-            self.pipeline._flush_deferred_tool_images(state)
+            state.flush_deferred_tool_images()
             await self.state_manager.save(state, checkpoint_type="completed")
 
         # 上次普通工具链若异常中止，为未完成调用补齐结果，避免自动重试副作用。
@@ -303,7 +314,7 @@ class Agent:
                     tool_call_id=tool_call.id,
                 )
             state.clear_pending_tool_calls()
-            self.pipeline._flush_deferred_tool_images(state)
+            state.flush_deferred_tool_images()
             await self.state_manager.save(state, checkpoint_type="completed")
 
         # 每轮起始重置一次性的记忆上下文（由 MemoryPlugin 在 BEFORE_LLM 重新注入）
@@ -320,46 +331,17 @@ class Agent:
         state.increment_summary_counter()
         await self.state_manager.save(state, checkpoint_type="intermediate")
 
-        # 3. 执行管道
-        errored = False
-        commit_context: dict = {}
-        async for event in self.pipeline.execute(
+        # 3. 执行管道；最终提交与 DONE 只由 Agent 负责。
+        async for event in self._stream_and_finalize(
             state,
-            checkpoint=self.state_manager.save,
-            commit_context=commit_context,
-            runtime_context=runtime_context,
+            self.pipeline.execute(
+                state,
+                checkpoint=self.state_manager.save,
+                runtime_context=runtime_context,
+            ),
+            failure_message="本轮执行出错，已保留最近工具进度，未写入最终 checkpoint",
         ):
-            if event.type == EventType.ERROR:
-                # 出错时不写最终 checkpoint，已经提交的工具进度继续保留。
-                errored = True
-                yield event
-                break
-
-            if event.type == EventType.INTERRUPT:
-                # Pipeline 已先保存中断状态，再向上游发送事件。
-                yield event
-                return
-
-            if event.type == EventType.DONE:
-                continue
-
             yield event
-
-        if errored:
-            logger.warning(
-                "本轮执行出错，已保留最近工具进度，未写入最终 checkpoint: %s",
-                self.config.session_id,
-            )
-            return
-
-        # 4. 保存最终状态
-        await self.state_manager.save(state, checkpoint_type="completed")
-        await self.plugin_manager.run_hooks(
-            PluginHook.AFTER_RESPONSE_COMMIT,
-            state,
-            data=commit_context,
-        )
-        yield AgentEvent(EventType.DONE, None)
 
     async def resume(
         self,
@@ -385,47 +367,61 @@ class Agent:
             yield AgentEvent(EventType.ERROR, "没有中断状态需要恢复")
             return
 
-        # 3. 恢复执行
-        errored = False
-        commit_context: dict = {}
-        async for event in self.pipeline.resume_tools(
+        # 3. 恢复执行；最终提交与 DONE 只由 Agent 负责。
+        async for event in self._stream_and_finalize(
             state,
-            resume_data,
-            checkpoint=self.state_manager.save,
-            commit_context=commit_context,
-            runtime_context=runtime_context,
+            self.pipeline.resume_tools(
+                state,
+                resume_data,
+                checkpoint=self.state_manager.save,
+                runtime_context=runtime_context,
+            ),
+            failure_message="恢复执行出错，已保留最近工具进度，未写入最终 checkpoint",
         ):
-            if event.type == EventType.ERROR:
-                errored = True
-                yield event
-                break
-
-            # 检查新的中断
-            if event.type == EventType.INTERRUPT:
-                # Pipeline 已先保存新的中断状态，再向上游发送事件。
-                yield event
-                return
-
-            if event.type == EventType.DONE:
-                continue
-
             yield event
 
-        if errored:
-            logger.warning(
-                "恢复执行出错，已保留最近工具进度，未写入最终 checkpoint: %s",
-                self.config.session_id,
-            )
-            return
+    async def _stream_and_finalize(
+        self,
+        state: AgentState,
+        event_stream: AsyncIterator[AgentEvent],
+        *,
+        failure_message: str,
+    ) -> AsyncIterator[AgentEvent]:
+        """转发执行事件，并在正常结束后完成唯一一次响应提交。"""
+        async for event in event_stream:
+            if event.type == EventType.ERROR:
+                yield event
+                logger.warning("%s: %s", failure_message, self.config.session_id)
+                return
+            if event.type == EventType.INTERRUPT:
+                yield event
+                return
+            yield event
 
-        # 4. 保存最终状态
+        await self._finalize_response(state)
+        yield AgentEvent(EventType.DONE, None)
+
+    async def _finalize_response(self, state: AgentState) -> None:
+        """在成功执行后准备并持久化最终响应。"""
+        commit_context: dict = {}
+        state = await self.plugin_manager.run_hooks(
+            PluginHook.BEFORE_RESPONSE_COMMIT,
+            state,
+            data=commit_context,
+        )
+        memory_human_floor = int(
+            commit_context.get("memory_checkpoint_human_floor", 0) or 0
+        )
+        self.context_strategy.compact_checkpoint(
+            state,
+            memory_human_floor=memory_human_floor,
+        )
         await self.state_manager.save(state, checkpoint_type="completed")
         await self.plugin_manager.run_hooks(
             PluginHook.AFTER_RESPONSE_COMMIT,
             state,
             data=commit_context,
         )
-        yield AgentEvent(EventType.DONE, None)
 
     # ==================== 运行时操作 ====================
 
@@ -439,7 +435,7 @@ class Agent:
 
     async def register_plugin(self, plugin: BasePlugin) -> None:
         """运行时注册插件"""
-        await self.plugin_manager.register(plugin, self)
+        await self.plugin_manager.register(plugin)
 
     async def unregister_plugin(self, name: str) -> bool:
         """运行时移除插件"""

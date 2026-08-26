@@ -6,9 +6,6 @@ from app.agent.message import (
     is_screenshot_message,
     is_user_message,
 )
-from app.agent.context import ToolResult
-from app.agent.core.pipeline import ExecutionPipeline
-from app.agent.message import ToolCall
 from app.agent.state import AgentState
 
 
@@ -56,21 +53,19 @@ def test_mcp_tool_image_is_system_injected_not_real_human() -> None:
 
 def test_tool_images_are_flushed_after_all_tool_messages() -> None:
     """同一批工具的图片不得插入尚未补齐的 tool 槽位之间。"""
-    pipeline = object.__new__(ExecutionPipeline)
     state = AgentState.create_new("batch-images")
-    first = ToolCall(id="a", name="image_tool", args={})
-    second = ToolCall(id="b", name="text_tool", args={})
-
-    pipeline._append_tool_result(
-        state,
-        first,
-        ToolResult.success("image", image_urls=["data:image/png;base64,QQ=="]),
-    )
-    pipeline._append_tool_result(state, second, ToolResult.success("text"))
+    state.add_tool_message("image", "image_tool", "a")
+    state.deferred_tool_images.append({
+        "tool_call_id": "a",
+        "tool_name": "image_tool",
+        "image_message_name": MCP_TOOL_IMAGE_MESSAGE_NAME,
+        "image_urls": ["data:image/png;base64,QQ=="],
+    })
+    state.add_tool_message("text", "text_tool", "b")
 
     assert [item["role"] for item in state.messages] == ["tool", "tool"]
     assert len(state.deferred_tool_images) == 1
-    pipeline._flush_deferred_tool_images(state)
+    state.flush_deferred_tool_images()
     assert [item["role"] for item in state.messages] == ["tool", "tool", "user"]
     assert state.deferred_tool_images == []
 

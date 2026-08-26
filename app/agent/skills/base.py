@@ -5,7 +5,6 @@
 """
 
 from abc import ABC
-from typing import Any
 
 
 class BaseSkill(ABC):
@@ -28,6 +27,6 @@ class BaseSkill(ABC):
     # 该能力包引入的插件名（从 PluginRegistry 解析）
     plugins: list[str] = []
 
-    async def on_load(self, agent: Any) -> None:
+    async def on_load(self) -> None:
         """加载时的可选初始化钩子。"""
         pass

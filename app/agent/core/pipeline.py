@@ -9,7 +9,7 @@ tool_call_id/tool_args/resume_state）写入 state.interrupt_data，使恢复能
 """
 
 import logging
-from typing import AsyncIterator, Protocol, TYPE_CHECKING
+from typing import Any, AsyncIterator, Awaitable, Callable, Protocol
 
 from app.agent.context import (
     ToolContext,
@@ -17,11 +17,13 @@ from app.agent.context import (
     PluginHook,
 )
 from app.agent.core.event_router import EventType, AgentEvent
+from app.agent.core.plugin_manager import PluginManager
+from app.agent.core.tool_manager import ToolManager
+from app.agent.context_strategy import ContextStrategyManager
 from app.agent.message import (
     SCREENSHOT_MESSAGE_NAME,
     ToolCall,
     Message,
-    ContentPart,
     MessageRole,
     AssistantMessageWithTools,
 )
@@ -29,8 +31,6 @@ from app.agent.state import AgentState
 from app.agent.models.llm_client import StreamChunk
 from app.agent.message_time import RuntimeContext
 from app.agent.core.state_manager import CheckpointType
-if TYPE_CHECKING:
-    from app.agent.agent import Agent
 
 logger = logging.getLogger(__name__)
 
@@ -46,11 +46,44 @@ class CheckpointCallback(Protocol):
     ) -> int: ...
 
 
+class SystemPromptSource(Protocol):
+    """Pipeline 构建模型消息所需的最小配置接口。"""
+
+    system_prompt: str
+
+
+class StreamingLLMClient(Protocol):
+    """Pipeline 调用流式模型所需的最小接口。"""
+
+    def astream(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+    ) -> AsyncIterator[StreamChunk]: ...
+
+
+EventEmitter = Callable[[EventType, Any], Awaitable[None]]
+
+
 class ExecutionPipeline:
     """执行管道 - 编排 LLM 调用和工具执行"""
 
-    def __init__(self, agent: "Agent"):
-        self.agent = agent
+    def __init__(
+        self,
+        *,
+        prompt_source: SystemPromptSource,
+        llm_client: StreamingLLMClient,
+        tool_manager: ToolManager,
+        plugin_manager: PluginManager,
+        context_strategy: ContextStrategyManager,
+        emit_event: EventEmitter,
+    ) -> None:
+        self._prompt_source = prompt_source
+        self._llm_client = llm_client
+        self._tool_manager = tool_manager
+        self._plugin_manager = plugin_manager
+        self._context_strategy = context_strategy
+        self._emit_event = emit_event
 
     # ==================== 主入口 ====================
 
@@ -58,18 +91,17 @@ class ExecutionPipeline:
         self,
         state: AgentState,
         checkpoint: CheckpointCallback | None = None,
-        commit_context: dict | None = None,
         runtime_context: RuntimeContext | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """执行主循环（一轮对话的起点）"""
         # ON_INVOKE 钩子 - 每轮仅在此触发一次
-        state = await self.agent.plugin_manager.run_hooks(
+        state = await self._plugin_manager.run_hooks(
             PluginHook.ON_INVOKE, state
         )
 
         runtime_context = runtime_context or RuntimeContext.capture()
         async for event in self._run_loop(
-            state, checkpoint, commit_context, runtime_context
+            state, checkpoint, runtime_context
         ):
             yield event
 
@@ -78,7 +110,6 @@ class ExecutionPipeline:
         state: AgentState,
         resume_data: dict,
         checkpoint: CheckpointCallback | None = None,
-        commit_context: dict | None = None,
         runtime_context: RuntimeContext | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """从中断恢复：先跑完被中断的工具与剩余待执行工具，再回到 LLM 循环。
@@ -146,7 +177,7 @@ class ExecutionPipeline:
         # 3. 回到 LLM 循环（不重跑 ON_INVOKE）
         runtime_context = runtime_context or RuntimeContext.capture()
         async for event in self._run_loop(
-            state, checkpoint, commit_context, runtime_context
+            state, checkpoint, runtime_context
         ):
             yield event
 
@@ -156,13 +187,12 @@ class ExecutionPipeline:
         self,
         state: AgentState,
         checkpoint: CheckpointCallback | None = None,
-        commit_context: dict | None = None,
         runtime_context: RuntimeContext | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """LLM ↔ 工具循环主体（不含 ON_INVOKE）"""
         while True:
             # 1. BEFORE_LLM 钩子
-            state = await self.agent.plugin_manager.run_hooks(
+            state = await self._plugin_manager.run_hooks(
                 PluginHook.BEFORE_LLM, state
             )
 
@@ -187,14 +217,14 @@ class ExecutionPipeline:
                     raise RuntimeError(f"模型未返回有效文本（finish_reason={reason}）")
             except Exception as e:
                 logger.error("LLM 调用失败: %s", e)
-                await self.agent.plugin_manager.run_hooks(
+                await self._plugin_manager.run_hooks(
                     PluginHook.ON_ERROR, state, data={"error": e}
                 )
                 yield AgentEvent(EventType.ERROR, str(e))
                 return
 
             # 3. AFTER_LLM 钩子
-            state = await self.agent.plugin_manager.run_hooks(
+            state = await self._plugin_manager.run_hooks(
                 PluginHook.AFTER_LLM, state,
                 data={"content": accumulated_content, "tool_calls": tool_calls},
             )
@@ -221,7 +251,7 @@ class ExecutionPipeline:
                 if result.interrupt:
                     remaining = [tc.to_dict() for tc in tool_calls[i + 1:]]
                     self._persist_interrupt(state, tool_call, result, remaining)
-                    await self.agent.plugin_manager.run_hooks(
+                    await self._plugin_manager.run_hooks(
                         PluginHook.ON_INTERRUPT, state,
                         data={"interrupt": result.interrupt},
                     )
@@ -235,24 +265,6 @@ class ExecutionPipeline:
                     result,
                     checkpoint,
                 )
-
-        # 7. 最终响应提交前准备：标注图片、准备记忆快照并裁剪 checkpoint。
-        state = await self.agent.plugin_manager.run_hooks(
-            PluginHook.BEFORE_RESPONSE_COMMIT,
-            state,
-            data=commit_context if commit_context is not None else {},
-        )
-        memory_human_floor = 0
-        if commit_context is not None:
-            memory_human_floor = int(
-                commit_context.get("memory_checkpoint_human_floor", 0) or 0
-            )
-        self.agent.context_strategy.compact_checkpoint(
-            state,
-            memory_human_floor=memory_human_floor,
-        )
-
-        yield AgentEvent(EventType.DONE, None)
 
     @staticmethod
     async def _checkpoint(
@@ -272,9 +284,9 @@ class ExecutionPipeline:
     ) -> AsyncIterator[StreamChunk]:
         """调用 LLM，保留文本、工具调用和终止原因。"""
         messages = self._build_messages(state, runtime_context)
-        tools = self.agent.tool_manager.get_openai_tools()
+        tools = self._tool_manager.get_openai_tools()
 
-        async for chunk in self.agent.llm_client.astream(messages, tools=tools or None):
+        async for chunk in self._llm_client.astream(messages, tools=tools or None):
             if chunk.finish_reason == "content_filter":
                 # 内容被 API 过滤：抛出，由 _run_loop 的 try/except 统一转成 ERROR 事件
                 # （本轮不写 checkpoint，且前端能看到明确报错）
@@ -293,7 +305,7 @@ class ExecutionPipeline:
         messages: list[dict] = []
 
         # 系统提示词（拼接记忆上下文）
-        system_prompt = self.agent.config.system_prompt
+        system_prompt = self._prompt_source.system_prompt
         system_prompt = (
             f"{system_prompt}\n\n{runtime_context.system_text}"
             if system_prompt
@@ -305,7 +317,7 @@ class ExecutionPipeline:
             messages.append(Message.system_message(system_prompt).to_openai_format())
 
         # 上下文策略生成临时窗口，不修改持久化消息。
-        history = self.agent.context_strategy.build_model_window(state)
+        history = self._context_strategy.build_model_window(state)
         messages.extend(history)
 
         return messages
@@ -320,12 +332,12 @@ class ExecutionPipeline:
         resume_state: dict | None = None,
     ) -> ToolResult:
         """执行单个工具（支持中断后恢复执行：传入 resume_data + resume_state）"""
-        await self.agent.plugin_manager.run_hooks(
+        await self._plugin_manager.run_hooks(
             PluginHook.BEFORE_TOOL, state,
             data={"tool_call": tool_call.to_dict()},
         )
 
-        tool = self.agent.tool_manager.get(tool_call.name)
+        tool = self._tool_manager.get(tool_call.name)
         if not tool:
             logger.warning("工具 '%s' 不存在", tool_call.name)
             return ToolResult.error(f"工具 '{tool_call.name}' 不存在")
@@ -333,7 +345,7 @@ class ExecutionPipeline:
         context = ToolContext(
             session_id=state.session_id,
             state=state,
-            emit_event=self.agent.event_router.emit,
+            emit_event=self._emit_event,
             get_checkpoint=state.to_checkpoint,
             set_checkpoint=lambda d: state.update_extra(d),
             resume_data=resume_data,
@@ -346,7 +358,7 @@ class ExecutionPipeline:
             logger.error("工具 '%s' 执行失败: %s", tool_call.name, e)
             result = ToolResult.error(str(e))
 
-        await self.agent.plugin_manager.run_hooks(
+        await self._plugin_manager.run_hooks(
             PluginHook.AFTER_TOOL, state,
             data={"tool_call": tool_call.to_dict(), "result": result},
         )
@@ -374,7 +386,7 @@ class ExecutionPipeline:
         self._append_tool_result(state, tool_call, result)
         state.remove_pending_tool_call(tool_call.id)
         if not state.pending_tool_calls:
-            self._flush_deferred_tool_images(state)
+            state.flush_deferred_tool_images()
         await self._checkpoint(state, checkpoint)
 
     def _append_tool_result(
@@ -403,28 +415,6 @@ class ExecutionPipeline:
                 "image_message_name": result.image_message_name or SCREENSHOT_MESSAGE_NAME,
                 "image_urls": image_urls,
             })
-
-    @staticmethod
-    def _flush_deferred_tool_images(state: AgentState) -> None:
-        """在整批 tool 消息补齐后统一注入工具图片。
-
-        Args:
-            state: 保存消息和延迟图片队列的 Agent 状态。
-        """
-        deferred = list(state.deferred_tool_images)
-        state.deferred_tool_images = []
-        for item in deferred:
-            image_urls = list(item.get("image_urls") or [])
-            if not image_urls:
-                continue
-            tool_name = str(item.get("tool_name") or "")
-            state.add_message(Message.user_message(
-                [
-                    ContentPart.text_part(f"[系统消息]工具 {tool_name} 返回图片: "),
-                    *(ContentPart.image_part(url) for url in image_urls),
-                ],
-                name=str(item.get("image_message_name") or SCREENSHOT_MESSAGE_NAME),
-            ))
 
     def _persist_interrupt(
         self,

@@ -4,7 +4,6 @@
 负责插件的生命周期管理和钩子分发。
 """
 
-import asyncio
 import logging
 from collections import defaultdict
 from typing import Any
@@ -22,27 +21,20 @@ class PluginManager:
         self._hooks: dict[PluginHook, list[BasePlugin]] = defaultdict(list)
         # 所有已注册的插件
         self._plugins: dict[str, BasePlugin] = {}
-        # Agent 引用（用于插件的 on_register）
-        self._agent: Any = None
 
-    async def register(self, plugin: BasePlugin, agent: Any) -> None:
+    async def register(self, plugin: BasePlugin) -> None:
         """注册插件
 
         Args:
             plugin: 插件实例
-            agent: Agent 实例（传递给插件的 on_register）
         """
         if plugin.name in self._plugins:
             logger.warning(f"插件 '{plugin.name}' 已存在，将被覆盖")
             # 先注销旧插件
             await self.unregister(plugin.name)
 
-        # 保存 Agent 引用
-        if self._agent is None:
-            self._agent = agent
-
         # 调用插件的初始化方法
-        await plugin.on_register(agent)
+        await plugin.on_register()
 
         # 注册到钩子列表
         for hook in plugin.hooks:

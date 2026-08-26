@@ -9,6 +9,7 @@ from datetime import datetime
 from uuid import uuid4
 
 from app.agent.message import (
+    SCREENSHOT_MESSAGE_NAME,
     Message,
     ContentPart,
     ToolCall,
@@ -116,6 +117,23 @@ class AgentState(BaseModel):
         """获取待执行的工具调用列表"""
         from app.agent.message import ToolCall
         return [ToolCall.from_dict(tc) for tc in self.pending_tool_calls]
+
+    def flush_deferred_tool_images(self) -> None:
+        """在整批工具消息补齐后统一注入工具图片。"""
+        deferred = list(self.deferred_tool_images)
+        self.deferred_tool_images = []
+        for item in deferred:
+            image_urls = list(item.get("image_urls") or [])
+            if not image_urls:
+                continue
+            tool_name = str(item.get("tool_name") or "")
+            self.add_message(Message.user_message(
+                [
+                    ContentPart.text_part(f"[系统消息]工具 {tool_name} 返回图片: "),
+                    *(ContentPart.image_part(url) for url in image_urls),
+                ],
+                name=str(item.get("image_message_name") or SCREENSHOT_MESSAGE_NAME),
+            ))
 
     # ==================== 中断恢复操作 ====================
 

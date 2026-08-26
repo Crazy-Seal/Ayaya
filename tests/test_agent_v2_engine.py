@@ -85,7 +85,7 @@ class _FakeLLM:
             yield chunk
 
 
-class _FakeAgent:
+class _PipelineHarness:
     def __init__(self, llm, tools):
         self.config = AgentConfig(
             session_id="t", model_name="m", api_key="k",
@@ -98,7 +98,14 @@ class _FakeAgent:
         self.event_router = EventRouter()
         self.context_strategy = ContextStrategyManager(self.config.context_strategy)
         self.llm_client = llm
-        self.pipeline = ExecutionPipeline(self)
+        self.pipeline = ExecutionPipeline(
+            prompt_source=self.config,
+            llm_client=self.llm_client,
+            tool_manager=self.tool_manager,
+            plugin_manager=self.plugin_manager,
+            context_strategy=self.context_strategy,
+            emit_event=self.event_router.emit,
+        )
 
 
 async def _drain(agen):
@@ -295,14 +302,15 @@ def test_tool_call_extra_content_roundtrips_into_followup_request():
             ))],
             [StreamChunk(content="搜索功能正常")],
         ])
-        agent = _FakeAgent(llm, tools=[_FakeSearchTool()])
+        agent = _PipelineHarness(llm, tools=[_FakeSearchTool()])
         state = AgentState.create_new("t")
         state.add_user_message("测试搜索")
         events = await _drain(agent.pipeline.execute(state))
         return llm, state, events
 
     llm, state, events = asyncio.run(run())
-    assert events[-1].type == EventType.DONE
+    assert events[-1].type == EventType.TEXT_CHUNK
+    assert events[-1].data == "搜索功能正常"
     assert llm.messages[0][0] == llm.messages[1][0]
     assert "当前本地日期时间：" in llm.messages[0][0]["content"]
 
@@ -334,7 +342,7 @@ def test_resumable_screenshot_roundtrip():
             # 恢复后第 2 次：模型基于截图作答
             [StreamChunk(content="我看到一只猫")],
         ])
-        agent = _FakeAgent(llm, tools=[_FakeScreenshotTool()])
+        agent = _PipelineHarness(llm, tools=[_FakeScreenshotTool()])
         state = AgentState.create_new("t")
         state.add_user_message("看看我的屏幕")
 
@@ -351,7 +359,8 @@ def test_resumable_screenshot_roundtrip():
         events2 = await _drain(agent.pipeline.resume_tools(
             state, {"approved": True, "screenshot_data": "data:image/png;base64,AAA"}
         ))
-        assert events2[-1].type == EventType.DONE
+        assert events2[-1].type == EventType.TEXT_CHUNK
+        assert events2[-1].data == "我看到一只猫"
         return state
 
     state = asyncio.run(run())
@@ -375,14 +384,15 @@ def test_resumable_screenshot_roundtrip():
 def test_context_strategy_builds_without_temporary_state():
     async def run():
         llm = _FakeLLM(scripts=[[StreamChunk(content="你好呀")]])
-        agent = _FakeAgent(llm, tools=[])
+        agent = _PipelineHarness(llm, tools=[])
         state = AgentState.create_new("t")
         state.add_user_message("在吗")
         events = await _drain(agent.pipeline.execute(state))
         return state, events
 
     state, events = asyncio.run(run())
-    assert events[-1].type == EventType.DONE
+    assert events[-1].type == EventType.TEXT_CHUNK
+    assert events[-1].data == "你好呀"
     assert state.extra == {}
     # state.messages 仍含完整对话
     roles = [m.get("role") for m in state.messages]
@@ -395,7 +405,7 @@ def test_pipeline_rejects_empty_final_response(content):
         script = [StreamChunk(finish_reason="stop")]
         if content is not None:
             script.insert(0, StreamChunk(content=content))
-        agent = _FakeAgent(_FakeLLM(scripts=[script]), tools=[])
+        agent = _PipelineHarness(_FakeLLM(scripts=[script]), tools=[])
         state = AgentState.create_new("t")
         state.add_user_message("在吗")
         return state, await _drain(agent.pipeline.execute(state))
@@ -409,7 +419,7 @@ def test_pipeline_rejects_empty_final_response(content):
 
 def test_pipeline_keeps_content_filter_error():
     async def run():
-        agent = _FakeAgent(
+        agent = _PipelineHarness(
             _FakeLLM(scripts=[[StreamChunk(finish_reason="content_filter")]]),
             tools=[],
         )

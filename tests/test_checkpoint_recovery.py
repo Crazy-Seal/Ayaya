@@ -99,6 +99,7 @@ async def make_agent(
     tool: BaseTool,
     session_id: str = "checkpoint-test",
 ) -> Agent:
+    llm_client = ScriptedLLM(scripts)
     agent = Agent(
         AgentConfig(
             session_id=session_id,
@@ -107,9 +108,8 @@ async def make_agent(
             context_strategy=ContextStrategyConfig(),
         ),
         db_path=str(db_path),
+        llm_client=llm_client,
     )
-    await agent.llm_client.close()
-    agent.llm_client = ScriptedLLM(scripts)
     agent.tool_manager.register(tool)
     return agent
 
@@ -167,7 +167,7 @@ def test_response_commit_hooks_wrap_completed_checkpoint(tmp_path: Path) -> None
             [[StreamChunk(content="完成")]],
             StepTool(),
         )
-        await agent.plugin_manager.register(CommitOrderPlugin(order), agent)
+        await agent.plugin_manager.register(CommitOrderPlugin(order))
         original_save = agent.state_manager.save
 
         async def tracked_save(state, *, checkpoint_type):
@@ -177,7 +177,9 @@ def test_response_commit_hooks_wrap_completed_checkpoint(tmp_path: Path) -> None
 
         agent.state_manager.save = tracked_save
         try:
-            await drain(agent.run("开始"))
+            async for event in agent.run("开始"):
+                if event.type == EventType.DONE:
+                    order.append("done")
             return order
         finally:
             await agent.close()
@@ -187,6 +189,7 @@ def test_response_commit_hooks_wrap_completed_checkpoint(tmp_path: Path) -> None
         "before_commit",
         "save_completed",
         "after_commit",
+        "done",
     ]
 
 
@@ -199,7 +202,7 @@ def test_completed_checkpoint_failure_skips_after_commit_hook(tmp_path: Path) ->
             [[StreamChunk(content="完成")]],
             StepTool(),
         )
-        await agent.plugin_manager.register(CommitOrderPlugin(order), agent)
+        await agent.plugin_manager.register(CommitOrderPlugin(order))
         original_save = agent.state_manager.save
 
         async def failing_save(state, *, checkpoint_type):
@@ -408,7 +411,7 @@ def test_partial_tool_batch_is_marked_interrupted_without_retry(tmp_path: Path) 
 
 
 def test_checkpoint_failure_keeps_tool_marked_pending() -> None:
-    class FakeAgent:
+    class PipelineHarness:
         def __init__(self):
             from app.agent.core.event_router import EventRouter
             from app.agent.core.plugin_manager import PluginManager
@@ -428,8 +431,15 @@ def test_checkpoint_failure_keeps_tool_marked_pending() -> None:
             self.llm_client = ScriptedLLM([[tool_call("call-a", label="A")]])
 
     async def scenario() -> None:
-        agent = FakeAgent()
-        pipeline = ExecutionPipeline(agent)
+        agent = PipelineHarness()
+        pipeline = ExecutionPipeline(
+            prompt_source=agent.config,
+            llm_client=agent.llm_client,
+            tool_manager=agent.tool_manager,
+            plugin_manager=agent.plugin_manager,
+            context_strategy=agent.context_strategy,
+            emit_event=agent.event_router.emit,
+        )
         state = AgentState.create_new("test")
         state.add_user_message("执行工具")
         snapshots: list[dict] = []
