@@ -152,6 +152,8 @@ class ToolResult:
 
 class PluginHook(str, Enum):
     """插件钩子点"""
+    BEFORE_USER_INPUT_COMMIT = "before_user_input_commit"  # 新输入加入状态前
+    AFTER_USER_INPUT_COMMIT = "after_user_input_commit"    # 新输入中间态提交后
     ON_INVOKE = "on_invoke"             # 初次进入执行循环时（首个消息处理前）
     BEFORE_LLM = "before_llm"           # LLM 调用前
     AFTER_LLM = "after_llm"             # LLM 调用后

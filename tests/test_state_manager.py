@@ -227,6 +227,39 @@ def test_chat_history_store_has_no_independent_write_api() -> None:
     assert not hasattr(ChatHistoryStore, "save_chat_message")
 
 
+def test_chat_history_store_honors_previous_input_high_watermark(tmp_path: Path) -> None:
+    async def scenario() -> tuple[int, list[str]]:
+        db_path = tmp_path / "agent.sqlite3"
+        manager = StateManager("test-session", db_path=str(db_path))
+        store = ChatHistoryStore(db_path=db_path)
+        try:
+            state = AgentState.create_new("test-session")
+            state.add_user_message("上一轮输入")
+            state.add_assistant_message("上一轮回复")
+            await manager.save(state, checkpoint_type="completed")
+            cutoff = await store.get_latest_message_id("test-session")
+
+            state.add_user_message("当前可修改输入")
+            await manager.save(state, checkpoint_type="intermediate")
+            effective_date = store._utc_to_local_date(state.messages[0]["_created_at"])
+            count = await store.get_message_count_by_date(
+                "test-session",
+                effective_date,
+                role="Human",
+                max_history_id=cutoff,
+            )
+            messages = await store.get_messages_by_date(
+                "test-session",
+                effective_date,
+                max_history_id=cutoff,
+            )
+            return count, [message["content"] for message in messages]
+        finally:
+            await manager.close()
+
+    assert asyncio.run(scenario()) == (1, ["上一轮输入", "上一轮回复"])
+
+
 def test_chat_history_store_constructor_does_not_initialize_schema(tmp_path: Path) -> None:
     db_path = tmp_path / "agent_checkpoints.sqlite3"
 

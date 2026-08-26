@@ -190,3 +190,56 @@ def test_concurrent_summary_checks_generate_once(tmp_path) -> None:
         return memory.llm.calls
 
     assert asyncio.run(scenario()) == 1
+
+
+def test_summary_uses_history_cutoff_from_before_current_input(tmp_path) -> None:
+    class FakeHistory:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int | None]] = []
+
+        async def get_message_count_by_date(
+            self,
+            *args,
+            max_history_id=None,
+            **kwargs,
+        ):
+            self.calls.append(("count", max_history_id))
+            return 10
+
+        async def get_messages_by_date(
+            self,
+            *args,
+            max_history_id=None,
+            **kwargs,
+        ):
+            self.calls.append(("messages", max_history_id))
+            return [{"role": "Human", "content": "上一轮输入"}]
+
+    class FakeLlm:
+        async def ainvoke(self, *args, **kwargs):
+            await asyncio.sleep(0)
+            return type("Response", (), {"content": "summary"})()
+
+    async def scenario() -> list[tuple[str, int | None]]:
+        memory = SummaryMemory.__new__(SummaryMemory)
+        memory.session_id = "session"
+        memory.config = MemoryConfig(
+            sqlite_path=str(tmp_path / "memory.sqlite3"),
+            summary_every_messages=10,
+        )
+        memory.chat_history_store = FakeHistory()
+        memory.store = DiarySqliteStore(memory.config.sqlite_path)
+        memory.llm = FakeLlm()
+        memory._summary_lock = asyncio.Lock()
+
+        async def build_prompt(*args, **kwargs):
+            return "prompt"
+
+        memory._build_system_prompt = build_prompt
+        await memory._check_and_generate_summary(
+            date(2026, 7, 10),
+            max_history_id=23,
+        )
+        return memory.chat_history_store.calls
+
+    assert asyncio.run(scenario()) == [("count", 23), ("messages", 23)]

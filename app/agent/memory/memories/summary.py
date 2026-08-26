@@ -56,17 +56,28 @@ class SummaryMemory:
 
     # ==================== 核心方法 ====================
 
-    async def check_and_generate(self, today: date) -> None:
+    async def check_and_generate(
+        self,
+        today: date,
+        *,
+        max_history_id: int | None = None,
+    ) -> None:
         """检查并触发生成摘要/日记
 
         Args:
             today: 今天的有效日期（需调用方传入，考虑时区和分界点规则）
         """
         # 1. 日记检查：最后一个有聊天记录的日期（排除今天）是否有日记
-        await self._check_and_generate_diary(today)
+        await self._check_and_generate_diary(
+            today,
+            max_history_id=max_history_id,
+        )
 
         # 2. 摘要检查：今天的用户消息数是否达到阈值
-        await self._check_and_generate_summary(today)
+        await self._check_and_generate_summary(
+            today,
+            max_history_id=max_history_id,
+        )
 
     async def add(self, date_obj: date, content: str, is_diary: bool = False) -> int:
         """添加摘要或日记
@@ -182,10 +193,17 @@ class SummaryMemory:
 
     # ==================== 检查和生成逻辑 ====================
 
-    async def _check_and_generate_diary(self, today: date) -> None:
+    async def _check_and_generate_diary(
+        self,
+        today: date,
+        *,
+        max_history_id: int | None = None,
+    ) -> None:
         """检查并生成日记"""
         last_chat_date = await self.chat_history_store.get_last_chat_date(
-            self.session_id, exclude_today=today
+            self.session_id,
+            exclude_today=today,
+            max_history_id=max_history_id,
         )
         if not last_chat_date:
             return
@@ -195,7 +213,9 @@ class SummaryMemory:
             return
 
         messages = await self.chat_history_store.get_messages_by_date(
-            self.session_id, last_chat_date
+            self.session_id,
+            last_chat_date,
+            max_history_id=max_history_id,
         )
         if not messages:
             return
@@ -206,11 +226,19 @@ class SummaryMemory:
         )
         await self._generate_diary(last_chat_date, messages)
 
-    async def _check_and_generate_summary(self, today: date) -> None:
+    async def _check_and_generate_summary(
+        self,
+        today: date,
+        *,
+        max_history_id: int | None = None,
+    ) -> None:
         """检查并生成摘要"""
         async with self._summary_lock:
             today_count = await self.chat_history_store.get_message_count_by_date(
-                self.session_id, today, role="Human"
+                self.session_id,
+                today,
+                role="Human",
+                max_history_id=max_history_id,
             )
             summarized_count = await self.store.get_summary_progress(
                 self.session_id,
@@ -222,7 +250,9 @@ class SummaryMemory:
                 return
 
             messages = await self.chat_history_store.get_messages_by_date(
-                self.session_id, today
+                self.session_id,
+                today,
+                max_history_id=max_history_id,
             )
             if not messages:
                 return

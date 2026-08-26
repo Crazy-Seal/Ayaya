@@ -67,10 +67,11 @@ class MemoryPlugin(BasePlugin):
     @property
     def hooks(self) -> list[PluginHook]:
         return [
+            PluginHook.BEFORE_USER_INPUT_COMMIT,
+            PluginHook.AFTER_USER_INPUT_COMMIT,
             PluginHook.ON_INVOKE,
             PluginHook.BEFORE_LLM,
             PluginHook.BEFORE_RESPONSE_COMMIT,
-            PluginHook.AFTER_RESPONSE_COMMIT,
         ]
 
     def _mm(self, state):
@@ -78,14 +79,16 @@ class MemoryPlugin(BasePlugin):
 
     async def execute(self, context: HookContext) -> HookContext:
         state = context.agent_state
-        if context.hook == PluginHook.ON_INVOKE:
+        if context.hook == PluginHook.BEFORE_USER_INPUT_COMMIT:
+            await self._prepare_user_input_commit(state, context.data)
+        elif context.hook == PluginHook.AFTER_USER_INPUT_COMMIT:
+            self._schedule_committed_memory(context.data)
+        elif context.hook == PluginHook.ON_INVOKE:
             self._start_image_description(state)
         elif context.hook == PluginHook.BEFORE_LLM:
             await self._inject_context(state)
         elif context.hook == PluginHook.BEFORE_RESPONSE_COMMIT:
             await self._prepare_response_commit(state, context.data)
-        elif context.hook == PluginHook.AFTER_RESPONSE_COMMIT:
-            self._schedule_committed_memory(context.data)
         return context
 
     def _start_image_description(self, state) -> None:
@@ -140,16 +143,11 @@ class MemoryPlugin(BasePlugin):
         state.memory_context = f"{MEMORY_PREAMBLE}\n\n{ctx}" if ctx and ctx.strip() else ""
 
     async def _prepare_response_commit(self, state, commit_context: dict) -> None:
-        """在 completed 提交前准备图片标注和不可变记忆任务快照。"""
+        """在 completed 提交前完成图片标注并保护尚未抽取的消息。"""
         image_description, image_filenames = await self._await_image(state)
         self._annotate_latest_image_message(state, image_description, image_filenames)
 
         pending_count = state.summary_counter
-        reached_interval = pending_count >= self.config.summary_every_human_messages
-        should_persist = reached_interval and (
-            self.config.enable_episodic or self.config.enable_semantic
-        )
-
         if pending_count > 0 and (
             self.config.enable_episodic or self.config.enable_semantic
         ):
@@ -157,10 +155,20 @@ class MemoryPlugin(BasePlugin):
                 pending_count + MEMORY_HISTORY_HUMAN_MESSAGES
             )
 
+    async def _prepare_user_input_commit(self, state, commit_context: dict) -> None:
+        """在当前输入加入前冻结上一批记忆任务。"""
+        pending_count = state.summary_counter
+        if pending_count <= 0 and not self.config.enable_diary:
+            return
+
+        reached_interval = pending_count >= self.config.summary_every_human_messages
+        should_persist = reached_interval and (
+            self.config.enable_episodic or self.config.enable_semantic
+        )
+
         if not self.config.enable_diary and not should_persist:
             if reached_interval:
                 state.summary_counter = 0
-                commit_context.pop(MEMORY_CHECKPOINT_HUMAN_FLOOR_KEY, None)
             return
 
         try:
@@ -169,6 +177,10 @@ class MemoryPlugin(BasePlugin):
                 "manager": memory_manager,
                 "check_summary": self.config.enable_diary,
             }
+            if self.config.enable_diary:
+                memory_job["summary_history_cutoff"] = (
+                    await memory_manager.get_summary_history_cutoff()
+                )
             if should_persist:
                 history_msgs, recent_msgs = split_context(
                     state.messages,
@@ -179,15 +191,14 @@ class MemoryPlugin(BasePlugin):
                 memory_job["history_messages"] = tuple(deepcopy(history_msgs))
             commit_context["memory"] = memory_job
         except Exception as e:
-            logger.warning("[MemoryPlugin] 准备提交后记忆任务失败: %s", e)
+            logger.warning("[MemoryPlugin] 准备上一批记忆任务失败: %s", e)
             return
 
         if reached_interval:
             state.summary_counter = 0
-            commit_context.pop(MEMORY_CHECKPOINT_HUMAN_FLOOR_KEY, None)
 
     def _schedule_committed_memory(self, commit_context: dict) -> None:
-        """completed 提交成功后启动派生记忆任务，不再修改 AgentState。"""
+        """当前用户输入提交成功后启动上一批派生记忆任务。"""
         memory_job = commit_context.get("memory")
         if not memory_job:
             return
@@ -195,7 +206,9 @@ class MemoryPlugin(BasePlugin):
         memory_manager = memory_job["manager"]
         if memory_job.get("check_summary"):
             create_background_task(
-                memory_manager.check_summary(),
+                memory_manager.check_summary(
+                    max_history_id=memory_job["summary_history_cutoff"],
+                ),
                 logger=logger,
                 task_name="memory.check_summary",
             )

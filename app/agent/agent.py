@@ -320,16 +320,8 @@ class Agent:
         # 每轮起始重置一次性的记忆上下文（由 MemoryPlugin 在 BEFORE_LLM 重新注入）
         state.memory_context = None
 
-        # 2. 构建用户消息
-        if images:
-            content = [ContentPart.text_part(message)]
-            for img in images:
-                content.append(ContentPart.image_part(img))
-            state.add_user_message(content)
-        else:
-            state.add_user_message(message)
-        state.increment_summary_counter()
-        await self.state_manager.save(state, checkpoint_type="intermediate")
+        # 2. 在独立输入事务中提交用户消息和上一批派生任务。
+        state = await self._commit_user_input(state, message, images)
 
         # 3. 执行管道；最终提交与 DONE 只由 Agent 负责。
         async for event in self._stream_and_finalize(
@@ -342,6 +334,36 @@ class Agent:
             failure_message="本轮执行出错，已保留最近工具进度，未写入最终 checkpoint",
         ):
             yield event
+
+    async def _commit_user_input(
+        self,
+        state: AgentState,
+        message: str,
+        images: list[str] | None,
+    ) -> AgentState:
+        """冻结上一批派生任务，并原子提交当前用户输入。"""
+        commit_context: dict = {}
+        state = await self.plugin_manager.run_hooks(
+            PluginHook.BEFORE_USER_INPUT_COMMIT,
+            state,
+            data=commit_context,
+        )
+
+        if images:
+            content = [ContentPart.text_part(message)]
+            content.extend(ContentPart.image_part(image) for image in images)
+            state.add_user_message(content)
+        else:
+            state.add_user_message(message)
+        state.increment_summary_counter()
+        await self.state_manager.save(state, checkpoint_type="intermediate")
+
+        await self.plugin_manager.run_hooks(
+            PluginHook.AFTER_USER_INPUT_COMMIT,
+            state,
+            data=commit_context,
+        )
+        return state
 
     async def resume(
         self,

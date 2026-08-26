@@ -121,7 +121,10 @@ def test_memory_persistence_runs_every_ten_human_messages(monkeypatch) -> None:
         return None
 
     class FakeMemoryManager:
-        async def check_summary(self):
+        async def get_summary_history_cutoff(self):
+            return 42
+
+        async def check_summary(self, *, max_history_id=None):
             return None
 
         async def add(self, *args, **kwargs):
@@ -140,13 +143,13 @@ def test_memory_persistence_runs_every_ten_human_messages(monkeypatch) -> None:
 
         commit_context: dict = {}
         await plugin.execute(HookContext.create(
-            PluginHook.BEFORE_RESPONSE_COMMIT,
+            PluginHook.BEFORE_USER_INPUT_COMMIT,
             state,
             data=commit_context,
         ))
         assert scheduled_tasks == []
         await plugin.execute(HookContext.create(
-            PluginHook.AFTER_RESPONSE_COMMIT,
+            PluginHook.AFTER_USER_INPUT_COMMIT,
             state,
             data=commit_context,
         ))
@@ -167,7 +170,7 @@ def test_memory_plugin_respects_summary_interval_and_disabled_types(monkeypatch)
         return None
 
     class FakeMemoryManager:
-        async def check_summary(self):
+        async def check_summary(self, *, max_history_id=None):
             return None
 
         async def add(self, *args, **kwargs):
@@ -190,12 +193,12 @@ def test_memory_plugin_respects_summary_interval_and_disabled_types(monkeypatch)
 
         commit_context: dict = {}
         await plugin.execute(HookContext.create(
-            PluginHook.BEFORE_RESPONSE_COMMIT,
+            PluginHook.BEFORE_USER_INPUT_COMMIT,
             state,
             data=commit_context,
         ))
         await plugin.execute(HookContext.create(
-            PluginHook.AFTER_RESPONSE_COMMIT,
+            PluginHook.AFTER_USER_INPUT_COMMIT,
             state,
             data=commit_context,
         ))
@@ -292,7 +295,7 @@ def test_check_summary_is_noop_when_diary_disabled() -> None:
 
 
 def test_memory_manager_check_summary_uses_persisted_history(monkeypatch) -> None:
-    checked_dates: list[date] = []
+    checks: list[tuple[date, int | None]] = []
 
     class FakeChatHistoryStore:
         def __init__(self, *args, **kwargs):
@@ -302,8 +305,13 @@ def test_memory_manager_check_summary_uses_persisted_history(monkeypatch) -> Non
         def __init__(self, *args, **kwargs):
             pass
 
-        async def check_and_generate(self, effective_date: date) -> None:
-            checked_dates.append(effective_date)
+        async def check_and_generate(
+            self,
+            effective_date: date,
+            *,
+            max_history_id: int | None = None,
+        ) -> None:
+            checks.append((effective_date, max_history_id))
 
     monkeypatch.setattr(memory_manager_module, "ChatHistoryStore", FakeChatHistoryStore)
     monkeypatch.setattr(memory_manager_module, "SummaryMemory", FakeSummaryMemory)
@@ -317,9 +325,9 @@ def test_memory_manager_check_summary_uses_persisted_history(monkeypatch) -> Non
             enable_semantic=False,
         ),
     )
-    asyncio.run(manager.check_summary())
+    asyncio.run(manager.check_summary(max_history_id=17))
 
-    assert checked_dates
+    assert checks and checks[0][1] == 17
 
 
 def test_memory_plugin_keeps_counter_when_commit_job_preparation_fails(monkeypatch) -> None:
@@ -338,7 +346,7 @@ def test_memory_plugin_keeps_counter_when_commit_job_preparation_fails(monkeypat
 
         await plugin.execute(
             HookContext.create(
-                PluginHook.BEFORE_RESPONSE_COMMIT,
+                PluginHook.BEFORE_USER_INPUT_COMMIT,
                 state,
                 data=commit_context,
             )
@@ -349,12 +357,12 @@ def test_memory_plugin_keeps_counter_when_commit_job_preparation_fails(monkeypat
 
     assert state.summary_counter == 3
     assert "memory" not in commit_context
-    assert commit_context["memory_checkpoint_human_floor"] == 8
+    assert "memory_checkpoint_human_floor" not in commit_context
 
 
 def test_memory_plugin_snapshots_every_pending_human_message(monkeypatch) -> None:
     class FakeMemoryManager:
-        async def check_summary(self):
+        async def check_summary(self, *, max_history_id=None):
             return None
 
         async def add(self, *args, **kwargs):
@@ -374,7 +382,7 @@ def test_memory_plugin_snapshots_every_pending_human_message(monkeypatch) -> Non
 
         commit_context: dict = {}
         await plugin.execute(HookContext.create(
-            PluginHook.BEFORE_RESPONSE_COMMIT,
+            PluginHook.BEFORE_USER_INPUT_COMMIT,
             state,
             data=commit_context,
         ))
@@ -385,7 +393,75 @@ def test_memory_plugin_snapshots_every_pending_human_message(monkeypatch) -> Non
     recent_messages = commit_context["memory"]["recent_messages"]
     assert sum(is_real_human_message(message) for message in recent_messages) == 11
     assert state.summary_counter == 0
-    assert "memory_checkpoint_human_floor" not in commit_context
+
+
+def test_first_input_checks_only_history_existing_before_it(monkeypatch) -> None:
+    scheduled_tasks: list[str] = []
+
+    def capture_task(coro, *, logger, task_name):
+        scheduled_tasks.append(task_name)
+        coro.close()
+        return None
+
+    class FakeMemoryManager:
+        async def get_summary_history_cutoff(self):
+            return 0
+
+        async def check_summary(self, *, max_history_id=None):
+            return None
+
+    monkeypatch.setattr(memory_plugin_module, "create_background_task", capture_task)
+
+    async def scenario() -> None:
+        plugin = MemoryPlugin(enable_episodic=False, enable_semantic=False)
+        monkeypatch.setattr(plugin, "_mm", lambda state: FakeMemoryManager())
+        state = AgentState.create_new("test-session")
+        commit_context: dict = {}
+
+        await plugin.execute(HookContext.create(
+            PluginHook.BEFORE_USER_INPUT_COMMIT,
+            state,
+            data=commit_context,
+        ))
+        await plugin.execute(HookContext.create(
+            PluginHook.AFTER_USER_INPUT_COMMIT,
+            state,
+            data=commit_context,
+        ))
+
+    asyncio.run(scenario())
+
+    assert scheduled_tasks == ["memory.check_summary"]
+
+
+def test_response_commit_only_protects_pending_batch_without_extracting(
+    monkeypatch,
+) -> None:
+    class UnexpectedMemoryManager:
+        def __getattr__(self, name):
+            raise AssertionError(f"响应完成时不应访问记忆管理器: {name}")
+
+    async def scenario() -> tuple[AgentState, dict]:
+        plugin = MemoryPlugin(summary_every_human_messages=1)
+        monkeypatch.setattr(plugin, "_mm", lambda state: UnexpectedMemoryManager())
+        state = AgentState.create_new("test-session")
+        state.summary_counter = 1
+        state.add_user_message("可修改的最后一轮输入")
+        state.add_assistant_message("刚生成的回复")
+        commit_context: dict = {}
+
+        await plugin.execute(HookContext.create(
+            PluginHook.BEFORE_RESPONSE_COMMIT,
+            state,
+            data=commit_context,
+        ))
+        return state, commit_context
+
+    state, commit_context = asyncio.run(scenario())
+
+    assert state.summary_counter == 1
+    assert "memory" not in commit_context
+    assert commit_context["memory_checkpoint_human_floor"] == 6
 
 
 def test_pending_memory_batch_raises_checkpoint_retention_floor() -> None:

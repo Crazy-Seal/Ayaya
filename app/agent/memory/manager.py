@@ -57,7 +57,7 @@ class MemoryManager:
 
         # SummaryMemory 启用时才创建聊天历史查询适配器。
         if self.memory_options.get("enable_diary", True):
-            chat_history_store = ChatHistoryStore(
+            self.chat_history_store = ChatHistoryStore(
                 timezone=self.config.timezone,
                 day_boundary_hour=self.config.day_boundary_hour,
             )
@@ -65,9 +65,10 @@ class MemoryManager:
                 session_id,
                 self.config,
                 self.chat_settings,
-                chat_history_store,
+                self.chat_history_store,
             )
         else:
+            self.chat_history_store = None
             self.summary_memory = None
         self.episodic_memory = (
             EpisodicMemory(session_id, self.config, self.chat_settings)
@@ -136,13 +137,22 @@ class MemoryManager:
 
         return {"episodic": episodic_count, "semantic": semantic_count}
 
-    async def check_summary(self) -> None:
+    async def get_summary_history_cutoff(self) -> int:
+        """返回当前已提交聊天历史的高水位，0 表示尚无记录。"""
+        if self.chat_history_store is None:
+            return 0
+        return await self.chat_history_store.get_latest_message_id(self.session_id)
+
+    async def check_summary(self, *, max_history_id: int | None = None) -> None:
         """基于已提交的聊天历史检查是否需要生成摘要或日记。"""
         now = datetime.now(self.config.timezone)
         today = self._get_effective_date(now)
 
         if self.summary_memory is not None:
-            await self.summary_memory.check_and_generate(today)
+            await self.summary_memory.check_and_generate(
+                today,
+                max_history_id=max_history_id,
+            )
 
     async def get_context(
         self,

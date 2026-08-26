@@ -159,6 +159,37 @@ class CommitOrderPlugin(BasePlugin):
         return context
 
 
+class UserInputCommitOrderPlugin(BasePlugin):
+    name = "user_input_commit_order"
+
+    def __init__(self, order: list[str]):
+        self.order = order
+
+    @property
+    def hooks(self) -> list[PluginHook]:
+        return [
+            PluginHook.BEFORE_USER_INPUT_COMMIT,
+            PluginHook.AFTER_USER_INPUT_COMMIT,
+        ]
+
+    async def execute(self, context: HookContext) -> HookContext:
+        if context.hook == PluginHook.BEFORE_USER_INPUT_COMMIT:
+            assert not any(
+                message.get("content") == "本轮新输入"
+                for message in context.agent_state.messages
+            )
+            self.order.append("before_user_input_commit")
+            context.data["prepared_previous_turn"] = True
+        elif context.hook == PluginHook.AFTER_USER_INPUT_COMMIT:
+            assert context.data == {"prepared_previous_turn": True}
+            assert any(
+                message.get("content") == "本轮新输入"
+                for message in context.agent_state.messages
+            )
+            self.order.append("after_user_input_commit")
+        return context
+
+
 def test_response_commit_hooks_wrap_completed_checkpoint(tmp_path: Path) -> None:
     async def scenario() -> list[str]:
         order: list[str] = []
@@ -190,6 +221,68 @@ def test_response_commit_hooks_wrap_completed_checkpoint(tmp_path: Path) -> None
         "save_completed",
         "after_commit",
         "done",
+    ]
+
+
+def test_user_input_commit_hooks_wrap_intermediate_checkpoint(tmp_path: Path) -> None:
+    async def scenario() -> list[str]:
+        order: list[str] = []
+        agent = await make_agent(
+            tmp_path / "checkpoints.sqlite3",
+            [[StreamChunk(content="完成")]],
+            StepTool(),
+        )
+        await agent.plugin_manager.register(UserInputCommitOrderPlugin(order))
+        original_save = agent.state_manager.save
+
+        async def tracked_save(state, *, checkpoint_type):
+            checkpoint_id = await original_save(state, checkpoint_type=checkpoint_type)
+            order.append(f"save_{checkpoint_type}")
+            return checkpoint_id
+
+        agent.state_manager.save = tracked_save
+        try:
+            await drain(agent.run("本轮新输入"))
+            return order
+        finally:
+            await agent.close()
+
+    assert asyncio.run(scenario()) == [
+        "before_user_input_commit",
+        "save_intermediate",
+        "after_user_input_commit",
+        "save_completed",
+    ]
+
+
+def test_intermediate_checkpoint_failure_skips_after_user_input_hook(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> list[str]:
+        order: list[str] = []
+        agent = await make_agent(
+            tmp_path / "checkpoints.sqlite3",
+            [[StreamChunk(content="不应执行")]],
+            StepTool(),
+        )
+        await agent.plugin_manager.register(UserInputCommitOrderPlugin(order))
+
+        async def failing_save(state, *, checkpoint_type):
+            assert checkpoint_type == "intermediate"
+            order.append("save_intermediate_failed")
+            raise RuntimeError("模拟 intermediate 保存失败")
+
+        agent.state_manager.save = failing_save
+        try:
+            with pytest.raises(RuntimeError, match="intermediate 保存失败"):
+                await drain(agent.run("本轮新输入"))
+            return order
+        finally:
+            await agent.close()
+
+    assert asyncio.run(scenario()) == [
+        "before_user_input_commit",
+        "save_intermediate_failed",
     ]
 
 

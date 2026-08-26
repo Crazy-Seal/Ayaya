@@ -120,11 +120,23 @@ class ChatHistoryStore:
 
     # ==================== 查询方法 ====================
 
+    async def get_latest_message_id(self, session_id: str) -> int:
+        """获取指定会话当前已提交聊天历史的高水位。"""
+        async with aiosqlite.connect(str(self.db_path)) as conn:
+            await conn.execute("PRAGMA busy_timeout=5000")
+            cursor = await conn.execute(
+                f"SELECT COALESCE(MAX(id), 0) FROM {self.TABLE_NAME} WHERE thread_id = ?",
+                (session_id,),
+            )
+            row = await cursor.fetchone()
+            return int(row[0]) if row else 0
+
     async def get_message_count_by_date(
         self,
         session_id: str,
         effective_date: date,
         role: str | None = None,
+        max_history_id: int | None = None,
     ) -> int:
         """获取指定本地日期的消息数量"""
         utc_start, utc_end = self._local_date_to_utc_range(effective_date)
@@ -136,16 +148,31 @@ class ChatHistoryStore:
                     f"""
                     SELECT COUNT(*) FROM {self.TABLE_NAME}
                     WHERE thread_id = ? AND timestamp >= ? AND timestamp < ? AND role = ?
+                      AND (? IS NULL OR id <= ?)
                     """,
-                    (session_id, utc_start.isoformat(), utc_end.isoformat(), role),
+                    (
+                        session_id,
+                        utc_start.isoformat(),
+                        utc_end.isoformat(),
+                        role,
+                        max_history_id,
+                        max_history_id,
+                    ),
                 )
             else:
                 cursor = await conn.execute(
                     f"""
                     SELECT COUNT(*) FROM {self.TABLE_NAME}
                     WHERE thread_id = ? AND timestamp >= ? AND timestamp < ?
+                      AND (? IS NULL OR id <= ?)
                     """,
-                    (session_id, utc_start.isoformat(), utc_end.isoformat()),
+                    (
+                        session_id,
+                        utc_start.isoformat(),
+                        utc_end.isoformat(),
+                        max_history_id,
+                        max_history_id,
+                    ),
                 )
             row = await cursor.fetchone()
             return row[0] if row else 0
@@ -154,6 +181,7 @@ class ChatHistoryStore:
         self,
         session_id: str,
         exclude_today: date | None = None,
+        max_history_id: int | None = None,
     ) -> date | None:
         """获取最后一个有聊天记录的本地日期"""
         async with aiosqlite.connect(str(self.db_path)) as conn:
@@ -164,20 +192,22 @@ class ChatHistoryStore:
                     f"""
                     SELECT timestamp FROM {self.TABLE_NAME}
                     WHERE thread_id = ? AND timestamp < ?
+                      AND (? IS NULL OR id <= ?)
                     ORDER BY timestamp DESC
                     LIMIT 1
                     """,
-                    (session_id, utc_start.isoformat()),
+                    (session_id, utc_start.isoformat(), max_history_id, max_history_id),
                 )
             else:
                 cursor = await conn.execute(
                     f"""
                     SELECT timestamp FROM {self.TABLE_NAME}
                     WHERE thread_id = ?
+                      AND (? IS NULL OR id <= ?)
                     ORDER BY timestamp DESC
                     LIMIT 1
                     """,
-                    (session_id,),
+                    (session_id, max_history_id, max_history_id),
                 )
             row = await cursor.fetchone()
             if row:
@@ -188,6 +218,7 @@ class ChatHistoryStore:
         self,
         session_id: str,
         effective_date: date,
+        max_history_id: int | None = None,
     ) -> list[dict[str, Any]]:
         """获取指定本地日期的所有聊天记录"""
         utc_start, utc_end = self._local_date_to_utc_range(effective_date)
@@ -199,9 +230,16 @@ class ChatHistoryStore:
                 SELECT role, content, timestamp, image_description, image_filenames
                 FROM {self.TABLE_NAME}
                 WHERE thread_id = ? AND timestamp >= ? AND timestamp < ?
+                  AND (? IS NULL OR id <= ?)
                 ORDER BY timestamp ASC, id ASC
                 """,
-                (session_id, utc_start.isoformat(), utc_end.isoformat()),
+                (
+                    session_id,
+                    utc_start.isoformat(),
+                    utc_end.isoformat(),
+                    max_history_id,
+                    max_history_id,
+                ),
             )
             rows = await cursor.fetchall()
             return [
