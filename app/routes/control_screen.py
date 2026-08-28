@@ -23,8 +23,8 @@ class ControlScreenResponseRequest(BaseModel):
     request_id: str = Field(min_length=1)
     approved: bool | None = None
     screenshot_data: str | None = None
-    width: int | None = None
-    height: int | None = None
+    width: int | None = Field(default=None, gt=0)
+    height: int | None = Field(default=None, gt=0)
     executed: bool | None = None
     error: str | None = None
 
@@ -32,6 +32,8 @@ class ControlScreenResponseRequest(BaseModel):
     def validate_payload(self) -> "ControlScreenResponseRequest":
         if self.screenshot_data and (self.width is None or self.height is None):
             raise ValueError("提供截图时必须同时提供 width 和 height")
+        if self.approved is True and self.executed is None:
+            raise ValueError("批准屏幕操作时必须提供 executed")
         return self
 
 

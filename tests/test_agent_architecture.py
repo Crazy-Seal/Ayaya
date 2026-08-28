@@ -75,6 +75,19 @@ class _DynamicTool(BaseTool):
         return ToolResult.success("动态工具完成")
 
 
+class _ContextModelTool(BaseTool):
+    name = "context_model"
+    description = "记录工具上下文中的模型名"
+    parameters_schema = {"type": "object", "properties": {}}
+
+    def __init__(self) -> None:
+        self.model_name = None
+
+    async def execute(self, args: dict, context: ToolContext) -> ToolResult:
+        self.model_name = context.model_name
+        return ToolResult.success("ok")
+
+
 def _config() -> AgentConfig:
     return AgentConfig(
         session_id="architecture-test",
@@ -109,6 +122,23 @@ def test_pipeline_uses_explicit_dependencies_without_agent_back_reference() -> N
 
     assert all(event.type != EventType.DONE for event in events)
     assert "agent" not in vars(_pipeline(_ScriptedLLM()))
+
+
+def test_pipeline_injects_current_model_name_into_tool_context() -> None:
+    async def scenario() -> tuple[ToolResult, str | None]:
+        pipeline = _pipeline(_ScriptedLLM())
+        tool = _ContextModelTool()
+        pipeline._tool_manager.register(tool)
+        result = await pipeline._execute_tool(
+            AgentState.create_new("architecture-test"),
+            ToolCall(id="context-1", name=tool.name, args={}),
+        )
+        return result, tool.model_name
+
+    result, model_name = asyncio.run(scenario())
+
+    assert result.content == "ok"
+    assert model_name == "test"
 
 
 def test_retained_pipeline_does_not_keep_agent_alive() -> None:

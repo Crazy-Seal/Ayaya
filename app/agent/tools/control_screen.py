@@ -1,31 +1,69 @@
 """屏幕控制工具。
 
-后端只负责截图定位和恢复编排；实际鼠标键盘操作由前端执行，并在用户确认后回传操作后的截图。
+后端负责标准化模型给出的坐标并编排恢复；实际鼠标键盘操作由前端在用户批准后执行，
+执行结果和操作后的截图会回传给 Agent。
 """
 
+import re
 from typing import Annotated, Literal
 
 from app.agent.context import ToolContext, ToolResult
-from app.agent.models.vlm import VLMService, clamp_bbox
 from app.agent.tools.decorator import tool
 
 Operation = Literal["click", "double", "right", "scroll"]
 ScrollDirection = Literal["none", "down", "up"]
 
-VLM_CANVAS_SIZE = 1000
+NORMALIZED_CANVAS_SIZE = 1000
+_GEMINI_MODEL_PATTERN = re.compile(r"(?:^|[/._:-])gemini(?:$|[/._:-])", re.IGNORECASE)
+
+
+def normalize_bbox_for_model(bbox: object, model_name: str = "") -> list[int]:
+    """把模型坐标转换成 canonical ``[x1, y1, x2, y2]``。"""
+    if not isinstance(bbox, list) or len(bbox) != 4:
+        raise ValueError("bbox 必须是包含四个整数的数组。")
+    if any(type(value) is not int for value in bbox):
+        raise ValueError("bbox 坐标必须是整数。")
+    if any(value < 0 or value > NORMALIZED_CANVAS_SIZE for value in bbox):
+        raise ValueError("bbox 坐标必须在 0 到 1000 之间。")
+
+    first, second, third, fourth = bbox
+    if _GEMINI_MODEL_PATTERN.search((model_name or "").strip()):
+        y1, x1, y2, x2 = first, second, third, fourth
+    else:
+        x1, y1, x2, y2 = first, second, third, fourth
+
+    if x2 <= x1 or y2 <= y1:
+        raise ValueError("bbox 必须满足 x1 < x2 且 y1 < y2。")
+    return [x1, y1, x2, y2]
+
+
+def _coordinates_from_bbox(bbox: list[int]) -> dict:
+    x1, y1, x2, y2 = bbox
+    return {
+        "bbox": bbox,
+        "x_ratio": ((x1 + x2) / 2) / NORMALIZED_CANVAS_SIZE,
+        "y_ratio": ((y1 + y2) / 2) / NORMALIZED_CANVAS_SIZE,
+    }
 
 
 def _validate_args(
     target: str | None,
+    bbox: object,
     operation: str | None,
     text: str | None,
     press_enter: bool | None,
     wait_seconds: int | None,
     scroll_direction: str | None,
-) -> tuple[str, Operation, str, bool, int, ScrollDirection] | str:
+    model_name: str,
+) -> tuple[str, list[int], Operation, str, bool, int, ScrollDirection] | str:
     resolved_target = (target or "").strip()
     if not resolved_target:
         return "缺少要操作的元素描述。"
+
+    try:
+        resolved_bbox = normalize_bbox_for_model(bbox, model_name)
+    except ValueError as exc:
+        return str(exc)
 
     resolved_operation = operation or "double"
     if resolved_operation not in {"click", "double", "right", "scroll"}:
@@ -39,11 +77,12 @@ def _validate_args(
         resolved_scroll_direction = "down"
 
     resolved_wait_seconds = 3 if wait_seconds is None else wait_seconds
-    if resolved_wait_seconds < 0 or resolved_wait_seconds > 60:
-        return "等待时长必须在 0 到 60 秒之间。"
+    if type(resolved_wait_seconds) is not int or not 0 <= resolved_wait_seconds <= 60:
+        return "等待时长必须是 0 到 60 之间的整数。"
 
     return (
         resolved_target,
+        resolved_bbox,
         resolved_operation,  # type: ignore[return-value]
         text or "",
         True if press_enter is None else bool(press_enter),
@@ -52,35 +91,10 @@ def _validate_args(
     )
 
 
-def restore_vlm_point(
-    bbox: list[int],
-    width: int,
-    height: int,
-) -> dict:
-    """把 VLM 的 1000x1000 bbox 中心点还原为截图坐标和比例坐标。"""
-    if width <= 0 or height <= 0:
-        raise ValueError("截图尺寸无效。")
-
-    x1, y1, x2, y2 = clamp_bbox(bbox, VLM_CANVAS_SIZE, VLM_CANVAS_SIZE)
-    center_x = (x1 + x2) / 2
-    center_y = (y1 + y2) / 2
-    x_ratio = max(0.0, min(center_x / VLM_CANVAS_SIZE, 1.0))
-    y_ratio = max(0.0, min(center_y / VLM_CANVAS_SIZE, 1.0))
-
-    return {
-        "bbox": [x1, y1, x2, y2],
-        "x_ratio": x_ratio,
-        "y_ratio": y_ratio,
-        "x": round(x_ratio * width),
-        "y": round(y_ratio * height),
-        "width": width,
-        "height": height,
-    }
-
-
 @tool(is_resumable=True)
 async def control_screen(
-    target: Annotated[str, "操作时的光标位置描述，换句话说就是操作的时候把光标放在哪，例如'页面上方的搜索框'。必须输入。"],
+    bbox: Annotated[list[int], "目标元素边界框 [x1, y1, x2, y2]，坐标相对于当前屏幕归一化到 0 至 1000。必须输入。"],
+    target: Annotated[str, "操作时的光标位置描述，例如‘页面上方的搜索框’。必须输入。"],
     operation: Annotated[Operation, "操作方式：click 单击、double 双击、right 右键、scroll 滚动。"] = "double",
     text: Annotated[str, "操作后要在该位置输入的文字；为空则不输入。"] = "",
     press_enter: Annotated[bool, "输入文字后是否按回车。"] = True,
@@ -90,14 +104,35 @@ async def control_screen(
 ) -> ToolResult:
     """操作用户的屏幕，并回传操作后的屏幕截图。
 
-    调用此工具前，你需要知道屏幕上的情况，如不知道，可以通过截屏工具获取。
-    注意：每轮工具调用中，只允许使用一次该工具；该工具传回操作后的截图后再判断下一步操作。
+    调用此工具前，你需要知道屏幕上的情况；如不知道，可先通过截屏工具获取。
+    每轮工具调用中只允许使用一次该工具；收到操作后的截图后再判断下一步操作。
     """
-    normalized = _validate_args(target, operation, text, press_enter, wait_seconds, scroll_direction)
+    if context is None:
+        return ToolResult.error("缺少工具上下文。")
+
+    normalized = _validate_args(
+        target,
+        bbox,
+        operation,
+        text,
+        press_enter,
+        wait_seconds,
+        scroll_direction,
+        context.model_name,
+    )
     if isinstance(normalized, str):
         return ToolResult.error(normalized)
 
-    resolved_target, resolved_operation, resolved_text, resolved_press_enter, resolved_wait, resolved_scroll = normalized
+    (
+        resolved_target,
+        resolved_bbox,
+        resolved_operation,
+        resolved_text,
+        resolved_press_enter,
+        resolved_wait,
+        resolved_scroll,
+    ) = normalized
+    coordinates = _coordinates_from_bbox(resolved_bbox)
     action_state = {
         "target": resolved_target,
         "operation": resolved_operation,
@@ -105,27 +140,15 @@ async def control_screen(
         "press_enter": resolved_press_enter,
         "wait_seconds": resolved_wait,
         "scroll_direction": resolved_scroll,
+        "coordinates": coordinates,
     }
 
-    if context is None:
-        return ToolResult.error("缺少工具上下文。")
-
-    if context.resume_data is None:
-        return ToolResult.needs_input(
-            type="control_screen_capture_request",
-            message="Agent 需要截取屏幕以定位要操作的位置。",
-            resume_state={
-                "phase": "awaiting_capture",
-                "action": action_state,
-            },
-        )
-
-    phase = (context.resume_state or {}).get("phase")
-
-    if phase == "awaiting_execution":
+    if context.resume_data is not None:
+        phase = (context.resume_state or {}).get("phase")
+        if phase != "awaiting_execution":
+            return ToolResult.error("屏幕操作恢复状态无效。")
         if not context.resume_data.get("approved"):
             return ToolResult.success("屏幕操作请求被用户拒绝。")
-
         if not context.resume_data.get("executed", False):
             error_message = context.resume_data.get("error") or "前端未完成屏幕操作。"
             return ToolResult.success(f"屏幕操作失败: {error_message}")
@@ -133,22 +156,10 @@ async def control_screen(
         screenshot_data = context.resume_data.get("screenshot_data")
         if not screenshot_data:
             return ToolResult.success("屏幕操作完成，但未收到操作后的截图。")
-        return ToolResult.success("屏幕操作完成，已收到操作后的截图。", image_url=screenshot_data)
-
-    screenshot_data = context.resume_data.get("screenshot_data")
-    width = context.resume_data.get("width")
-    height = context.resume_data.get("height")
-    if not screenshot_data:
-        return ToolResult.error("未收到用于定位的屏幕截图。")
-    if not isinstance(width, int) or not isinstance(height, int):
-        return ToolResult.error("未收到有效的截图尺寸。")
-
-    bbox = await VLMService().locate(resolved_target, screenshot_data)
-    coordinates = restore_vlm_point(bbox, width, height)
-    execute_data = {
-        **action_state,
-        "coordinates": coordinates,
-    }
+        return ToolResult.success(
+            "屏幕操作完成，已收到操作后的截图。",
+            image_url=screenshot_data,
+        )
 
     return ToolResult.needs_input(
         type="control_screen_execute_request",
@@ -156,10 +167,6 @@ async def control_screen(
             f"Agent 请求对“{resolved_target}”执行 {resolved_operation} 操作。"
             "请确认是否允许。"
         ),
-        data=execute_data,
-        resume_state={
-            "phase": "awaiting_execution",
-            "action": action_state,
-            "coordinates": coordinates,
-        },
+        data=action_state,
+        resume_state={"phase": "awaiting_execution"},
     )

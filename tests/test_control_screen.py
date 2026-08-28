@@ -1,10 +1,18 @@
 import asyncio
+import json
+
+import pytest
 
 from app.agent.context import ToolContext
-from app.agent.tools.control_screen import control_screen, restore_vlm_point
+from app.agent.tools.control_screen import control_screen, normalize_bbox_for_model
 
 
-def _context(resume_data=None, resume_state=None) -> ToolContext:
+def _context(
+    *,
+    model_name: str = "test-model",
+    resume_data=None,
+    resume_state=None,
+) -> ToolContext:
     async def emit_event(_event_type, _data):
         return None
 
@@ -14,111 +22,72 @@ def _context(resume_data=None, resume_state=None) -> ToolContext:
         emit_event=emit_event,
         get_checkpoint=lambda: {},
         set_checkpoint=lambda _data: None,
+        model_name=model_name,
         resume_data=resume_data,
         resume_state=resume_state,
     )
 
 
-def test_restore_vlm_point_maps_1000_canvas_to_screenshot_size() -> None:
-    result = restore_vlm_point([400, 200, 600, 400], 1920, 1080)
-
-    assert result["bbox"] == [400, 200, 600, 400]
-    assert result["x_ratio"] == 0.5
-    assert result["y_ratio"] == 0.3
-    assert result["x"] == 960
-    assert result["y"] == 324
-    assert result["width"] == 1920
-    assert result["height"] == 1080
+def _args(**overrides) -> dict:
+    args = {"target": "search box", "bbox": [400, 200, 600, 400]}
+    args.update(overrides)
+    return args
 
 
-def test_control_screen_initial_interrupt_requests_capture_without_confirmation() -> None:
+def test_control_screen_schema_only_describes_xyxy() -> None:
+    function = control_screen().to_openai_tool()["function"]
+    serialized = json.dumps(function, ensure_ascii=False).lower()
+
+    assert set(function["parameters"]["required"]) == {"target", "bbox"}
+    assert "[x1, y1, x2, y2]" in function["parameters"]["properties"]["bbox"]["description"]
+    assert "gemini" not in serialized
+    assert "y1, x1, y2, x2" not in serialized
+
+
+@pytest.mark.parametrize(
+    "model_name",
+    ["gemini-2.5-pro", "models/GEMINI-3-pro", "google/gemini-2.0-flash"],
+)
+def test_gemini_bbox_is_normalized_from_yxyx(model_name: str) -> None:
+    assert normalize_bbox_for_model([200, 400, 400, 600], model_name) == [400, 200, 600, 400]
+
+
+@pytest.mark.parametrize("model_name", ["gpt-5", "qwen3-vl-plus", "unknown", "notgemini"])
+def test_non_gemini_bbox_remains_xyxy(model_name: str) -> None:
+    assert normalize_bbox_for_model([400, 200, 600, 400], model_name) == [400, 200, 600, 400]
+
+
+@pytest.mark.parametrize(
+    "bbox",
+    [
+        None,
+        [],
+        [1, 2, 3],
+        [1, 2, 3, 4, 5],
+        [1.0, 2, 3, 4],
+        [True, 2, 3, 4],
+        [-1, 2, 3, 4],
+        [1, 2, 1001, 4],
+        [500, 200, 500, 400],
+        [600, 200, 500, 400],
+        [400, 500, 600, 400],
+    ],
+)
+def test_invalid_bbox_is_rejected(bbox: object) -> None:
+    with pytest.raises(ValueError):
+        normalize_bbox_for_model(bbox, "gpt-5")
+
+
+def test_initial_call_directly_requests_execution() -> None:
     async def run():
-        tool = control_screen()
-        return await tool.execute({"target": "search box"}, _context())
-
-    result = asyncio.run(run())
-
-    assert result.interrupt is not None
-    assert result.interrupt.type == "control_screen_capture_request"
-    assert result.interrupt.data == {}
-    assert result.resume_state["phase"] == "awaiting_capture"
-    assert result.resume_state["action"]["operation"] == "double"
-    assert result.resume_state["action"]["press_enter"] is True
-    assert result.resume_state["action"]["scroll_direction"] == "down"
-
-
-def test_control_screen_defaults_scroll_direction_to_down() -> None:
-    async def run():
-        tool = control_screen()
-        return await tool.execute(
-            {"target": "list", "operation": "scroll"},
-            _context(),
-        )
-
-    result = asyncio.run(run())
-
-    assert result.interrupt is not None
-    assert result.resume_state["action"]["scroll_direction"] == "down"
-
-
-def test_control_screen_rejects_none_scroll_direction_for_scroll_operation() -> None:
-    async def run():
-        tool = control_screen()
-        return await tool.execute(
-            {"target": "list", "operation": "scroll", "scroll_direction": "none"},
-            _context(),
-        )
-
-    result = asyncio.run(run())
-
-    assert result.interrupt is None
-    assert result.content.startswith("错误:")
-    assert "scroll_direction" in result.content
-
-
-def test_control_screen_ignores_scroll_direction_for_non_scroll_operation() -> None:
-    async def run():
-        tool = control_screen()
-        return await tool.execute(
-            {"target": "search box", "operation": "click", "scroll_direction": "sideways"},
-            _context(),
-        )
-
-    result = asyncio.run(run())
-
-    assert result.interrupt is not None
-    assert result.resume_state["action"]["operation"] == "click"
-    assert result.resume_state["action"]["scroll_direction"] == "down"
-
-
-def test_control_screen_capture_resume_sends_execute_payload(monkeypatch) -> None:
-    async def fake_locate(_self, intent, image_data_url):
-        assert intent == "search box"
-        assert image_data_url == "data:image/png;base64,AAA"
-        return [400, 200, 600, 400]
-
-    monkeypatch.setattr("app.agent.models.vlm.VLMService.locate", fake_locate)
-
-    async def run():
-        tool = control_screen()
-        return await tool.execute(
-            {
-                "target": "search box",
-                "operation": "click",
-                "text": "hello",
-                "press_enter": False,
-                "wait_seconds": 1,
-            },
-            _context(
-                resume_data={
-                    "screenshot_data": "data:image/png;base64,AAA",
-                    "width": 1920,
-                    "height": 1080,
-                },
-                resume_state={
-                    "phase": "awaiting_capture",
-                },
+        return await control_screen().execute(
+            _args(
+                operation="click",
+                text="hello",
+                press_enter=False,
+                wait_seconds=1,
             ),
+            _context(),
         )
 
     result = asyncio.run(run())
@@ -129,16 +98,74 @@ def test_control_screen_capture_resume_sends_execute_payload(monkeypatch) -> Non
     assert result.interrupt.data["operation"] == "click"
     assert result.interrupt.data["text"] == "hello"
     assert result.interrupt.data["press_enter"] is False
-    assert result.interrupt.data["coordinates"]["x"] == 960
-    assert result.interrupt.data["coordinates"]["y"] == 324
-    assert result.resume_state["phase"] == "awaiting_execution"
+    assert result.interrupt.data["coordinates"] == {
+        "bbox": [400, 200, 600, 400],
+        "x_ratio": 0.5,
+        "y_ratio": 0.3,
+    }
+    assert result.resume_state == {"phase": "awaiting_execution"}
+
+
+def test_initial_gemini_call_sends_canonical_coordinates() -> None:
+    async def run():
+        return await control_screen().execute(
+            _args(bbox=[200, 400, 400, 600]),
+            _context(model_name="models/gemini-3-pro"),
+        )
+
+    result = asyncio.run(run())
+
+    assert result.interrupt is not None
+    assert result.interrupt.data["coordinates"] == {
+        "bbox": [400, 200, 600, 400],
+        "x_ratio": 0.5,
+        "y_ratio": 0.3,
+    }
+
+
+def test_invalid_bbox_does_not_create_interrupt() -> None:
+    async def run():
+        return await control_screen().execute(
+            _args(bbox=[1000, 0, 1000, 50]),
+            _context(),
+        )
+
+    result = asyncio.run(run())
+
+    assert result.interrupt is None
+    assert result.content.startswith("错误:")
+
+
+def test_control_screen_defaults_scroll_direction_to_down() -> None:
+    async def run():
+        return await control_screen().execute(
+            _args(operation="scroll"),
+            _context(),
+        )
+
+    result = asyncio.run(run())
+
+    assert result.interrupt is not None
+    assert result.interrupt.data["scroll_direction"] == "down"
+
+
+def test_control_screen_rejects_invalid_scroll_direction() -> None:
+    async def run():
+        return await control_screen().execute(
+            _args(operation="scroll", scroll_direction="none"),
+            _context(),
+        )
+
+    result = asyncio.run(run())
+
+    assert result.interrupt is None
+    assert "scroll_direction" in result.content
 
 
 def test_control_screen_execution_resume_injects_screenshot() -> None:
     async def run():
-        tool = control_screen()
-        return await tool.execute(
-            {"target": "search box"},
+        return await control_screen().execute(
+            _args(),
             _context(
                 resume_data={
                     "approved": True,
@@ -157,9 +184,8 @@ def test_control_screen_execution_resume_injects_screenshot() -> None:
 
 def test_control_screen_execution_resume_handles_rejection() -> None:
     async def run():
-        tool = control_screen()
-        return await tool.execute(
-            {"target": "search box"},
+        return await control_screen().execute(
+            _args(),
             _context(
                 resume_data={"approved": False},
                 resume_state={"phase": "awaiting_execution"},
@@ -170,3 +196,39 @@ def test_control_screen_execution_resume_handles_rejection() -> None:
 
     assert result.content == "屏幕操作请求被用户拒绝。"
     assert result.image_url is None
+
+
+def test_control_screen_execution_resume_reports_frontend_failure() -> None:
+    async def run():
+        return await control_screen().execute(
+            _args(),
+            _context(
+                resume_data={
+                    "approved": True,
+                    "executed": False,
+                    "error": "mouse unavailable",
+                },
+                resume_state={"phase": "awaiting_execution"},
+            ),
+        )
+
+    result = asyncio.run(run())
+
+    assert result.content == "屏幕操作失败: mouse unavailable"
+    assert result.image_url is None
+
+
+def test_control_screen_rejects_legacy_resume_phase() -> None:
+    async def run():
+        return await control_screen().execute(
+            _args(),
+            _context(
+                resume_data={"screenshot_data": "legacy"},
+                resume_state={"phase": "awaiting_capture"},
+            ),
+        )
+
+    result = asyncio.run(run())
+
+    assert result.interrupt is None
+    assert "恢复状态无效" in result.content

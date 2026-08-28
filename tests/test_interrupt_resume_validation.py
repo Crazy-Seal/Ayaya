@@ -139,7 +139,7 @@ async def test_resume_endpoint_rejects_other_interrupt_types(
         (
             "control_screen_capture_request",
             lambda service: service.resume_after_control_screen(
-                "session-a", request_id="request-stale", approved=False
+                "session-a", request_id="request-stale"
             ),
         ),
         (
@@ -255,6 +255,36 @@ def test_old_resume_routes_require_non_empty_request_id() -> None:
         ControlScreenResponseRequest.model_validate({
             "session_id": "session-a",
             "request_id": "",
+            "approved": False,
+        })
+
+    capture_payload = ControlScreenResponseRequest.model_validate({
+        "session_id": "session-a",
+        "request_id": "request-current",
+        "screenshot_data": "image",
+        "width": 10,
+        "height": 20,
+    })
+    assert capture_payload.approved is None
+
+
+def test_control_screen_response_requires_execution_result_when_approved() -> None:
+    with pytest.raises(ValidationError, match="executed"):
+        ControlScreenResponseRequest.model_validate({
+            "session_id": "session-a",
+            "request_id": "request-current",
+            "approved": True,
+        })
+
+
+def test_control_screen_response_requires_dimensions_with_screenshot() -> None:
+    with pytest.raises(ValidationError, match="width"):
+        ControlScreenResponseRequest.model_validate({
+            "session_id": "session-a",
+            "request_id": "request-current",
+            "approved": True,
+            "executed": True,
+            "screenshot_data": "image",
         })
 
 

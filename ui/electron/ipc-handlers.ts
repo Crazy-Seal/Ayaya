@@ -50,6 +50,7 @@ import {
 import { getMainWindow, getSettingsWindow, getTrustedRendererPolicy, openSettingsWindow, openImagePreviewWindow } from "./window-manager.js";
 import { createTrustedIpcRegistrar } from "./ipc-security.js";
 import { resolveScreenActionPoint } from "./screen-action-coordinates.js";
+import { selectPrimaryDisplaySource } from "./screen-capture-source.js";
 import { pasteScreenActionText } from "./screen-action-input.js";
 import { appendFrontendLog } from "./logging/app-logger.js";
 import { buildBackendInterruptIdentity } from "./interrupt-response.js";
@@ -162,7 +163,7 @@ const performScreenAction = async (payload: ScreenActionRequest): Promise<Screen
     const nut = await import("@nut-tree-fork/nut-js");
     const display = screen.getPrimaryDisplay();
     const bounds = display.bounds;
-    const { x, y } = resolveScreenActionPoint(coordinates, bounds);
+    const { x, y } = resolveScreenActionPoint(coordinates, bounds, display.scaleFactor);
     const point = new nut.Point(x, y);
 
     await nut.mouse.setPosition(point);
@@ -727,8 +728,8 @@ export const registerIpcHandlers = (): void => {
       try {
         const requestBody: Record<string, unknown> = {
           ...buildBackendInterruptIdentity(payload),
+          approved,
         };
-        if (approved !== undefined) requestBody.approved = approved;
         if (screenshotData) requestBody.screenshot_data = screenshotData;
         if (width !== undefined) requestBody.width = width;
         if (height !== undefined) requestBody.height = height;
@@ -822,11 +823,8 @@ export const registerIpcHandlers = (): void => {
         thumbnailSize: { width: 1920, height: 1080 },
       });
 
-      if (sources.length === 0) {
-        throw new Error("未找到屏幕");
-      }
-
-      const primaryScreen = sources[0];
+      const primaryDisplay = screen.getPrimaryDisplay();
+      const primaryScreen = selectPrimaryDisplaySource(sources, primaryDisplay.id);
       const size = primaryScreen.thumbnail.getSize();
       const dataUrl = primaryScreen.thumbnail.toDataURL();
 

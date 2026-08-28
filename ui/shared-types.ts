@@ -212,10 +212,6 @@ export type ControlScreenCoordinates = {
   bbox: [number, number, number, number];
   x_ratio: number;
   y_ratio: number;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
 };
 
 export type ControlScreenActionData = {

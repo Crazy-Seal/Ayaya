@@ -6,39 +6,47 @@ import type { ControlScreenCoordinates } from "../shared-types.js";
 
 const coordinates: ControlScreenCoordinates = {
   bbox: [450, 480, 580, 550],
-  x_ratio: 986.5 / 1920,
-  y_ratio: 555.5 / 1080,
-  x: 987,
-  y: 556,
-  width: 1920,
-  height: 1080,
+  x_ratio: 0.5,
+  y_ratio: 0.5,
 };
 
-test("屏幕操作优先使用截图像素坐标，避免 125% DPI 缩放导致 0.8 倍偏移", () => {
+test("屏幕操作使用 scaleFactor 将逻辑坐标转换成物理坐标", () => {
   const point = resolveScreenActionPoint(coordinates, {
     x: 0,
     y: 0,
     width: 1536,
     height: 864,
-  });
+  }, 1.25);
 
-  assert.deepEqual(point, { x: 987, y: 556 });
+  assert.deepEqual(point, { x: 960, y: 540 });
 });
 
-test("缺少截图像素坐标时才回退到比例坐标和显示器 bounds", () => {
+test("显示器逻辑坐标原点和尺寸会一起应用 scaleFactor", () => {
   const point = resolveScreenActionPoint(
-    {
-      ...coordinates,
-      x: Number.NaN,
-      y: Number.NaN,
-    },
+    coordinates,
     {
       x: 100,
       y: 50,
       width: 1536,
       height: 864,
     },
+    1.25,
   );
 
-  assert.deepEqual(point, { x: 889, y: 494 });
+  assert.deepEqual(point, { x: 1085, y: 603 });
+});
+
+test("无效的比例坐标或 scaleFactor 会被拒绝", () => {
+  assert.throws(
+    () => resolveScreenActionPoint({ ...coordinates, x_ratio: Number.NaN }, { x: 0, y: 0, width: 1, height: 1 }, 1),
+    /Invalid screen coordinates/,
+  );
+  assert.throws(
+    () => resolveScreenActionPoint(coordinates, { x: 0, y: 0, width: 1, height: 1 }, 0),
+    /Invalid screen coordinates/,
+  );
+  assert.throws(
+    () => resolveScreenActionPoint({ ...coordinates, y_ratio: 1.1 }, { x: 0, y: 0, width: 1, height: 1 }, 1),
+    /Invalid screen coordinates/,
+  );
 });

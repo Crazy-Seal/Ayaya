@@ -7,6 +7,10 @@ import { ChatHistoryManager } from "./chat-history-manager.js";
 import { ScreenshotConfirmDialog } from "./screenshot-confirm-dialog.js";
 import { formatMcpApprovalMessage } from "./mcp-approval.js";
 import { buildInterruptResponseMeta } from "./interrupt-response.js";
+import {
+  isControlScreenCaptureInterrupt,
+  isControlScreenExecuteInterrupt,
+} from "./control-screen-interrupt.js";
 import { ToolCallToastManager } from "./tool-call-toast.js";
 import type { ChatInterruptPayload, ChatResult, ControlScreenActionData } from "../types.js";
 
@@ -168,7 +172,8 @@ export class ChatClient {
     };
     const inputText = action.text ? `，并输入“${action.text}”` : "";
     const enterText = action.text && action.press_enter ? "后按回车" : "";
-    return `Agent 请求在屏幕坐标 (${action.coordinates.x}, ${action.coordinates.y}) 对“${action.target}”执行${operationText[action.operation]}${inputText}${enterText}。是否允许？`;
+    const [x1, y1, x2, y2] = action.coordinates.bbox;
+    return `Agent 请求在屏幕区域 (${x1}, ${y1})–(${x2}, ${y2}) 对“${action.target}”执行${operationText[action.operation]}${inputText}${enterText}。是否允许？`;
   }
 
   private delay(ms: number): Promise<void> {
@@ -203,7 +208,7 @@ export class ChatClient {
       });
     }
 
-    if (interruptValue.type === "control_screen_capture_request") {
+    if (isControlScreenCaptureInterrupt(interruptValue)) {
       const screenshot = await this.captureScreenWithUserPreference();
       return await window.desktopPetApi.controlScreenRespond?.({
         sessionId: this.sessionId,
@@ -226,6 +231,11 @@ export class ChatClient {
         ...responseMeta,
         approved,
       });
+    }
+
+    if (!isControlScreenExecuteInterrupt(interruptValue)) {
+      console.warn("忽略未知的聊天中断类型", interruptValue);
+      return undefined;
     }
 
     const action = interruptValue.data;
