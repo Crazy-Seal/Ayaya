@@ -7,7 +7,7 @@ from app.agent.context import ToolContext
 from app.agent.tools.decorator import tool
 
 
-@tool
+@tool(compressible=True)
 async def search_diary(
     start: Annotated[str, "开始日期，格式 YYYY-MM-DD"],
     end: Annotated[str, "结束日期，格式 YYYY-MM-DD"],

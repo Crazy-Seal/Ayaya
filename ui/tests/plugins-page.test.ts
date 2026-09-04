@@ -9,18 +9,18 @@ const memoryPlugin: PluginItem = {
   description: "记忆",
   inherent: true,
   default_config: {
-    summary_every_human_messages: 10,
+    long_term_memory_every_human_messages: 10,
   },
   config_schema: {
     properties: {
-      summary_every_human_messages: { type: "integer", minimum: 1 },
+      long_term_memory_every_human_messages: { type: "integer", minimum: 1 },
     },
   },
 };
 
 test("插件数字字段最小值来自后端 JSON schema", () => {
   assert.equal(
-    getNumberFieldMinimum(memoryPlugin, "summary_every_human_messages"),
+    getNumberFieldMinimum(memoryPlugin, "long_term_memory_every_human_messages"),
     1
   );
 });

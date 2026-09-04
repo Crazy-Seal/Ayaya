@@ -1,6 +1,6 @@
-"""
-聊天记录查询 - 访问 chat_history 表
-"""
+"""面向日记和长期记忆的 OpenAI 协议日志只读查询。"""
+
+from __future__ import annotations
 
 import json
 from datetime import date, datetime, time, timezone, timedelta
@@ -10,126 +10,117 @@ from zoneinfo import ZoneInfo
 
 import aiosqlite
 
+from app.agent.message import is_real_human_message
 from app.runtime import get_chat_history_db
 
 
 class ChatHistoryStore:
-    """聊天记录查询类
-
-    负责：
-    - 按本地日期查询消息数量
-    - 获取指定本地日期的聊天记录
-    - 获取最后一个有聊天记录的本地日期
-
-    时间规则：
-    - 数据库存储 UTC 时间
-    - 查询和显示使用本地时间（配置的时区）
-    - 本地日期边界：凌晨 N 点前算前一天，N 点后算当天
-    """
-
-    TABLE_NAME = "chat_history"
+    TABLE_NAME = "conversation_messages"
 
     def __init__(
         self,
         db_path: Path | str | None = None,
         timezone: ZoneInfo | None = None,
         day_boundary_hour: int = 4,
-    ):
+    ) -> None:
         self.db_path = Path(db_path) if db_path else get_chat_history_db()
         self.timezone = timezone or datetime.now().astimezone().tzinfo
         self.day_boundary_hour = day_boundary_hour
 
     def _local_date_to_utc_range(self, local_date: date) -> tuple[datetime, datetime]:
-        """将本地日期转换为 UTC 时间范围"""
-        local_start = datetime.combine(
-            local_date, time(self.day_boundary_hour, 0, 0), tzinfo=self.timezone
-        )
-        local_end = datetime.combine(
-            local_date + timedelta(days=1), time(self.day_boundary_hour, 0, 0), tzinfo=self.timezone
-        )
-        utc_start = local_start.astimezone(timezone.utc)
-        utc_end = local_end.astimezone(timezone.utc)
-        return utc_start, utc_end
+        start = datetime.combine(local_date, time(self.day_boundary_hour), tzinfo=self.timezone)
+        end = datetime.combine(local_date + timedelta(days=1), time(self.day_boundary_hour), tzinfo=self.timezone)
+        return start.astimezone(timezone.utc), end.astimezone(timezone.utc)
 
-    def _utc_to_local_date(self, utc_timestamp: str | datetime | int | float) -> date:
-        """将 UTC 时间戳转换为本地日期"""
-        dt = self._parse_timestamp(utc_timestamp)
-        if dt is None:
-            if isinstance(utc_timestamp, str):
-                return date.fromisoformat(utc_timestamp)
-            raise ValueError(f"无法解析时间戳: {utc_timestamp}")
-
-        local_dt = dt.astimezone(self.timezone)
-        if local_dt.hour < self.day_boundary_hour:
-            return (local_dt - timedelta(days=1)).date()
-        return local_dt.date()
-
-    def _parse_timestamp(self, timestamp: str | datetime | int | float) -> datetime | None:
-        """解析各种格式的时间戳为 UTC datetime"""
-        if isinstance(timestamp, datetime):
-            if timestamp.tzinfo is None:
-                return timestamp.replace(tzinfo=timezone.utc)
-            return timestamp.astimezone(timezone.utc)
-
-        if isinstance(timestamp, (int, float)):
-            ts = timestamp
-            if ts > 1e12:
-                ts = ts / 1000
-            return datetime.fromtimestamp(ts, tz=timezone.utc)
-
-        if isinstance(timestamp, str):
+    def _parse_timestamp(self, value: str | datetime | int | float) -> datetime | None:
+        if isinstance(value, datetime):
+            return value.replace(tzinfo=value.tzinfo or timezone.utc).astimezone(timezone.utc)
+        if isinstance(value, (int, float)):
+            value = value / 1000 if abs(value) >= 1e12 else value
+            return datetime.fromtimestamp(value, tz=timezone.utc)
+        if isinstance(value, str):
             try:
-                ts = float(timestamp)
-                if ts > 1e12:
-                    ts = ts / 1000
-                return datetime.fromtimestamp(ts, tz=timezone.utc)
+                return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(
+                    tzinfo=datetime.fromisoformat(value.replace("Z", "+00:00")).tzinfo or timezone.utc
+                ).astimezone(timezone.utc)
             except ValueError:
-                pass
-
-            try:
-                dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-                return dt
-            except ValueError:
-                pass
-
-            try:
-                dt_str = timestamp.split(".")[0]
-                dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
-                return dt.replace(tzinfo=timezone.utc)
-            except ValueError:
-                pass
-
+                try:
+                    number = float(value)
+                    number = number / 1000 if abs(number) >= 1e12 else number
+                    return datetime.fromtimestamp(number, tz=timezone.utc)
+                except ValueError:
+                    return None
         return None
 
-    def _format_local_time(self, timestamp: str | datetime | int | float, include_weekday: bool = True) -> str:
-        """将时间戳格式化为本地时间字符串"""
-        dt = self._parse_timestamp(timestamp)
-        if dt is None:
-            return str(timestamp)
+    def _utc_to_local_date(self, value: str | datetime | int | float) -> date:
+        parsed = self._parse_timestamp(value)
+        if parsed is None:
+            if isinstance(value, str):
+                return date.fromisoformat(value)
+            raise ValueError(f"无法解析时间戳: {value}")
+        local = parsed.astimezone(self.timezone)
+        return (local - timedelta(hours=self.day_boundary_hour)).date()
 
-        local_dt = dt.astimezone(self.timezone)
+    def _format_local_time(self, value: str | datetime | int | float, include_weekday: bool = True) -> str:
+        parsed = self._parse_timestamp(value)
+        if parsed is None:
+            return str(value)
+        local = parsed.astimezone(self.timezone)
+        if not include_weekday:
+            return local.strftime("%Y-%m-%d %H:%M:%S")
+        weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+        return f"{local:%Y-%m-%d} {weekdays[local.weekday()]} {local:%H:%M:%S}"
 
-        if include_weekday:
-            weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
-            weekday = weekdays[local_dt.weekday()]
-            return f"{local_dt.strftime('%Y-%m-%d')} {weekday} {local_dt.strftime('%H:%M:%S')}"
-        else:
-            return local_dt.strftime('%Y-%m-%d %H:%M:%S')
-
-    # ==================== 查询方法 ====================
-
-    async def get_latest_message_id(self, session_id: str) -> int:
-        """获取指定会话当前已提交聊天历史的高水位。"""
+    async def _rows(
+        self,
+        session_id: str,
+        *,
+        max_history_id: int | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> list[tuple]:
+        clauses = ["session_id = ?"]
+        params: list[Any] = [session_id]
+        if max_history_id is not None:
+            clauses.append("id <= ?")
+            params.append(max_history_id)
+        if start is not None:
+            clauses.append("created_at >= ?")
+            params.append(start.isoformat())
+        if end is not None:
+            clauses.append("created_at < ?")
+            params.append(end.isoformat())
         async with aiosqlite.connect(str(self.db_path)) as conn:
             await conn.execute("PRAGMA busy_timeout=5000")
-            cursor = await conn.execute(
-                f"SELECT COALESCE(MAX(id), 0) FROM {self.TABLE_NAME} WHERE thread_id = ?",
-                (session_id,),
+            exists = await conn.execute_fetchall(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (self.TABLE_NAME,)
             )
-            row = await cursor.fetchone()
-            return int(row[0]) if row else 0
+            if not exists:
+                return []
+            return await conn.execute_fetchall(
+                f"""
+                SELECT id, message_id, created_at, role, message_json, record_kind
+                FROM {self.TABLE_NAME}
+                WHERE {' AND '.join(clauses)}
+                ORDER BY id ASC
+                """,
+                params,
+            )
+
+    @staticmethod
+    def _decode(row: tuple) -> dict[str, Any]:
+        row_id, message_id, created_at, role, raw, record_kind = row
+        message = json.loads(raw)
+        message["_history_id"] = row_id
+        message["_message_id"] = message_id
+        message["_created_at"] = created_at
+        message["_record_kind"] = record_kind
+        message["role"] = role
+        return message
+
+    async def get_latest_message_id(self, session_id: str) -> int:
+        rows = await self._rows(session_id)
+        return int(rows[-1][0]) if rows else 0
 
     async def get_message_count_by_date(
         self,
@@ -138,44 +129,13 @@ class ChatHistoryStore:
         role: str | None = None,
         max_history_id: int | None = None,
     ) -> int:
-        """获取指定本地日期的消息数量"""
-        utc_start, utc_end = self._local_date_to_utc_range(effective_date)
-
-        async with aiosqlite.connect(str(self.db_path)) as conn:
-            await conn.execute("PRAGMA busy_timeout=5000")
-            if role:
-                cursor = await conn.execute(
-                    f"""
-                    SELECT COUNT(*) FROM {self.TABLE_NAME}
-                    WHERE thread_id = ? AND timestamp >= ? AND timestamp < ? AND role = ?
-                      AND (? IS NULL OR id <= ?)
-                    """,
-                    (
-                        session_id,
-                        utc_start.isoformat(),
-                        utc_end.isoformat(),
-                        role,
-                        max_history_id,
-                        max_history_id,
-                    ),
-                )
-            else:
-                cursor = await conn.execute(
-                    f"""
-                    SELECT COUNT(*) FROM {self.TABLE_NAME}
-                    WHERE thread_id = ? AND timestamp >= ? AND timestamp < ?
-                      AND (? IS NULL OR id <= ?)
-                    """,
-                    (
-                        session_id,
-                        utc_start.isoformat(),
-                        utc_end.isoformat(),
-                        max_history_id,
-                        max_history_id,
-                    ),
-                )
-            row = await cursor.fetchone()
-            return row[0] if row else 0
+        messages = await self.get_messages_by_date(session_id, effective_date, max_history_id)
+        if role in {"Human", "user"}:
+            return sum(1 for message in messages if is_real_human_message(message))
+        if role:
+            normalized = {"AI": "assistant", "Tool": "tool"}.get(role, role)
+            return sum(1 for message in messages if message.get("role") == normalized)
+        return len(messages)
 
     async def get_last_chat_date(
         self,
@@ -183,36 +143,12 @@ class ChatHistoryStore:
         exclude_today: date | None = None,
         max_history_id: int | None = None,
     ) -> date | None:
-        """获取最后一个有聊天记录的本地日期"""
-        async with aiosqlite.connect(str(self.db_path)) as conn:
-            await conn.execute("PRAGMA busy_timeout=5000")
-            if exclude_today:
-                utc_start, utc_end = self._local_date_to_utc_range(exclude_today)
-                cursor = await conn.execute(
-                    f"""
-                    SELECT timestamp FROM {self.TABLE_NAME}
-                    WHERE thread_id = ? AND timestamp < ?
-                      AND (? IS NULL OR id <= ?)
-                    ORDER BY timestamp DESC
-                    LIMIT 1
-                    """,
-                    (session_id, utc_start.isoformat(), max_history_id, max_history_id),
-                )
-            else:
-                cursor = await conn.execute(
-                    f"""
-                    SELECT timestamp FROM {self.TABLE_NAME}
-                    WHERE thread_id = ?
-                      AND (? IS NULL OR id <= ?)
-                    ORDER BY timestamp DESC
-                    LIMIT 1
-                    """,
-                    (session_id, max_history_id, max_history_id),
-                )
-            row = await cursor.fetchone()
-            if row:
-                return self._utc_to_local_date(row[0])
-            return None
+        rows = await self._rows(session_id, max_history_id=max_history_id)
+        for row in reversed(rows):
+            effective = self._utc_to_local_date(row[2])
+            if exclude_today is None or effective < exclude_today:
+                return effective
+        return None
 
     async def get_messages_by_date(
         self,
@@ -220,70 +156,65 @@ class ChatHistoryStore:
         effective_date: date,
         max_history_id: int | None = None,
     ) -> list[dict[str, Any]]:
-        """获取指定本地日期的所有聊天记录"""
-        utc_start, utc_end = self._local_date_to_utc_range(effective_date)
-
-        async with aiosqlite.connect(str(self.db_path)) as conn:
-            await conn.execute("PRAGMA busy_timeout=5000")
-            cursor = await conn.execute(
-                f"""
-                SELECT role, content, timestamp, image_description, image_filenames
-                FROM {self.TABLE_NAME}
-                WHERE thread_id = ? AND timestamp >= ? AND timestamp < ?
-                  AND (? IS NULL OR id <= ?)
-                ORDER BY timestamp ASC, id ASC
-                """,
-                (
-                    session_id,
-                    utc_start.isoformat(),
-                    utc_end.isoformat(),
-                    max_history_id,
-                    max_history_id,
-                ),
+        start, end = self._local_date_to_utc_range(effective_date)
+        return [
+            self._decode(row)
+            for row in await self._rows(
+                session_id, max_history_id=max_history_id, start=start, end=end
             )
-            rows = await cursor.fetchall()
-            return [
-                {
-                    "role": row[0],
-                    "content": row[1],
-                    "timestamp": self._format_local_time(row[2]),
-                    "image_description": row[3],
-                    "images": json.loads(row[4]) if row[4] else None,
-                }
-                for row in rows
-            ]
+        ]
 
     async def get_messages_before_date(
         self,
         session_id: str,
         before_date: date,
         limit: int = 10,
+        *,
+        max_history_id: int | None = None,
     ) -> list[dict[str, Any]]:
-        """获取指定本地日期之前的最后 N 条聊天记录"""
-        utc_start, utc_end = self._local_date_to_utc_range(before_date)
+        start, _ = self._local_date_to_utc_range(before_date)
+        rows = await self._rows(
+            session_id,
+            max_history_id=max_history_id,
+            end=start,
+        )
+        return [self._decode(row) for row in rows[-limit:]]
 
-        async with aiosqlite.connect(str(self.db_path)) as conn:
-            await conn.execute("PRAGMA busy_timeout=5000")
-            cursor = await conn.execute(
-                f"""
-                SELECT role, content, timestamp, image_filenames FROM (
-                    SELECT role, content, timestamp, image_filenames
-                    FROM {self.TABLE_NAME}
-                    WHERE thread_id = ? AND timestamp < ?
-                    ORDER BY timestamp DESC
-                    LIMIT ?
-                ) sub
-                ORDER BY timestamp ASC
-                """,
-                (session_id, utc_start.isoformat(), limit),
+    async def get_recent_completed_turns(
+        self,
+        session_id: str,
+        *,
+        current_turns: int = 10,
+        history_turns: int = 5,
+        max_history_id: int | None = None,
+    ) -> tuple[list[dict], list[dict]]:
+        """返回前情和当前批次；只接受具有最终普通 assistant 的完整轮次。"""
+        records = [
+            self._decode(row)
+            for row in await self._rows(session_id, max_history_id=max_history_id)
+        ]
+        turns: list[list[dict]] = []
+        active: list[dict] = []
+        for message in records:
+            if is_real_human_message(message):
+                if active:
+                    turns.append(active)
+                active = [message]
+            elif active:
+                active.append(message)
+        if active:
+            turns.append(active)
+        complete = [
+            turn for turn in turns
+            if any(
+                message.get("role") == "assistant"
+                and not message.get("tool_calls")
+                for message in turn[1:]
             )
-            rows = await cursor.fetchall()
-            return [
-                {
-                    "role": row[0],
-                    "content": row[1],
-                    "timestamp": self._format_local_time(row[2]),
-                    "images": json.loads(row[3]) if row[3] else None,
-                }
-                for row in rows
-            ]
+        ]
+        selected = complete[-current_turns:]
+        history = complete[-(current_turns + history_turns):-current_turns]
+        return (
+            [message for turn in history for message in turn],
+            [message for turn in selected for message in turn],
+        )

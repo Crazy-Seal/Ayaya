@@ -6,12 +6,12 @@ from app.agent.tools.decorator import tool
 from app.agent.utils.infra.safe_path import safe_path
 
 
-@tool
+@tool(compressible=True)
 async def read_file(
     path: Annotated[str, "被读取的文件路径字符串。"],
     limit: Annotated[int | None, "可选参数，最多返回的行数。"] = None,
 ) -> str:
-    """读取指定路径的文件内容，并返回字符串结果。最多返回50000字符。"""
+    """读取指定路径的文件内容，并返回字符串结果。最多返回5000字符左右。"""
     try:
         # 统一按 UTF-8（兼容 BOM）读取，避免 Windows 默认编码导致乱码。
         text = safe_path(path).read_text(encoding="utf-8")

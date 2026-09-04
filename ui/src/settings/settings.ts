@@ -124,11 +124,7 @@ class SettingsApp {
 
     this.contextStrategyPage = new ContextStrategyPage(
       {
-        recent_context_human_messages: this.getElement("#context-recent-human-messages"),
-        max_images_in_context: this.getElement("#context-max-images"),
-        image_ttl_human_messages: this.getElement("#context-image-ttl"),
-        max_screenshots_in_context: this.getElement("#context-max-screenshots"),
-        screenshot_ttl_human_messages: this.getElement("#context-screenshot-ttl"),
+        compression_trigger_tokens_k: this.getElement("#context-compression-trigger-tokens-k"),
       },
       this.getElement("#context-strategy-confirm-btn")
     );

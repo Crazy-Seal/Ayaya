@@ -11,11 +11,7 @@ chat_models:
   - access_the_internet
   - screenshot
   context_strategy:
-    recent_context_human_messages: 10
-    max_images_in_context: 5
-    image_ttl_human_messages: 10
-    max_screenshots_in_context: 2
-    screenshot_ttl_human_messages: 2
+    compression_trigger_tokens_k: 100
   agent_plugins:
     memory:
       enabled: true
@@ -23,7 +19,7 @@ chat_models:
         enable_diary: true
         enable_episodic: true
         enable_semantic: true
-        summary_every_human_messages: 10
+        long_term_memory_every_human_messages: 10
   name: AI名字
   feature: 性格特点
   character: AI人设

@@ -40,11 +40,21 @@ class LLMResponse:
 
 
 @dataclass
+class TokenUsage:
+    """模型请求 token 用量。"""
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
+
+@dataclass
 class StreamChunk:
     """流式响应块"""
     content: str | None = None
     tool_call: ToolCall | None = None
     finish_reason: str | None = None
+    usage: TokenUsage | None = None
 
     @property
     def is_done(self) -> bool:
@@ -53,6 +63,8 @@ class StreamChunk:
 
 class LLMClient:
     """LLM API 客户端（AsyncOpenAI 后端）"""
+
+    _stream_usage_capabilities: dict[tuple[str, str], bool] = {}
 
     def __init__(self, config: LLMConfig):
         self.config = config
@@ -189,6 +201,10 @@ class LLMClient:
         payload = self._base_payload(messages, stream=True, **kwargs)
         if tools:
             payload["tools"] = tools
+        capability_key = (self.config.base_url.rstrip("/"), self.config.model)
+        include_usage = self._stream_usage_capabilities.get(capability_key, True)
+        if include_usage:
+            payload["stream_options"] = {"include_usage": True}
 
         # 按 call id 累积工具调用，index 仅用于路由缺少 id 的后续分片。
         tool_acc: list[dict] = []
@@ -196,8 +212,28 @@ class LLMClient:
         final_reason: str | None = None
 
         try:
-            stream = await self._client.chat.completions.create(**payload)
+            try:
+                stream = await self._client.chat.completions.create(**payload)
+            except Exception as exc:
+                message = str(exc).lower()
+                unsupported = "stream_options" in message and any(
+                    marker in message
+                    for marker in ("unexpected", "unsupported", "unknown", "unrecognized", "invalid")
+                )
+                if not include_usage or not unsupported:
+                    raise
+                self._stream_usage_capabilities[capability_key] = False
+                payload.pop("stream_options", None)
+                stream = await self._client.chat.completions.create(**payload)
             async for chunk in stream:
+                usage = getattr(chunk, "usage", None)
+                if usage is not None:
+                    self._stream_usage_capabilities[capability_key] = True
+                    yield StreamChunk(usage=TokenUsage(
+                        prompt_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
+                        completion_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
+                        total_tokens=int(getattr(usage, "total_tokens", 0) or 0),
+                    ))
                 if not chunk.choices:
                     continue
                 choice = chunk.choices[0]

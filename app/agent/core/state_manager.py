@@ -1,8 +1,4 @@
-"""
-状态管理器
-
-负责 Agent 状态的 checkpoint 持久化与分层裁剪。
-"""
+"""Agent checkpoint 与 append-only OpenAI 协议日志的原子持久化。"""
 
 import json
 import logging
@@ -12,9 +8,7 @@ from uuid import uuid4
 
 import aiosqlite
 
-from app.agent.message import is_real_human_message
 from app.agent.state import AgentState
-from app.agent.utils.domain.text import extract_text
 from app.agent.message_time import normalize_utc, utc_now
 from app.runtime import get_checkpoint_db
 
@@ -48,7 +42,7 @@ class StateManager:
         return self._db
 
     async def _init_tables(self) -> None:
-        """初始化 checkpoint 与聊天记录表。"""
+        """初始化 checkpoint 与协议日志。"""
         db = await self._get_db()
         await db.execute("""
             CREATE TABLE IF NOT EXISTS checkpoints (
@@ -66,40 +60,30 @@ class StateManager:
             ON checkpoints(session_id, checkpoint_type, id DESC)
         """)
         await db.execute("""
-            CREATE TABLE IF NOT EXISTS chat_history (
+            CREATE TABLE IF NOT EXISTS conversation_messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                thread_id TEXT NOT NULL,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                role TEXT NOT NULL,
-                content TEXT NOT NULL,
-                image_description TEXT,
-                image_filenames TEXT,
-                source_message_id TEXT
+                session_id TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'tool')),
+                message_json TEXT NOT NULL,
+                record_kind TEXT NOT NULL CHECK (
+                    record_kind IN ('protocol', 'tool_image', 'legacy_tool_notice')
+                ),
+                fidelity TEXT NOT NULL CHECK (fidelity IN ('exact', 'projected')),
+                associated_message_id TEXT,
+                attachments_json TEXT,
+                legacy_source_id TEXT,
+                UNIQUE (session_id, message_id)
             )
         """)
-        columns = {
-            row[1]
-            for row in await db.execute_fetchall("PRAGMA table_info(chat_history)")
-        }
-        if "source_message_id" not in columns:
-            await db.execute(
-                "ALTER TABLE chat_history ADD COLUMN source_message_id TEXT"
-            )
-        index_rows = await db.execute_fetchall(
-            """
-            SELECT sql FROM sqlite_master
-            WHERE type = 'index' AND name = 'idx_chat_history_source_message'
-            """
-        )
-        if index_rows and " WHERE " in (index_rows[0][0] or "").upper():
-            await db.execute("DROP INDEX idx_chat_history_source_message")
         await db.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_history_source_message
-            ON chat_history(source_message_id)
+            CREATE INDEX IF NOT EXISTS idx_conversation_messages_session_id
+            ON conversation_messages(session_id, id)
         """)
         await db.execute("""
-            CREATE INDEX IF NOT EXISTS idx_chat_history_thread_timestamp
-            ON chat_history(thread_id, timestamp, id)
+            CREATE INDEX IF NOT EXISTS idx_conversation_messages_session_time
+            ON conversation_messages(session_id, created_at, id)
         """)
         await db.commit()
 
@@ -111,63 +95,35 @@ class StateManager:
             message["_created_at"] = normalize_utc(created_at).isoformat()
 
     @staticmethod
-    def _history_rows(state: AgentState) -> list[tuple]:
+    def _protocol_rows(state: AgentState) -> list[tuple]:
         rows: list[tuple] = []
         for message in state.messages:
-            message_id = message["_message_id"]
-            created_at = message["_created_at"]
             role = message.get("role")
-            content = extract_text(message.get("content"))
-            filenames = message.get("image_filenames")
-            filenames_json = (
-                json.dumps(filenames, ensure_ascii=False) if filenames else None
-            )
-
-            if role == "user" and is_real_human_message(message):
-                rows.append(
-                    (
-                        state.session_id,
-                        created_at,
-                        "Human",
-                        content,
-                        message.get("image_description"),
-                        filenames_json,
-                        f"{message_id}:content",
-                    )
-                )
+            name = message.get("name")
+            if role == "system" or name == "context_summary":
                 continue
-
-            if role != "assistant":
+            if role not in {"user", "assistant", "tool"}:
                 continue
-            if content:
-                rows.append(
-                    (
-                        state.session_id,
-                        created_at,
-                        "AI",
-                        content,
-                        None,
-                        None,
-                        f"{message_id}:content",
-                    )
-                )
-            tool_calls = message.get("tool_calls") or []
-            if tool_calls:
-                tool_names = [
-                    (tool_call.get("function") or {}).get("name", "未知工具")
-                    for tool_call in tool_calls
-                ]
-                rows.append(
-                    (
-                        state.session_id,
-                        created_at,
-                        "AI_Tool_Calling",
-                        f"调用了工具: {', '.join(tool_names)}",
-                        None,
-                        None,
-                        f"{message_id}:tools",
-                    )
-                )
+            record_kind = "tool_image" if role == "user" and name in {
+                "mcp_tool_image", "system_screenshot"
+            } else "protocol"
+            payload = {
+                key: value for key, value in message.items()
+                if key not in {"_message_id", "_created_at"}
+            }
+            attachments = message.get("image_filenames")
+            rows.append((
+                state.session_id,
+                message["_message_id"],
+                message["_created_at"],
+                role,
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str),
+                record_kind,
+                "exact",
+                message.get("_associated_message_id"),
+                json.dumps(attachments, ensure_ascii=False) if attachments else None,
+                None,
+            ))
         return rows
 
     async def load(self) -> AgentState:
@@ -206,7 +162,7 @@ class StateManager:
         db = await self._get_db()
         self._ensure_message_metadata(state)
         state_json = json.dumps(state.to_checkpoint(), ensure_ascii=False, default=str)
-        history_rows = self._history_rows(state)
+        protocol_rows = self._protocol_rows(state)
 
         try:
             await db.execute("BEGIN IMMEDIATE")
@@ -248,24 +204,21 @@ class StateManager:
                 )
                 await self._prune_completed(db)
 
-            if history_rows:
+            if protocol_rows:
                 await db.executemany(
                     """
-                    INSERT INTO chat_history (
-                        thread_id, timestamp, role, content,
-                        image_description, image_filenames, source_message_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(source_message_id) DO UPDATE SET
-                        image_description = COALESCE(
-                            excluded.image_description,
-                            chat_history.image_description
-                        ),
-                        image_filenames = COALESCE(
-                            excluded.image_filenames,
-                            chat_history.image_filenames
+                    INSERT INTO conversation_messages (
+                        session_id, message_id, created_at, role, message_json,
+                        record_kind, fidelity, associated_message_id,
+                        attachments_json, legacy_source_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(session_id, message_id) DO UPDATE SET
+                        attachments_json = COALESCE(
+                            excluded.attachments_json,
+                            conversation_messages.attachments_json
                         )
                     """,
-                    history_rows,
+                    protocol_rows,
                 )
 
             await db.commit()

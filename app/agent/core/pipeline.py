@@ -9,7 +9,7 @@ tool_call_id/tool_args/resume_state）写入 state.interrupt_data，使恢复能
 """
 
 import logging
-from typing import Any, AsyncIterator, Awaitable, Callable, Protocol
+from typing import Any, AsyncIterator, Awaitable, Callable, Protocol, TYPE_CHECKING
 
 from app.agent.context import (
     ToolContext,
@@ -23,14 +23,19 @@ from app.agent.context_strategy import ContextStrategyManager
 from app.agent.message import (
     SCREENSHOT_MESSAGE_NAME,
     ToolCall,
-    Message,
     MessageRole,
     AssistantMessageWithTools,
+    is_real_human_message,
 )
 from app.agent.state import AgentState
 from app.agent.models.llm_client import StreamChunk
 from app.agent.message_time import RuntimeContext
 from app.agent.core.state_manager import CheckpointType
+from app.agent.tool_result_normalizer import ToolResultNormalizer
+from app.agent.model_input import DiaryCoverage, ModelInputCoordinator
+
+if TYPE_CHECKING:
+    from app.schemas.chat_settings import ChatSettings
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +83,8 @@ class ExecutionPipeline:
         plugin_manager: PluginManager,
         context_strategy: ContextStrategyManager,
         emit_event: EventEmitter,
+        diary_coverage: DiaryCoverage | None = None,
+        chat_settings: "ChatSettings | None" = None,
     ) -> None:
         self._prompt_source = prompt_source
         self._llm_client = llm_client
@@ -85,6 +92,13 @@ class ExecutionPipeline:
         self._plugin_manager = plugin_manager
         self._context_strategy = context_strategy
         self._emit_event = emit_event
+        self._tool_result_normalizer = ToolResultNormalizer()
+        self._model_input = ModelInputCoordinator(
+            context_strategy,
+            llm_client,
+            diary_coverage=diary_coverage,
+            chat_settings=chat_settings,
+        )
 
     # ==================== 主入口 ====================
 
@@ -95,12 +109,17 @@ class ExecutionPipeline:
         runtime_context: RuntimeContext | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """执行主循环（一轮对话的起点）"""
+        runtime_context = runtime_context or RuntimeContext.capture()
+        latest_human = next(
+            (message for message in reversed(state.messages) if is_real_human_message(message)),
+            None,
+        )
+        if latest_human:
+            runtime_context.latest_human_message_id = str(latest_human.get("_message_id") or "")
         # ON_INVOKE 钩子 - 每轮仅在此触发一次
         state = await self._plugin_manager.run_hooks(
-            PluginHook.ON_INVOKE, state
+            PluginHook.ON_INVOKE, state, data={"runtime_context": runtime_context}
         )
-
-        runtime_context = runtime_context or RuntimeContext.capture()
         async for event in self._run_loop(
             state, checkpoint, runtime_context
         ):
@@ -204,7 +223,9 @@ class ExecutionPipeline:
 
             try:
                 runtime_context = runtime_context or RuntimeContext.capture()
-                async for chunk in self._call_llm(state, runtime_context):
+                async for chunk in self._call_llm(state, runtime_context, checkpoint):
+                    if chunk.usage and chunk.usage.prompt_tokens:
+                        self._model_input.calibrate(chunk.usage.prompt_tokens)
                     if chunk.content:
                         accumulated_content += chunk.content
                         yield AgentEvent(EventType.TEXT_CHUNK, chunk.content)
@@ -282,46 +303,35 @@ class ExecutionPipeline:
         self,
         state: AgentState,
         runtime_context: RuntimeContext,
+        checkpoint: CheckpointCallback | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """调用 LLM，保留文本、工具调用和终止原因。"""
-        messages = self._build_messages(state, runtime_context)
         tools = self._tool_manager.get_openai_tools()
-
-        async for chunk in self._llm_client.astream(messages, tools=tools or None):
-            if chunk.finish_reason == "content_filter":
-                # 内容被 API 过滤：抛出，由 _run_loop 的 try/except 统一转成 ERROR 事件
-                # （本轮不写 checkpoint，且前端能看到明确报错）
-                raise RuntimeError("触发 API 内容过滤")
-            yield chunk
-
-    def _build_messages(
-        self,
-        state: AgentState,
-        runtime_context: RuntimeContext,
-    ) -> list[dict]:
-        """构建发送给 LLM 的消息列表
-
-        上下文策略是必经核心能力，不允许退回完整历史。
-        """
-        messages: list[dict] = []
-
-        # 系统提示词（拼接记忆上下文）
-        system_prompt = self._prompt_source.system_prompt
-        system_prompt = (
-            f"{system_prompt}\n\n{runtime_context.system_text}"
-            if system_prompt
-            else runtime_context.system_text
-        )
-        if state.memory_context:
-            system_prompt = f"{system_prompt}\n\n{state.memory_context}"
-        if system_prompt:
-            messages.append(Message.system_message(system_prompt).to_openai_format())
-
-        # 上下文策略生成临时窗口，不修改持久化消息。
-        history = self._context_strategy.build_model_window(state)
-        messages.extend(history)
-
-        return messages
+        produced = False
+        for attempt in range(2):
+            prepared = await self._model_input.prepare(
+                state=state,
+                system_prompt=self._prompt_source.system_prompt,
+                tools=tools,
+                turn_context=runtime_context,
+            )
+            if prepared.state_changed:
+                await self._checkpoint(state, checkpoint)
+            try:
+                async for chunk in self._llm_client.astream(
+                    prepared.messages, tools=tools or None
+                ):
+                    produced = produced or bool(chunk.content or chunk.tool_call)
+                    if chunk.finish_reason == "content_filter":
+                        raise RuntimeError("触发 API 内容过滤")
+                    yield chunk
+                return
+            except Exception as exc:
+                text = str(exc).lower()
+                context_error = "context_length_exceeded" in text or "maximum context" in text
+                if attempt or produced or not context_error:
+                    raise
+                self._context_strategy.budget.raise_after_context_error()
 
     # ==================== 工具执行 ====================
 
@@ -359,6 +369,8 @@ class ExecutionPipeline:
         except Exception as e:
             logger.error("工具 '%s' 执行失败: %s", tool_call.name, e)
             result = ToolResult.error(str(e))
+
+        result = self._tool_result_normalizer.normalize(result)
 
         await self._plugin_manager.run_hooks(
             PluginHook.AFTER_TOOL, state,
@@ -405,7 +417,9 @@ class ExecutionPipeline:
             content=result.content,
             tool_name=tool_call.name,
             tool_call_id=tool_call.id,
+            compressible=bool(getattr(self._tool_manager.get(tool_call.name), "compressible", False)),
         )
+        tool_message_id = state.messages[-1]["_message_id"]
 
         image_urls = list(result.image_urls)
         if result.image_url and result.image_url not in image_urls:
@@ -414,6 +428,7 @@ class ExecutionPipeline:
             state.deferred_tool_images.append({
                 "tool_call_id": tool_call.id,
                 "tool_name": tool_call.name,
+                "associated_message_id": tool_message_id,
                 "image_message_name": result.image_message_name or SCREENSHOT_MESSAGE_NAME,
                 "image_urls": image_urls,
             })

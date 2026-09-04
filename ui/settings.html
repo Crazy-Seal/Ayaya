@@ -198,24 +198,8 @@
           <div class="settings-page" data-page="contextStrategy">
             <div class="llm-config-panel">
               <label class="llm-field">
-                <span>上下文消息轮数</span>
-                <input id="context-recent-human-messages" class="ui-control" type="number" min="1" step="1" />
-              </label>
-              <label class="llm-field">
-                <span>上下文最大图片数</span>
-                <input id="context-max-images" class="ui-control" type="number" min="0" step="1" />
-              </label>
-              <label class="llm-field">
-                <span>图片 TTL</span>
-                <input id="context-image-ttl" class="ui-control" type="number" min="0" step="1" />
-              </label>
-              <label class="llm-field">
-                <span>上下文最大截图数</span>
-                <input id="context-max-screenshots" class="ui-control" type="number" min="0" step="1" />
-              </label>
-              <label class="llm-field">
-                <span>截图 TTL</span>
-                <input id="context-screenshot-ttl" class="ui-control" type="number" min="0" step="1" />
+                <span>上下文压缩触发阈值（K Token）</span>
+                <input id="context-compression-trigger-tokens-k" class="ui-control" type="number" min="10" step="1" placeholder="例如 100" />
               </label>
               <button id="context-strategy-confirm-btn" type="button" class="llm-confirm-btn ui-button ui-button--primary ui-button--medium">保存上下文策略</button>
             </div>

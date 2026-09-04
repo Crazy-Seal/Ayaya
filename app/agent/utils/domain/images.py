@@ -1,86 +1,14 @@
-"""图片处理工具函数和缓存管理"""
+"""图片保存工具函数。"""
 
-import asyncio
 import base64
 import logging
 import os
 import uuid
-from dataclasses import dataclass
 from datetime import datetime
 
 from app.runtime import get_images_dir
 
 logger = logging.getLogger(__name__)
-
-# ==================== 数据类 ====================
-
-@dataclass
-class ImageTaskResult:
-    """图片描述任务结果"""
-    description: str       # 图片描述（单字符串）
-    filenames: list[str]   # 文件名列表
-
-
-# ==================== 模块级缓存 ====================
-
-# 后台任务缓存：存储正在执行的图片描述生成任务
-_image_description_tasks: dict[str, asyncio.Task] = {}
-
-
-# ==================== 缓存管理函数 ====================
-
-def get_cache_key(session_id: str, message_id: str) -> str:
-    """生成缓存 key。
-
-    Args:
-        session_id: 会话 ID
-        message_id: 消息 ID
-
-    Returns:
-        缓存 key，格式为 "{session_id}:{message_id}"
-    """
-    return f"{session_id}:{message_id}"
-
-
-def set_image_task(key: str, task: asyncio.Task) -> None:
-    """存储后台任务。
-
-    Args:
-        key: 缓存 key
-        task: asyncio.Task 对象
-    """
-    _image_description_tasks[key] = task
-
-
-def get_image_task(key: str) -> asyncio.Task | None:
-    """获取后台任务。
-
-    Args:
-        key: 缓存 key
-
-    Returns:
-        asyncio.Task 对象，不存在则返回 None
-    """
-    return _image_description_tasks.get(key)
-
-
-def clear_task(key: str) -> None:
-    """清理任务缓存。
-
-    Args:
-        key: 缓存 key
-    """
-    _image_description_tasks.pop(key, None)
-
-
-def cancel_task(key: str) -> None:
-    """取消并移除后续不会再被消费的图片任务。"""
-    task = _image_description_tasks.pop(key, None)
-    if task is not None and not task.done():
-        task.cancel()
-
-
-# ==================== 图片保存函数 ====================
 
 def save_image_to_disk(image_data: str) -> str | None:
     """保存单张图片到磁盘。
@@ -157,25 +85,3 @@ def save_multiple_images(images: list[str]) -> list[str]:
         if filename:
             filenames.append(filename)
     return filenames
-
-
-# ==================== 消息内容处理函数 ====================
-
-def has_image_content(content: object) -> bool:
-    """检查消息内容是否包含图片。
-
-    Args:
-        content: 消息内容，可能是字符串或列表
-
-    Returns:
-        是否包含图片
-    """
-    if isinstance(content, str):
-        return False
-
-    if isinstance(content, list):
-        for item in content:
-            if isinstance(item, dict) and item.get("type") == "image_url":
-                return True
-
-    return False

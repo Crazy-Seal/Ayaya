@@ -64,7 +64,7 @@ class ImageStepTool(BaseTool):
         label = args.get("label", "")
         return ToolResult.success(
             f"完成 {label}",
-            image_urls=[f"data:image/png;base64,{label}"],
+            image_urls=["data:image/png;base64,iVBORw0KGgpwYXlsb2Fk"],
         )
 
 
@@ -105,7 +105,7 @@ async def make_agent(
             session_id=session_id,
             model_name="test",
             api_key="test",
-            context_strategy=ContextStrategyConfig(),
+            context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100),
         ),
         db_path=str(db_path),
         llm_client=llm_client,
@@ -152,7 +152,7 @@ class CommitOrderPlugin(BasePlugin):
         if context.hook == PluginHook.BEFORE_RESPONSE_COMMIT:
             self.order.append("before_commit")
             context.data["prepared"] = True
-            context.agent_state.summary_counter += 1
+            context.agent_state.long_term_memory_turn_counter += 1
         elif context.hook == PluginHook.AFTER_RESPONSE_COMMIT:
             assert context.data == {"prepared": True}
             self.order.append("after_commit")
@@ -314,13 +314,13 @@ def test_completed_checkpoint_failure_skips_after_commit_hook(tmp_path: Path) ->
         manager = StateManager("checkpoint-test", db_path=str(db_path))
         try:
             persisted = await manager.load()
-            return order, persisted.summary_counter
+            return order, persisted.long_term_memory_turn_counter
         finally:
             await manager.close()
 
     order, persisted_counter = asyncio.run(scenario())
     assert order == ["before_commit", "save_completed_failed"]
-    assert persisted_counter == 1
+    assert persisted_counter == 0
 
 
 def test_completed_tool_results_survive_later_llm_failure(tmp_path: Path) -> None:
@@ -345,7 +345,7 @@ def test_completed_tool_results_survive_later_llm_failure(tmp_path: Path) -> Non
             tool_messages = [item for item in state.messages if item.get("role") == "tool"]
             assert [item["content"] for item in tool_messages] == ["完成 A", "完成 B", "完成 C"]
             assert state.pending_tool_calls == []
-            assert state.summary_counter == 1
+            assert state.long_term_memory_turn_counter == 0
             assert await checkpoint_types(agent.state_manager) == ["intermediate"]
         finally:
             await agent.close()
@@ -353,7 +353,7 @@ def test_completed_tool_results_survive_later_llm_failure(tmp_path: Path) -> Non
     asyncio.run(scenario())
 
 
-def test_new_message_after_llm_failure_counts_both_human_messages(tmp_path: Path) -> None:
+def test_new_message_after_llm_failure_counts_only_completed_human_turn(tmp_path: Path) -> None:
     async def scenario() -> None:
         db_path = tmp_path / "checkpoints.sqlite3"
         first_agent = await make_agent(
@@ -368,7 +368,7 @@ def test_new_message_after_llm_failure_counts_both_human_messages(tmp_path: Path
             events = await drain(first_agent.run("first human message"))
             assert events[-1].type == EventType.ERROR
             failed_state = await first_agent.state_manager.load()
-            assert failed_state.summary_counter == 1
+            assert failed_state.long_term_memory_turn_counter == 0
         finally:
             await first_agent.close()
 
@@ -381,7 +381,7 @@ def test_new_message_after_llm_failure_counts_both_human_messages(tmp_path: Path
             events = await drain(second_agent.run("please continue"))
             assert events[-1].type == EventType.DONE
             completed_state = await second_agent.state_manager.load()
-            assert completed_state.summary_counter == 2
+            assert completed_state.long_term_memory_turn_counter == 1
         finally:
             await second_agent.close()
 
@@ -514,7 +514,7 @@ def test_checkpoint_failure_keeps_tool_marked_pending() -> None:
                 session_id="test",
                 model_name="test",
                 api_key="test",
-                context_strategy=ContextStrategyConfig(),
+                context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100),
             )
             self.context_strategy = ContextStrategyManager(self.config.context_strategy)
             self.plugin_manager = PluginManager()
@@ -600,6 +600,9 @@ def test_last_tool_checkpoint_flushes_all_batch_images(tmp_path: Path) -> None:
     assert [item["id"] for item in first_result.pending_tool_calls] == ["call-b"]
     assert len(first_result.deferred_tool_images) == 1
     assert [item["role"] for item in first_result.messages[-2:]] == ["assistant", "tool"]
+    assert first_result.deferred_tool_images[0]["associated_message_id"] == (
+        first_result.messages[-1]["_message_id"]
+    )
 
     completed_batch = snapshots[-1]
     assert completed_batch.pending_tool_calls == []
@@ -610,6 +613,17 @@ def test_last_tool_checkpoint_flushes_all_batch_images(tmp_path: Path) -> None:
         "tool",
         "user",
         "user",
+    ]
+    tool_messages = [
+        item for item in completed_batch.messages if item.get("role") == "tool"
+    ]
+    image_messages = [
+        item
+        for item in completed_batch.messages
+        if item.get("name") == "system_screenshot"
+    ]
+    assert [item.get("_associated_message_id") for item in image_messages] == [
+        item["_message_id"] for item in tool_messages
     ]
 
 
@@ -628,7 +642,7 @@ def test_resumed_last_tool_checkpoint_flushes_deferred_images(tmp_path: Path) ->
             "tool_call_id": "call-a",
             "tool_name": "image_step",
             "image_message_name": "mcp_tool_image",
-            "image_urls": ["data:image/png;base64,A"],
+            "image_urls": ["data:image/png;base64,iVBORw0KGgpwYXlsb2Fk"],
         })
         state.set_interrupt({
             "type": "mcp_tool_approval_request",
@@ -671,6 +685,17 @@ def test_resumed_last_tool_checkpoint_flushes_deferred_images(tmp_path: Path) ->
         "tool",
         "user",
         "user",
+    ]
+    tool_messages = [
+        item for item in completed_batch.messages if item.get("role") == "tool"
+    ]
+    image_messages = [
+        item
+        for item in completed_batch.messages
+        if item.get("name") in {"system_screenshot", "mcp_tool_image"}
+    ]
+    assert [item.get("_associated_message_id") for item in image_messages] == [
+        item["_message_id"] for item in tool_messages
     ]
 
 
@@ -715,7 +740,7 @@ def test_interrupt_recovers_across_fresh_agents_and_repeated_response_fails(
             first_interrupt = await manager.load()
             assert first_interrupt.is_interrupted()
             first_request_id = first_interrupt.interrupt_data["request_id"]
-            assert first_interrupt.summary_counter == 1
+            assert first_interrupt.long_term_memory_turn_counter == 0
             assert await checkpoint_types(manager) == ["intermediate"]
         finally:
             await manager.close()
@@ -752,7 +777,7 @@ def test_interrupt_recovers_across_fresh_agents_and_repeated_response_fails(
         manager = StateManager("checkpoint-test", db_path=str(db_path))
         try:
             resumed_state = await manager.load()
-            assert resumed_state.summary_counter == 1
+            assert resumed_state.long_term_memory_turn_counter == 1
         finally:
             await manager.close()
 

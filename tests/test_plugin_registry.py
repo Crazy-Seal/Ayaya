@@ -25,4 +25,4 @@ def test_plugins_endpoint_exposes_metadata_from_config_model() -> None:
     memory = plugins["memory"]
     assert memory["inherent"] is True
     assert memory["default_config"]["enable_diary"] is True
-    assert memory["default_config"]["summary_every_human_messages"] == 10
+    assert memory["default_config"]["long_term_memory_every_human_messages"] == 10

@@ -48,7 +48,7 @@ def _chat_settings(**overrides) -> ChatSettings:
         "temperature": 0.1,
         "system_prompt": "prompt",
         "tools_list": [],
-        "context_strategy": ContextStrategyConfig(),
+        "context_strategy": ContextStrategyConfig(compression_trigger_tokens_k=100),
     }
     values.update(overrides)
     return ChatSettings(**values)
@@ -1142,7 +1142,7 @@ async def test_agent_builds_adapters_without_owning_connections(tmp_path: Path) 
             session_id="mcp-agent",
             model_name="model",
             api_key="key",
-            context_strategy=ContextStrategyConfig(),
+            context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100),
             mcp=model_settings,
         ),
         db_path=str(tmp_path / "state.sqlite3"),

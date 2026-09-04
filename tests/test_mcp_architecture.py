@@ -28,7 +28,7 @@ def _chat_settings(**overrides) -> ChatSettings:
         "temperature": 0.1,
         "system_prompt": "prompt",
         "tools_list": [],
-        "context_strategy": ContextStrategyConfig(),
+        "context_strategy": ContextStrategyConfig(compression_trigger_tokens_k=100),
     }
     values.update(overrides)
     return ChatSettings(**values)

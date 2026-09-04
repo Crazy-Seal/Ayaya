@@ -10,6 +10,7 @@ _TEST_STORAGE = tempfile.TemporaryDirectory(prefix="ayaya-tests-")
 os.environ["AYAYA_ENV"] = "test"
 os.environ["AYAYA_DATA_DIR"] = _TEST_STORAGE.name
 os.environ["AYAYA_API_TOKEN"] = "t" * 43
+os.environ["MEMORY_EXTRACTION_MAX_CONTEXT_TOKENS"] = "128000"
 
 # 生产环境的路径覆盖值不得泄漏到测试进程中。
 for variable in (

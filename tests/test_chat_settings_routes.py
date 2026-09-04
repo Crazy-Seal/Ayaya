@@ -14,7 +14,7 @@ def _settings(policy: str) -> ChatSettings:
         temperature=0.1,
         system_prompt="prompt",
         tools_list=[],
-        context_strategy=ContextStrategyConfig(),
+        context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100),
         mcp={"servers": {"filesystem": {"enabled": True, "tools": {"read": policy}}}},
     )
 

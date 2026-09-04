@@ -36,10 +36,10 @@ class MemoryConfig:
     episodic_extraction_model: str = ""
     episodic_extraction_api_key: str = ""
     episodic_extraction_base_url: str = ""
+    extraction_max_context_tokens: int | None = None
 
     # 记忆参数
-    summary_every_messages: int = 10     # 每 N 条消息生成一次摘要
-    recent_summaries_count: int = 2      # 获取最近 N 天摘要
+    recent_diaries_count: int = 2        # 获取最近 N 天日记
     episodic_top_k: int = 3              # 情景记忆检索数量
     semantic_top_k: int = 3              # 语义记忆检索数量
 
@@ -72,6 +72,11 @@ class MemoryConfig:
             episodic_extraction_model=os.getenv("EPISODIC_EXTRACTION_MODEL", ""),
             episodic_extraction_api_key=os.getenv("EPISODIC_EXTRACTION_API_KEY", ""),
             episodic_extraction_base_url=os.getenv("EPISODIC_EXTRACTION_BASE_URL", ""),
+            extraction_max_context_tokens=(
+                int(os.environ["MEMORY_EXTRACTION_MAX_CONTEXT_TOKENS"])
+                if os.getenv("MEMORY_EXTRACTION_MAX_CONTEXT_TOKENS")
+                else None
+            ),
             timezone=timezone,
             day_boundary_hour=day_boundary_hour,
         )

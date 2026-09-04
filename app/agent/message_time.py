@@ -55,6 +55,13 @@ def project_messages_with_time(messages: list[dict]) -> list[dict]:
         if not timestamp:
             continue
         role = message.get("role")
+        if role == "user" and message.get("name") in {
+            "system_screenshot",
+            "system_screenshot_compressed",
+            "mcp_tool_image",
+            "context_summary",
+        }:
+            continue
         is_plain_assistant = role == "assistant" and not message.get("tool_calls")
         if role != "user" and not is_plain_assistant:
             continue
@@ -62,14 +69,14 @@ def project_messages_with_time(messages: list[dict]) -> list[dict]:
     return projected
 
 
-@dataclass(frozen=True)
+@dataclass
 class RuntimeContext:
-    started_at: datetime
+    """一轮模型工具循环共享、但绝不持久化的易变上下文。"""
+
+    captured_at: datetime
+    latest_human_message_id: str = ""
+    recalled_memory: str = ""
 
     @classmethod
     def capture(cls) -> "RuntimeContext":
-        return cls(started_at=utc_now())
-
-    @property
-    def system_text(self) -> str:
-        return f"当前本地日期时间：{format_local_time(self.started_at)}"
+        return cls(captured_at=utc_now())

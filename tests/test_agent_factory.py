@@ -13,32 +13,46 @@ def _settings(agent_plugins=None, context_strategy=None):
         system_prompt="test",
         tools_list=[],
         agent_plugins=agent_plugins,
-        context_strategy=context_strategy or ContextStrategyConfig(),
+        context_strategy=context_strategy or ContextStrategyConfig(compression_trigger_tokens_k=100),
         skills=[],
+        name="Ayaya",
+        feature="温柔",
+        character="助手",
+        address="用户",
+        characteristic="忠实记录共同经历。",
     )
 
 
 def test_memory_plugin_owns_image_processing(monkeypatch) -> None:
-    monkeypatch.setattr(agent_factory, "Agent", lambda config: config)
+    manager = object()
+    captured = {}
+    monkeypatch.setattr(agent_factory, "get_memory_manager", lambda session_id: manager)
+    monkeypatch.setattr(
+        agent_factory,
+        "Agent",
+        lambda config, **kwargs: captured.update(kwargs) or config,
+    )
+    settings = _settings()
 
-    config = agent_factory.build_agent(_settings())
+    config = agent_factory.build_agent(settings)
 
-    assert config.context_strategy.recent_context_human_messages == 10
-    assert config.plugins == [
-        {"name": "memory", "config": {
-            "enable_diary": True,
-            "enable_episodic": True,
-            "enable_semantic": True,
-            "summary_every_human_messages": 10,
-        }},
-    ]
+    assert config.context_strategy.compression_trigger_tokens_k == 100
+    assert captured["chat_settings"] is settings
+    assert config.plugins == [{"name": "memory", "config": {
+        "enable_diary": True,
+        "enable_episodic": True,
+        "enable_semantic": True,
+        "long_term_memory_every_human_messages": 10,
+    }}]
 
 
 def test_agent_factory_uses_top_level_context_strategy(monkeypatch) -> None:
-    monkeypatch.setattr(agent_factory, "Agent", lambda config: config)
+    manager = object()
+    monkeypatch.setattr(agent_factory, "get_memory_manager", lambda session_id: manager)
+    monkeypatch.setattr(agent_factory, "Agent", lambda config, **kwargs: config)
 
     settings = _settings(
-        context_strategy=ContextStrategyConfig(recent_context_human_messages=3),
+        context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100),
         agent_plugins={
             "memory": AgentPluginSettings(
                 enabled=False,
@@ -46,7 +60,7 @@ def test_agent_factory_uses_top_level_context_strategy(monkeypatch) -> None:
                     "enable_diary": False,
                     "enable_episodic": True,
                     "enable_semantic": False,
-                    "summary_every_human_messages": 7,
+                    "long_term_memory_every_human_messages": 7,
                 },
             ),
         }
@@ -54,19 +68,19 @@ def test_agent_factory_uses_top_level_context_strategy(monkeypatch) -> None:
 
     config = agent_factory.build_agent(settings)
 
-    assert config.context_strategy.recent_context_human_messages == 3
-    assert config.plugins == [
-        {"name": "memory", "config": {
-            "enable_diary": False,
-            "enable_episodic": True,
-            "enable_semantic": False,
-            "summary_every_human_messages": 7,
-        }},
-    ]
+    assert config.context_strategy.compression_trigger_tokens_k == 100
+    assert config.plugins[0]["config"] == {
+        "enable_diary": False,
+        "enable_episodic": True,
+        "enable_semantic": False,
+        "long_term_memory_every_human_messages": 7,
+    }
 
 
 def test_agent_factory_loads_memory_when_all_memory_types_are_disabled(monkeypatch) -> None:
-    monkeypatch.setattr(agent_factory, "Agent", lambda config: config)
+    manager = object()
+    monkeypatch.setattr(agent_factory, "get_memory_manager", lambda session_id: manager)
+    monkeypatch.setattr(agent_factory, "Agent", lambda config, **kwargs: config)
 
     settings = _settings(
         agent_plugins={
@@ -83,14 +97,11 @@ def test_agent_factory_loads_memory_when_all_memory_types_are_disabled(monkeypat
 
     config = agent_factory.build_agent(settings)
 
-    assert config.plugins[0] == {
-        "name": "memory",
-        "config": {
-            "enable_diary": False,
-            "enable_episodic": False,
-            "enable_semantic": False,
-            "summary_every_human_messages": 10,
-        },
+    assert config.plugins[0]["config"] == {
+        "enable_diary": False,
+        "enable_episodic": False,
+        "enable_semantic": False,
+        "long_term_memory_every_human_messages": 10,
     }
 
 

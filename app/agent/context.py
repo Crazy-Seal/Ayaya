@@ -200,6 +200,7 @@ class BaseTool(ABC):
     description: str             # 工具描述（给 LLM 看）
     parameters_schema: dict      # JSON Schema 格式的参数定义
     is_resumable: bool = False   # 是否为可恢复工具（execute 内靠 context.resume_data 分支）
+    compressible: bool = False   # 旧结果是否允许从活跃模型上下文回收，不代表允许重放工具
 
     @abstractmethod
     async def execute(

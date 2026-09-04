@@ -51,33 +51,79 @@ class ChatHistoryDao:
             logger.warning("[ChatHistory] 无法解析 timestamp=%r", utc_timestamp_value)
             return str(utc_timestamp_value)
 
+    @staticmethod
+    def _project_protocol_row(row: tuple) -> list[dict]:
+        row_id, message_id, role, raw_json, created_at, record_kind, attachments_json = row
+        try:
+            message = json.loads(raw_json)
+        except (TypeError, json.JSONDecodeError):
+            logger.warning("[ChatHistory] 无法解析协议消息 id=%s", row_id)
+            return []
+        content_value = message.get("content", "")
+        if isinstance(content_value, list):
+            content = "\n".join(
+                str(part.get("text", ""))
+                for part in content_value
+                if isinstance(part, dict) and part.get("type") == "text"
+            )
+        else:
+            content = str(content_value or "")
+        timestamp = ChatHistoryDao._to_local_time_text(created_at)
+        images = json.loads(attachments_json) if attachments_json else None
+        base = {"id": message_id or str(row_id), "timestamp": timestamp, "images": images}
+        if record_kind == "legacy_tool_notice":
+            return [{**base, "role": "AI_Tool_Calling", "content": content}]
+        if record_kind == "tool_image":
+            image_urls = [
+                part.get("image_url", {}).get("url")
+                for part in content_value if isinstance(content_value, list)
+                if isinstance(part, dict) and part.get("type") == "image_url"
+            ]
+            return [{**base, "role": "AI", "content": content, "images": images or image_urls}]
+        if role == "user":
+            return [{**base, "role": "Human", "content": content}]
+        if role == "tool":
+            return []
+        projected: list[dict] = []
+        if content:
+            projected.append({**base, "role": "AI", "content": content})
+        tool_calls = message.get("tool_calls") or []
+        if tool_calls:
+            names = [
+                str((tool_call.get("function") or {}).get("name") or "未知工具")
+                for tool_call in tool_calls
+            ]
+            projected.append({
+                **base,
+                "id": f"{base['id']}:tools",
+                "role": "AI_Tool_Calling",
+                "content": f"调用了工具: {', '.join(names)}",
+            })
+        return projected
+
+    async def _visible_protocol_rows(self, session_id: str) -> list[dict]:
+        async with aiosqlite.connect(str(self.db_path)) as conn:
+            exists = await conn.execute_fetchall(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='conversation_messages'"
+            )
+            rows = await conn.execute_fetchall(
+                """
+                SELECT id, message_id, role, message_json, created_at,
+                       record_kind, attachments_json
+                FROM conversation_messages
+                WHERE session_id = ?
+                ORDER BY id ASC
+                """,
+                (session_id,),
+            ) if exists else []
+        return [item for row in rows for item in self._project_protocol_row(row)]
+
     async def list_chat_history_async(self, session_id: str, start: int = 0, limit: int = 200) -> list[dict[str, str]]:
-        """查询会话历史，并把 UTC 时间转换为系统本地时区。"""
+        """从协议日志投影可见历史，再执行 UI 分页。"""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            async with aiosqlite.connect(str(self.db_path)) as conn:
-                cursor = await conn.execute(
-                    """
-                    SELECT id, source_message_id, role, content, timestamp, image_filenames
-                    FROM chat_history
-                    WHERE thread_id = ?
-                    ORDER BY timestamp ASC, id ASC
-                    LIMIT ? OFFSET ?
-                    """,
-                    (session_id, limit, start),
-                )
-                rows = await cursor.fetchall()
-
-            return [
-                {
-                    "id": source_message_id or str(row_id),
-                    "role": role,
-                    "content": content,
-                    "timestamp": self._to_local_time_text(timestamp_text),
-                    "images": json.loads(image_filenames) if image_filenames else None,
-                }
-                for row_id, source_message_id, role, content, timestamp_text, image_filenames in rows
-            ]
+            rows = await self._visible_protocol_rows(session_id)
+            return rows[max(start, 0) : max(start, 0) + max(limit, 0)]
         except Exception:
             logger.exception("[ChatHistory][session=%s] 查询聊天记录失败", session_id)
             return []
@@ -86,32 +132,8 @@ class ChatHistoryDao:
         """查询会话最后 N 条历史记录，按时间升序返回。"""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            async with aiosqlite.connect(str(self.db_path)) as conn:
-                cursor = await conn.execute(
-                    """
-                    SELECT id, source_message_id, role, content, timestamp, image_filenames
-                    FROM chat_history
-                    WHERE thread_id = ?
-                    ORDER BY timestamp DESC, id DESC
-                    LIMIT ?
-                    """,
-                    (session_id, n),
-                )
-                rows = await cursor.fetchall()
-
-            # 反转顺序，使其按时间升序返回
-            rows = list(reversed(rows))
-
-            return [
-                {
-                    "id": source_message_id or str(row_id),
-                    "role": role,
-                    "content": content,
-                    "timestamp": self._to_local_time_text(timestamp_text),
-                    "images": json.loads(image_filenames) if image_filenames else None,
-                }
-                for row_id, source_message_id, role, content, timestamp_text, image_filenames in rows
-            ]
+            rows = await self._visible_protocol_rows(session_id)
+            return rows[-max(n, 0) :] if n else []
         except Exception:
             logger.exception("[ChatHistory][session=%s] 查询最后聊天记录失败", session_id)
             return []

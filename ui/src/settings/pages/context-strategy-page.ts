@@ -9,16 +9,10 @@ import type {
 type ContextStrategyKey = keyof ChatSettingsState["context_strategy"];
 
 export const CONTEXT_STRATEGY_FIELDS: ContextStrategyKey[] = [
-  "recent_context_human_messages",
-  "max_images_in_context",
-  "image_ttl_human_messages",
-  "max_screenshots_in_context",
-  "screenshot_ttl_human_messages",
+  "compression_trigger_tokens_k",
 ];
 
-export const getContextStrategyMinimum = (key: ContextStrategyKey): number => (
-  key === "recent_context_human_messages" ? 1 : 0
-);
+export const getContextStrategyMinimum = (_key: ContextStrategyKey): number => 10;
 
 export class ContextStrategyPage implements ISettingsPage {
   private inputs: Record<ContextStrategyKey, HTMLInputElement>;
@@ -37,7 +31,9 @@ export class ContextStrategyPage implements ISettingsPage {
 
   render(data: PageRenderData): void {
     for (const key of CONTEXT_STRATEGY_FIELDS) {
-      this.inputs[key].value = String(data.saved.context_strategy[key]);
+      this.inputs[key].value = data.saved.context_strategy[key] == null
+        ? ""
+        : String(data.saved.context_strategy[key]);
     }
   }
 
@@ -45,11 +41,7 @@ export class ContextStrategyPage implements ISettingsPage {
     return {
       contextStrategy: {
         context_strategy: {
-          recent_context_human_messages: Number(this.inputs.recent_context_human_messages.value),
-          max_images_in_context: Number(this.inputs.max_images_in_context.value),
-          image_ttl_human_messages: Number(this.inputs.image_ttl_human_messages.value),
-          max_screenshots_in_context: Number(this.inputs.max_screenshots_in_context.value),
-          screenshot_ttl_human_messages: Number(this.inputs.screenshot_ttl_human_messages.value),
+          compression_trigger_tokens_k: Number(this.inputs.compression_trigger_tokens_k.value),
         },
       },
     };

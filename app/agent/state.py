@@ -3,7 +3,7 @@ Agent 状态定义
 
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Any
 from datetime import datetime
 from uuid import uuid4
@@ -26,8 +26,7 @@ class AgentState(BaseModel):
     messages: list[dict] = Field(default_factory=list)  # 序列化的消息列表（便于持久化）
 
     # ==================== 记忆相关 ====================
-    memory_context: str | None = None  # 记忆上下文（注入到系统提示词）
-    summary_counter: int = 0           # 已持久化接收、尚未进入长期记忆批次的真实用户消息数
+    long_term_memory_turn_counter: int = 0
 
     # ==================== 工具执行上下文 ====================
     pending_tool_calls: list[dict] = Field(default_factory=list)  # 待执行的工具调用
@@ -45,8 +44,7 @@ class AgentState(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     # ==================== 消息操作 ====================
 
@@ -73,10 +71,18 @@ class AgentState(BaseModel):
         msg = Message.system_message(content)
         self.add_message(msg)
 
-    def add_tool_message(self, content: str, tool_name: str, tool_call_id: str | None = None) -> None:
+    def add_tool_message(
+        self,
+        content: str,
+        tool_name: str,
+        tool_call_id: str | None = None,
+        *,
+        compressible: bool = False,
+    ) -> None:
         """添加工具返回消息"""
         msg = Message.tool_message(content, tool_name, tool_call_id)
         self.add_message(msg)
+        self.messages[-1]["_compressible"] = compressible
 
     def get_messages(self) -> list[Message]:
         """获取消息对象列表（用于处理）"""
@@ -127,6 +133,19 @@ class AgentState(BaseModel):
             if not image_urls:
                 continue
             tool_name = str(item.get("tool_name") or "")
+            associated_message_id = item.get("associated_message_id")
+            if not associated_message_id:
+                tool_call_id = item.get("tool_call_id")
+                if tool_call_id:
+                    source = next(
+                        (
+                            message for message in reversed(self.messages)
+                            if message.get("role") == "tool"
+                            and message.get("tool_call_id") == tool_call_id
+                        ),
+                        None,
+                    )
+                    associated_message_id = source.get("_message_id") if source else None
             self.add_message(Message.user_message(
                 [
                     ContentPart.text_part(f"[系统消息]工具 {tool_name} 返回图片: "),
@@ -134,6 +153,8 @@ class AgentState(BaseModel):
                 ],
                 name=str(item.get("image_message_name") or SCREENSHOT_MESSAGE_NAME),
             ))
+            if associated_message_id:
+                self.messages[-1]["_associated_message_id"] = str(associated_message_id)
 
     # ==================== 中断恢复操作 ====================
 
@@ -153,26 +174,15 @@ class AgentState(BaseModel):
         """检查是否处于中断状态"""
         return self.interrupt_data is not None
 
-    # ==================== 记忆上下文操作 ====================
-
-    def set_memory_context(self, context: str) -> None:
-        """设置记忆上下文"""
-        self.memory_context = context
-        self.updated_at = utc_now()
-
-    def clear_memory_context(self) -> None:
-        """清除记忆上下文"""
-        self.memory_context = None
-
-    def increment_summary_counter(self) -> int:
+    def increment_long_term_memory_turn_counter(self) -> int:
         """记录一条已接收的真实用户消息，返回尚未处理的消息数。"""
-        self.summary_counter += 1
+        self.long_term_memory_turn_counter += 1
         self.updated_at = utc_now()
-        return self.summary_counter
+        return self.long_term_memory_turn_counter
 
-    def reset_summary_counter(self) -> None:
+    def reset_long_term_memory_turn_counter(self) -> None:
         """标记当前累计的真实用户消息已经进入长期记忆批次。"""
-        self.summary_counter = 0
+        self.long_term_memory_turn_counter = 0
         self.updated_at = utc_now()
 
     # ==================== 扩展字段操作 ====================

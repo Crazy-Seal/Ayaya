@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.agent.models.llm_client import LLMClient, LLMConfig
+from app.agent.models.llm_client import LLMClient, LLMConfig, TokenUsage
 
 
 SCHEMA = {
@@ -57,6 +57,15 @@ def test_ainvoke_structured_returns_valid_json_without_retry() -> None:
 
     assert _invoke(client) == {"value": "ok"}
     assert len(calls) == 1
+    assert calls[0]["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "structured_output",
+            "strict": True,
+            "schema": SCHEMA,
+        },
+    }
+    assert "tools" not in calls[0]
 
 
 @pytest.mark.parametrize(
@@ -140,3 +149,59 @@ def test_ainvoke_structured_reraises_last_json_decode_error() -> None:
 
     assert exc_info.value.doc == '{"value":"second'
     assert len(calls) == 2
+
+
+def test_astream_reads_usage_from_empty_choices_chunk() -> None:
+    async def scenario():
+        client = LLMClient(LLMConfig(model="m", api_key="k", base_url="http://x/v1"))
+        calls = []
+
+        async def chunks():
+            yield SimpleNamespace(
+                choices=[],
+                usage=SimpleNamespace(prompt_tokens=123, completion_tokens=7, total_tokens=130),
+            )
+
+        async def fake_create(**kwargs):
+            calls.append(kwargs)
+            return chunks()
+
+        client._client.chat.completions.create = fake_create
+        try:
+            received = [chunk async for chunk in client.astream([{"role": "user", "content": "x"}])]
+            return calls, received
+        finally:
+            await client.close()
+
+    calls, chunks = asyncio.run(scenario())
+    assert calls[0]["stream_options"] == {"include_usage": True}
+    assert chunks[0].usage == TokenUsage(prompt_tokens=123, completion_tokens=7, total_tokens=130)
+    assert chunks[-1].finish_reason == "stop"
+
+
+def test_astream_retries_without_usage_option_and_caches_gateway_capability() -> None:
+    async def scenario():
+        client = LLMClient(LLMConfig(model="m", api_key="k", base_url="http://no-usage/v1"))
+        calls = []
+
+        async def empty_stream():
+            if False:
+                yield None
+
+        async def fake_create(**kwargs):
+            calls.append(kwargs)
+            if "stream_options" in kwargs:
+                raise TypeError("unexpected keyword argument 'stream_options'")
+            return empty_stream()
+
+        client._client.chat.completions.create = fake_create
+        try:
+            for _ in range(2):
+                _ = [chunk async for chunk in client.astream([{"role": "user", "content": "x"}])]
+            return calls
+        finally:
+            await client.close()
+
+    calls = asyncio.run(scenario())
+    assert "stream_options" in calls[0]
+    assert all("stream_options" not in call for call in calls[1:])

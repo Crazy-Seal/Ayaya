@@ -4,6 +4,7 @@ Agent 核心类
 门面类，协调各管理器，提供统一的接口。
 """
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, TYPE_CHECKING
@@ -19,13 +20,17 @@ from app.agent.core.pipeline import ExecutionPipeline
 from app.agent.models.llm_client import LLMClient, LLMConfig
 from app.agent.context_strategy import ContextStrategyConfig, ContextStrategyManager
 from app.agent.message_time import RuntimeContext
+from app.agent.model_input import DiaryCoverage
+from app.agent.utils.domain.images import save_multiple_images
 from app.schemas.mcp import MCPModelSettings
 
 if TYPE_CHECKING:
+    from app.schemas.chat_settings import ChatSettings
     from app.services.mcp_connection_manager import MCPConnectionManager
     from app.services.mcp_policy_resolver import MCPPolicyResolver
 
 logger = logging.getLogger(__name__)
+
 
 INTERRUPTED_TOOL_RESULT = (
     "上次工具链中断，未获得该工具的可靠结果；"
@@ -67,6 +72,8 @@ class Agent:
         mcp_policy_resolver: "MCPPolicyResolver | None" = None,
         *,
         llm_client: LLMClient | None = None,
+        diary_coverage: DiaryCoverage | None = None,
+        chat_settings: "ChatSettings | None" = None,
     ):
         self.config = config
         self.mcp_connection_manager = mcp_connection_manager
@@ -101,10 +108,13 @@ class Agent:
             plugin_manager=self.plugin_manager,
             context_strategy=self.context_strategy,
             emit_event=self.event_router.emit,
+            diary_coverage=diary_coverage,
+            chat_settings=chat_settings,
         )
 
         # 初始化标志
         self._initialized = False
+
 
     async def initialize(self) -> None:
         """初始化 Agent（异步）"""
@@ -317,9 +327,6 @@ class Agent:
             state.flush_deferred_tool_images()
             await self.state_manager.save(state, checkpoint_type="completed")
 
-        # 每轮起始重置一次性的记忆上下文（由 MemoryPlugin 在 BEFORE_LLM 重新注入）
-        state.memory_context = None
-
         # 2. 在独立输入事务中提交用户消息和上一批派生任务。
         state = await self._commit_user_input(state, message, images)
 
@@ -350,12 +357,21 @@ class Agent:
         )
 
         if images:
+            try:
+                image_filenames = await asyncio.to_thread(
+                    save_multiple_images,
+                    images,
+                )
+            except Exception as exc:
+                logger.warning("[Agent] 用户图片保存失败: %s", exc)
+                image_filenames = []
             content = [ContentPart.text_part(message)]
             content.extend(ContentPart.image_part(image) for image in images)
             state.add_user_message(content)
+            if image_filenames:
+                state.messages[-1]["image_filenames"] = image_filenames
         else:
             state.add_user_message(message)
-        state.increment_summary_counter()
         await self.state_manager.save(state, checkpoint_type="intermediate")
 
         await self.plugin_manager.run_hooks(
@@ -426,17 +442,12 @@ class Agent:
     async def _finalize_response(self, state: AgentState) -> None:
         """在成功执行后准备并持久化最终响应。"""
         commit_context: dict = {}
+        # 轮次计数属于 Agent 完成生命周期：只有走到最终响应提交才推进。
+        state.increment_long_term_memory_turn_counter()
         state = await self.plugin_manager.run_hooks(
             PluginHook.BEFORE_RESPONSE_COMMIT,
             state,
             data=commit_context,
-        )
-        memory_human_floor = int(
-            commit_context.get("memory_checkpoint_human_floor", 0) or 0
-        )
-        self.context_strategy.compact_checkpoint(
-            state,
-            memory_human_floor=memory_human_floor,
         )
         await self.state_manager.save(state, checkpoint_type="completed")
         await self.plugin_manager.run_hooks(
@@ -497,40 +508,3 @@ class Agent:
 
     async def __aexit__(self, *args) -> None:
         await self.close()
-
-
-# ==================== 工厂函数 ====================
-
-async def create_agent(
-    session_id: str,
-    model_name: str,
-    api_key: str,
-    base_url: str = "https://api.openai.com/v1",
-    temperature: float = 0.7,
-    system_prompt: str = "",
-    tools: list[str] | None = None,
-    plugins: list[str] | None = None,
-    mcp: MCPModelSettings | None = None,
-    mcp_connection_manager: "MCPConnectionManager | None" = None,
-    mcp_policy_resolver: "MCPPolicyResolver | None" = None,
-) -> Agent:
-    """创建 Agent 的便捷函数"""
-    config = AgentConfig(
-        session_id=session_id,
-        model_name=model_name,
-        api_key=api_key,
-        context_strategy=ContextStrategyConfig(),
-        base_url=base_url,
-        temperature=temperature,
-        system_prompt=system_prompt,
-        tools=tools or [],
-        plugins=plugins or [],
-        mcp=mcp or MCPModelSettings(),
-    )
-    agent = Agent(
-        config,
-        mcp_connection_manager=mcp_connection_manager,
-        mcp_policy_resolver=mcp_policy_resolver,
-    )
-    await agent.initialize()
-    return agent

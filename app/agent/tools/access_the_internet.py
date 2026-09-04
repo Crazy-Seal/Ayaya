@@ -65,7 +65,7 @@ def _format_search_output(data) -> str:
     return "互联网检索结果:\n" + "\n".join(lines)
 
 
-@tool
+@tool(compressible=True)
 async def access_the_internet(
     query: Annotated[str, "你的搜索问题或关键词等。"],
 ) -> str:

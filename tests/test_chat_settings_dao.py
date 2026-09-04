@@ -8,6 +8,33 @@ from app.agent.context_strategy import ContextStrategyConfig
 from app.schemas.chat_settings import AgentPluginSettings, ChatSettings
 
 
+def test_clearing_chat_settings_cache_also_clears_memory_manager_cache(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import app.agent.memory as memory_package
+
+    cleared: list[bool] = []
+
+    class FakeMemoryManagerFactory:
+        @staticmethod
+        def cache_clear() -> None:
+            cleared.append(True)
+
+    monkeypatch.setattr(
+        memory_package,
+        "get_memory_manager",
+        FakeMemoryManagerFactory(),
+    )
+    dao = ChatSettingsDao(config_file=tmp_path / "chat_settings.yaml")
+    dao._cache["session"] = object()
+
+    dao._clear_caches()
+
+    assert dao._cache == {}
+    assert cleared == [True]
+
+
 def test_skills_survive_round_trip(tmp_path: Path) -> None:
     config_file = tmp_path / "chat_settings.yaml"
     config_file.write_text("chat_models: []\n", encoding="utf-8")
@@ -20,7 +47,7 @@ def test_skills_survive_round_trip(tmp_path: Path) -> None:
         temperature=0.1,
         system_prompt="test",
         tools_list=[],
-        context_strategy=ContextStrategyConfig(),
+        context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100),
         skills=["sample"],
     )
 
@@ -31,7 +58,7 @@ def test_skills_survive_round_trip(tmp_path: Path) -> None:
     assert reloaded.agent_plugins["memory"].enabled is True
 
 
-def test_agent_plugins_round_trip_without_legacy_memory_field(tmp_path: Path) -> None:
+def test_agent_plugins_round_trip_with_long_term_memory_interval(tmp_path: Path) -> None:
     config_file = tmp_path / "chat_settings.yaml"
     config_file.write_text("chat_models: []\n", encoding="utf-8")
     dao = ChatSettingsDao(config_file=config_file)
@@ -43,7 +70,7 @@ def test_agent_plugins_round_trip_without_legacy_memory_field(tmp_path: Path) ->
         temperature=0.1,
         system_prompt="test",
         tools_list=[],
-        context_strategy=ContextStrategyConfig(recent_context_human_messages=7),
+        context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100),
         agent_plugins={
             "memory": AgentPluginSettings(
                 enabled=True,
@@ -51,7 +78,7 @@ def test_agent_plugins_round_trip_without_legacy_memory_field(tmp_path: Path) ->
                     "enable_diary": False,
                     "enable_episodic": True,
                     "enable_semantic": True,
-                    "summary_every_human_messages": 12,
+                    "long_term_memory_every_human_messages": 12,
                 },
             )
         },
@@ -62,8 +89,9 @@ def test_agent_plugins_round_trip_without_legacy_memory_field(tmp_path: Path) ->
     reloaded = ChatSettingsDao(config_file=config_file).get_chat_settings("test-session")
     raw_yaml = config_file.read_text(encoding="utf-8")
 
-    assert reloaded.agent_plugins["memory"].config["summary_every_human_messages"] == 12
-    assert reloaded.context_strategy.recent_context_human_messages == 7
+    assert reloaded.agent_plugins["memory"].config["long_term_memory_every_human_messages"] == 12
+    assert reloaded.context_strategy.compression_trigger_tokens_k == 100
+    assert "long_term_memory_every_human_messages: 12" in raw_yaml
     assert "memory" + "_plugins" not in raw_yaml
 
 
@@ -76,7 +104,7 @@ def test_memory_plugin_is_inherent_even_when_disabled_or_all_types_disabled() ->
         temperature=0.1,
         system_prompt="test",
         tools_list=[],
-        context_strategy=ContextStrategyConfig(),
+        context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100),
         agent_plugins={
             "memory": AgentPluginSettings(
                 enabled=False,
@@ -106,11 +134,11 @@ def test_agent_plugin_config_is_validated_before_persistence() -> None:
             temperature=0.1,
             system_prompt="test",
             tools_list=[],
-            context_strategy=ContextStrategyConfig(recent_context_human_messages=1),
+            context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100),
             agent_plugins={
                 "memory": AgentPluginSettings(
                     enabled=True,
-                    config={"summary_every_human_messages": 0},
+                    config={"long_term_memory_every_human_messages": 0},
                 ),
             },
         )
@@ -129,4 +157,26 @@ def test_context_strategy_is_required_and_validated() -> None:
         )
 
     with pytest.raises(ValidationError):
-        ContextStrategyConfig(recent_context_human_messages=0)
+        ContextStrategyConfig(compression_trigger_tokens_k=9)
+
+
+def test_context_strategy_defaults_to_100k_compression_trigger(tmp_path: Path) -> None:
+    config_file = tmp_path / "chat_settings.yaml"
+    config_file.write_text("chat_models: []\n", encoding="utf-8")
+    dao = ChatSettingsDao(config_file=config_file)
+    settings = ChatSettings(
+        session_id="test-session",
+        model_name="test-model",
+        openai_api_key="test-key",
+        openai_base_url="http://127.0.0.1:1/v1",
+        temperature=0.1,
+        system_prompt="test",
+        tools_list=[],
+        context_strategy=ContextStrategyConfig(),
+    )
+
+    dao.add_chat_settings(settings)
+    reloaded = ChatSettingsDao(config_file=config_file).get_chat_settings("test-session")
+
+    assert reloaded.context_strategy.compression_trigger_tokens_k == 100
+    assert "compression_trigger_tokens_k: 100" in config_file.read_text(encoding="utf-8")

@@ -15,10 +15,15 @@ from app.agent.message_time import normalize_utc, utc_now
 SCREENSHOT_MESSAGE_NAME = "system_screenshot"
 SCREENSHOT_COMPRESSED_NAME = "system_screenshot_compressed"
 MCP_TOOL_IMAGE_MESSAGE_NAME = "mcp_tool_image"
-SYSTEM_INJECTED_USER_MESSAGE_NAMES = frozenset({
+CONTEXT_SUMMARY_MESSAGE_NAME = "context_summary"
+TOOL_IMAGE_MESSAGE_NAMES = frozenset({
     SCREENSHOT_MESSAGE_NAME,
     SCREENSHOT_COMPRESSED_NAME,
     MCP_TOOL_IMAGE_MESSAGE_NAME,
+})
+SYSTEM_INJECTED_USER_MESSAGE_NAMES = frozenset({
+    *TOOL_IMAGE_MESSAGE_NAMES,
+    CONTEXT_SUMMARY_MESSAGE_NAME,
 })
 
 

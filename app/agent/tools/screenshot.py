@@ -14,7 +14,7 @@ from app.agent.tools.decorator import tool
 logger = logging.getLogger(__name__)
 
 
-@tool(is_resumable=True)
+@tool(is_resumable=True, compressible=True)
 async def screenshot(context: ToolContext) -> ToolResult:
     """向用户请求截屏。用户确认后系统会携带截图继续对话。"""
     # 首次执行：请求用户批准

@@ -1,17 +1,12 @@
 import asyncio
 from datetime import date
 
-from app.agent.context import HookContext, PluginHook
-from app.agent.context_strategy import ContextStrategyConfig, ContextStrategyManager
+from app.agent.context_strategy import ContextStrategyConfig
 from app.agent.memory import manager as memory_manager_module
 from app.agent.memory.config import MemoryConfig
 from app.agent.memory.manager import MemoryManager
 from app.agent.memory.memories import episodic as episodic_module
 from app.agent.message import Message
-from app.agent.message import is_real_human_message
-from app.agent.plugins import memory as memory_plugin_module
-from app.agent.plugins.memory import MemoryPlugin
-from app.agent.state import AgentState
 from app.schemas.chat_settings import AgentPluginSettings, ChatSettings
 
 
@@ -24,7 +19,7 @@ def _chat_settings(*, enable_diary=True, enable_episodic=True, enable_semantic=T
         temperature=0.1,
         system_prompt="test",
         tools_list=[],
-        context_strategy=ContextStrategyConfig(),
+        context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100),
         agent_plugins={
             "memory": AgentPluginSettings(
                 enabled=True,
@@ -53,12 +48,7 @@ def _capture_episodic_llm_config(monkeypatch, config: MemoryConfig):
     monkeypatch.setattr(episodic_module, "EpisodicChromaStore", FakeStore)
     monkeypatch.setattr(episodic_module, "EpisodicSqliteStore", FakeStore)
     monkeypatch.setattr(episodic_module, "LLMClient", FakeLLMClient)
-
-    episodic_module.EpisodicMemory(
-        "test-session",
-        config,
-        _chat_settings(),
-    )
+    episodic_module.EpisodicMemory("test-session", config, _chat_settings())
     return captured["config"]
 
 
@@ -89,9 +79,7 @@ def test_episodic_memory_uses_independent_extraction_config(monkeypatch) -> None
     assert llm_config.api_key == "memory-key"
 
 
-def test_episodic_memory_uses_only_explicit_model_without_chat_fallback(
-    monkeypatch,
-) -> None:
+def test_episodic_memory_uses_only_explicit_model_without_chat_fallback(monkeypatch) -> None:
     llm_config = _capture_episodic_llm_config(
         monkeypatch,
         MemoryConfig(episodic_extraction_model="gpt-test"),
@@ -102,112 +90,12 @@ def test_episodic_memory_uses_only_explicit_model_without_chat_fallback(
     assert llm_config.api_key == ""
 
 
-def test_episodic_memory_does_not_fall_back_to_chat_model_config(
-    monkeypatch,
-) -> None:
+def test_episodic_memory_does_not_fall_back_to_chat_model_config(monkeypatch) -> None:
     llm_config = _capture_episodic_llm_config(monkeypatch, MemoryConfig())
 
     assert llm_config.model == ""
     assert llm_config.base_url == ""
     assert llm_config.api_key == ""
-
-
-def test_memory_persistence_runs_every_ten_human_messages(monkeypatch) -> None:
-    scheduled_tasks: list[str] = []
-
-    def capture_task(coro, *, logger, task_name):
-        scheduled_tasks.append(task_name)
-        coro.close()
-        return None
-
-    class FakeMemoryManager:
-        async def get_summary_history_cutoff(self):
-            return 42
-
-        async def check_summary(self, *, max_history_id=None):
-            return None
-
-        async def add(self, *args, **kwargs):
-            return None
-
-    monkeypatch.setattr(memory_plugin_module, "create_background_task", capture_task)
-
-    async def scenario() -> AgentState:
-        plugin = MemoryPlugin()
-        monkeypatch.setattr(plugin, "_mm", lambda state: FakeMemoryManager())
-        state = AgentState.create_new("test-session")
-        state.summary_counter = 10
-        for index in range(10):
-            state.add_user_message(f"human-{index}")
-            state.add_assistant_message(f"assistant-{index}")
-
-        commit_context: dict = {}
-        await plugin.execute(HookContext.create(
-            PluginHook.BEFORE_USER_INPUT_COMMIT,
-            state,
-            data=commit_context,
-        ))
-        assert scheduled_tasks == []
-        await plugin.execute(HookContext.create(
-            PluginHook.AFTER_USER_INPUT_COMMIT,
-            state,
-            data=commit_context,
-        ))
-        return state
-
-    state = asyncio.run(scenario())
-
-    assert scheduled_tasks == ["memory.check_summary", "memory.persist"]
-    assert state.summary_counter == 0
-
-
-def test_memory_plugin_respects_summary_interval_and_disabled_types(monkeypatch) -> None:
-    scheduled_tasks: list[str] = []
-
-    def capture_task(coro, *, logger, task_name):
-        scheduled_tasks.append(task_name)
-        coro.close()
-        return None
-
-    class FakeMemoryManager:
-        async def check_summary(self, *, max_history_id=None):
-            return None
-
-        async def add(self, *args, **kwargs):
-            raise AssertionError("disabled memory types should skip add")
-
-    monkeypatch.setattr(memory_plugin_module, "create_background_task", capture_task)
-
-    async def scenario() -> AgentState:
-        plugin = MemoryPlugin(
-            enable_diary=False,
-            enable_episodic=False,
-            enable_semantic=False,
-            summary_every_human_messages=3,
-        )
-        monkeypatch.setattr(plugin, "_mm", lambda state: FakeMemoryManager())
-        state = AgentState.create_new("test-session")
-        state.summary_counter = 3
-        state.add_user_message("human")
-        state.add_assistant_message("assistant")
-
-        commit_context: dict = {}
-        await plugin.execute(HookContext.create(
-            PluginHook.BEFORE_USER_INPUT_COMMIT,
-            state,
-            data=commit_context,
-        ))
-        await plugin.execute(HookContext.create(
-            PluginHook.AFTER_USER_INPUT_COMMIT,
-            state,
-            data=commit_context,
-        ))
-        return state
-
-    state = asyncio.run(scenario())
-
-    assert scheduled_tasks == []
-    assert state.summary_counter == 0
 
 
 def test_memory_manager_skips_disabled_memory_subsystems(monkeypatch) -> None:
@@ -222,27 +110,23 @@ def test_memory_manager_skips_disabled_memory_subsystems(monkeypatch) -> None:
             raise AssertionError("disabled memory subsystem should not initialize")
 
     monkeypatch.setattr(memory_manager_module, "ChatHistoryStore", FakeChatHistoryStore)
-    monkeypatch.setattr(memory_manager_module, "SummaryMemory", DisabledSubsystem)
+    monkeypatch.setattr(memory_manager_module, "DiaryMemory", DisabledSubsystem)
     monkeypatch.setattr(memory_manager_module, "EpisodicMemory", DisabledSubsystem)
     monkeypatch.setattr(memory_manager_module, "Mem0SemanticMemory", DisabledSubsystem)
 
     manager = MemoryManager(
         "test-session",
         MemoryConfig(),
-        _chat_settings(
-            enable_diary=False,
-            enable_episodic=False,
-            enable_semantic=False,
-        ),
+        _chat_settings(enable_diary=False, enable_episodic=False, enable_semantic=False),
     )
 
     assert constructed == []
-    assert manager.summary_memory is None
+    assert manager.diary_memory is None
     assert manager.episodic_memory is None
     assert manager.semantic_memory is None
 
 
-def test_memory_manager_uses_mem0_even_with_legacy_backend_env(monkeypatch) -> None:
+def test_memory_manager_uses_mem0_even_with_unrelated_backend_env(monkeypatch) -> None:
     constructed: list[tuple[str, str]] = []
 
     class FakeChatHistoryStore:
@@ -258,50 +142,41 @@ def test_memory_manager_uses_mem0_even_with_legacy_backend_env(monkeypatch) -> N
             constructed.append((session_id, chat_settings.session_id))
 
     monkeypatch.setenv("SEMANTIC_BACKEND", "native")
-    monkeypatch.setenv("NEO4J_URI", "bolt://legacy.example:7687")
     monkeypatch.setattr(memory_manager_module, "ChatHistoryStore", FakeChatHistoryStore)
-    monkeypatch.setattr(memory_manager_module, "SummaryMemory", DisabledSubsystem)
+    monkeypatch.setattr(memory_manager_module, "DiaryMemory", DisabledSubsystem)
     monkeypatch.setattr(memory_manager_module, "EpisodicMemory", DisabledSubsystem)
     monkeypatch.setattr(memory_manager_module, "Mem0SemanticMemory", FakeMem0SemanticMemory)
 
     manager = MemoryManager(
         "test-session",
         MemoryConfig.from_env(),
-        _chat_settings(
-            enable_diary=False,
-            enable_episodic=False,
-            enable_semantic=True,
-        ),
+        _chat_settings(enable_diary=False, enable_episodic=False, enable_semantic=True),
     )
 
     assert constructed == [("test-session", "test-session")]
     assert isinstance(manager.semantic_memory, FakeMem0SemanticMemory)
 
 
-def test_check_summary_is_noop_when_diary_disabled() -> None:
+def test_check_diary_is_noop_when_diary_disabled() -> None:
     async def scenario() -> None:
         manager = MemoryManager(
             "test-session",
             MemoryConfig(),
-            _chat_settings(
-                enable_diary=False,
-                enable_episodic=False,
-                enable_semantic=False,
-            ),
+            _chat_settings(enable_diary=False, enable_episodic=False, enable_semantic=False),
         )
-        await manager.check_summary()
+        await manager.check_diary()
 
     asyncio.run(scenario())
 
 
-def test_memory_manager_check_summary_uses_persisted_history(monkeypatch) -> None:
+def test_memory_manager_check_diary_uses_protocol_history_cutoff(monkeypatch) -> None:
     checks: list[tuple[date, int | None]] = []
 
     class FakeChatHistoryStore:
         def __init__(self, *args, **kwargs):
             pass
 
-    class FakeSummaryMemory:
+    class FakeDiaryMemory:
         def __init__(self, *args, **kwargs):
             pass
 
@@ -314,187 +189,17 @@ def test_memory_manager_check_summary_uses_persisted_history(monkeypatch) -> Non
             checks.append((effective_date, max_history_id))
 
     monkeypatch.setattr(memory_manager_module, "ChatHistoryStore", FakeChatHistoryStore)
-    monkeypatch.setattr(memory_manager_module, "SummaryMemory", FakeSummaryMemory)
+    monkeypatch.setattr(memory_manager_module, "DiaryMemory", FakeDiaryMemory)
 
     manager = MemoryManager(
         "test-session",
         MemoryConfig(),
-        _chat_settings(
-            enable_diary=True,
-            enable_episodic=False,
-            enable_semantic=False,
-        ),
+        _chat_settings(enable_diary=True, enable_episodic=False, enable_semantic=False),
     )
-    asyncio.run(manager.check_summary(max_history_id=17))
+    asyncio.run(manager.check_diary(max_history_id=17))
 
     assert checks and checks[0][1] == 17
 
-
-def test_memory_plugin_keeps_counter_when_commit_job_preparation_fails(monkeypatch) -> None:
-    async def scenario() -> tuple[AgentState, dict]:
-        plugin = MemoryPlugin(summary_every_human_messages=3)
-        monkeypatch.setattr(
-            plugin,
-            "_mm",
-            lambda state: (_ for _ in ()).throw(RuntimeError("初始化记忆失败")),
-        )
-        state = AgentState.create_new("test-session")
-        state.summary_counter = 3
-        state.add_user_message("你好")
-        state.add_assistant_message("你好呀")
-        commit_context: dict = {}
-
-        await plugin.execute(
-            HookContext.create(
-                PluginHook.BEFORE_USER_INPUT_COMMIT,
-                state,
-                data=commit_context,
-            )
-        )
-        return state, commit_context
-
-    state, commit_context = asyncio.run(scenario())
-
-    assert state.summary_counter == 3
-    assert "memory" not in commit_context
-    assert "memory_checkpoint_human_floor" not in commit_context
-
-
-def test_memory_plugin_snapshots_every_pending_human_message(monkeypatch) -> None:
-    class FakeMemoryManager:
-        async def check_summary(self, *, max_history_id=None):
-            return None
-
-        async def add(self, *args, **kwargs):
-            return None
-
-    async def scenario() -> tuple[AgentState, dict]:
-        plugin = MemoryPlugin(
-            enable_diary=False,
-            summary_every_human_messages=10,
-        )
-        monkeypatch.setattr(plugin, "_mm", lambda state: FakeMemoryManager())
-        state = AgentState.create_new("test-session")
-        state.summary_counter = 11
-        for index in range(11):
-            state.add_user_message(f"human-{index}")
-            state.add_assistant_message(f"assistant-{index}")
-
-        commit_context: dict = {}
-        await plugin.execute(HookContext.create(
-            PluginHook.BEFORE_USER_INPUT_COMMIT,
-            state,
-            data=commit_context,
-        ))
-        return state, commit_context
-
-    state, commit_context = asyncio.run(scenario())
-
-    recent_messages = commit_context["memory"]["recent_messages"]
-    assert sum(is_real_human_message(message) for message in recent_messages) == 11
-    assert state.summary_counter == 0
-
-
-def test_first_input_checks_only_history_existing_before_it(monkeypatch) -> None:
-    scheduled_tasks: list[str] = []
-
-    def capture_task(coro, *, logger, task_name):
-        scheduled_tasks.append(task_name)
-        coro.close()
-        return None
-
-    class FakeMemoryManager:
-        async def get_summary_history_cutoff(self):
-            return 0
-
-        async def check_summary(self, *, max_history_id=None):
-            return None
-
-    monkeypatch.setattr(memory_plugin_module, "create_background_task", capture_task)
-
-    async def scenario() -> None:
-        plugin = MemoryPlugin(enable_episodic=False, enable_semantic=False)
-        monkeypatch.setattr(plugin, "_mm", lambda state: FakeMemoryManager())
-        state = AgentState.create_new("test-session")
-        commit_context: dict = {}
-
-        await plugin.execute(HookContext.create(
-            PluginHook.BEFORE_USER_INPUT_COMMIT,
-            state,
-            data=commit_context,
-        ))
-        await plugin.execute(HookContext.create(
-            PluginHook.AFTER_USER_INPUT_COMMIT,
-            state,
-            data=commit_context,
-        ))
-
-    asyncio.run(scenario())
-
-    assert scheduled_tasks == ["memory.check_summary"]
-
-
-def test_response_commit_only_protects_pending_batch_without_extracting(
-    monkeypatch,
-) -> None:
-    class UnexpectedMemoryManager:
-        def __getattr__(self, name):
-            raise AssertionError(f"响应完成时不应访问记忆管理器: {name}")
-
-    async def scenario() -> tuple[AgentState, dict]:
-        plugin = MemoryPlugin(summary_every_human_messages=1)
-        monkeypatch.setattr(plugin, "_mm", lambda state: UnexpectedMemoryManager())
-        state = AgentState.create_new("test-session")
-        state.summary_counter = 1
-        state.add_user_message("可修改的最后一轮输入")
-        state.add_assistant_message("刚生成的回复")
-        commit_context: dict = {}
-
-        await plugin.execute(HookContext.create(
-            PluginHook.BEFORE_RESPONSE_COMMIT,
-            state,
-            data=commit_context,
-        ))
-        return state, commit_context
-
-    state, commit_context = asyncio.run(scenario())
-
-    assert state.summary_counter == 1
-    assert "memory" not in commit_context
-    assert commit_context["memory_checkpoint_human_floor"] == 6
-
-
-def test_pending_memory_batch_raises_checkpoint_retention_floor() -> None:
-    async def scenario() -> tuple[AgentState, dict]:
-        memory_plugin = MemoryPlugin(
-            enable_diary=False,
-            summary_every_human_messages=30,
-        )
-        context_strategy = ContextStrategyManager(
-            ContextStrategyConfig(recent_context_human_messages=1)
-        )
-        state = AgentState.create_new("test-session")
-        state.summary_counter = 18
-        for index in range(23):
-            state.add_user_message(f"human-{index}")
-            state.add_assistant_message(f"assistant-{index}")
-
-        commit_context: dict = {}
-        await memory_plugin.execute(HookContext.create(
-            PluginHook.BEFORE_RESPONSE_COMMIT,
-            state,
-            data=commit_context,
-        ))
-        context_strategy.compact_checkpoint(
-            state,
-            memory_human_floor=commit_context["memory_checkpoint_human_floor"],
-        )
-        return state, commit_context
-
-    state, commit_context = asyncio.run(scenario())
-
-    assert commit_context["memory_checkpoint_human_floor"] == 23
-    assert sum(is_real_human_message(message) for message in state.messages) == 23
 
 def test_disabled_memory_subsystems_are_not_accessed(monkeypatch) -> None:
     class FakeChatHistoryStore:
@@ -506,7 +211,7 @@ def test_disabled_memory_subsystems_are_not_accessed(monkeypatch) -> None:
             raise AssertionError("disabled memory subsystem should not initialize")
 
     monkeypatch.setattr(memory_manager_module, "ChatHistoryStore", FakeChatHistoryStore)
-    monkeypatch.setattr(memory_manager_module, "SummaryMemory", DisabledSubsystem)
+    monkeypatch.setattr(memory_manager_module, "DiaryMemory", DisabledSubsystem)
     monkeypatch.setattr(memory_manager_module, "EpisodicMemory", DisabledSubsystem)
     monkeypatch.setattr(memory_manager_module, "Mem0SemanticMemory", DisabledSubsystem)
 
@@ -514,23 +219,14 @@ def test_disabled_memory_subsystems_are_not_accessed(monkeypatch) -> None:
         manager = MemoryManager(
             "test-session",
             MemoryConfig(),
-            _chat_settings(
-                enable_diary=False,
-                enable_episodic=False,
-                enable_semantic=False,
-            ),
+            _chat_settings(enable_diary=False, enable_episodic=False, enable_semantic=False),
         )
         add_result = await manager.add(
             [Message.user_message("近期对话")],
             enable_episodic=False,
             enable_semantic=False,
         )
-        context = await manager.get_context(
-            "查询",
-            include_diary=True,
-            include_episodic=True,
-            include_semantic=True,
-        )
+        context = await manager.get_context("查询")
         search_result = await manager.search("查询", "all")
         diary_result = await manager.search_diary(date(2024, 1, 1), date(2024, 1, 2))
         return add_result, context, search_result, diary_result

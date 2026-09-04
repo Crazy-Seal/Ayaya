@@ -7,6 +7,7 @@ import pytest
 
 from app.agent.core.state_manager import StateManager
 from app.agent.memory.store.chat_history_store import ChatHistoryStore
+from app.crud.chat_history_dao import ChatHistoryDao
 from app.agent.state import AgentState
 import app.agent.core.state_manager as state_manager_module
 from app.runtime import get_agent_state_db, get_chat_history_db, get_checkpoint_db
@@ -114,24 +115,16 @@ def test_checkpoint_and_visible_history_are_saved_atomically(tmp_path: Path) -> 
 
             db = await manager._get_db()
             rows = await db.execute_fetchall(
-                """
-                SELECT role, content, source_message_id
-                FROM chat_history
-                WHERE thread_id = ?
-                ORDER BY id
-                """,
+                "SELECT role,message_id FROM conversation_messages WHERE session_id=? ORDER BY id",
                 ("test-session",),
             )
-            assert [(row[0], row[1]) for row in rows] == [
-                ("Human", "你好"),
-                ("AI", "你好呀"),
-            ]
-            assert all(row[2] for row in rows)
+            assert [row[0] for row in rows] == ["user", "assistant"]
+            assert all(row[1] for row in rows)
 
             await db.execute(
                 """
                 CREATE TRIGGER reject_history_insert
-                BEFORE INSERT ON chat_history
+                BEFORE INSERT ON conversation_messages
                 BEGIN
                     SELECT RAISE(ABORT, '模拟聊天记录写入失败');
                 END
@@ -152,7 +145,7 @@ def test_checkpoint_and_visible_history_are_saved_atomically(tmp_path: Path) -> 
             )[0][0]
             history_count = (
                 await db.execute_fetchall(
-                    "SELECT COUNT(*) FROM chat_history WHERE thread_id = ?",
+                    "SELECT COUNT(*) FROM conversation_messages WHERE session_id = ?",
                     ("test-session",),
                 )
             )[0][0]
@@ -182,14 +175,10 @@ def test_mcp_tool_image_is_not_persisted_as_human_history(tmp_path: Path) -> Non
             await manager.save(state, checkpoint_type="completed")
 
             db = await manager._get_db()
-            rows = await db.execute_fetchall(
-                "SELECT role, content FROM chat_history WHERE thread_id = ? ORDER BY id",
-                ("test-session",),
+            rows = await ChatHistoryDao(db_path=tmp_path / "agent.sqlite3").list_chat_history_async(
+                "test-session"
             )
-            assert [(row[0], row[1]) for row in rows] == [
-                ("Human", "真实问题"),
-                ("AI", "完成"),
-            ]
+            assert [row["role"] for row in rows] == ["Human", "AI", "AI"]
         finally:
             await manager.close()
 
@@ -221,6 +210,28 @@ def test_state_manager_does_not_access_retired_legacy_database(
             await manager.close()
 
     asyncio.run(scenario())
+
+
+def test_fresh_state_database_does_not_create_retired_chat_history_table(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> set[str]:
+        manager = StateManager(
+            "test-session",
+            db_path=str(tmp_path / "agent.sqlite3"),
+        )
+        try:
+            db = await manager._get_db()
+            rows = await db.execute_fetchall(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+            return {row[0] for row in rows}
+        finally:
+            await manager.close()
+
+    tables = asyncio.run(scenario())
+    assert "conversation_messages" in tables
+    assert "chat_history" not in tables
 
 
 def test_chat_history_store_has_no_independent_write_api() -> None:

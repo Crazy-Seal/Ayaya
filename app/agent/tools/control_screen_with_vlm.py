@@ -79,7 +79,7 @@ def restore_vlm_point(
     }
 
 
-@tool(is_resumable=True)
+@tool(is_resumable=True, compressible=True)
 async def control_screen_with_vlm(
     target: Annotated[str, "操作时的光标位置描述，换句话说就是操作的时候把光标放在哪，例如'页面上方的搜索框'。必须输入。"],
     operation: Annotated[Operation, "操作方式：click 单击、double 双击、right 右键、scroll 滚动。"] = "double",

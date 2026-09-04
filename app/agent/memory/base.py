@@ -2,15 +2,7 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
 from typing import Any
-
-
-class MemoryType(str, Enum):
-    """记忆类型枚举"""
-    SUMMARY = "summary"
-    EPISODIC = "episodic"
-    SEMANTIC = "semantic"
 
 
 @dataclass
@@ -23,4 +15,3 @@ class MemoryItem:
     created_at: datetime                 # 记忆创建时间（系统时间）
     importance: float = 0.5              # 重要性 [0, 1]，LLM 评估
     metadata: dict[str, Any] = field(default_factory=dict)  # 扩展元数据
-

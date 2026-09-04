@@ -10,7 +10,7 @@ MEMORY_DEFAULT_CONFIG = {
     "enable_diary": True,
     "enable_episodic": True,
     "enable_semantic": True,
-    "summary_every_human_messages": 10,
+    "long_term_memory_every_human_messages": 10,
 }
 
 

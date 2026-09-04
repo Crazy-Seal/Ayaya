@@ -96,6 +96,7 @@ MEM0_CUSTOM_INSTRUCTIONS = MEM0_FACT_EXTRACTION_MARKER + """
 - 禁止提取对未来事件的预估；
 - 禁止强行推断，禁止歪曲意思。
 - 描述事件时禁止使用"最近""今天""下个月""今年"等模糊时间表达，如有需要，请使用具体时间。
+- 工具调用参数与结果只用于理解对话上下文，不是用户陈述，禁止单独提取为记忆。
 
 ## 前情提要
 - **注意**：标有[前情提要]的对话是之前的对话，仅作为上下文补充使用，无需提取其中的信息
@@ -287,13 +288,21 @@ class Mem0SemanticMemory:
         mem0_messages = []
 
         for msg in messages:
+            if msg.role == MessageRole.USER and msg.name in {
+                "system_screenshot", "system_screenshot_compressed", "mcp_tool_image",
+                "context_summary",
+            }:
+                continue
             # 确定角色
             if msg.role == MessageRole.USER:
                 role = "user"
             elif msg.role == MessageRole.ASSISTANT:
                 role = "assistant"
+            elif msg.role == MessageRole.TOOL:
+                if mark_as_history:
+                    continue
+                role = "assistant"
             else:
-                # 跳过 system、tool 等其他类型消息
                 continue
 
             # 提取内容
@@ -314,13 +323,22 @@ class Mem0SemanticMemory:
             else:
                 text = str(content)
 
-            if text.strip():
-                has_tool_calls = bool(getattr(msg, "tool_calls", None))
-                text = (
-                    text.strip()
-                    if has_tool_calls
-                    else render_timed_text(text.strip(), msg.timestamp)
-                )
+            if text.strip() or getattr(msg, "tool_calls", None):
+                tool_calls = list(getattr(msg, "tool_calls", None) or [])
+                if tool_calls:
+                    if mark_as_history:
+                        text = "\n".join(f"AI：调用了工具 {call.name}" for call in tool_calls)
+                    else:
+                        import json
+                        text = "\n".join(
+                            f"AI：调用工具 {call.name}，参数："
+                            f"{json.dumps(call.args, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}"
+                            for call in tool_calls
+                        )
+                elif msg.role == MessageRole.TOOL:
+                    text = f"工具结果：{text.strip()}"
+                else:
+                    text = render_timed_text(text.strip(), msg.timestamp)
                 if mark_as_history:
                     text = f"[前情提要] {text}"
                 mem0_messages.append({"role": role, "content": text})

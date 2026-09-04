@@ -6,12 +6,12 @@ from app.agent.context import ToolContext
 from app.agent.tools.decorator import tool
 
 
-@tool
+@tool(compressible=True)
 async def search_memory(
-    query: Annotated[str, "搜索关键词/关键句。"],
+    query: Annotated[str, "搜索关键词/关键句。不要使用问句。"],
     context: ToolContext,
 ) -> str:
-    """在长期记忆中搜索相关信息，并返回最相近的10条。"""
+    """在长期记忆中搜索相关信息，并返回最相近的10条。当你有想要知道的关于用户或你自己的信息时，调用此工具搜索。"""
     session_id = context.session_id
     try:
         if not query or not query.strip():

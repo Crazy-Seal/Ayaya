@@ -89,7 +89,7 @@ class _PipelineHarness:
     def __init__(self, llm, tools):
         self.config = AgentConfig(
             session_id="t", model_name="m", api_key="k",
-            context_strategy=ContextStrategyConfig(), system_prompt="sys",
+            context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100), system_prompt="sys",
         )
         self.tool_manager = ToolManager()
         for t in tools:
@@ -312,7 +312,9 @@ def test_tool_call_extra_content_roundtrips_into_followup_request():
     assert events[-1].type == EventType.TEXT_CHUNK
     assert events[-1].data == "搜索功能正常"
     assert llm.messages[0][0] == llm.messages[1][0]
-    assert "当前本地日期时间：" in llm.messages[0][0]["content"]
+    assert llm.messages[0][0]["content"] == "sys"
+    latest_user = next(message for message in llm.messages[0] if message.get("role") == "user")
+    assert "当前日期时间：" in latest_user["content"]
 
     assistant_call = next(
         message for message in llm.messages[1]
@@ -357,7 +359,7 @@ def test_resumable_screenshot_roundtrip():
         assert set(client_payload.keys()) == {"type", "request_id", "message"}
 
         events2 = await _drain(agent.pipeline.resume_tools(
-            state, {"approved": True, "screenshot_data": "data:image/png;base64,AAA"}
+            state, {"approved": True, "screenshot_data": "data:image/png;base64,iVBORw0KGgpwYXlsb2Fk"}
         ))
         assert events2[-1].type == EventType.TEXT_CHUNK
         assert events2[-1].data == "我看到一只猫"
@@ -629,7 +631,7 @@ def test_skill_loads_tools_and_prompt_fragment():
 
     async def run():
         config = AgentConfig(session_id="t", model_name="m", api_key="k",
-                             context_strategy=ContextStrategyConfig(),
+                             context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100),
                              system_prompt="基础", skills=["test_skill"])
         agent = Agent(config)
         await agent.initialize()

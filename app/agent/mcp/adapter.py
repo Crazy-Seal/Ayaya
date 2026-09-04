@@ -86,6 +86,7 @@ class MCPToolAdapter(BaseTool):
         self.policy = policy
         self.tool_contract_fingerprint = tool_contract_fingerprint(descriptor)
         self.is_resumable = True
+        self.compressible = (descriptor.annotations or {}).get("readOnlyHint") is True
         self._connection_manager = connection_manager
         self._policy_resolver = policy_resolver
 

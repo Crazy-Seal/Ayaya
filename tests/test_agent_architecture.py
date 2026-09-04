@@ -93,7 +93,7 @@ def _config() -> AgentConfig:
         session_id="architecture-test",
         model_name="test",
         api_key="test",
-        context_strategy=ContextStrategyConfig(),
+        context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100),
         system_prompt="system",
     )
 

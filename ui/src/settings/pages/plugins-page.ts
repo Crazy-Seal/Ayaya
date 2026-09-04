@@ -13,11 +13,11 @@ const CONFIG_LABELS: Record<string, string> = {
   enable_diary: "启用日记",
   enable_episodic: "启用情景记忆",
   enable_semantic: "启用语义记忆",
-  summary_every_human_messages: "每多少轮总结长期记忆",
+  long_term_memory_every_human_messages: "每多少轮总结长期记忆",
 };
 
 const NUMBER_FIELDS = new Set([
-  "summary_every_human_messages",
+  "long_term_memory_every_human_messages",
 ]);
 
 const BOOLEAN_FIELDS = new Set([

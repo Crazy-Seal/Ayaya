@@ -1,6 +1,7 @@
 """agent 工厂 - 把 ChatSettings 映射为 Agent。"""
 
 from app.agent.agent import Agent, AgentConfig
+from app.agent.memory.manager import get_memory_manager
 from app.schemas.chat_settings import (
     MEMORY_DEFAULT_CONFIG,
     ChatSettings,
@@ -53,9 +54,15 @@ def build_agent(
         mcp=chat_settings.mcp,
     )
     if mcp_connection_manager is None and mcp_policy_resolver is None:
-        return Agent(config)
+        return Agent(
+            config,
+            diary_coverage=get_memory_manager(chat_settings.session_id),
+            chat_settings=chat_settings,
+        )
     return Agent(
         config,
         mcp_connection_manager=mcp_connection_manager,
         mcp_policy_resolver=mcp_policy_resolver,
+        diary_coverage=get_memory_manager(chat_settings.session_id),
+        chat_settings=chat_settings,
     )

@@ -3,6 +3,7 @@ import { afterEach, test } from "node:test";
 
 import {
   clearChatSettingsCache,
+  createEmptyChatSettings,
   getDefaultAgentPluginsForTest,
   getChatSettingsCache,
   runMcpMutationWithCacheInvalidation,
@@ -24,11 +25,7 @@ const savedSettings: ChatSettingsData = {
   tools_list: [],
   mcp: { servers: {} },
   context_strategy: {
-    recent_context_human_messages: 10,
-    max_images_in_context: 5,
-    image_ttl_human_messages: 10,
-    max_screenshots_in_context: 2,
-    screenshot_ttl_human_messages: 2,
+    compression_trigger_tokens_k: 100,
   },
 };
 
@@ -73,6 +70,22 @@ test("前端默认 memory 插件为固有启用", () => {
   const defaults = getDefaultAgentPluginsForTest();
 
   assert.equal(defaults.memory.enabled, true);
+});
+
+test("新建模型默认使用 100K token 压缩触发阈值", async () => {
+  const requestBodies: ChatSettingsData[] = [];
+  globalThis.fetch = async (_input, init) => {
+    const requestBody = JSON.parse(String(init?.body)) as ChatSettingsData;
+    requestBodies.push(requestBody);
+    return new Response(JSON.stringify({ code: 200, msg: "success", data: requestBody }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  await createEmptyChatSettings("new-session");
+
+  assert.equal(requestBodies[0]?.context_strategy.compression_trigger_tokens_k, 100);
 });
 
 test("更新 ChatSettings 时不再发送旧记忆插件字段", async () => {

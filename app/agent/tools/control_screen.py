@@ -91,7 +91,7 @@ def _validate_args(
     )
 
 
-@tool(is_resumable=True)
+@tool(is_resumable=True, compressible=True)
 async def control_screen(
     bbox: Annotated[list[int], "目标元素边界框 [x1, y1, x2, y2]，坐标相对于当前屏幕归一化到 0 至 1000。必须输入。"],
     target: Annotated[str, "操作时的光标位置描述，例如‘页面上方的搜索框’。必须输入。"],

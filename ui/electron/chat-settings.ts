@@ -22,17 +22,13 @@ const DEFAULT_AGENT_PLUGINS: NonNullable<ChatSettingsData["agent_plugins"]> = {
       enable_diary: true,
       enable_episodic: true,
       enable_semantic: true,
-      summary_every_human_messages: 10,
+      long_term_memory_every_human_messages: 10,
     },
   },
 };
 
 const DEFAULT_CONTEXT_STRATEGY: ChatSettingsData["context_strategy"] = {
-  recent_context_human_messages: 10,
-  max_images_in_context: 5,
-  image_ttl_human_messages: 10,
-  max_screenshots_in_context: 2,
-  screenshot_ttl_human_messages: 2,
+  compression_trigger_tokens_k: 100,
 };
 
 export const getDefaultAgentPluginsForTest = (): NonNullable<ChatSettingsData["agent_plugins"]> =>
@@ -45,11 +41,14 @@ const normalizeAgentPlugins = (
   const result: NonNullable<ChatSettingsData["agent_plugins"]> = {};
   for (const [name, defaults] of Object.entries(DEFAULT_AGENT_PLUGINS)) {
     const current = source[name];
+    const currentConfig = current?.config && typeof current.config === "object"
+      ? { ...current.config }
+      : {};
     result[name] = {
       enabled: typeof current?.enabled === "boolean" ? current.enabled : defaults.enabled,
       config: {
         ...defaults.config,
-        ...(current?.config && typeof current.config === "object" ? current.config : {}),
+        ...currentConfig,
       },
     };
   }
