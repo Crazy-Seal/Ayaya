@@ -4,12 +4,11 @@ import json
 import pytest
 
 from app.agent.context import ToolContext
-from app.agent.tools.control_screen import control_screen, normalize_bbox_for_model
+from app.agent.tools.control_screen import control_screen, normalize_bbox
 
 
 def _context(
     *,
-    model_name: str = "test-model",
     resume_data=None,
     resume_state=None,
 ) -> ToolContext:
@@ -22,7 +21,6 @@ def _context(
         emit_event=emit_event,
         get_checkpoint=lambda: {},
         set_checkpoint=lambda _data: None,
-        model_name=model_name,
         resume_data=resume_data,
         resume_state=resume_state,
     )
@@ -44,17 +42,8 @@ def test_control_screen_schema_only_describes_xyxy() -> None:
     assert "y1, x1, y2, x2" not in serialized
 
 
-@pytest.mark.parametrize(
-    "model_name",
-    ["gemini-2.5-pro", "models/GEMINI-3-pro", "google/gemini-2.0-flash"],
-)
-def test_gemini_bbox_is_normalized_from_yxyx(model_name: str) -> None:
-    assert normalize_bbox_for_model([200, 400, 400, 600], model_name) == [400, 200, 600, 400]
-
-
-@pytest.mark.parametrize("model_name", ["gpt-5", "qwen3-vl-plus", "unknown", "notgemini"])
-def test_non_gemini_bbox_remains_xyxy(model_name: str) -> None:
-    assert normalize_bbox_for_model([400, 200, 600, 400], model_name) == [400, 200, 600, 400]
+def test_bbox_is_always_interpreted_as_xyxy() -> None:
+    assert normalize_bbox([200, 400, 400, 600]) == [200, 400, 400, 600]
 
 
 @pytest.mark.parametrize(
@@ -75,7 +64,7 @@ def test_non_gemini_bbox_remains_xyxy(model_name: str) -> None:
 )
 def test_invalid_bbox_is_rejected(bbox: object) -> None:
     with pytest.raises(ValueError):
-        normalize_bbox_for_model(bbox, "gpt-5")
+        normalize_bbox(bbox)
 
 
 def test_initial_call_directly_requests_execution() -> None:
@@ -106,20 +95,20 @@ def test_initial_call_directly_requests_execution() -> None:
     assert result.resume_state == {"phase": "awaiting_execution"}
 
 
-def test_initial_gemini_call_sends_canonical_coordinates() -> None:
+def test_initial_call_does_not_reorder_xyxy_coordinates() -> None:
     async def run():
         return await control_screen().execute(
             _args(bbox=[200, 400, 400, 600]),
-            _context(model_name="models/gemini-3-pro"),
+            _context(),
         )
 
     result = asyncio.run(run())
 
     assert result.interrupt is not None
     assert result.interrupt.data["coordinates"] == {
-        "bbox": [400, 200, 600, 400],
-        "x_ratio": 0.5,
-        "y_ratio": 0.3,
+        "bbox": [200, 400, 400, 600],
+        "x_ratio": 0.3,
+        "y_ratio": 0.5,
     }
 
 

@@ -1,15 +1,10 @@
-import type { ControlScreenCoordinates } from "../shared-types.js";
+import type { ControlScreenCoordinates, ScreenActionPoint } from "../shared-types.js";
 
 export type ScreenBounds = {
   x: number;
   y: number;
   width: number;
   height: number;
-};
-
-export type ScreenPoint = {
-  x: number;
-  y: number;
 };
 
 const isFiniteNumber = (value: unknown): value is number =>
@@ -19,7 +14,7 @@ export const resolveScreenActionPoint = (
   coordinates: ControlScreenCoordinates,
   bounds: ScreenBounds,
   scaleFactor: number,
-): ScreenPoint => {
+): ScreenActionPoint => {
   if (
     !isFiniteNumber(coordinates.x_ratio)
     || !isFiniteNumber(coordinates.y_ratio)

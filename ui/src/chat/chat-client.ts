@@ -7,6 +7,7 @@ import { ChatHistoryManager } from "./chat-history-manager.js";
 import { ScreenshotConfirmDialog } from "./screenshot-confirm-dialog.js";
 import { formatMcpApprovalMessage } from "./mcp-approval.js";
 import { buildInterruptResponseMeta } from "./interrupt-response.js";
+import { formatControlScreenApprovalMessage } from "./control-screen-approval.js";
 import {
   isControlScreenCaptureInterrupt,
   isControlScreenExecuteInterrupt,
@@ -163,19 +164,6 @@ export class ChatClient {
     }
   }
 
-  private formatControlScreenMessage(action: ControlScreenActionData): string {
-    const operationText: Record<ControlScreenActionData["operation"], string> = {
-      click: "单击",
-      double: "双击",
-      right: "右键单击",
-      scroll: action.scroll_direction === "up" ? "向上滚动" : "向下滚动",
-    };
-    const inputText = action.text ? `，并输入“${action.text}”` : "";
-    const enterText = action.text && action.press_enter ? "后按回车" : "";
-    const [x1, y1, x2, y2] = action.coordinates.bbox;
-    return `Agent 请求在屏幕区域 (${x1}, ${y1})–(${x2}, ${y2}) 对“${action.target}”执行${operationText[action.operation]}${inputText}${enterText}。是否允许？`;
-  }
-
   private delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
@@ -239,8 +227,12 @@ export class ChatClient {
     }
 
     const action = interruptValue.data;
+    const screenPoint = await window.desktopPetApi.resolveScreenActionPoint?.(action.coordinates);
+    if (!screenPoint) {
+      throw new Error("无法解析屏幕操作的真实坐标");
+    }
     const approved = await this.screenshotConfirmDialog.open(
-      this.formatControlScreenMessage(action)
+      formatControlScreenApprovalMessage(action, screenPoint)
     );
     if (!approved) {
       return await window.desktopPetApi.controlScreenRespond?.({

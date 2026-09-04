@@ -86,6 +86,8 @@ const desktopPetApi: DesktopPetApi = {
     ipcRenderer.invoke("desktop-pet:control-screen-respond", payload),
   mcpToolRespond: (payload) => ipcRenderer.invoke("desktop-pet:mcp-tool-respond", payload),
   captureScreen: () => ipcRenderer.invoke("desktop-pet:capture-screen"),
+  resolveScreenActionPoint: (coordinates) =>
+    ipcRenderer.invoke("desktop-pet:resolve-screen-action-point", coordinates),
   performScreenAction: (payload) =>
     ipcRenderer.invoke("desktop-pet:perform-screen-action", payload),
   onChatInterrupt: (listener) =>

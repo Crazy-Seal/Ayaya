@@ -4,7 +4,6 @@
 执行结果和操作后的截图会回传给 Agent。
 """
 
-import re
 from typing import Annotated, Literal
 
 from app.agent.context import ToolContext, ToolResult
@@ -14,11 +13,10 @@ Operation = Literal["click", "double", "right", "scroll"]
 ScrollDirection = Literal["none", "down", "up"]
 
 NORMALIZED_CANVAS_SIZE = 1000
-_GEMINI_MODEL_PATTERN = re.compile(r"(?:^|[/._:-])gemini(?:$|[/._:-])", re.IGNORECASE)
 
 
-def normalize_bbox_for_model(bbox: object, model_name: str = "") -> list[int]:
-    """把模型坐标转换成 canonical ``[x1, y1, x2, y2]``。"""
+def normalize_bbox(bbox: object) -> list[int]:
+    """校验并返回 canonical ``[x1, y1, x2, y2]``。"""
     if not isinstance(bbox, list) or len(bbox) != 4:
         raise ValueError("bbox 必须是包含四个整数的数组。")
     if any(type(value) is not int for value in bbox):
@@ -26,11 +24,7 @@ def normalize_bbox_for_model(bbox: object, model_name: str = "") -> list[int]:
     if any(value < 0 or value > NORMALIZED_CANVAS_SIZE for value in bbox):
         raise ValueError("bbox 坐标必须在 0 到 1000 之间。")
 
-    first, second, third, fourth = bbox
-    if _GEMINI_MODEL_PATTERN.search((model_name or "").strip()):
-        y1, x1, y2, x2 = first, second, third, fourth
-    else:
-        x1, y1, x2, y2 = first, second, third, fourth
+    x1, y1, x2, y2 = bbox
 
     if x2 <= x1 or y2 <= y1:
         raise ValueError("bbox 必须满足 x1 < x2 且 y1 < y2。")
@@ -54,14 +48,13 @@ def _validate_args(
     press_enter: bool | None,
     wait_seconds: int | None,
     scroll_direction: str | None,
-    model_name: str,
 ) -> tuple[str, list[int], Operation, str, bool, int, ScrollDirection] | str:
     resolved_target = (target or "").strip()
     if not resolved_target:
         return "缺少要操作的元素描述。"
 
     try:
-        resolved_bbox = normalize_bbox_for_model(bbox, model_name)
+        resolved_bbox = normalize_bbox(bbox)
     except ValueError as exc:
         return str(exc)
 
@@ -118,7 +111,6 @@ async def control_screen(
         press_enter,
         wait_seconds,
         scroll_direction,
-        context.model_name,
     )
     if isinstance(normalized, str):
         return ToolResult.error(normalized)

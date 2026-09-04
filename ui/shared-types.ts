@@ -329,6 +329,11 @@ export type LogBatch = {
 
 export type ScreenActionRequest = ControlScreenActionData;
 
+export type ScreenActionPoint = {
+  x: number;
+  y: number;
+};
+
 export type ScreenActionResult = {
   executed: boolean;
   error?: string;
@@ -409,6 +414,7 @@ export interface DesktopPetApi {
     approved: boolean;
   }) => Promise<ChatResult>;
   captureScreen?: () => Promise<{ dataUrl: string; width: number; height: number }>;
+  resolveScreenActionPoint?: (coordinates: ControlScreenCoordinates) => Promise<ScreenActionPoint>;
   performScreenAction?: (payload: ScreenActionRequest) => Promise<ScreenActionResult>;
   onChatInterrupt?: (callback: (data: ChatInterruptPayload) => void) => () => void;
   onToolCall?: (callback: (data: ToolCallEventData) => void) => () => void;

@@ -20,6 +20,7 @@ export type {
   MotionSettingType,
   PendingInterruptResult,
   ScreenActionRequest,
+  ScreenActionPoint,
   ScreenActionResult,
   ScreenshotInterruptPayload,
   ToolCallEventData,

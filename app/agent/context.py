@@ -86,7 +86,6 @@ class ToolContext:
     emit_event: Callable[[str, Any], Awaitable[None]]  # 发送 SSE 事件
     get_checkpoint: Callable[[], dict]                  # 获取当前 checkpoint
     set_checkpoint: Callable[[dict], None]              # 设置 checkpoint
-    model_name: str = ""                                # 当前主模型名称（用于模型兼容处理）
     resume_data: dict | None = None                     # 中断恢复时用户回传的数据
     resume_state: dict | None = None                    # 中断前工具暂存的中间态（恢复执行时读取）
 

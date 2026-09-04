@@ -65,7 +65,9 @@ import {
 } from "./mcp-api.js";
 import type {
   ControlScreenResponsePayload,
+  ControlScreenCoordinates,
   MCPServerConfig,
+  ScreenActionPoint,
   ScreenshotResponsePayload,
 } from "../shared-types.js";
 
@@ -807,6 +809,14 @@ export const registerIpcHandlers = (): void => {
   );
 
   // 执行屏幕控制动作
+  trustedIpc.handle(
+    "desktop-pet:resolve-screen-action-point",
+    (_event, coordinates: ControlScreenCoordinates): ScreenActionPoint => {
+      const display = screen.getPrimaryDisplay();
+      return resolveScreenActionPoint(coordinates, display.bounds, display.scaleFactor);
+    }
+  );
+
   trustedIpc.handle(
     "desktop-pet:perform-screen-action",
     async (_event, payload: ScreenActionRequest): Promise<ScreenActionResult> => {

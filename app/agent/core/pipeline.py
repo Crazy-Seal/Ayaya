@@ -55,7 +55,6 @@ class SystemPromptSource(Protocol):
     """Pipeline 构建模型消息所需的最小配置接口。"""
 
     system_prompt: str
-    model_name: str
 
 
 class StreamingLLMClient(Protocol):
@@ -359,7 +358,6 @@ class ExecutionPipeline:
             emit_event=self._emit_event,
             get_checkpoint=state.to_checkpoint,
             set_checkpoint=lambda d: state.update_extra(d),
-            model_name=self._prompt_source.model_name,
             resume_data=resume_data,
             resume_state=resume_state,
         )
