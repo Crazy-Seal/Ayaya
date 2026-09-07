@@ -48,3 +48,6 @@ app/agent/memory/import_demo.py
 
 # ===== memory data =====
 /memory/
+
+# ===== docs =====
+/docs/
