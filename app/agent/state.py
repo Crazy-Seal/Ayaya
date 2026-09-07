@@ -9,7 +9,7 @@ from datetime import datetime
 from uuid import uuid4
 
 from app.agent.message import (
-    SCREENSHOT_MESSAGE_NAME,
+    TOOL_IMAGE_MESSAGE_NAME,
     Message,
     ContentPart,
     ToolCall,
@@ -151,7 +151,7 @@ class AgentState(BaseModel):
                     ContentPart.text_part(f"[系统消息]工具 {tool_name} 返回图片: "),
                     *(ContentPart.image_part(url) for url in image_urls),
                 ],
-                name=str(item.get("image_message_name") or SCREENSHOT_MESSAGE_NAME),
+                name=str(item.get("image_message_name") or TOOL_IMAGE_MESSAGE_NAME),
             ))
             if associated_message_id:
                 self.messages[-1]["_associated_message_id"] = str(associated_message_id)

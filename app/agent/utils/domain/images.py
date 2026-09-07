@@ -3,6 +3,8 @@
 import base64
 import logging
 import os
+from pathlib import Path
+from typing import Literal
 import uuid
 from datetime import datetime
 
@@ -10,7 +12,15 @@ from app.runtime import get_images_dir
 
 logger = logging.getLogger(__name__)
 
-def save_image_to_disk(image_data: str) -> str | None:
+ImageCategory = Literal["tool", "screenshot", "mcp"]
+IMAGE_CATEGORIES = frozenset({"tool", "screenshot", "mcp"})
+
+
+def save_image_to_disk(
+    image_data: str,
+    *,
+    category: ImageCategory | None = None,
+) -> str | None:
     """保存单张图片到磁盘。
 
     Args:
@@ -21,8 +31,11 @@ def save_image_to_disk(image_data: str) -> str | None:
     """
     try:
         # 确保目录存在
+        if category is not None and category not in IMAGE_CATEGORIES:
+            raise ValueError(f"不支持的图片目录类别: {category}")
         images_dir = get_images_dir()
-        os.makedirs(images_dir, exist_ok=True)
+        target_dir = images_dir / category if category else images_dir
+        os.makedirs(target_dir, exist_ok=True)
 
         # 解析 data URL 并提取格式
         ext = "png"  # 默认后缀
@@ -37,7 +50,7 @@ def save_image_to_disk(image_data: str) -> str | None:
                 if mime_ext == "jpeg":
                     ext = "jpg"
                 else:
-                    ext = mime_ext
+                    ext = "".join(char for char in mime_ext if char.isalnum()) or "png"
 
             # 提取 base64 部分
             base64_start = image_data.find(",") + 1
@@ -56,21 +69,26 @@ def save_image_to_disk(image_data: str) -> str | None:
         timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
         unique_id = uuid.uuid4().hex[:8]
         filename = f"{timestamp}_{unique_id}.{ext}"
-        filepath = images_dir / filename
+        filepath = target_dir / filename
 
         # 保存文件
         with open(filepath, "wb") as f:
             f.write(image_bytes)
 
         logger.info("[ImageUtils] 图片已保存: %s", filename)
-        return filename
+        relative_path = Path(category, filename) if category else Path(filename)
+        return relative_path.as_posix()
 
     except Exception as e:
         logger.warning("[ImageUtils] 图片保存失败: %s", e)
         return None
 
 
-def save_multiple_images(images: list[str]) -> list[str]:
+def save_multiple_images(
+    images: list[str],
+    *,
+    category: ImageCategory | None = None,
+) -> list[str]:
     """保存多张图片到磁盘。
 
     Args:
@@ -81,7 +99,16 @@ def save_multiple_images(images: list[str]) -> list[str]:
     """
     filenames: list[str] = []
     for image_data in images:
-        filename = save_image_to_disk(image_data)
-        if filename:
-            filenames.append(filename)
+        filename = save_image_to_disk(image_data, category=category)
+        if not filename:
+            images_dir = get_images_dir().resolve()
+            for saved in filenames:
+                try:
+                    path = (images_dir / Path(saved)).resolve()
+                    if path.is_relative_to(images_dir):
+                        path.unlink(missing_ok=True)
+                except OSError as exc:
+                    logger.warning("[ImageUtils] 清理未完成图片组失败: %s", exc)
+            return []
+        filenames.append(filename)
     return filenames

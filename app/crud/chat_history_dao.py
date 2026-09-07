@@ -8,6 +8,8 @@ from app.runtime import get_chat_history_db
 
 logger = logging.getLogger(__name__)
 class ChatHistoryDao:
+    READ_CHUNK_SIZE = 256
+
     def __init__(self, db_path: Path | None = None):
         self.db_path = db_path or get_chat_history_db()
 
@@ -101,29 +103,77 @@ class ChatHistoryDao:
             })
         return projected
 
-    async def _visible_protocol_rows(self, session_id: str) -> list[dict]:
-        async with aiosqlite.connect(str(self.db_path)) as conn:
-            exists = await conn.execute_fetchall(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='conversation_messages'"
-            )
-            rows = await conn.execute_fetchall(
-                """
-                SELECT id, message_id, role, message_json, created_at,
-                       record_kind, attachments_json
-                FROM conversation_messages
-                WHERE session_id = ?
-                ORDER BY id ASC
-                """,
-                (session_id,),
-            ) if exists else []
-        return [item for row in rows for item in self._project_protocol_row(row)]
+    @staticmethod
+    async def _protocol_table_exists(conn: aiosqlite.Connection) -> bool:
+        rows = await conn.execute_fetchall(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='conversation_messages'"
+        )
+        return bool(rows)
+
+    @staticmethod
+    async def _fetch_protocol_chunk(
+        conn: aiosqlite.Connection,
+        session_id: str,
+        *,
+        after_id: int | None = None,
+        before_id: int | None = None,
+        descending: bool = False,
+        limit: int,
+    ) -> list[tuple]:
+        clauses = ["session_id = ?"]
+        params: list[object] = [session_id]
+        if after_id is not None:
+            clauses.append("id > ?")
+            params.append(after_id)
+        if before_id is not None:
+            clauses.append("id < ?")
+            params.append(before_id)
+        params.append(limit)
+        direction = "DESC" if descending else "ASC"
+        return await conn.execute_fetchall(
+            f"""
+            SELECT id, message_id, role, message_json, created_at,
+                   record_kind, attachments_json
+            FROM conversation_messages
+            WHERE {' AND '.join(clauses)}
+            ORDER BY id {direction}
+            LIMIT ?
+            """,
+            params,
+        )
 
     async def list_chat_history_async(self, session_id: str, start: int = 0, limit: int = 200) -> list[dict[str, str]]:
         """从协议日志投影可见历史，再执行 UI 分页。"""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        start = max(start, 0)
+        limit = max(limit, 0)
+        if limit == 0:
+            return []
         try:
-            rows = await self._visible_protocol_rows(session_id)
-            return rows[max(start, 0) : max(start, 0) + max(limit, 0)]
+            result: list[dict[str, str]] = []
+            visible_index = 0
+            after_id: int | None = None
+            async with aiosqlite.connect(str(self.db_path)) as conn:
+                if not await self._protocol_table_exists(conn):
+                    return []
+                while len(result) < limit:
+                    rows = await self._fetch_protocol_chunk(
+                        conn,
+                        session_id,
+                        after_id=after_id,
+                        limit=self.READ_CHUNK_SIZE,
+                    )
+                    if not rows:
+                        break
+                    after_id = int(rows[-1][0])
+                    for row in rows:
+                        for item in self._project_protocol_row(row):
+                            if visible_index >= start and len(result) < limit:
+                                result.append(item)
+                            visible_index += 1
+                    if len(rows) < self.READ_CHUNK_SIZE:
+                        break
+            return result
         except Exception:
             logger.exception("[ChatHistory][session=%s] 查询聊天记录失败", session_id)
             return []
@@ -131,9 +181,39 @@ class ChatHistoryDao:
     async def list_chat_history_last_n_async(self, session_id: str, n: int = 100) -> list[dict[str, str]]:
         """查询会话最后 N 条历史记录，按时间升序返回。"""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        n = max(n, 0)
+        if n == 0:
+            return []
         try:
-            rows = await self._visible_protocol_rows(session_id)
-            return rows[-max(n, 0) :] if n else []
+            projected_groups: list[list[dict[str, str]]] = []
+            visible_count = 0
+            before_id: int | None = None
+            async with aiosqlite.connect(str(self.db_path)) as conn:
+                if not await self._protocol_table_exists(conn):
+                    return []
+                while visible_count < n:
+                    rows = await self._fetch_protocol_chunk(
+                        conn,
+                        session_id,
+                        before_id=before_id,
+                        descending=True,
+                        limit=self.READ_CHUNK_SIZE,
+                    )
+                    if not rows:
+                        break
+                    before_id = int(rows[-1][0])
+                    for row in rows:
+                        group = self._project_protocol_row(row)
+                        projected_groups.append(group)
+                        visible_count += len(group)
+                    if len(rows) < self.READ_CHUNK_SIZE:
+                        break
+            ordered = [
+                item
+                for group in reversed(projected_groups)
+                for item in group
+            ]
+            return ordered[-n:]
         except Exception:
             logger.exception("[ChatHistory][session=%s] 查询最后聊天记录失败", session_id)
             return []

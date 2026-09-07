@@ -1,5 +1,6 @@
 import asyncio
 import json
+from datetime import timedelta
 from pathlib import Path
 
 import aiosqlite
@@ -253,22 +254,87 @@ def test_chat_history_store_honors_previous_input_high_watermark(tmp_path: Path)
             state.add_user_message("当前可修改输入")
             await manager.save(state, checkpoint_type="intermediate")
             effective_date = store._utc_to_local_date(state.messages[0]["_created_at"])
-            count = await store.get_message_count_by_date(
-                "test-session",
-                effective_date,
-                role="Human",
-                max_history_id=cutoff,
-            )
             messages = await store.get_messages_by_date(
                 "test-session",
                 effective_date,
                 max_history_id=cutoff,
             )
-            return count, [message["content"] for message in messages]
+            human_count = sum(
+                1 for message in messages
+                if message.get("role") == "user"
+            )
+            return human_count, [message["content"] for message in messages]
         finally:
             await manager.close()
 
     assert asyncio.run(scenario()) == (1, ["上一轮输入", "上一轮回复"])
+
+
+def test_latest_protocol_id_uses_session_scoped_monotonic_high_watermark(tmp_path: Path) -> None:
+    async def scenario() -> tuple[int, int]:
+        db_path = tmp_path / "agent.sqlite3"
+        first = StateManager("first", db_path=str(db_path))
+        second = StateManager("second", db_path=str(db_path))
+        try:
+            first_state = AgentState.create_new("first")
+            first_state.add_user_message("first-1")
+            await first.save(first_state, checkpoint_type="completed")
+
+            second_state = AgentState.create_new("second")
+            second_state.add_user_message("second-1")
+            await second.save(second_state, checkpoint_type="completed")
+
+            first_state.add_assistant_message("first-2")
+            await first.save(first_state, checkpoint_type="completed")
+            await first.save(first_state, checkpoint_type="completed")
+
+            store = ChatHistoryStore(db_path=db_path)
+            return (
+                await store.get_latest_message_id("first"),
+                await store.get_latest_message_id("second"),
+            )
+        finally:
+            await first.close()
+            await second.close()
+
+    first_id, second_id = asyncio.run(scenario())
+    assert first_id > second_id > 0
+
+
+def test_narrow_history_queries_do_not_use_full_row_loader(tmp_path: Path) -> None:
+    async def scenario() -> tuple[int, int, int]:
+        db_path = tmp_path / "agent.sqlite3"
+        manager = StateManager("session", db_path=str(db_path))
+        try:
+            state = AgentState.create_new("session")
+            for index in range(15):
+                state.add_user_message(f"human-{index}")
+                state.add_assistant_message(f"assistant-{index}")
+            await manager.save(state, checkpoint_type="completed")
+
+            store = ChatHistoryStore(db_path=db_path)
+
+            async def reject_full_row_loader(*_args, **_kwargs):
+                raise AssertionError("窄查询不应加载整个会话的 message_json")
+
+            store._rows = reject_full_row_loader  # type: ignore[method-assign]
+            latest_id = await store.get_latest_message_id("session")
+            last_date = await store.get_last_chat_date("session")
+            previous = await store.get_messages_before_date(
+                "session",
+                last_date + timedelta(days=1),
+                limit=10,
+                max_history_id=latest_id,
+            )
+            history, current = await store.get_recent_completed_turns(
+                "session",
+                max_history_id=latest_id,
+            )
+            return len(previous), len(history), len(current)
+        finally:
+            await manager.close()
+
+    assert asyncio.run(scenario()) == (10, 10, 20)
 
 
 def test_chat_history_store_constructor_does_not_initialize_schema(tmp_path: Path) -> None:

@@ -21,7 +21,7 @@ from app.agent.core.plugin_manager import PluginManager
 from app.agent.core.tool_manager import ToolManager
 from app.agent.context_strategy import ContextStrategyManager
 from app.agent.message import (
-    SCREENSHOT_MESSAGE_NAME,
+    TOOL_IMAGE_MESSAGE_NAME,
     ToolCall,
     MessageRole,
     AssistantMessageWithTools,
@@ -427,7 +427,7 @@ class ExecutionPipeline:
                 "tool_call_id": tool_call.id,
                 "tool_name": tool_call.name,
                 "associated_message_id": tool_message_id,
-                "image_message_name": result.image_message_name or SCREENSHOT_MESSAGE_NAME,
+                "image_message_name": result.image_message_name or TOOL_IMAGE_MESSAGE_NAME,
                 "image_urls": image_urls,
             })
 

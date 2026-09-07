@@ -7,6 +7,7 @@
 from typing import Annotated, Literal
 
 from app.agent.context import ToolContext, ToolResult
+from app.agent.message import SCREENSHOT_MESSAGE_NAME
 from app.agent.models.vlm import VLMService, clamp_bbox
 from app.agent.tools.decorator import tool
 
@@ -134,7 +135,11 @@ async def control_screen_with_vlm(
         screenshot_data = context.resume_data.get("screenshot_data")
         if not screenshot_data:
             return ToolResult.success("屏幕操作完成，但未收到操作后的截图。")
-        return ToolResult.success("屏幕操作完成，已收到操作后的截图。", image_url=screenshot_data)
+        return ToolResult.success(
+            "屏幕操作完成，已收到操作后的截图。",
+            image_url=screenshot_data,
+            image_message_name=SCREENSHOT_MESSAGE_NAME,
+        )
 
     screenshot_data = context.resume_data.get("screenshot_data")
     width = context.resume_data.get("width")

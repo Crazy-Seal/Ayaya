@@ -16,6 +16,7 @@ from app.runtime import get_chat_history_db
 
 class ChatHistoryStore:
     TABLE_NAME = "conversation_messages"
+    READ_CHUNK_SIZE = 256
 
     def __init__(
         self,
@@ -92,10 +93,7 @@ class ChatHistoryStore:
             params.append(end.isoformat())
         async with aiosqlite.connect(str(self.db_path)) as conn:
             await conn.execute("PRAGMA busy_timeout=5000")
-            exists = await conn.execute_fetchall(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (self.TABLE_NAME,)
-            )
-            if not exists:
+            if not await self._table_exists(conn):
                 return []
             return await conn.execute_fetchall(
                 f"""
@@ -106,6 +104,13 @@ class ChatHistoryStore:
                 """,
                 params,
             )
+
+    async def _table_exists(self, conn: aiosqlite.Connection) -> bool:
+        row = await conn.execute_fetchall(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (self.TABLE_NAME,),
+        )
+        return bool(row)
 
     @staticmethod
     def _decode(row: tuple) -> dict[str, Any]:
@@ -119,23 +124,15 @@ class ChatHistoryStore:
         return message
 
     async def get_latest_message_id(self, session_id: str) -> int:
-        rows = await self._rows(session_id)
-        return int(rows[-1][0]) if rows else 0
-
-    async def get_message_count_by_date(
-        self,
-        session_id: str,
-        effective_date: date,
-        role: str | None = None,
-        max_history_id: int | None = None,
-    ) -> int:
-        messages = await self.get_messages_by_date(session_id, effective_date, max_history_id)
-        if role in {"Human", "user"}:
-            return sum(1 for message in messages if is_real_human_message(message))
-        if role:
-            normalized = {"AI": "assistant", "Tool": "tool"}.get(role, role)
-            return sum(1 for message in messages if message.get("role") == normalized)
-        return len(messages)
+        async with aiosqlite.connect(str(self.db_path)) as conn:
+            await conn.execute("PRAGMA busy_timeout=5000")
+            if not await self._table_exists(conn):
+                return 0
+            rows = await conn.execute_fetchall(
+                f"SELECT COALESCE(MAX(id), 0) FROM {self.TABLE_NAME} WHERE session_id = ?",
+                (session_id,),
+            )
+        return int(rows[0][0])
 
     async def get_last_chat_date(
         self,
@@ -143,11 +140,28 @@ class ChatHistoryStore:
         exclude_today: date | None = None,
         max_history_id: int | None = None,
     ) -> date | None:
-        rows = await self._rows(session_id, max_history_id=max_history_id)
-        for row in reversed(rows):
-            effective = self._utc_to_local_date(row[2])
-            if exclude_today is None or effective < exclude_today:
-                return effective
+        clauses = ["session_id = ?"]
+        params: list[Any] = [session_id]
+        if max_history_id is not None:
+            clauses.append("id <= ?")
+            params.append(max_history_id)
+        async with aiosqlite.connect(str(self.db_path)) as conn:
+            await conn.execute("PRAGMA busy_timeout=5000")
+            if not await self._table_exists(conn):
+                return None
+            async with conn.execute(
+                f"""
+                SELECT created_at
+                FROM {self.TABLE_NAME}
+                WHERE {' AND '.join(clauses)}
+                ORDER BY id DESC
+                """,
+                params,
+            ) as cursor:
+                async for row in cursor:
+                    effective = self._utc_to_local_date(row[0])
+                    if exclude_today is None or effective < exclude_today:
+                        return effective
         return None
 
     async def get_messages_by_date(
@@ -172,13 +186,52 @@ class ChatHistoryStore:
         *,
         max_history_id: int | None = None,
     ) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
         start, _ = self._local_date_to_utc_range(before_date)
-        rows = await self._rows(
-            session_id,
-            max_history_id=max_history_id,
-            end=start,
-        )
-        return [self._decode(row) for row in rows[-limit:]]
+        clauses = ["session_id = ?", "created_at < ?"]
+        params: list[Any] = [session_id, start.isoformat()]
+        if max_history_id is not None:
+            clauses.append("id <= ?")
+            params.append(max_history_id)
+        params.append(limit)
+        async with aiosqlite.connect(str(self.db_path)) as conn:
+            await conn.execute("PRAGMA busy_timeout=5000")
+            if not await self._table_exists(conn):
+                return []
+            rows = await conn.execute_fetchall(
+                f"""
+                SELECT id, message_id, created_at, role, message_json, record_kind
+                FROM {self.TABLE_NAME}
+                WHERE {' AND '.join(clauses)}
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                params,
+            )
+        return [self._decode(row) for row in reversed(rows)]
+
+    @staticmethod
+    def _completed_turns(records: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+        turns: list[list[dict[str, Any]]] = []
+        active: list[dict[str, Any]] = []
+        for message in records:
+            if is_real_human_message(message):
+                if active:
+                    turns.append(active)
+                active = [message]
+            elif active:
+                active.append(message)
+        if active:
+            turns.append(active)
+        return [
+            turn for turn in turns
+            if any(
+                message.get("role") == "assistant"
+                and not message.get("tool_calls")
+                for message in turn[1:]
+            )
+        ]
 
     async def get_recent_completed_turns(
         self,
@@ -189,31 +242,51 @@ class ChatHistoryStore:
         max_history_id: int | None = None,
     ) -> tuple[list[dict], list[dict]]:
         """返回前情和当前批次；只接受具有最终普通 assistant 的完整轮次。"""
-        records = [
-            self._decode(row)
-            for row in await self._rows(session_id, max_history_id=max_history_id)
-        ]
-        turns: list[list[dict]] = []
-        active: list[dict] = []
-        for message in records:
-            if is_real_human_message(message):
-                if active:
-                    turns.append(active)
-                active = [message]
-            elif active:
-                active.append(message)
-        if active:
-            turns.append(active)
-        complete = [
-            turn for turn in turns
-            if any(
-                message.get("role") == "assistant"
-                and not message.get("tool_calls")
-                for message in turn[1:]
-            )
-        ]
-        selected = complete[-current_turns:]
-        history = complete[-(current_turns + history_turns):-current_turns]
+        current_turns = max(current_turns, 0)
+        history_turns = max(history_turns, 0)
+        required = current_turns + history_turns
+        if required == 0:
+            return [], []
+
+        records: list[dict[str, Any]] = []
+        complete: list[list[dict[str, Any]]] = []
+        before_id: int | None = None
+        async with aiosqlite.connect(str(self.db_path)) as conn:
+            await conn.execute("PRAGMA busy_timeout=5000")
+            if not await self._table_exists(conn):
+                return [], []
+            while len(complete) < required:
+                clauses = ["session_id = ?"]
+                params: list[Any] = [session_id]
+                if before_id is not None:
+                    clauses.append("id < ?")
+                    params.append(before_id)
+                elif max_history_id is not None:
+                    clauses.append("id <= ?")
+                    params.append(max_history_id)
+                params.append(self.READ_CHUNK_SIZE)
+                rows = await conn.execute_fetchall(
+                    f"""
+                    SELECT id, message_id, created_at, role, message_json, record_kind
+                    FROM {self.TABLE_NAME}
+                    WHERE {' AND '.join(clauses)}
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    params,
+                )
+                if not rows:
+                    break
+                records = [self._decode(row) for row in reversed(rows)] + records
+                complete = self._completed_turns(records)
+                before_id = int(rows[-1][0])
+                if len(rows) < self.READ_CHUNK_SIZE:
+                    break
+
+        selected = complete[-current_turns:] if current_turns else []
+        history_end = len(complete) - len(selected)
+        history_start = max(history_end - history_turns, 0)
+        history = complete[history_start:history_end]
         return (
             [message for turn in history for message in turn],
             [message for turn in selected for message in turn],

@@ -12,7 +12,7 @@ from app.agent.memory.memories.semantic_mem0 import Mem0SemanticMemory
 from app.agent.memory.memories.semantic_mem0 import MEM0_CUSTOM_INSTRUCTIONS
 from app.agent.memory.memories.diary import DiaryMemory
 from app.agent.memory.store.chat_history_store import ChatHistoryStore
-from app.agent.message import Message, MessageRole
+from app.agent.message import Message, MessageRole, SYSTEM_INJECTED_USER_MESSAGE_NAMES
 from app.agent.utils.domain.text import extract_text
 from app.agent.message_time import render_timed_text
 from app.agent.tool_result_normalizer import truncate_weighted_text
@@ -385,10 +385,7 @@ class MemoryManager:
         ai_name = self.chat_settings.name or "AI"
         lines = []
         for msg in messages:
-            if msg.role == MessageRole.USER and msg.name in {
-                "system_screenshot", "system_screenshot_compressed", "mcp_tool_image",
-                "context_summary",
-            }:
+            if msg.role == MessageRole.USER and msg.name in SYSTEM_INJECTED_USER_MESSAGE_NAMES:
                 continue
             if msg.role == MessageRole.USER:
                 role = user_name

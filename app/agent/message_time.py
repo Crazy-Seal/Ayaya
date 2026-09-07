@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from app.agent.message_names import SYSTEM_INJECTED_USER_MESSAGE_NAMES
+
 
 WEEKDAYS = ("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日")
 
@@ -55,12 +57,7 @@ def project_messages_with_time(messages: list[dict]) -> list[dict]:
         if not timestamp:
             continue
         role = message.get("role")
-        if role == "user" and message.get("name") in {
-            "system_screenshot",
-            "system_screenshot_compressed",
-            "mcp_tool_image",
-            "context_summary",
-        }:
+        if role == "user" and message.get("name") in SYSTEM_INJECTED_USER_MESSAGE_NAMES:
             continue
         is_plain_assistant = role == "assistant" and not message.get("tool_calls")
         if role != "user" and not is_plain_assistant:

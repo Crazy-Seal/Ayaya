@@ -10,7 +10,11 @@ from app.agent.context_strategy import ContextStrategyConfig, ContextStrategyMan
 from app.agent.core.event_router import EventType
 from app.agent.core.pipeline import ExecutionPipeline
 from app.agent.core.state_manager import CheckpointType, StateManager
-from app.agent.message import ToolCall
+from app.agent.message import (
+    MCP_TOOL_IMAGE_MESSAGE_NAME,
+    TOOL_IMAGE_MESSAGE_NAME,
+    ToolCall,
+)
 from app.agent.models.llm_client import StreamChunk
 from app.agent.state import AgentState
 from app.schemas.chat import AgentInput
@@ -620,7 +624,7 @@ def test_last_tool_checkpoint_flushes_all_batch_images(tmp_path: Path) -> None:
     image_messages = [
         item
         for item in completed_batch.messages
-        if item.get("name") == "system_screenshot"
+        if item.get("name") == TOOL_IMAGE_MESSAGE_NAME
     ]
     assert [item.get("_associated_message_id") for item in image_messages] == [
         item["_message_id"] for item in tool_messages
@@ -692,7 +696,10 @@ def test_resumed_last_tool_checkpoint_flushes_deferred_images(tmp_path: Path) ->
     image_messages = [
         item
         for item in completed_batch.messages
-        if item.get("name") in {"system_screenshot", "mcp_tool_image"}
+        if item.get("name") in {
+            MCP_TOOL_IMAGE_MESSAGE_NAME,
+            TOOL_IMAGE_MESSAGE_NAME,
+        }
     ]
     assert [item.get("_associated_message_id") for item in image_messages] == [
         item["_message_id"] for item in tool_messages

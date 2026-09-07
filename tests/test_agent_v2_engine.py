@@ -53,7 +53,11 @@ class _FakeScreenshotTool(BaseTool):
             return ToolResult.needs_input("screenshot_request", "允许截屏？")
         if not context.resume_data.get("approved"):
             return ToolResult.success("用户拒绝截屏")
-        return ToolResult.success("截屏成功", image_url=context.resume_data.get("screenshot_data"))
+        return ToolResult.success(
+            "截屏成功",
+            image_url=context.resume_data.get("screenshot_data"),
+            image_message_name=SCREENSHOT_MESSAGE_NAME,
+        )
 
 
 class _FakeSearchTool(BaseTool):

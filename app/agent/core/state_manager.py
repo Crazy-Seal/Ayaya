@@ -1,5 +1,7 @@
 """Agent checkpoint 与 append-only OpenAI 协议日志的原子持久化。"""
 
+import asyncio
+from copy import deepcopy
 import json
 import logging
 import os
@@ -9,7 +11,15 @@ from uuid import uuid4
 import aiosqlite
 
 from app.agent.state import AgentState
+from app.agent.message_names import (
+    MCP_TOOL_IMAGE_MESSAGE_NAME,
+    SCREENSHOT_COMPRESSED_NAME,
+    SCREENSHOT_MESSAGE_NAME,
+    TOOL_IMAGE_MESSAGE_NAME,
+    TOOL_IMAGE_MESSAGE_NAMES,
+)
 from app.agent.message_time import normalize_utc, utc_now
+from app.agent.utils.domain.images import ImageCategory, save_multiple_images
 from app.runtime import get_checkpoint_db
 
 logger = logging.getLogger(__name__)
@@ -95,7 +105,98 @@ class StateManager:
             message["_created_at"] = normalize_utc(created_at).isoformat()
 
     @staticmethod
-    def _protocol_rows(state: AgentState) -> list[tuple]:
+    def _tool_image_category(name: object) -> ImageCategory | None:
+        if name == MCP_TOOL_IMAGE_MESSAGE_NAME:
+            return "mcp"
+        if name in {SCREENSHOT_MESSAGE_NAME, SCREENSHOT_COMPRESSED_NAME}:
+            return "screenshot"
+        if name == TOOL_IMAGE_MESSAGE_NAME:
+            return "tool"
+        return None
+
+    @classmethod
+    def _externalize_tool_images(cls, state: AgentState) -> None:
+        """为工具图片补充本地文件引用；State 中仍保留原始 Base64。"""
+        for message in state.messages:
+            if message.get("role") != "user":
+                continue
+            category = cls._tool_image_category(message.get("name"))
+            if category is None:
+                continue
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            image_parts = [
+                part
+                for part in content
+                if isinstance(part, dict) and part.get("type") == "image_url"
+            ]
+            if not image_parts:
+                continue
+            image_urls: list[str] = []
+            for part in image_parts:
+                image_url = part.get("image_url")
+                url = image_url.get("url") if isinstance(image_url, dict) else None
+                if not isinstance(url, str) or not url:
+                    image_urls = []
+                    break
+                image_urls.append(url)
+            if len(image_urls) != len(image_parts):
+                continue
+            existing = message.get("image_filenames")
+            if (
+                isinstance(existing, list)
+                and len(existing) == len(image_urls)
+                and all(isinstance(path, str) and path for path in existing)
+            ):
+                continue
+            try:
+                filenames = save_multiple_images(image_urls, category=category)
+            except Exception as exc:
+                logger.warning(
+                    "[StateManager] 工具图片外置失败，协议日志保留 Base64: %s",
+                    exc,
+                )
+                continue
+            if len(filenames) == len(image_urls):
+                message["image_filenames"] = filenames
+
+    @staticmethod
+    def _protocol_payload(message: dict) -> tuple[dict, list[str] | None]:
+        payload = {
+            key: deepcopy(value)
+            for key, value in message.items()
+            if key not in {
+                "_message_id",
+                "_created_at",
+                "image_description",
+                "image_filenames",
+            }
+        }
+        content = payload.get("content")
+        image_parts = [
+            part
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "image_url"
+        ] if isinstance(content, list) else []
+        raw_attachments = message.get("image_filenames")
+        attachments = (
+            list(raw_attachments)
+            if isinstance(raw_attachments, list)
+            and len(raw_attachments) == len(image_parts)
+            and image_parts
+            and all(isinstance(path, str) and path for path in raw_attachments)
+            else None
+        )
+        if attachments:
+            for part, relative_path in zip(image_parts, attachments, strict=True):
+                image_url = part.get("image_url")
+                if isinstance(image_url, dict):
+                    image_url["url"] = relative_path
+        return payload, attachments
+
+    @classmethod
+    def _protocol_rows(cls, state: AgentState) -> list[tuple]:
         rows: list[tuple] = []
         for message in state.messages:
             role = message.get("role")
@@ -104,14 +205,12 @@ class StateManager:
                 continue
             if role not in {"user", "assistant", "tool"}:
                 continue
-            record_kind = "tool_image" if role == "user" and name in {
-                "mcp_tool_image", "system_screenshot"
-            } else "protocol"
-            payload = {
-                key: value for key, value in message.items()
-                if key not in {"_message_id", "_created_at"}
-            }
-            attachments = message.get("image_filenames")
+            record_kind = (
+                "tool_image"
+                if role == "user" and name in TOOL_IMAGE_MESSAGE_NAMES
+                else "protocol"
+            )
+            payload, attachments = cls._protocol_payload(message)
             rows.append((
                 state.session_id,
                 message["_message_id"],
@@ -161,6 +260,7 @@ class StateManager:
         """原子保存指定类型的 checkpoint，并执行对应的分层裁剪。"""
         db = await self._get_db()
         self._ensure_message_metadata(state)
+        await asyncio.to_thread(self._externalize_tool_images, state)
         state_json = json.dumps(state.to_checkpoint(), ensure_ascii=False, default=str)
         protocol_rows = self._protocol_rows(state)
 
@@ -213,6 +313,12 @@ class StateManager:
                         attachments_json, legacy_source_id
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(session_id, message_id) DO UPDATE SET
+                        message_json = CASE
+                            WHEN conversation_messages.attachments_json IS NULL
+                             AND excluded.attachments_json IS NOT NULL
+                            THEN excluded.message_json
+                            ELSE conversation_messages.message_json
+                        END,
                         attachments_json = COALESCE(
                             excluded.attachments_json,
                             conversation_messages.attachments_json

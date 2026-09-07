@@ -9,6 +9,7 @@
 import logging
 
 from app.agent.context import ToolContext, ToolResult
+from app.agent.message import SCREENSHOT_MESSAGE_NAME
 from app.agent.tools.decorator import tool
 
 logger = logging.getLogger(__name__)
@@ -41,4 +42,8 @@ async def screenshot(context: ToolContext) -> ToolResult:
         )
 
     # 截图作为 image_url 返回；pipeline 会注入为 system_screenshot 用户消息
-    return ToolResult.success("截屏成功", image_url=screenshot_data)
+    return ToolResult.success(
+        "截屏成功",
+        image_url=screenshot_data,
+        image_message_name=SCREENSHOT_MESSAGE_NAME,
+    )

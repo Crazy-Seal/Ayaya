@@ -42,6 +42,7 @@ def test_protocol_store_freezes_ten_complete_turns_and_five_history_turns(tmp_pa
                 state.add_assistant_message(f"assistant-{index}")
             await manager.save(state, checkpoint_type="completed")
             store = ChatHistoryStore(db_path=db_path)
+            store.READ_CHUNK_SIZE = 3
             return await store.get_recent_completed_turns("session")
         finally:
             await manager.close()
@@ -50,6 +51,46 @@ def test_protocol_store_freezes_ten_complete_turns_and_five_history_turns(tmp_pa
     assert sum(1 for message in history if message.get("role") == "user") == 5
     assert sum(1 for message in current if message.get("role") == "user") == 10
     assert any(message.get("role") == "tool" for message in current)
+
+
+def test_completed_turn_query_does_not_accept_a_chunk_head_fragment(tmp_path: Path) -> None:
+    async def scenario():
+        db_path = tmp_path / "agent.sqlite3"
+        manager = StateManager("session", db_path=str(db_path))
+        try:
+            state = AgentState.create_new("session")
+            state.add_user_message("请读取文件")
+            state.messages.append({
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": "{}"},
+                }],
+            })
+            state.add_tool_message("file-content", "read_file", "call-1")
+            state.add_assistant_message("读取完成")
+            await manager.save(state, checkpoint_type="completed")
+
+            store = ChatHistoryStore(db_path=db_path)
+            store.READ_CHUNK_SIZE = 2
+            return await store.get_recent_completed_turns(
+                "session",
+                current_turns=1,
+                history_turns=0,
+            )
+        finally:
+            await manager.close()
+
+    history, current = asyncio.run(scenario())
+    assert history == []
+    assert [message["role"] for message in current] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
 
 
 def test_long_term_memory_format_has_full_current_tools_and_light_history_tools() -> None:
@@ -95,6 +136,14 @@ def test_diary_format_skips_system_injected_tool_images() -> None:
             "content": [
                 {"type": "text", "text": "[系统消息]工具 draw 返回图片: "},
                 {"type": "image_url", "image_url": {"url": "data:image/png;base64,BBB"}},
+            ],
+        },
+        {
+            "role": "user",
+            "name": "system_tool_image",
+            "content": [
+                {"type": "text", "text": "[系统消息]工具 draw 返回图片: "},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,CCC"}},
             ],
         },
     ])

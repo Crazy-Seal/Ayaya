@@ -15,7 +15,7 @@ from app.agent.memory.memories.mem0_llm_compat import (
     MEM0_FACT_EXTRACTION_MARKER,
     Mem0FactExtractionLLMAdapter,
 )
-from app.agent.message import Message, MessageRole
+from app.agent.message import Message, MessageRole, SYSTEM_INJECTED_USER_MESSAGE_NAMES
 from app.agent.message_time import render_timed_text
 from app.schemas.chat_settings import ChatSettings
 
@@ -288,10 +288,7 @@ class Mem0SemanticMemory:
         mem0_messages = []
 
         for msg in messages:
-            if msg.role == MessageRole.USER and msg.name in {
-                "system_screenshot", "system_screenshot_compressed", "mcp_tool_image",
-                "context_summary",
-            }:
+            if msg.role == MessageRole.USER and msg.name in SYSTEM_INJECTED_USER_MESSAGE_NAMES:
                 continue
             # 确定角色
             if msg.role == MessageRole.USER:

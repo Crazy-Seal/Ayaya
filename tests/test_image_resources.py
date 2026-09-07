@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from app.agent import agent as agent_module
+from app.agent.core import state_manager as state_manager_module
 from app.agent.agent import Agent, AgentConfig
 from app.agent.context_strategy import ContextStrategyConfig
 from app.agent.models import vlm
@@ -97,6 +98,44 @@ def test_save_multiple_images_writes_files(monkeypatch, tmp_path: Path) -> None:
     assert (tmp_path / filenames[0]).read_bytes() == b"\x00"
 
 
+def test_save_multiple_images_uses_restricted_subdirectory(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(image_utils, "get_images_dir", lambda: tmp_path)
+
+    filenames = image_utils.save_multiple_images(
+        ["data:image/png;base64,AA=="],
+        category="screenshot",
+    )
+
+    assert len(filenames) == 1
+    assert filenames[0].startswith("screenshot/")
+    assert (tmp_path / Path(filenames[0])).read_bytes() == b"\x00"
+
+
+def test_save_multiple_images_rolls_back_partial_group(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(image_utils, "get_images_dir", lambda: tmp_path)
+    calls = 0
+
+    def save_one(image_data: str, *, category=None) -> str | None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            path = tmp_path / "tool" / "first.png"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"first")
+            return "tool/first.png"
+        return None
+
+    monkeypatch.setattr(image_utils, "save_image_to_disk", save_one)
+
+    filenames = image_utils.save_multiple_images(
+        ["data:image/png;base64,AA==", "data:image/png;base64,AQ=="],
+        category="tool",
+    )
+
+    assert filenames == []
+    assert not (tmp_path / "tool" / "first.png").exists()
+
+
 def test_legacy_image_description_is_filtered_from_model_input() -> None:
     normalized = normalize_messages_for_model([
         {
@@ -160,8 +199,8 @@ def test_user_image_is_saved_before_first_protocol_commit(
     assert calls == [[image]]
     assert message["image_filenames"] == ["stored.png"]
     assert "image_description" not in message
-    assert payload["image_filenames"] == ["stored.png"]
-    assert payload["content"][1]["image_url"]["url"] == image
+    assert "image_filenames" not in payload
+    assert payload["content"][1]["image_url"]["url"] == "stored.png"
     assert "image_description" not in payload
     assert json.loads(row[1]) == ["stored.png"]
     assert "image_task_key" not in state.extra
@@ -233,5 +272,142 @@ def test_image_save_failure_does_not_block_user_commit(
 
     assert called is True
     assert payload["content"][0]["text"] == "继续聊天"
+    assert payload["content"][1]["image_url"]["url"] == "data:image/png;base64,AA=="
     assert "image_filenames" not in state.messages[-1]
     assert row[1] is None
+
+
+def test_tool_image_is_externalized_for_protocol_but_kept_in_checkpoint(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    image = "data:image/png;base64,AA=="
+    monkeypatch.setattr(image_utils, "get_images_dir", lambda: tmp_path / "images")
+
+    async def scenario() -> tuple[dict, dict, list[str]]:
+        manager = agent_module.StateManager("tool-image", db_path=str(tmp_path / "agent.sqlite3"))
+        try:
+            state = AgentState.create_new("tool-image")
+            state.add_tool_message("done", "draw", "call-draw")
+            state.deferred_tool_images.append({
+                "tool_call_id": "call-draw",
+                "tool_name": "draw",
+                "image_urls": [image],
+            })
+            state.flush_deferred_tool_images()
+            await manager.save(state, checkpoint_type="completed")
+            db = await manager._get_db()
+            protocol_raw, attachments_raw = (await db.execute_fetchall(
+                "SELECT message_json, attachments_json FROM conversation_messages WHERE record_kind='tool_image'"
+            ))[0]
+            checkpoint_raw = (await db.execute_fetchall(
+                "SELECT state_json FROM checkpoints ORDER BY id DESC LIMIT 1"
+            ))[0][0]
+            return json.loads(protocol_raw), json.loads(checkpoint_raw), json.loads(attachments_raw)
+        finally:
+            await manager.close()
+
+    protocol, checkpoint, attachments = asyncio.run(scenario())
+
+    assert attachments[0].startswith("tool/")
+    assert protocol["name"] == "system_tool_image"
+    assert protocol["content"][1]["image_url"]["url"] == attachments[0]
+    assert checkpoint["messages"][-1]["content"][1]["image_url"]["url"] == image
+    assert (tmp_path / "images" / Path(attachments[0])).read_bytes() == b"\x00"
+
+
+def test_tool_image_protocol_row_upgrades_after_transient_save_failure(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    attempts = 0
+
+    def save_images(images: list[str], *, category=None) -> list[str]:
+        nonlocal attempts
+        attempts += 1
+        return [] if attempts == 1 else ["tool/recovered.png"]
+
+    monkeypatch.setattr(state_manager_module, "save_multiple_images", save_images)
+
+    async def scenario() -> tuple[dict, str | None, dict, str | None]:
+        manager = state_manager_module.StateManager(
+            "retry-tool-image",
+            db_path=str(tmp_path / "agent.sqlite3"),
+        )
+        try:
+            state = AgentState.create_new("retry-tool-image")
+            state.add_tool_message("done", "draw", "call-draw")
+            state.deferred_tool_images.append({
+                "tool_call_id": "call-draw",
+                "tool_name": "draw",
+                "image_urls": ["data:image/png;base64,AA=="],
+            })
+            state.flush_deferred_tool_images()
+            await manager.save(state, checkpoint_type="completed")
+            db = await manager._get_db()
+            first_raw, first_attachments = (await db.execute_fetchall(
+                "SELECT message_json, attachments_json FROM conversation_messages WHERE record_kind='tool_image'"
+            ))[0]
+
+            await manager.save(state, checkpoint_type="completed")
+            second_raw, second_attachments = (await db.execute_fetchall(
+                "SELECT message_json, attachments_json FROM conversation_messages WHERE record_kind='tool_image'"
+            ))[0]
+            return (
+                json.loads(first_raw),
+                first_attachments,
+                json.loads(second_raw),
+                second_attachments,
+            )
+        finally:
+            await manager.close()
+
+    first, first_attachments, second, second_attachments = asyncio.run(scenario())
+
+    assert first["content"][1]["image_url"]["url"].startswith("data:image/")
+    assert first_attachments is None
+    assert second["content"][1]["image_url"]["url"] == "tool/recovered.png"
+    assert json.loads(second_attachments) == ["tool/recovered.png"]
+
+
+def test_tool_image_save_exception_preserves_base64_and_checkpoint(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    def fail_save(_images: list[str], *, category=None) -> list[str]:
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(state_manager_module, "save_multiple_images", fail_save)
+
+    async def scenario() -> tuple[dict, dict, str | None]:
+        manager = state_manager_module.StateManager(
+            "failed-tool-image",
+            db_path=str(tmp_path / "agent.sqlite3"),
+        )
+        try:
+            state = AgentState.create_new("failed-tool-image")
+            state.add_tool_message("done", "draw", "call-draw")
+            state.deferred_tool_images.append({
+                "tool_call_id": "call-draw",
+                "tool_name": "draw",
+                "image_urls": ["data:image/png;base64,AA=="],
+            })
+            state.flush_deferred_tool_images()
+            await manager.save(state, checkpoint_type="completed")
+            db = await manager._get_db()
+            protocol_raw, attachments = (await db.execute_fetchall(
+                "SELECT message_json, attachments_json FROM conversation_messages WHERE record_kind='tool_image'"
+            ))[0]
+            checkpoint_raw = (await db.execute_fetchall(
+                "SELECT state_json FROM checkpoints ORDER BY id DESC LIMIT 1"
+            ))[0][0]
+            return json.loads(protocol_raw), json.loads(checkpoint_raw), attachments
+        finally:
+            await manager.close()
+
+    protocol, checkpoint, attachments = asyncio.run(scenario())
+
+    expected = "data:image/png;base64,AA=="
+    assert protocol["content"][1]["image_url"]["url"] == expected
+    assert checkpoint["messages"][-1]["content"][1]["image_url"]["url"] == expected
+    assert attachments is None

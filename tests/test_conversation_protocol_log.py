@@ -74,7 +74,13 @@ def test_history_dao_projects_visible_rows_before_pagination(tmp_path: Path) -> 
             state.add_tool_message("隐藏结果", "read_file", "call-1", compressible=True)
             state.add_assistant_message("回答")
             await manager.save(state, checkpoint_type="completed")
-            return await ChatHistoryDao(db_path=db_path).list_chat_history_async(
+            dao = ChatHistoryDao(db_path=db_path)
+
+            async def reject_full_history_load(_session_id: str) -> list[dict]:
+                raise AssertionError("分页查询不应先加载并投影整个会话")
+
+            dao._visible_protocol_rows = reject_full_history_load  # type: ignore[method-assign]
+            return await dao.list_chat_history_async(
                 "session", start=1, limit=2
             )
         finally:
@@ -82,6 +88,45 @@ def test_history_dao_projects_visible_rows_before_pagination(tmp_path: Path) -> 
 
     rows = asyncio.run(scenario())
     assert [row["role"] for row in rows] == ["AI_Tool_Calling", "AI"]
+
+
+def test_history_dao_keeps_projection_order_across_small_query_chunks(tmp_path: Path) -> None:
+    async def scenario() -> tuple[list[dict], list[dict]]:
+        db_path = tmp_path / "agent.sqlite3"
+        manager = StateManager("session", db_path=str(db_path))
+        try:
+            state = AgentState.create_new("session")
+            state.add_user_message("question")
+            state.messages.append({
+                "role": "assistant",
+                "content": "working",
+                "tool_calls": [{
+                    "id": "call-1", "type": "function",
+                    "function": {"name": "read_file", "arguments": "{}"},
+                }],
+            })
+            state.add_tool_message("hidden", "read_file", "call-1", compressible=True)
+            state.add_assistant_message("answer")
+            await manager.save(state, checkpoint_type="completed")
+
+            dao = ChatHistoryDao(db_path=db_path)
+            dao.READ_CHUNK_SIZE = 1
+            return (
+                await dao.list_chat_history_async("session", start=1, limit=2),
+                await dao.list_chat_history_last_n_async("session", n=2),
+            )
+        finally:
+            await manager.close()
+
+    page, tail = asyncio.run(scenario())
+    assert [(row["role"], row["content"]) for row in page] == [
+        ("AI", "working"),
+        ("AI_Tool_Calling", "调用了工具: read_file"),
+    ]
+    assert [(row["role"], row["content"]) for row in tail] == [
+        ("AI_Tool_Calling", "调用了工具: read_file"),
+        ("AI", "answer"),
+    ]
 
 
 def test_tool_image_protocol_row_references_its_tool_message(tmp_path: Path) -> None:
