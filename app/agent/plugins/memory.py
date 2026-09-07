@@ -72,7 +72,7 @@ class MemoryPlugin(BasePlugin):
                 "启用情景或语义记忆时必须配置正整数 MEMORY_EXTRACTION_MAX_CONTEXT_TOKENS"
             )
 
-    async def execute(self, context: HookContext) -> HookContext:
+    async def execute(self, context: HookContext) -> None:
         state = context.agent_state
         if context.hook == PluginHook.BEFORE_USER_INPUT_COMMIT:
             await self._prepare_user_input_commit(state, context.data)
@@ -86,7 +86,6 @@ class MemoryPlugin(BasePlugin):
             await self._prepare_response_commit(state, context.data)
         elif context.hook == PluginHook.AFTER_RESPONSE_COMMIT:
             self._schedule_long_term_memory(state, context.data)
-        return context
 
     async def _inject_context(self, state, runtime_context) -> None:
         query = get_last_human_text(state.messages)

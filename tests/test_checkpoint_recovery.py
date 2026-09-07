@@ -152,7 +152,7 @@ class CommitOrderPlugin(BasePlugin):
             PluginHook.AFTER_RESPONSE_COMMIT,
         ]
 
-    async def execute(self, context: HookContext) -> HookContext:
+    async def execute(self, context: HookContext) -> None:
         if context.hook == PluginHook.BEFORE_RESPONSE_COMMIT:
             self.order.append("before_commit")
             context.data["prepared"] = True
@@ -160,7 +160,6 @@ class CommitOrderPlugin(BasePlugin):
         elif context.hook == PluginHook.AFTER_RESPONSE_COMMIT:
             assert context.data == {"prepared": True}
             self.order.append("after_commit")
-        return context
 
 
 class UserInputCommitOrderPlugin(BasePlugin):
@@ -176,7 +175,7 @@ class UserInputCommitOrderPlugin(BasePlugin):
             PluginHook.AFTER_USER_INPUT_COMMIT,
         ]
 
-    async def execute(self, context: HookContext) -> HookContext:
+    async def execute(self, context: HookContext) -> None:
         if context.hook == PluginHook.BEFORE_USER_INPUT_COMMIT:
             assert not any(
                 message.get("content") == "本轮新输入"
@@ -191,7 +190,6 @@ class UserInputCommitOrderPlugin(BasePlugin):
                 for message in context.agent_state.messages
             )
             self.order.append("after_user_input_commit")
-        return context
 
 
 def test_response_commit_hooks_wrap_completed_checkpoint(tmp_path: Path) -> None:

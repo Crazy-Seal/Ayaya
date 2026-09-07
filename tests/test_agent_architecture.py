@@ -43,8 +43,8 @@ class _NoopPlugin(BasePlugin):
     def hooks(self) -> list[PluginHook]:
         return []
 
-    async def execute(self, context: HookContext) -> HookContext:
-        return context
+    async def execute(self, context: HookContext) -> None:
+        pass
 
 
 class _RecordingPlugin(BasePlugin):
@@ -57,9 +57,8 @@ class _RecordingPlugin(BasePlugin):
     def hooks(self) -> list[PluginHook]:
         return [PluginHook.BEFORE_LLM]
 
-    async def execute(self, context: HookContext) -> HookContext:
+    async def execute(self, context: HookContext) -> None:
         self.calls.append(context.hook)
-        return context
 
 
 class _DynamicTool(BaseTool):

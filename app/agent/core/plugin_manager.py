@@ -82,8 +82,8 @@ class PluginManager:
         state: Any,
         data: Any = None,
         metadata: dict | None = None
-    ) -> Any:
-        """运行指定钩子的所有插件
+    ) -> None:
+        """在同一上下文上运行插件，只允许原地修改状态和钩子数据。
 
         Args:
             hook: 钩子类型
@@ -91,25 +91,20 @@ class PluginManager:
             data: 钩子相关数据
             metadata: 元数据
 
-        Returns:
-            处理后的状态
+        插件异常会记录并继续执行；异常前的原地修改不会回滚。
         """
         plugins = self._hooks.get(hook, [])
         if not plugins:
-            return state
+            return
 
         context = HookContext.create(hook, state, data, metadata)
 
         for plugin in plugins:
             try:
-                context = await plugin.execute(context)
-                # 更新状态
-                state = context.agent_state
+                await plugin.execute(context)
             except Exception as e:
-                logger.error(f"插件 '{plugin.name}' 在钩子 '{hook}' 执行失败: {e}")
+                logger.exception(f"插件 '{plugin.name}' 在钩子 '{hook}' 执行失败: {e}")
                 # 继续执行其他插件
-
-        return state
 
     def get_plugin(self, name: str) -> BasePlugin | None:
         """获取插件"""

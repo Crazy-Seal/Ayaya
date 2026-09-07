@@ -350,7 +350,7 @@ class Agent:
     ) -> AgentState:
         """冻结上一批派生任务，并原子提交当前用户输入。"""
         commit_context: dict = {}
-        state = await self.plugin_manager.run_hooks(
+        await self.plugin_manager.run_hooks(
             PluginHook.BEFORE_USER_INPUT_COMMIT,
             state,
             data=commit_context,
@@ -444,7 +444,7 @@ class Agent:
         commit_context: dict = {}
         # 轮次计数属于 Agent 完成生命周期：只有走到最终响应提交才推进。
         state.increment_long_term_memory_turn_counter()
-        state = await self.plugin_manager.run_hooks(
+        await self.plugin_manager.run_hooks(
             PluginHook.BEFORE_RESPONSE_COMMIT,
             state,
             data=commit_context,

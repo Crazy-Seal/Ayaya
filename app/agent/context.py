@@ -165,9 +165,9 @@ class PluginHook(str, Enum):
     ON_ERROR = "on_error"               # 错误发生时
 
 
-@dataclass
+@dataclass(frozen=True)
 class HookContext:
-    """钩子上下文"""
+    """钩子上下文：字段引用固定，状态及钩子数据只允许原地修改。"""
     hook: PluginHook
     agent_state: Any  # AgentState（避免循环引用）
     data: Any         # 钩子相关的数据
@@ -241,8 +241,8 @@ class BasePlugin(ABC):
         pass
 
     @abstractmethod
-    async def execute(self, context: HookContext) -> HookContext:
-        """执行插件逻辑，返回可能修改后的上下文"""
+    async def execute(self, context: HookContext) -> None:
+        """原地修改状态或钩子数据，不返回替代上下文。"""
         pass
 
     async def on_register(self) -> None:

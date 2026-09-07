@@ -116,7 +116,7 @@ class ExecutionPipeline:
         if latest_human:
             runtime_context.latest_human_message_id = str(latest_human.get("_message_id") or "")
         # ON_INVOKE 钩子 - 每轮仅在此触发一次
-        state = await self._plugin_manager.run_hooks(
+        await self._plugin_manager.run_hooks(
             PluginHook.ON_INVOKE, state, data={"runtime_context": runtime_context}
         )
         async for event in self._run_loop(
@@ -211,7 +211,7 @@ class ExecutionPipeline:
         """LLM ↔ 工具循环主体（不含 ON_INVOKE）"""
         while True:
             # 1. BEFORE_LLM 钩子
-            state = await self._plugin_manager.run_hooks(
+            await self._plugin_manager.run_hooks(
                 PluginHook.BEFORE_LLM, state
             )
 
@@ -245,7 +245,7 @@ class ExecutionPipeline:
                 return
 
             # 3. AFTER_LLM 钩子
-            state = await self._plugin_manager.run_hooks(
+            await self._plugin_manager.run_hooks(
                 PluginHook.AFTER_LLM, state,
                 data={"content": accumulated_content, "tool_calls": tool_calls},
             )
