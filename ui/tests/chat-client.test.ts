@@ -1,0 +1,293 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+
+import { ChatClient, type ChatClientOptions } from "../src/chat/chat-client.js";
+import type {
+  ChatInterruptPayload, ChatResult, ScreenshotResponsePayload, ControlScreenResponsePayload,
+} from "../shared-types.js";
+
+const interrupt = (id: string): ChatInterruptPayload => ({
+  value: {
+    type: "mcp_tool_approval_request", request_id: id, message: "工具审批",
+    data: { server_id: "test", server_name: "测试", tool_name: "read", description: "读取", arguments: {} },
+  },
+});
+type Step = { text?: string; next?: string; error?: string; tool?: boolean; responseOnly?: string };
+type Bridge = NonNullable<ChatClientOptions["bridge"]>;
+
+function setup(steps: Step[]) {
+  const chunks = new Set<Parameters<Bridge["onChatChunk"]>[0]>();
+  const tools = new Set<Parameters<NonNullable<Bridge["onToolCall"]>>[0]>();
+  const completed: string[] = [];
+  const errors: string[] = [];
+  const motions: string[] = [];
+  const approvals: boolean[] = [];
+  const requests: { sessionId: string; requestId: string }[] = [];
+  const bubbles: string[] = [];
+  let draft = "";
+  let pendingTools = 0;
+  let completions = 0;
+  let historyError = false;
+  let onApproval: () => void | Promise<void> = () => {};
+  let approved = true;
+  const input = { value: "开始", style: { height: "40px" }, focus() {} };
+  const sendBtn = { disabled: false };
+  const request = async (requestId: string, sessionId: string): Promise<ChatResult> => {
+    requests.push({ requestId, sessionId });
+    const step = steps.shift();
+    assert.ok(step, "出现了多余请求");
+    if (step.tool) for (const callback of tools) callback({ requestId, toolName: "read" });
+    if (step.text) for (const callback of chunks) callback({ requestId, chunk: step.text, aggregated: step.text });
+    if (step.error) throw new Error(step.error);
+    return step.next
+      ? { interrupted: true, interruptData: interrupt(step.next), response: step.text ?? "", model: "" }
+      : { response: step.responseOnly ?? step.text ?? "", model: "" };
+  };
+  const bridge: Bridge = {
+    chat: async (_message, sessionId, requestId) => request(requestId!, sessionId!),
+    onChatChunk(callback) { chunks.add(callback); return () => { chunks.delete(callback); }; },
+    onToolCall(callback) { tools.add(callback); return () => { tools.delete(callback); }; },
+    getFrontendSettings: async () => ({ hide_on_screenshot: false }),
+    mcpToolRespond: async (payload) => {
+      approvals.push(payload.approved);
+      return request(payload.streamRequestId!, payload.sessionId);
+    },
+  };
+  const client = new ChatClient({
+    sessionId: "session-a", bridge, input, sendBtn,
+    bubble: { setText(text) { bubbles.push(text); } },
+    confirmDialog: { isOpen: () => false, async open() { await onApproval(); return approved; } },
+    toolCallToast: { show() {}, showError() {} },
+    playMotion(tag) { motions.push(tag); },
+    onChatComplete() { completions++; },
+    chatHistory: {
+      addMessage() {}, showTypingIndicator() {}, hideTypingIndicator() {},
+      startStreaming() { draft = ""; },
+      updateLastAiMessage(text) { draft = text; },
+      finalizeStreamingMessage() { if (draft) completed.push(draft); draft = ""; },
+      abortStreaming() { draft = ""; },
+      showToolCallMessage() { pendingTools++; },
+      finalizeToolCallIndicator() { pendingTools = 0; },
+      showErrorMessage(message) { errors.push(message ?? ""); },
+      async loadHistory() { if (historyError) throw new Error("历史离线"); },
+    },
+  });
+  return {
+    client, completed, errors, motions, approvals, requests, bubbles, input, sendBtn, bridge,
+    chunks, tools,
+    get pendingTools() { return pendingTools; },
+    get completions() { return completions; },
+    set historyError(value: boolean) { historyError = value; },
+    set approved(value: boolean) { approved = value; },
+    set onApproval(callback: () => void | Promise<void>) { onApproval = callback; },
+  };
+}
+
+test("恢复聊天在每次中断前完成当前文本段", async () => {
+  const h = setup([{ text: "第一段", next: "second" }, { text: "第二段" }]);
+  let confirmations = 0;
+  h.onApproval = () => {
+    if (++confirmations === 2) assert.deepEqual(h.completed, ["第一段"]);
+  };
+  await h.client.restorePendingInterrupt(interrupt("first"));
+  assert.deepEqual(h.completed, ["第一段", "第二段"]);
+  assert.deepEqual(h.errors, []);
+  assert.equal(h.bubbles.at(-1), "第二段");
+  assert.equal(h.sendBtn.disabled, false);
+  assert.equal(h.chunks.size + h.tools.size, 0);
+});
+
+for (const entry of ["send", "restore"] as const) {
+  const run = (h: ReturnType<typeof setup>) => entry === "send"
+    ? h.client.sendMessage()
+    : h.client.restorePendingInterrupt(interrupt("initial"));
+
+  test(`${entry}: 连续中断分段、工具完成和表情使用同一规则`, async (t) => {
+    t.mock.timers.enable({ apis: ["setInterval"] });
+    const h = setup([
+      { text: "<开心>第一段", tool: true, next: "second" },
+      { text: "<开心>第二段", next: "third" },
+      { text: "<点头>最后一段" },
+    ]);
+    let interruptSubscriptions = 0;
+    h.bridge.onChatInterrupt = () => { interruptSubscriptions++; return () => {}; };
+    h.onApproval = () => {
+      assert.equal(h.sendBtn.disabled, true);
+      assert.equal(h.pendingTools, 0);
+      if (h.requests.length > 0) assert.deepEqual(h.motions, ["开心"]);
+      const renders = h.bubbles.length;
+      t.mock.timers.tick(1000);
+      assert.equal(h.bubbles.length, renders, "等待审批时不应继续闪烁文本光标");
+    };
+    await run(h);
+    assert.deepEqual(h.errors, []);
+    assert.deepEqual(h.completed, ["第一段", "第二段", "最后一段"]);
+    assert.deepEqual(h.motions, ["开心", "点头"]);
+    assert.equal(h.completions, 1);
+    assert.equal(h.requests.length, 3);
+    assert.equal(interruptSubscriptions, 0);
+    assert.equal(h.chunks.size + h.tools.size, 0);
+    assert.equal(h.sendBtn.disabled, false);
+    const renders = h.bubbles.length;
+    t.mock.timers.tick(1000);
+    assert.equal(h.bubbles.length, renders, "完成后不应有遗留计时器");
+  });
+
+  test(`${entry}: 后续请求失败只丢弃当前草稿`, async () => {
+    const h = setup([{ text: "已完成", next: "second" }, { text: "未完成", error: "断线" }]);
+    await run(h);
+    assert.deepEqual(h.completed, ["已完成"]);
+    assert.equal(h.errors.length, 1);
+    assert.match(h.errors[0], /断线/);
+    assert.equal(h.completions, 1);
+    assert.equal(h.chunks.size + h.tools.size, 0);
+    assert.equal(h.sendBtn.disabled, false);
+  });
+
+  test(`${entry}: 拒绝审批后仍让后端继续，跳过无文本阶段`, async () => {
+    const h = setup([{ next: "second" }, { text: "已取消操作" }]);
+    h.approved = false;
+    await run(h);
+    assert.deepEqual(h.errors, []);
+    assert.ok(h.approvals.length > 0);
+    assert.ok(h.approvals.every((approved) => !approved));
+    assert.deepEqual(h.completed, ["已取消操作"]);
+  });
+
+  test(`${entry}: 忽略上一段迟到事件并保持会话标识`, async () => {
+    const h = setup([{ text: "第一段", next: "second" }, { text: "第二段" }]);
+    h.onApproval = () => {
+      if (h.requests.length === 0) return;
+      h.client.setSessionId("session-b");
+      for (const callback of h.chunks) {
+        callback({ requestId: h.requests[0].requestId, chunk: "迟到文本", aggregated: "迟到文本" });
+      }
+    };
+    await run(h);
+    assert.deepEqual(h.errors, []);
+    assert.deepEqual(h.completed, ["第一段", "第二段"]);
+    assert.ok(h.requests.every((request) => request.sessionId === "session-a"));
+  });
+
+  test(`${entry}: 只有返回文本时也保存回复，下一轮重置表情去重`, async () => {
+    const h = setup([{ responseOnly: "<开心>完成" }, { responseOnly: "<开心>再次完成" }]);
+    await run(h);
+    h.input.value = "再来一次";
+    await run(h);
+    assert.deepEqual(h.errors, []);
+    assert.deepEqual(h.completed, ["完成", "再次完成"]);
+    assert.deepEqual(h.motions, ["开心", "开心"]);
+    assert.equal(h.completions, 2);
+  });
+}
+
+test("历史同步失败不撤销已完成回复，也不覆盖桌宠气泡", async () => {
+  const h = setup([{ text: "完成" }]);
+  h.historyError = true;
+  await h.client.restorePendingInterrupt(interrupt("initial"));
+  assert.deepEqual(h.completed, ["完成"]);
+  assert.equal(h.bubbles.at(-1), "完成");
+  assert.equal(h.errors.length, 1);
+  assert.match(h.errors[0], /对话已完成.*历史记录同步失败/);
+  assert.equal(h.completions, 1);
+  assert.equal(h.sendBtn.disabled, false);
+});
+
+test("等待审批时拒绝重复启动，整轮完成前入口 Promise 不结束", async () => {
+  const h = setup([{ text: "完成" }]);
+  let approve!: () => void;
+  let settled = false;
+  h.onApproval = () => new Promise<void>((resolve) => { approve = resolve; });
+  const running = h.client.restorePendingInterrupt(interrupt("initial")).then(() => { settled = true; });
+  await h.client.sendMessage();
+  await h.client.restorePendingInterrupt(interrupt("duplicate"));
+  assert.equal(settled, false);
+  assert.equal(h.requests.length, 0);
+  approve();
+  await running;
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.completions, 1);
+  assert.deepEqual(h.errors, []);
+});
+
+for (const entry of ["send", "restore"] as const) {
+  const begin = async (h: ReturnType<typeof setup>, initial: ChatInterruptPayload) => {
+    if (entry === "restore") return h.client.restorePendingInterrupt(initial);
+    h.bridge.chat = async () => ({ interrupted: true, interruptData: initial, response: "", model: "" });
+    await h.client.sendMessage();
+  };
+  for (const approved of [true, false]) {
+    test(`${entry}: 截图${approved ? "批准" : "拒绝"}正确传回恢复标识`, async () => {
+      const h = setup([]);
+      h.approved = approved;
+      let captures = 0;
+      const responses: ScreenshotResponsePayload[] = [];
+      h.bridge.captureScreen = async () => {
+        captures++;
+        return { dataUrl: "data:image/png;base64,test", width: 800, height: 600 };
+      };
+      h.bridge.screenshotRespond = async (payload) => {
+        responses.push(payload);
+        return { response: "完成", model: "" };
+      };
+      await begin(h, { value: { type: "screenshot_request", request_id: "screenshot-id", message: "截图" } });
+      assert.deepEqual(h.errors, []);
+      assert.equal(captures, approved ? 1 : 0);
+      assert.equal(responses.length, 1);
+      assert.equal(responses[0].approved, approved);
+      assert.equal(responses[0].requestId, "screenshot-id");
+      assert.equal(responses[0].sessionId, "session-a");
+      assert.ok(responses[0].streamRequestId);
+      assert.equal(responses[0].screenshotData, approved ? "data:image/png;base64,test" : undefined);
+      assert.deepEqual(h.completed, ["完成"]);
+    });
+  }
+  for (const outcome of ["approved", "denied", "failed"] as const) {
+    test(`${entry}: 屏幕捕获后执行审批 ${outcome} 保持响应协议`, async () => {
+      const h = setup([]);
+      h.approved = outcome !== "denied";
+      let actions = 0;
+      let captures = 0;
+      const responses: ControlScreenResponsePayload[] = [];
+      h.bridge.captureScreen = async () => {
+        captures++;
+        return { dataUrl: "data:image/png;base64,test", width: 800, height: 600 };
+      };
+      h.bridge.resolveScreenActionPoint = async () => ({ x: 400, y: 300 });
+      h.bridge.performScreenAction = async () => {
+        actions++;
+        return outcome === "failed" ? { executed: false, error: "执行失败" } : { executed: true };
+      };
+      h.bridge.controlScreenRespond = async (payload) => {
+        responses.push(payload);
+        if (payload.requestId === "capture-id") return {
+          interrupted: true, response: "", model: "",
+          interruptData: { value: {
+            type: "control_screen_execute_request", request_id: "execute-id", message: "执行",
+            data: {
+              target: "按钮", operation: "click", text: "", press_enter: false,
+              wait_seconds: 0, scroll_direction: "none",
+              coordinates: { bbox: [400, 400, 600, 600], x_ratio: 0.5, y_ratio: 0.5 },
+            },
+          } },
+        };
+        return { response: "处理完成", model: "" };
+      };
+      await begin(h, { value: {
+        type: "control_screen_capture_request", request_id: "capture-id", message: "获取屏幕",
+      } });
+      assert.deepEqual(h.errors, []);
+      assert.equal(responses.length, 2);
+      assert.equal(responses[0].screenshotData, "data:image/png;base64,test");
+      assert.equal(responses[0].approved, undefined);
+      assert.equal(responses[1].requestId, "execute-id");
+      assert.equal(responses[1].approved, outcome !== "denied");
+      assert.equal(responses[1].executed, outcome === "denied" ? undefined : outcome === "approved");
+      assert.equal(responses[1].error, outcome === "failed" ? "执行失败" : undefined);
+      assert.equal(actions, outcome === "denied" ? 0 : 1);
+      assert.equal(captures, outcome === "approved" ? 2 : 1);
+      assert.ok(responses.every((payload) => payload.sessionId === "session-a" && payload.streamRequestId));
+      assert.deepEqual(h.completed, ["处理完成"]);
+    });
+  }
+}

@@ -171,6 +171,8 @@ export class ChatHistoryManager {
       startIndex = 0;
     }
 
+    // 成功取得历史后，已完成的流式尾句由历史重绘接管，避免计时器重复追加。
+    if (!this.isStreaming) this.abortStreaming();
     this.messages = lastNHistory.slice(startIndex);
     this.render();
 
