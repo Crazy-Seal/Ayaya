@@ -97,6 +97,179 @@ class ResumableScreenshotTool(BaseTool):
         return ToolResult.success("截屏恢复完成")
 
 
+class PhasedInterruptTool(BaseTool):
+    name = "phased_interrupt"
+    description = "按指定阶段数暂停，验证恢复路径"
+    parameters_schema = {"type": "object", "properties": {"stages": {"type": "integer"}}}
+    is_resumable = True
+
+    async def execute(self, args: dict, context: ToolContext) -> ToolResult:
+        phase = (context.resume_state or {}).get("phase", 0)
+        if phase < args["stages"]:
+            return ToolResult.needs_input(
+                "screenshot_request", "允许继续？", resume_state={"phase": phase + 1},
+            )
+        return ToolResult.success("阶段完成")
+
+
+class InterruptRecordingPlugin(BasePlugin):
+    name = "interrupt_recording"
+
+    def __init__(self) -> None:
+        self.invocations = 0
+        self.interrupt_ids: list[str] = []
+
+    @property
+    def hooks(self) -> list[PluginHook]:
+        return [PluginHook.ON_INVOKE, PluginHook.ON_INTERRUPT]
+
+    async def execute(self, context: HookContext) -> None:
+        if context.hook == PluginHook.ON_INVOKE:
+            self.invocations += 1
+            return
+        interrupt = context.data["interrupt"]
+        assert context.agent_state.interrupt_data["request_id"] == interrupt.request_id
+        assert not context.agent_state.pending_tool_calls
+        self.interrupt_ids.append(interrupt.request_id)
+        context.agent_state.extra["interrupt_ids"] = list(self.interrupt_ids)
+
+
+class FailingInterruptPlugin(BasePlugin):
+    name = "failing_interrupt"
+    priority = 90
+
+    @property
+    def hooks(self) -> list[PluginHook]:
+        return [PluginHook.ON_INTERRUPT]
+
+    async def execute(self, context: HookContext) -> None:
+        context.agent_state.extra["before_plugin_error"] = True
+        raise RuntimeError("测试中断插件失败")
+
+
+@pytest.mark.parametrize("path", ["normal", "same_tool", "remaining_tool"])
+@pytest.mark.parametrize("plugin_fails", [False, True])
+def test_all_interrupt_paths_save_hook_updates_before_emitting(
+    tmp_path: Path, path: str, plugin_fails: bool, caplog,
+) -> None:
+    async def scenario() -> None:
+        calls = [StreamChunk(tool_call=ToolCall(
+            id="first", name="phased_interrupt", args={"stages": 2 if path == "same_tool" else 1},
+        )), StreamChunk(tool_call=ToolCall(
+            id="second", name="phased_interrupt", args={"stages": 1},
+        ))]
+        db_path = tmp_path / "interrupts.sqlite3"
+        agent = await make_agent(db_path, [calls], PhasedInterruptTool())
+        plugin = InterruptRecordingPlugin()
+        if plugin_fails:
+            await agent.register_plugin(FailingInterruptPlugin())
+        await agent.register_plugin(plugin)
+        reader = StateManager("checkpoint-test", db_path=str(db_path))
+
+        async def observe(stream, expected_call: str, expected_count: int) -> None:
+            events = []
+            try:
+                async for event in stream:
+                    events.append(event)
+                    if event.type == EventType.INTERRUPT:
+                        saved = await reader.load()
+                        request_id = event.data["request_id"]
+                        assert len(plugin.interrupt_ids) == expected_count
+                        assert saved.extra["interrupt_ids"] == plugin.interrupt_ids
+                        if plugin_fails:
+                            assert saved.extra["before_plugin_error"] is True
+                        assert plugin.interrupt_ids[-1] == request_id
+                        assert saved.interrupt_data["tool_call_id"] == expected_call
+                        assert saved.interrupt_data["request_id"] == request_id
+                        assert saved.interrupt_data["resume_state"]["phase"] == (
+                            2 if path == "same_tool" and expected_count == 2 else 1
+                        )
+                        assert [item["id"] for item in saved.pending_actions] == (
+                            ["second"] if expected_call == "first" else []
+                        )
+                        assert not saved.pending_tool_calls
+                        assert saved.long_term_memory_turn_counter == 0
+            finally:
+                await stream.aclose()
+            assert events[-1].type == EventType.INTERRUPT
+            assert sum(event.type == EventType.INTERRUPT for event in events) == 1
+            assert all(event.type != EventType.DONE for event in events)
+
+        try:
+            await observe(agent.run("开始"), "first", 1)
+            if path != "normal":
+                await observe(
+                    agent.resume({"approved": True}),
+                    "first" if path == "same_tool" else "second", 2,
+                )
+            assert plugin.invocations == 1
+            assert len(set(plugin.interrupt_ids)) == len(plugin.interrupt_ids)
+        finally:
+            await reader.close()
+            await agent.close()
+
+    asyncio.run(scenario())
+    if plugin_fails:
+        assert "failing_interrupt" in caplog.text
+        assert "测试中断插件失败" in caplog.text
+
+
+@pytest.mark.parametrize("path", ["normal", "same_tool", "remaining_tool"])
+@pytest.mark.parametrize("storage", ["failure", "none"])
+def test_interrupt_paths_respect_checkpoint_failure_and_optional_storage(
+    tmp_path: Path, path: str, storage: str,
+) -> None:
+    async def scenario() -> None:
+        calls = [StreamChunk(tool_call=ToolCall(
+            id="first", name="phased_interrupt", args={"stages": 2 if path == "same_tool" else 1},
+        )), StreamChunk(tool_call=ToolCall(
+            id="second", name="phased_interrupt", args={"stages": 1},
+        ))]
+        agent = await make_agent(tmp_path / "unused.sqlite3", [calls], PhasedInterruptTool())
+        plugin = InterruptRecordingPlugin()
+        await agent.register_plugin(plugin)
+        state = AgentState.create_new("checkpoint-test")
+        state.add_user_message("开始")
+        fail = path == "normal"
+        failed_saves = []
+
+        async def checkpoint(current: AgentState, *, checkpoint_type: CheckpointType) -> int:
+            assert checkpoint_type == "intermediate"
+            if current.is_interrupted() and fail:
+                # 失败发生在钩子之后，但事件尚未发出。
+                assert current.extra["interrupt_ids"] == plugin.interrupt_ids
+                failed_saves.append(current.interrupt_data["request_id"])
+                raise RuntimeError("中断保存失败")
+            return 1
+
+        callback = checkpoint if storage == "failure" else None
+        stream = agent.pipeline.execute(state, checkpoint=callback)
+        events = []
+        try:
+            if path != "normal":
+                initial = await drain(stream)
+                assert initial[-1].type == EventType.INTERRUPT
+                fail = True
+                stream = agent.pipeline.resume_tools(state, {"approved": True}, checkpoint=callback)
+            if storage == "failure":
+                with pytest.raises(RuntimeError, match="中断保存失败"):
+                    async for event in stream:
+                        events.append(event)
+                assert failed_saves == [plugin.interrupt_ids[-1]]
+                assert all(event.type not in {EventType.INTERRUPT, EventType.DONE} for event in events)
+            else:
+                events = await drain(stream)
+                assert events[-1].type == EventType.INTERRUPT
+                assert state.extra["interrupt_ids"] == plugin.interrupt_ids
+            assert len(plugin.interrupt_ids) == (1 if path == "normal" else 2)
+            assert plugin.invocations == 1
+        finally:
+            await stream.aclose()
+            await agent.close()
+
+    asyncio.run(scenario())
+
+
 async def make_agent(
     db_path: Path,
     scripts: list[list[StreamChunk] | BaseException],

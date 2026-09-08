@@ -12,6 +12,7 @@ import logging
 from typing import Any, AsyncIterator, Awaitable, Callable, Protocol, TYPE_CHECKING
 
 from app.agent.context import (
+    InterruptEvent,
     ToolContext,
     ToolResult,
     PluginHook,
@@ -162,9 +163,10 @@ class ExecutionPipeline:
 
             # 恢复执行时又触发了新的中断
             if result.interrupt:
-                self._persist_interrupt(state, interrupted_call, result, pending_actions)
-                await self._checkpoint(state, checkpoint)
-                yield AgentEvent(EventType.INTERRUPT, result.interrupt.to_client())
+                yield await self._commit_interrupt(
+                    state, interrupted_call, result.interrupt,
+                    result.resume_state, pending_actions, checkpoint,
+                )
                 return
 
             await self._commit_completed_tool_call(
@@ -181,9 +183,10 @@ class ExecutionPipeline:
 
             result = await self._execute_tool(state, tool_call)
             if result.interrupt:
-                self._persist_interrupt(state, tool_call, result, pending_actions[i + 1:])
-                await self._checkpoint(state, checkpoint)
-                yield AgentEvent(EventType.INTERRUPT, result.interrupt.to_client())
+                yield await self._commit_interrupt(
+                    state, tool_call, result.interrupt,
+                    result.resume_state, pending_actions[i + 1:], checkpoint,
+                )
                 return
 
             await self._commit_completed_tool_call(
@@ -271,13 +274,10 @@ class ExecutionPipeline:
                 # 中断：持久化路由信息 + 剩余工具，仅发最小字段给前端
                 if result.interrupt:
                     remaining = [tc.to_dict() for tc in tool_calls[i + 1:]]
-                    self._persist_interrupt(state, tool_call, result, remaining)
-                    await self._plugin_manager.run_hooks(
-                        PluginHook.ON_INTERRUPT, state,
-                        data={"interrupt": result.interrupt},
+                    yield await self._commit_interrupt(
+                        state, tool_call, result.interrupt,
+                        result.resume_state, remaining, checkpoint,
                     )
-                    await self._checkpoint(state, checkpoint)
-                    yield AgentEvent(EventType.INTERRUPT, result.interrupt.to_client())
                     return
 
                 await self._commit_completed_tool_call(
@@ -431,24 +431,34 @@ class ExecutionPipeline:
                 "image_urls": image_urls,
             })
 
-    def _persist_interrupt(
+    async def _commit_interrupt(
         self,
         state: AgentState,
         tool_call: ToolCall,
-        result: ToolResult,
+        interrupt: InterruptEvent,
+        resume_state: dict,
         pending_actions: list[dict],
-    ) -> None:
-        """把中断的完整路由信息写入 state，供跨请求恢复。"""
-        interrupt = result.interrupt
+        checkpoint: CheckpointCallback | None,
+    ) -> AgentEvent:
+        """统一中断迁移：写入路由、执行钩子、保存，再构造客户端事件。
+
+        钩子的原地修改一并保存；保存失败时不产生中断事件。
+        未配置持久化回调时仍支持独立执行 Pipeline。
+        """
         interrupt.tool_name = tool_call.name
         interrupt.tool_call_id = tool_call.id
         interrupt.tool_args = tool_call.args
-        interrupt.resume_state = result.resume_state
+        interrupt.resume_state = resume_state
         state.set_interrupt(
             interrupt_data=interrupt.to_state(),
             pending_actions=pending_actions,
         )
         state.clear_pending_tool_calls()
+        await self._plugin_manager.run_hooks(
+            PluginHook.ON_INTERRUPT, state, data={"interrupt": interrupt},
+        )
+        await self._checkpoint(state, checkpoint)
+        return AgentEvent(EventType.INTERRUPT, interrupt.to_client())
 
     # ==================== 助手消息 ====================
 
