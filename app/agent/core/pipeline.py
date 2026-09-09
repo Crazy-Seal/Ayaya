@@ -90,7 +90,6 @@ class ExecutionPipeline:
         self._llm_client = llm_client
         self._tool_manager = tool_manager
         self._plugin_manager = plugin_manager
-        self._context_strategy = context_strategy
         self._emit_event = emit_event
         self._tool_result_normalizer = ToolResultNormalizer()
         self._model_input = ModelInputCoordinator(
@@ -307,30 +306,43 @@ class ExecutionPipeline:
         """调用 LLM，保留文本、工具调用和终止原因。"""
         tools = self._tool_manager.get_openai_tools()
         produced = False
-        for attempt in range(2):
-            prepared = await self._model_input.prepare(
-                state=state,
-                system_prompt=self._prompt_source.system_prompt,
-                tools=tools,
-                turn_context=runtime_context,
-            )
-            if prepared.state_changed:
-                await self._checkpoint(state, checkpoint)
-            try:
-                async for chunk in self._llm_client.astream(
-                    prepared.messages, tools=tools or None
-                ):
-                    produced = produced or bool(chunk.content or chunk.tool_call)
-                    if chunk.finish_reason == "content_filter":
-                        raise RuntimeError("触发 API 内容过滤")
-                    yield chunk
-                return
-            except Exception as exc:
-                text = str(exc).lower()
-                context_error = "context_length_exceeded" in text or "maximum context" in text
-                if attempt or produced or not context_error:
-                    raise
-                self._context_strategy.budget.raise_after_context_error()
+        prepared = await self._model_input.prepare(
+            state=state,
+            system_prompt=self._prompt_source.system_prompt,
+            tools=tools,
+            turn_context=runtime_context,
+        )
+        recovery = None
+        try:
+            while True:
+                if prepared.state_changed:
+                    await self._checkpoint(state, checkpoint)
+                try:
+                    async for chunk in self._llm_client.astream(
+                        prepared.messages, tools=tools or None
+                    ):
+                        produced = produced or bool(chunk.content or chunk.tool_call)
+                        if chunk.finish_reason == "content_filter":
+                            raise RuntimeError("触发 API 内容过滤")
+                        yield chunk
+                    return
+                except Exception as exc:
+                    if produced or not self._model_input.is_context_overflow(exc):
+                        raise
+                    if recovery is None:
+                        recovery = self._model_input.recover_context_overflow(
+                            state=state,
+                            system_prompt=self._prompt_source.system_prompt,
+                            tools=tools,
+                            turn_context=runtime_context,
+                        )
+                    try:
+                        prepared = await anext(recovery)
+                    except StopAsyncIteration:
+                        raise exc
+        finally:
+            if recovery is not None:
+                await recovery.aclose()
 
     # ==================== 工具执行 ====================
 

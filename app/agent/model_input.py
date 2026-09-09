@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Annotated, Protocol, TYPE_CHECKING
+from typing import Annotated, AsyncGenerator, Protocol, TYPE_CHECKING
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
@@ -434,3 +435,34 @@ class ModelInputCoordinator:
             raw_estimate=self.last_raw_estimate,
             actual_prompt_tokens=prompt_tokens,
         )
+
+    @staticmethod
+    def is_context_overflow(error: Exception) -> bool:
+        """仅明确的模型上下文拒绝进入压缩恢复。"""
+        text = str(error).lower()
+        return "context_length_exceeded" in text or "maximum context" in text
+
+    async def recover_context_overflow(
+        self,
+        *,
+        state: AgentState,
+        system_prompt: str,
+        tools: list[dict],
+        turn_context: TurnModelContext,
+    ) -> AsyncGenerator[PreparedModelInput, None]:
+        """按需提供两次强制压缩输入；冻结源仅在本次恢复期间存活。"""
+        self.compaction.compress_tool_results(state)
+        await self.compaction.drop_diary_covered_summaries(state)
+        frozen = deepcopy(state.messages)
+        for ratio in (0.60, 0.75):
+            candidate = await self.compaction.summarize_candidate(deepcopy(frozen), ratio)
+            candidate_state = AgentState.from_checkpoint(state.to_checkpoint())
+            candidate_state.messages = candidate
+            messages, raw, calibrated = self._view(
+                candidate_state, system_prompt, tools, turn_context
+            )
+            # 模型已拒绝输入，不再使用日常预算阈值跳过摘要或阻止重试。
+            state.messages = candidate
+            state.updated_at = utc_now()
+            self.last_raw_estimate = raw
+            yield PreparedModelInput(messages, raw, calibrated, state_changed=True)

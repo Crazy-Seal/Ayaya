@@ -104,9 +104,6 @@ class ContextBudgetService(RoughTokenEstimator):
         self._ewma_ratio = 0.8 * self._ewma_ratio + 0.2 * ratio
         self.calibration_factor = min(2.0, max(1.0, self._ewma_ratio * 1.10))
 
-    def raise_after_context_error(self) -> None:
-        self.calibration_factor = min(2.0, max(1.25, self.calibration_factor * 1.25))
-
     def should_compact(self, calibrated_estimate: int) -> bool:
         return calibrated_estimate >= self.config.compression_trigger_tokens
 
