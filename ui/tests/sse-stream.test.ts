@@ -9,6 +9,18 @@ import {
 
 const encoder = new TextEncoder();
 
+test("明确终态后取消剩余流并释放读取锁，清理失败不覆盖结果", async () => {
+  let cancelled = false;
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) { controller.enqueue(encoder.encode('data: [DONE]\n\n')); },
+    cancel() { cancelled = true; throw new Error("清理失败"); },
+  });
+  const result = await consumeSseStream(stream, {}, "流式响应失败");
+  assert.equal(result.response, "");
+  assert.equal(cancelled, true);
+  assert.equal(stream.locked, false);
+});
+
 const streamFrom = (...chunks: string[]): ReadableStream<Uint8Array> =>
   new ReadableStream({
     start(controller) {

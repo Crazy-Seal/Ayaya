@@ -6,9 +6,9 @@ import { BrowserWindow, dialog, desktopCapturer, screen, clipboard, type IpcMain
 import fs from "node:fs";
 import path from "node:path";
 
-import { CHAT_REQUEST_TIMEOUT_MS, FRONTEND_SETTINGS_PATH } from "./config.js";
+import { FRONTEND_SETTINGS_PATH } from "./config.js";
 import { backendFetch } from "./backend-client.js";
-import { consumeSseStream } from "./sse-stream.js";
+import { requestChatStream } from "./chat-stream-request.js";
 import type {
   ChatSettingsData,
   ModelTransformPayload,
@@ -126,34 +126,26 @@ const notifyModelTransformChanged = (model: {
   mainWindow.webContents.send("desktop-pet:model-transform-changed", payload);
 };
 
-const streamBackendResponse = async (
+/** 将共享流请求事件转发到发起请求的窗口。 */
+const streamBackendResponse = (
   event: IpcMainInvokeEvent,
-  res: Response,
+  path: string,
+  body: object,
   requestId: string | undefined,
-  errorFallback: string
-): Promise<ChatResult> => {
-  if (!res.body) {
-    throw new Error("API error: missing response stream");
-  }
-  return await consumeSseStream(
-    res.body,
-    {
-      onChunk: (chunk, aggregated) => {
-        if (!requestId) return;
-        const chunkPayload: ChatChunkPayload = { requestId, chunk, aggregated };
-        event.sender.send("desktop-pet:chat-chunk", chunkPayload);
-      },
-      onToolCall: (toolName) => {
-        if (!requestId) return;
-        event.sender.send("desktop-pet:chat-tool-call", { requestId, toolName });
-      },
-      onInterrupt: (interrupt) => {
-        event.sender.send("desktop-pet:chat-interrupt", interrupt);
-      },
-    },
-    errorFallback,
-  );
-};
+): Promise<ChatResult> => requestChatStream(path, body, {
+  onChunk: (chunk, aggregated) => {
+    if (!requestId) return;
+    const chunkPayload: ChatChunkPayload = { requestId, chunk, aggregated };
+    event.sender.send("desktop-pet:chat-chunk", chunkPayload);
+  },
+  onToolCall: (toolName) => {
+    if (!requestId) return;
+    event.sender.send("desktop-pet:chat-tool-call", { requestId, toolName });
+  },
+  onInterrupt: (interrupt) => {
+    event.sender.send("desktop-pet:chat-interrupt", interrupt);
+  },
+});
 
 const performScreenAction = async (payload: ScreenActionRequest): Promise<ScreenActionResult> => {
   const coordinates = payload.coordinates;
@@ -609,202 +601,59 @@ export const registerIpcHandlers = (): void => {
       if (images && images.length > 0) {
         body.images = images;
       }
-      const abortController = new AbortController();
-      const timeoutTimer = setTimeout(() => {
-        abortController.abort();
-      }, CHAT_REQUEST_TIMEOUT_MS);
-
-      try {
-        const res = await backendFetch("/chat", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(body),
-          signal: abortController.signal,
-        });
-
-        if (!res.ok) {
-          const text = await res.text();
-          throw new Error(text || `请求失败: ${res.status}`);
-        }
-
-        return await streamBackendResponse(
-          event,
-          res,
-          requestId,
-          "聊天流返回错误事件",
-        );
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        if (error instanceof Error && error.name === "AbortError") {
-          throw new Error("Chat request timeout (900s), please try again later");
-        }
-        if (
-          errorMessage.includes("UND_ERR_BODY_TIMEOUT") ||
-          errorMessage.toLowerCase().includes("body timeout") ||
-          errorMessage.toLowerCase().includes("terminated")
-        ) {
-          throw new Error("Chat request timeout (900s), please try again later");
-        }
-        throw error;
-      } finally {
-        clearTimeout(timeoutTimer);
-      }
+      return await streamBackendResponse(event, "/chat", body, requestId);
     }
   );
 
   // 截屏审批响应
   trustedIpc.handle(
     "desktop-pet:screenshot-respond",
-    async (
-      event,
-      payload: ScreenshotResponsePayload
-    ) => {
+    async (event, payload: ScreenshotResponsePayload) => {
       const { approved, screenshotData, width, height } = payload;
-
-      const abortController = new AbortController();
-      const timeoutTimer = setTimeout(() => {
-        abortController.abort();
-      }, CHAT_REQUEST_TIMEOUT_MS);
-
-      try {
-        // 构建请求体
-        const requestBody: Record<string, unknown> = {
-          ...buildBackendInterruptIdentity(payload),
-          approved,
-        };
-        // 如果允许且有截图数据，添加到请求体
-        if (approved && screenshotData) {
-          requestBody.screenshot_data = screenshotData;
-          if (width !== undefined) requestBody.width = width;
-          if (height !== undefined) requestBody.height = height;
-        }
-
-        const res = await backendFetch("/screenshot/respond", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(requestBody),
-          signal: abortController.signal,
-        });
-
-        if (!res.ok) {
-          const text = await res.text();
-          throw new Error(text || `请求失败: ${res.status}`);
-        }
-
-        return await streamBackendResponse(
-          event,
-          res,
-          payload.streamRequestId,
-          "截屏响应流返回错误事件",
-        );
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        if (error instanceof Error && error.name === "AbortError") {
-          throw new Error("Screenshot respond timeout (900s), please try again later");
-        }
-        throw error;
-      } finally {
-        clearTimeout(timeoutTimer);
+      const body: Record<string, unknown> = {
+        ...buildBackendInterruptIdentity(payload),
+        approved,
+      };
+      if (approved && screenshotData) {
+        body.screenshot_data = screenshotData;
+        if (width !== undefined) body.width = width;
+        if (height !== undefined) body.height = height;
       }
+      return await streamBackendResponse(event, "/screenshot/respond", body, payload.streamRequestId);
     }
   );
 
   // 屏幕控制工具响应
   trustedIpc.handle(
     "desktop-pet:control-screen-respond",
-    async (
-      event,
-      payload: ControlScreenResponsePayload
-    ) => {
+    async (event, payload: ControlScreenResponsePayload) => {
       const { approved, screenshotData, width, height, executed, error } = payload;
-
-      const abortController = new AbortController();
-      const timeoutTimer = setTimeout(() => {
-        abortController.abort();
-      }, CHAT_REQUEST_TIMEOUT_MS);
-
-      try {
-        const requestBody: Record<string, unknown> = {
-          ...buildBackendInterruptIdentity(payload),
-          approved,
-        };
-        if (screenshotData) requestBody.screenshot_data = screenshotData;
-        if (width !== undefined) requestBody.width = width;
-        if (height !== undefined) requestBody.height = height;
-        if (executed !== undefined) requestBody.executed = executed;
-        if (error) requestBody.error = error;
-
-        const res = await backendFetch("/control-screen/respond", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(requestBody),
-          signal: abortController.signal,
-        });
-
-        if (!res.ok) {
-          const text = await res.text();
-          throw new Error(text || `请求失败: ${res.status}`);
-        }
-
-        return await streamBackendResponse(
-          event,
-          res,
-          payload.streamRequestId,
-          "屏幕控制响应流返回错误事件"
-        );
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        if (error instanceof Error && error.name === "AbortError") {
-          throw new Error("Control screen respond timeout (900s), please try again later");
-        }
-        throw new Error(errorMessage);
-      } finally {
-        clearTimeout(timeoutTimer);
-      }
+      const body: Record<string, unknown> = {
+        ...buildBackendInterruptIdentity(payload),
+        approved,
+      };
+      if (screenshotData) body.screenshot_data = screenshotData;
+      if (width !== undefined) body.width = width;
+      if (height !== undefined) body.height = height;
+      if (executed !== undefined) body.executed = executed;
+      if (error) body.error = error;
+      return await streamBackendResponse(event, "/control-screen/respond", body, payload.streamRequestId);
     }
   );
 
   trustedIpc.handle(
     "desktop-pet:mcp-tool-respond",
-    async (
-      event,
-      payload: {
-        sessionId: string;
-        requestId: string;
-        streamRequestId?: string;
-        approved: boolean;
-      }
-    ) => {
-      const abortController = new AbortController();
-      const timeoutTimer = setTimeout(() => abortController.abort(), CHAT_REQUEST_TIMEOUT_MS);
-      try {
-        const res = await backendFetch("/mcp/respond", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            ...buildBackendInterruptIdentity(payload),
-            approved: payload.approved,
-          }),
-          signal: abortController.signal,
-        });
-        if (!res.ok) {
-          throw new Error((await res.text()) || `MCP 授权响应失败: ${res.status}`);
-        }
-        return await streamBackendResponse(
-          event,
-          res,
-          payload.streamRequestId,
-          "MCP 授权响应流格式错误"
-        );
-      } finally {
-        clearTimeout(timeoutTimer);
-      }
+    async (event, payload: {
+      sessionId: string;
+      requestId: string;
+      streamRequestId?: string;
+      approved: boolean;
+    }) => {
+      const body = {
+        ...buildBackendInterruptIdentity(payload),
+        approved: payload.approved,
+      };
+      return await streamBackendResponse(event, "/mcp/respond", body, payload.streamRequestId);
     }
   );
 

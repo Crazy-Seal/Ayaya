@@ -85,43 +85,49 @@ export const consumeSseStream = async (
     return undefined;
   };
 
-  while (!terminal) {
-    const readResult = await reader.read();
-    if (readResult.done) {
-      buffer += decoder.decode();
-      break;
-    }
-
-    buffer += decoder.decode(readResult.value, { stream: true });
-    const normalized = buffer.replaceAll("\r\n", "\n");
-    const eventBlocks = normalized.split("\n\n");
-    buffer = eventBlocks.pop() ?? "";
-
-    for (const block of eventBlocks) {
-      terminal = processEventBlock(block);
-      if (terminal) {
+  try {
+    while (!terminal) {
+      const readResult = await reader.read();
+      if (readResult.done) {
+        buffer += decoder.decode();
         break;
       }
-    }
-  }
 
-  if (!terminal) {
-    const remaining = buffer.trim();
-    if (remaining.length > 0) {
-      terminal = processEventBlock(remaining);
-    }
-  }
+      buffer += decoder.decode(readResult.value, { stream: true });
+      const normalized = buffer.replaceAll("\r\n", "\n");
+      const eventBlocks = normalized.split("\n\n");
+      buffer = eventBlocks.pop() ?? "";
 
-  if (!terminal) {
-    throw new UnexpectedSseEofError();
+      for (const block of eventBlocks) {
+        terminal = processEventBlock(block);
+        if (terminal) {
+          break;
+        }
+      }
+    }
+
+    if (!terminal) {
+      const remaining = buffer.trim();
+      if (remaining.length > 0) {
+        terminal = processEventBlock(remaining);
+      }
+    }
+
+    if (!terminal) {
+      throw new UnexpectedSseEofError();
+    }
+    if (terminal.type === "interrupt") {
+      return {
+        interrupted: true,
+        interruptData: terminal.data,
+        response: aggregatedResponse,
+        model: "",
+      };
+    }
+    return { response: aggregatedResponse, model: "" };
+  } finally {
+    // 终态或失败后停止消费；清理不阻塞结果，也不覆盖原始错误。
+    void reader.cancel().catch(() => {});
+    reader.releaseLock();
   }
-  if (terminal.type === "interrupt") {
-    return {
-      interrupted: true,
-      interruptData: terminal.data,
-      response: aggregatedResponse,
-      model: "",
-    };
-  }
-  return { response: aggregatedResponse, model: "" };
 };

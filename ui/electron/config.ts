@@ -11,7 +11,6 @@ export const LOG_WINDOW_HEIGHT = 720;
 export const LOG_WINDOW_MIN_WIDTH = 900;
 export const LOG_WINDOW_MIN_HEIGHT = 500;
 
-export const CHAT_REQUEST_TIMEOUT_MS = 900_000;
 export const CHAT_HISTORY_PAGE_SIZE = 200;
 export const CHAT_HISTORY_MAX_PAGES = 500;
 
