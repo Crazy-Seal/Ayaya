@@ -56,6 +56,7 @@ async def run(model, state, *, checkpoint_error=False):
         prompt_source=SimpleNamespace(system_prompt="固定提示"), llm_client=model,
         tool_manager=ToolManager(), plugin_manager=PluginManager(),
         context_strategy=strategy, emit_event=EventRouter().emit,
+        accounting_key="test",
         chat_settings=SimpleNamespace(name="助手", address="用户", feature="", character="", characteristic=""),
     )
     checkpoints = []
@@ -78,7 +79,6 @@ def test_rejected_input_forces_both_compaction_steps_below_budget():
     assert model.order == ["model", "summary", "checkpoint", "model"]
     assert any(message.get("name") == "context_summary" for message in checkpoints[0])
     assert not any(event.type == EventType.ERROR for event in events)
-    assert strategy.budget.calibration_factor == 1.10
 
 
 @pytest.mark.parametrize("failures", [2, 3])

@@ -8,6 +8,7 @@ from app.agent.context_strategy import (
     ContextCompressionPolicy,
     ContextStrategyConfig,
     ContextStrategyManager,
+    TokenAssessment,
     TurnModelContext,
     append_transient_context,
 )
@@ -26,7 +27,7 @@ from app.agent.model_input import (
     ContextSummary,
     ModelInputCoordinator,
 )
-from app.agent.state import AgentState
+from app.agent.state import AgentState, TokenBaseline
 from app.agent.tools.control_screen import control_screen
 from app.agent.tools.control_screen_with_vlm import control_screen_with_vlm
 from app.agent.tools.screenshot import screenshot
@@ -295,7 +296,7 @@ def test_image_only_compaction_marks_prepared_state_as_changed() -> None:
     state, prepared = asyncio.run(scenario())
 
     assert prepared.state_changed is True
-    assert prepared.calibrated_estimate < 10_000
+    assert prepared.estimated_tokens < 10_000
     assert not any(
         message.get("_associated_message_id") == "tool-0"
         for message in state.messages
@@ -336,20 +337,156 @@ def test_diary_coverage_port_removes_only_covered_context_summaries() -> None:
     assert asyncio.run(scenario()) == (1, ["未覆盖摘要", "当前消息"])
 
 
-def test_context_budget_calibration_is_conservative() -> None:
+def test_context_budget_uses_actual_prompt_as_baseline_for_net_rough_delta() -> None:
     service = ContextBudgetService(ContextStrategyConfig(compression_trigger_tokens_k=10))
-    raw = service.estimate_raw(
+    first = service.assess(
         system_prompt="system",
         tools=[{"type": "function", "function": {"name": "x", "parameters": {}}}],
         messages=[{"role": "user", "content": "hello"}],
+        baseline=None,
+        accounting_key="openai-chat:model-a",
     )
-    assert service.estimate_calibrated(raw) >= raw
+    baseline = service.observe(first, actual_prompt_tokens=1_000)
+    assert baseline is not None
 
-    service.calibrate(raw_estimate=raw, actual_prompt_tokens=raw * 2)
+    second = service.assess(
+        system_prompt="system",
+        tools=[{"type": "function", "function": {"name": "x", "parameters": {}}}],
+        messages=[
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "world"},
+            {"role": "user", "content": "next"},
+        ],
+        baseline=baseline,
+        accounting_key="openai-chat:model-a",
+    )
 
-    assert 1.0 < service.calibration_factor <= 2.0
+    assert second.source == "actual_delta"
+    assert second.estimated_prompt_tokens == (
+        1_000 + second.rough_prompt_tokens - first.rough_prompt_tokens
+    )
     assert service.should_compact(10_000)
     assert not service.should_compact(9_999)
+
+
+def test_context_budget_net_delta_accounts_for_replacement_and_deletion() -> None:
+    service = ContextBudgetService(ContextStrategyConfig(compression_trigger_tokens_k=10))
+    first = service.assess(
+        system_prompt="system",
+        tools=[],
+        messages=[
+            {"role": "user", "content": "old transient memory " + "x" * 600},
+            {"role": "tool", "content": "large result " + "y" * 600},
+        ],
+        baseline=None,
+        accounting_key="openai-chat:model-a",
+    )
+    baseline = service.observe(first, actual_prompt_tokens=2_000)
+    assert baseline is not None
+
+    second = service.assess(
+        system_prompt="system",
+        tools=[],
+        messages=[
+            {"role": "user", "content": "new transient memory"},
+            {"role": "tool", "content": COMPRESSED_TOOL_RESULT},
+            {"role": "user", "content": "tail"},
+        ],
+        baseline=baseline,
+        accounting_key="openai-chat:model-a",
+    )
+
+    assert second.estimated_prompt_tokens == max(
+        1,
+        2_000 + second.rough_prompt_tokens - first.rough_prompt_tokens,
+    )
+    assert second.estimated_prompt_tokens < 2_000
+
+
+@pytest.mark.parametrize(
+    ("accounting_key", "system_prompt"),
+    [
+        ("openai-chat:model-b", "system"),
+        ("openai-chat:model-a", "changed system"),
+    ],
+)
+def test_context_budget_invalidates_incompatible_baseline(
+    accounting_key: str,
+    system_prompt: str,
+) -> None:
+    service = ContextBudgetService(ContextStrategyConfig(compression_trigger_tokens_k=10))
+    first = service.assess(
+        system_prompt="system",
+        tools=[],
+        messages=[{"role": "user", "content": "hello"}],
+        baseline=None,
+        accounting_key="openai-chat:model-a",
+    )
+    baseline = service.observe(first, actual_prompt_tokens=9_999)
+    assert baseline is not None
+
+    current = service.assess(
+        system_prompt=system_prompt,
+        tools=[],
+        messages=[{"role": "user", "content": "hello"}],
+        baseline=baseline,
+        accounting_key=accounting_key,
+    )
+
+    assert current.source == "rough"
+    assert current.estimated_prompt_tokens == current.rough_prompt_tokens
+
+
+def test_context_budget_invalidates_baseline_when_tools_change() -> None:
+    service = ContextBudgetService(ContextStrategyConfig(compression_trigger_tokens_k=10))
+    first = service.assess(
+        system_prompt="system",
+        tools=[],
+        messages=[{"role": "user", "content": "hello"}],
+        baseline=None,
+        accounting_key="openai-chat:model-a",
+    )
+    baseline = service.observe(first, actual_prompt_tokens=9_999)
+    assert baseline is not None
+
+    current = service.assess(
+        system_prompt="system",
+        tools=[{"type": "function", "function": {"name": "new_tool"}}],
+        messages=[{"role": "user", "content": "hello"}],
+        baseline=baseline,
+        accounting_key="openai-chat:model-a",
+    )
+
+    assert current.source == "rough"
+    assert current.estimated_prompt_tokens == current.rough_prompt_tokens
+
+
+def test_context_budget_ignores_missing_actual_usage() -> None:
+    service = ContextBudgetService(ContextStrategyConfig(compression_trigger_tokens_k=10))
+    assessment = service.assess(
+        system_prompt="system",
+        tools=[],
+        messages=[{"role": "user", "content": "hello"}],
+        baseline=None,
+        accounting_key="openai-chat:model-a",
+    )
+
+    assert service.observe(assessment, actual_prompt_tokens=0) is None
+
+
+def test_token_baseline_survives_checkpoint_round_trip() -> None:
+    state = AgentState.create_new("session")
+    state.token_baseline = TokenBaseline(
+        accounting_key="openai-chat:model-a",
+        estimator_version=1,
+        static_fingerprint="abc",
+        rough_prompt_tokens=900,
+        actual_prompt_tokens=1_000,
+    )
+
+    restored = AgentState.from_checkpoint(state.to_checkpoint())
+
+    assert restored.token_baseline == state.token_baseline
 
 
 def test_compression_trigger_is_configured_directly_in_k_tokens() -> None:
@@ -484,15 +621,20 @@ class _RatioBudget:
         self.config = config
         self.accept_75 = accept_75
 
-    def estimate_raw(self, *, messages: list[dict], **_kwargs) -> int:
+    def assess(self, *, messages: list[dict], **_kwargs) -> TokenAssessment:
         marker = " ".join(str(message.get("content", "")) for message in messages)
         if "candidate-75" in marker and self.accept_75:
-            return 10
-        return 10_001
-
-    @staticmethod
-    def estimate_calibrated(raw: int) -> int:
-        return raw
+            raw = 10
+        else:
+            raw = 10_001
+        return TokenAssessment(
+            rough_prompt_tokens=raw,
+            estimated_prompt_tokens=raw,
+            source="rough",
+            accounting_key="test",
+            estimator_version=1,
+            static_fingerprint="test",
+        )
 
     def should_compact(self, estimate: int) -> bool:
         return estimate >= self.config.compression_trigger_tokens
@@ -600,7 +742,7 @@ def test_model_input_coordinator_replaces_old_turns_with_state_only_summary() ->
     assert all("仅存在于本轮输入的召回记忆" not in str(message.get("content")) for message in state.messages)
     assert all(extraction_prompt not in str(message.get("content")) for message in state.messages)
     assert any("仅存在于本轮输入的召回记忆" in str(message.get("content")) for message in prepared.messages)
-    assert prepared.calibrated_estimate < strategy.config.compression_trigger_tokens
+    assert prepared.estimated_tokens < strategy.config.compression_trigger_tokens
 
 
 def test_context_summary_persona_is_built_directly_from_optional_chat_settings() -> None:
@@ -848,7 +990,7 @@ def test_model_input_expands_from_frozen_source_to_75_percent() -> None:
 
     assert compaction.ratios == [0.60, 0.75]
     assert state.messages[0]["content"] == "candidate-75"
-    assert prepared.calibrated_estimate == 10
+    assert prepared.estimated_tokens == 10
 
 
 def test_model_input_stops_before_main_model_when_75_percent_is_still_over_budget() -> None:

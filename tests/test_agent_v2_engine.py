@@ -109,6 +109,7 @@ class _PipelineHarness:
             plugin_manager=self.plugin_manager,
             context_strategy=self.context_strategy,
             emit_event=self.event_router.emit,
+            accounting_key="test",
         )
 
 

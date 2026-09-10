@@ -9,7 +9,7 @@ import pytest
 from app.agent.core.state_manager import StateManager
 from app.agent.memory.store.chat_history_store import ChatHistoryStore
 from app.crud.chat_history_dao import ChatHistoryDao
-from app.agent.state import AgentState
+from app.agent.state import AgentState, TokenBaseline
 import app.agent.core.state_manager as state_manager_module
 from app.runtime import get_agent_state_db, get_chat_history_db, get_checkpoint_db
 
@@ -103,6 +103,29 @@ def test_completed_checkpoint_removes_intermediate_and_keeps_latest_thirty(
 def test_runtime_uses_one_database_for_checkpoint_and_chat_history() -> None:
     assert get_checkpoint_db() == get_agent_state_db()
     assert get_chat_history_db() == get_agent_state_db()
+
+
+def test_token_baseline_is_persisted_in_checkpoint(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        manager = StateManager("test-session", db_path=str(tmp_path / "agent.sqlite3"))
+        try:
+            state = AgentState.create_new("test-session")
+            state.token_baseline = TokenBaseline(
+                accounting_key="openai-chat:model-a",
+                estimator_version=1,
+                static_fingerprint="abc",
+                rough_prompt_tokens=900,
+                actual_prompt_tokens=1_000,
+            )
+            await manager.save(state, checkpoint_type="completed")
+
+            restored = await manager.load()
+
+            assert restored.token_baseline == state.token_baseline
+        finally:
+            await manager.close()
+
+    asyncio.run(scenario())
 
 
 def test_checkpoint_and_visible_history_are_saved_atomically(tmp_path: Path) -> None:

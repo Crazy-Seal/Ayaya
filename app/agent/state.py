@@ -18,12 +18,23 @@ from app.agent.message import (
 from app.agent.message_time import utc_now
 
 
+class TokenBaseline(BaseModel):
+    """一次成功主模型请求留下的真实输入 token 锚点。"""
+
+    accounting_key: str
+    estimator_version: int
+    static_fingerprint: str
+    rough_prompt_tokens: int = Field(gt=0)
+    actual_prompt_tokens: int = Field(gt=0)
+
+
 class AgentState(BaseModel):
     """Agent 状态"""
 
     # ==================== 核心字段 ====================
     session_id: str
     messages: list[dict] = Field(default_factory=list)  # 序列化的消息列表（便于持久化）
+    token_baseline: TokenBaseline | None = None
 
     # ==================== 记忆相关 ====================
     long_term_memory_turn_counter: int = 0

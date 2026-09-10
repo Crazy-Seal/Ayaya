@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import json
 import math
+from dataclasses import dataclass
+from hashlib import sha256
 from copy import deepcopy
-from typing import Any, Iterable
+from typing import Any, Iterable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.agent.message import TOOL_IMAGE_MESSAGE_NAMES, is_real_human_message
 from app.agent.message_time import RuntimeContext, format_local_time, project_messages_with_time
-from app.agent.state import AgentState
+from app.agent.state import AgentState, TokenBaseline
 from app.agent.tool_result_normalizer import weighted_char_count
 from app.agent.utils.domain.text import normalize_messages_for_model
 
@@ -86,26 +88,102 @@ class RoughTokenEstimator:
         return max(total, 1)
 
 
+@dataclass(frozen=True)
+class TokenAssessment:
+    """一次待发送请求的 token 预算快照。"""
+
+    rough_prompt_tokens: int
+    estimated_prompt_tokens: int
+    source: Literal["rough", "actual_delta"]
+    accounting_key: str
+    estimator_version: int
+    static_fingerprint: str
+
+
+def build_token_accounting_key(*, protocol: str, model: str, endpoint: str) -> str:
+    """为不能共享真实 token 基线的模型调用配置生成稳定标识。"""
+    value = _stable_json({
+        "protocol": protocol,
+        "model": model,
+        "endpoint": endpoint.rstrip("/"),
+    })
+    return sha256(value.encode("utf-8")).hexdigest()
+
+
 class ContextBudgetService(RoughTokenEstimator):
-    """估算完整主模型请求，并用真实 prompt usage 做进程内保守校准。"""
+    """以最近真实 prompt usage 为锚点估算当前完整主模型请求。"""
+
+    ESTIMATOR_VERSION = 1
 
     def __init__(self, config: ContextStrategyConfig) -> None:
         self.config = config
-        self._ewma_ratio = 1.0
-        self.calibration_factor = 1.10
 
-    def estimate_calibrated(self, raw_estimate: int) -> int:
-        return max(raw_estimate, math.ceil(raw_estimate * self.calibration_factor))
+    @staticmethod
+    def _static_fingerprint(system_prompt: str, tools: list[dict] | None) -> str:
+        value = _stable_json({"system_prompt": system_prompt or "", "tools": tools or []})
+        return sha256(value.encode("utf-8")).hexdigest()
 
-    def calibrate(self, *, raw_estimate: int, actual_prompt_tokens: int) -> None:
-        if raw_estimate <= 0 or actual_prompt_tokens <= 0:
-            return
-        ratio = actual_prompt_tokens / raw_estimate
-        self._ewma_ratio = 0.8 * self._ewma_ratio + 0.2 * ratio
-        self.calibration_factor = min(2.0, max(1.0, self._ewma_ratio * 1.10))
+    def assess(
+        self,
+        *,
+        system_prompt: str,
+        tools: list[dict] | None,
+        messages: list[dict],
+        baseline: TokenBaseline | None,
+        accounting_key: str,
+    ) -> TokenAssessment:
+        """用真实基线加完整粗估净变化计算当前输入预算。"""
+        rough = self.estimate_raw(
+            system_prompt=system_prompt,
+            tools=tools,
+            messages=messages,
+        )
+        fingerprint = self._static_fingerprint(system_prompt, tools)
+        compatible = (
+            baseline is not None
+            and baseline.accounting_key == accounting_key
+            and baseline.estimator_version == self.ESTIMATOR_VERSION
+            and baseline.static_fingerprint == fingerprint
+        )
+        if compatible:
+            estimated = max(
+                1,
+                baseline.actual_prompt_tokens
+                + rough
+                - baseline.rough_prompt_tokens,
+            )
+            source: Literal["rough", "actual_delta"] = "actual_delta"
+        else:
+            estimated = rough
+            source = "rough"
+        return TokenAssessment(
+            rough_prompt_tokens=rough,
+            estimated_prompt_tokens=estimated,
+            source=source,
+            accounting_key=accounting_key,
+            estimator_version=self.ESTIMATOR_VERSION,
+            static_fingerprint=fingerprint,
+        )
 
-    def should_compact(self, calibrated_estimate: int) -> bool:
-        return calibrated_estimate >= self.config.compression_trigger_tokens
+    @staticmethod
+    def observe(
+        assessment: TokenAssessment,
+        *,
+        actual_prompt_tokens: int,
+    ) -> TokenBaseline | None:
+        """把成功请求的真实 prompt usage 固化为下一次预算锚点。"""
+        if actual_prompt_tokens <= 0:
+            return None
+        return TokenBaseline(
+            accounting_key=assessment.accounting_key,
+            estimator_version=assessment.estimator_version,
+            static_fingerprint=assessment.static_fingerprint,
+            rough_prompt_tokens=assessment.rough_prompt_tokens,
+            actual_prompt_tokens=actual_prompt_tokens,
+        )
+
+    def should_compact(self, estimated_tokens: int) -> bool:
+        return estimated_tokens >= self.config.compression_trigger_tokens
 
 
 class ContextCompressionPolicy:

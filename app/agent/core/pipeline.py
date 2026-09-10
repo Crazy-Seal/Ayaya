@@ -83,6 +83,7 @@ class ExecutionPipeline:
         plugin_manager: PluginManager,
         context_strategy: ContextStrategyManager,
         emit_event: EventEmitter,
+        accounting_key: str,
         diary_coverage: DiaryCoverage | None = None,
         chat_settings: "ChatSettings | None" = None,
     ) -> None:
@@ -97,6 +98,7 @@ class ExecutionPipeline:
             llm_client,
             diary_coverage=diary_coverage,
             chat_settings=chat_settings,
+            accounting_key=accounting_key,
         )
 
     # ==================== 主入口 ====================
@@ -225,8 +227,6 @@ class ExecutionPipeline:
             try:
                 runtime_context = runtime_context or RuntimeContext.capture()
                 async for chunk in self._call_llm(state, runtime_context, checkpoint):
-                    if chunk.usage and chunk.usage.prompt_tokens:
-                        self._model_input.calibrate(chunk.usage.prompt_tokens)
                     if chunk.content:
                         accumulated_content += chunk.content
                         yield AgentEvent(EventType.TEXT_CHUNK, chunk.content)
@@ -315,16 +315,29 @@ class ExecutionPipeline:
         recovery = None
         try:
             while True:
+                latest_prompt_tokens = 0
+                has_valid_output = False
                 if prepared.state_changed:
                     await self._checkpoint(state, checkpoint)
                 try:
                     async for chunk in self._llm_client.astream(
                         prepared.messages, tools=tools or None
                     ):
+                        if chunk.usage and chunk.usage.prompt_tokens:
+                            latest_prompt_tokens = chunk.usage.prompt_tokens
                         produced = produced or bool(chunk.content or chunk.tool_call)
+                        has_valid_output = has_valid_output or bool(
+                            chunk.tool_call or (chunk.content and chunk.content.strip())
+                        )
                         if chunk.finish_reason == "content_filter":
                             raise RuntimeError("触发 API 内容过滤")
                         yield chunk
+                    if latest_prompt_tokens and has_valid_output:
+                        self._model_input.observe_usage(
+                            state=state,
+                            prepared=prepared,
+                            prompt_tokens=latest_prompt_tokens,
+                        )
                     return
                 except Exception as exc:
                     if produced or not self._model_input.is_context_overflow(exc):

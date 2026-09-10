@@ -18,7 +18,11 @@ from app.agent.core.state_manager import StateManager
 from app.agent.core.event_router import EventRouter, EventType, AgentEvent
 from app.agent.core.pipeline import ExecutionPipeline
 from app.agent.models.llm_client import LLMClient, LLMConfig
-from app.agent.context_strategy import ContextStrategyConfig, ContextStrategyManager
+from app.agent.context_strategy import (
+    ContextStrategyConfig,
+    ContextStrategyManager,
+    build_token_accounting_key,
+)
 from app.agent.message_time import RuntimeContext
 from app.agent.model_input import DiaryCoverage
 from app.agent.utils.domain.images import save_multiple_images
@@ -108,6 +112,11 @@ class Agent:
             plugin_manager=self.plugin_manager,
             context_strategy=self.context_strategy,
             emit_event=self.event_router.emit,
+            accounting_key=build_token_accounting_key(
+                protocol="openai_chat_completions",
+                model=config.model_name,
+                endpoint=config.base_url,
+            ),
             diary_coverage=diary_coverage,
             chat_settings=chat_settings,
         )

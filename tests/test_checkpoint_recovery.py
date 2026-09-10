@@ -707,6 +707,7 @@ def test_checkpoint_failure_keeps_tool_marked_pending() -> None:
             plugin_manager=agent.plugin_manager,
             context_strategy=agent.context_strategy,
             emit_event=agent.event_router.emit,
+            accounting_key="test",
         )
         state = AgentState.create_new("test")
         state.add_user_message("执行工具")

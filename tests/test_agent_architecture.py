@@ -2,6 +2,7 @@ import ast
 import asyncio
 import gc
 from pathlib import Path
+from types import SimpleNamespace
 import weakref
 
 from app.agent.agent import Agent, AgentConfig
@@ -13,12 +14,16 @@ from app.agent.context import (
     ToolContext,
     ToolResult,
 )
-from app.agent.context_strategy import ContextStrategyConfig, ContextStrategyManager
+from app.agent.context_strategy import (
+    ContextStrategyConfig,
+    ContextStrategyManager,
+    build_token_accounting_key,
+)
 from app.agent.core.event_router import EventRouter, EventType
 from app.agent.core.pipeline import ExecutionPipeline
 from app.agent.core.plugin_manager import PluginManager
 from app.agent.core.tool_manager import ToolManager
-from app.agent.models.llm_client import StreamChunk
+from app.agent.models.llm_client import StreamChunk, TokenUsage
 from app.agent.message import ToolCall
 from app.agent.state import AgentState
 
@@ -84,7 +89,11 @@ def _config() -> AgentConfig:
     )
 
 
-def _pipeline(llm: _ScriptedLLM) -> ExecutionPipeline:
+def _pipeline(
+    llm: _ScriptedLLM,
+    *,
+    accounting_key: str = "architecture-test",
+) -> ExecutionPipeline:
     config = _config()
     router = EventRouter()
     return ExecutionPipeline(
@@ -94,6 +103,7 @@ def _pipeline(llm: _ScriptedLLM) -> ExecutionPipeline:
         plugin_manager=PluginManager(),
         context_strategy=ContextStrategyManager(config.context_strategy),
         emit_event=router.emit,
+        accounting_key=accounting_key,
     )
 
 
@@ -108,6 +118,78 @@ def test_pipeline_uses_explicit_dependencies_without_agent_back_reference() -> N
 
     assert all(event.type != EventType.DONE for event in events)
     assert "agent" not in vars(_pipeline(_ScriptedLLM()))
+
+
+def test_pipeline_records_usage_only_after_a_successful_stream() -> None:
+    async def scenario(scripts: list[list[StreamChunk]]) -> AgentState:
+        pipeline = _pipeline(_ScriptedLLM(scripts))
+        state = AgentState.create_new("architecture-test")
+        state.add_user_message("开始")
+        _ = [event async for event in pipeline.execute(state)]
+        return state
+
+    successful = asyncio.run(scenario([[
+        StreamChunk(content="完成"),
+        StreamChunk(usage=TokenUsage(prompt_tokens=123, completion_tokens=7, total_tokens=130)),
+    ]]))
+
+    assert successful.token_baseline is not None
+    assert successful.token_baseline.actual_prompt_tokens == 123
+
+
+def test_pipeline_does_not_record_usage_from_a_failed_stream() -> None:
+    class _FailedAfterUsageLLM(_ScriptedLLM):
+        async def astream(self, messages, tools=None):
+            yield StreamChunk(
+                usage=TokenUsage(prompt_tokens=123, completion_tokens=7, total_tokens=130)
+            )
+            raise RuntimeError("connection reset")
+
+    async def scenario() -> AgentState:
+        pipeline = _pipeline(_FailedAfterUsageLLM())
+        state = AgentState.create_new("architecture-test")
+        state.add_user_message("开始")
+        _ = [event async for event in pipeline.execute(state)]
+        return state
+
+    failed = asyncio.run(scenario())
+
+    assert failed.token_baseline is None
+
+
+def test_pipeline_does_not_record_usage_from_an_empty_response() -> None:
+    async def scenario() -> tuple[AgentState, list]:
+        pipeline = _pipeline(_ScriptedLLM([[
+            StreamChunk(
+                usage=TokenUsage(prompt_tokens=123, completion_tokens=0, total_tokens=123)
+            ),
+        ]]))
+        state = AgentState.create_new("architecture-test")
+        state.add_user_message("开始")
+        events = [event async for event in pipeline.execute(state)]
+        return state, events
+
+    state, events = asyncio.run(scenario())
+
+    assert state.token_baseline is None
+    assert any(event.type == EventType.ERROR for event in events)
+
+
+def test_pipeline_uses_explicit_accounting_key() -> None:
+    llm = _ScriptedLLM()
+    llm.config = SimpleNamespace(
+        model="actual-model",
+        base_url="https://actual.example/v1/",
+    )
+    accounting_key = build_token_accounting_key(
+        protocol="openai_chat_completions",
+        model=llm.config.model,
+        endpoint=llm.config.base_url,
+    )
+
+    pipeline = _pipeline(llm, accounting_key=accounting_key)
+
+    assert pipeline._model_input.accounting_key == accounting_key
 
 
 def test_retained_pipeline_does_not_keep_agent_alive() -> None:

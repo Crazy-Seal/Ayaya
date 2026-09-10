@@ -16,6 +16,7 @@ from app.agent.context_strategy import (
     CONTEXT_SUMMARY_NAME,
     CONTEXT_SUMMARY_PREFIX,
     ContextStrategyManager,
+    TokenAssessment,
     TurnModelContext,
     append_transient_context,
 )
@@ -186,9 +187,12 @@ def validate_openai_protocol(messages: list[dict]) -> None:
 @dataclass
 class PreparedModelInput:
     messages: list[dict]
-    raw_estimate: int
-    calibrated_estimate: int
+    token_assessment: TokenAssessment
     state_changed: bool = False
+
+    @property
+    def estimated_tokens(self) -> int:
+        return self.token_assessment.estimated_prompt_tokens
 
 
 class ContextCompactionCoordinator:
@@ -356,6 +360,7 @@ class ModelInputCoordinator:
         *,
         diary_coverage: DiaryCoverage | None = None,
         chat_settings: "ChatSettings | None" = None,
+        accounting_key: str = "openai-chat-completions:default",
     ) -> None:
         self.strategy = strategy
         self.compaction = ContextCompactionCoordinator(
@@ -364,7 +369,7 @@ class ModelInputCoordinator:
             diary_coverage,
             chat_settings=chat_settings,
         )
-        self.last_raw_estimate = 0
+        self.accounting_key = accounting_key
 
     def _view(
         self,
@@ -372,16 +377,28 @@ class ModelInputCoordinator:
         system_prompt: str,
         tools: list[dict],
         turn_context: TurnModelContext,
-    ) -> tuple[list[dict], int, int]:
+    ) -> tuple[list[dict], TokenAssessment]:
         transient = append_transient_context(state.messages, turn_context)
         history = self.strategy.build_model_window(transient)
         messages = ([{"role": "system", "content": system_prompt}] if system_prompt else []) + history
-        raw = self.strategy.budget.estimate_raw(
+        assessment = self.strategy.budget.assess(
             system_prompt=system_prompt,
             tools=tools,
             messages=history,
+            baseline=state.token_baseline,
+            accounting_key=self.accounting_key,
         )
-        return messages, raw, self.strategy.budget.estimate_calibrated(raw)
+        baseline = state.token_baseline
+        logger.debug(
+            "模型输入 token 预算: source=%s rough=%s baseline_actual=%s "
+            "baseline_rough=%s estimated=%s",
+            assessment.source,
+            assessment.rough_prompt_tokens,
+            baseline.actual_prompt_tokens if baseline else None,
+            baseline.rough_prompt_tokens if baseline else None,
+            assessment.estimated_prompt_tokens,
+        )
+        return messages, assessment
 
     async def prepare(
         self,
@@ -391,50 +408,60 @@ class ModelInputCoordinator:
         tools: list[dict],
         turn_context: TurnModelContext,
     ) -> PreparedModelInput:
-        messages, raw, calibrated = self._view(state, system_prompt, tools, turn_context)
-        self.last_raw_estimate = raw
-        if not self.strategy.budget.should_compact(calibrated):
-            return PreparedModelInput(messages, raw, calibrated)
+        messages, assessment = self._view(state, system_prompt, tools, turn_context)
+        if not self.strategy.budget.should_compact(assessment.estimated_prompt_tokens):
+            return PreparedModelInput(messages, assessment)
 
         changed = bool(self.compaction.compress_tool_results(state))
-        messages, raw, calibrated = self._view(state, system_prompt, tools, turn_context)
-        self.last_raw_estimate = raw
-        if not self.strategy.budget.should_compact(calibrated):
-            return PreparedModelInput(messages, raw, calibrated, state_changed=changed)
+        messages, assessment = self._view(state, system_prompt, tools, turn_context)
+        if not self.strategy.budget.should_compact(assessment.estimated_prompt_tokens):
+            return PreparedModelInput(messages, assessment, state_changed=changed)
 
         removed_summaries = await self.compaction.drop_diary_covered_summaries(state)
         changed = changed or bool(removed_summaries)
         if removed_summaries:
-            messages, raw, calibrated = self._view(state, system_prompt, tools, turn_context)
-            self.last_raw_estimate = raw
-            if not self.strategy.budget.should_compact(calibrated):
-                return PreparedModelInput(messages, raw, calibrated, state_changed=True)
+            messages, assessment = self._view(state, system_prompt, tools, turn_context)
+            if not self.strategy.budget.should_compact(assessment.estimated_prompt_tokens):
+                return PreparedModelInput(messages, assessment, state_changed=True)
 
         frozen = [dict(message) for message in state.messages]
         for ratio in (0.60, 0.75):
             candidate = await self.compaction.summarize_candidate(frozen, ratio)
             candidate_state = AgentState.from_checkpoint(state.to_checkpoint())
             candidate_state.messages = candidate
-            candidate_messages, candidate_raw, candidate_calibrated = self._view(
+            candidate_messages, candidate_assessment = self._view(
                 candidate_state, system_prompt, tools, turn_context
             )
-            if not self.strategy.budget.should_compact(candidate_calibrated):
+            if not self.strategy.budget.should_compact(
+                candidate_assessment.estimated_prompt_tokens
+            ):
                 state.messages = candidate
                 state.updated_at = utc_now()
-                self.last_raw_estimate = candidate_raw
                 return PreparedModelInput(
                     candidate_messages,
-                    candidate_raw,
-                    candidate_calibrated,
+                    candidate_assessment,
                     state_changed=True,
                 )
         raise ContextOverflowError("上下文在扩大到75%摘要后仍达到配置的压缩触发阈值，已停止主模型调用")
 
-    def calibrate(self, prompt_tokens: int) -> None:
-        self.strategy.budget.calibrate(
-            raw_estimate=self.last_raw_estimate,
+    def observe_usage(
+        self,
+        *,
+        state: AgentState,
+        prepared: PreparedModelInput,
+        prompt_tokens: int,
+    ) -> None:
+        baseline = self.strategy.budget.observe(
+            prepared.token_assessment,
             actual_prompt_tokens=prompt_tokens,
         )
+        if baseline is not None:
+            state.token_baseline = baseline
+            logger.debug(
+                "已更新模型输入 token 基线: actual=%s rough=%s",
+                baseline.actual_prompt_tokens,
+                baseline.rough_prompt_tokens,
+            )
 
     @staticmethod
     def is_context_overflow(error: Exception) -> bool:
@@ -458,11 +485,10 @@ class ModelInputCoordinator:
             candidate = await self.compaction.summarize_candidate(deepcopy(frozen), ratio)
             candidate_state = AgentState.from_checkpoint(state.to_checkpoint())
             candidate_state.messages = candidate
-            messages, raw, calibrated = self._view(
+            messages, assessment = self._view(
                 candidate_state, system_prompt, tools, turn_context
             )
             # 模型已拒绝输入，不再使用日常预算阈值跳过摘要或阻止重试。
             state.messages = candidate
             state.updated_at = utc_now()
-            self.last_raw_estimate = raw
-            yield PreparedModelInput(messages, raw, calibrated, state_changed=True)
+            yield PreparedModelInput(messages, assessment, state_changed=True)
