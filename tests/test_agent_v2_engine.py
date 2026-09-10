@@ -406,6 +406,226 @@ def test_context_strategy_builds_without_temporary_state():
     assert roles == ["user", "assistant"]
 
 
+def test_pipeline_removes_streamed_assistant_time_prefix():
+    async def run():
+        llm = _FakeLLM(scripts=[[
+            StreamChunk(content="[发送"),
+            StreamChunk(content="时间：2026-09-10 10:11:12 +0800 星期四] "),
+            StreamChunk(content="真正回复"),
+            StreamChunk(finish_reason="stop"),
+        ]])
+        agent = _PipelineHarness(llm, tools=[])
+        state = AgentState.create_new("t")
+        state.add_user_message("请回复")
+        events = await _drain(agent.pipeline.execute(state))
+        return state, events
+
+    state, events = asyncio.run(run())
+    streamed = "".join(
+        event.data for event in events if event.type == EventType.TEXT_CHUNK
+    )
+
+    assert streamed == "真正回复"
+    assert state.messages[-1]["content"] == "真正回复"
+
+
+def test_pipeline_keeps_expression_tag_before_removed_time_prefix():
+    async def run():
+        llm = _FakeLLM(scripts=[[
+            StreamChunk(content="<开心>"),
+            StreamChunk(content="[发送时间：2026-09-10 10:11:12 +0800 星期四]"),
+            StreamChunk(content="真正回复"),
+            StreamChunk(finish_reason="stop"),
+        ]])
+        agent = _PipelineHarness(llm, tools=[])
+        state = AgentState.create_new("t")
+        state.add_user_message("请回复")
+        events = await _drain(agent.pipeline.execute(state))
+        return state, events
+
+    state, events = asyncio.run(run())
+    streamed = "".join(
+        event.data for event in events if event.type == EventType.TEXT_CHUNK
+    )
+
+    assert streamed == "<开心>真正回复"
+    assert state.messages[-1]["content"] == "<开心>真正回复"
+
+
+def test_pipeline_keeps_long_expression_tag_without_spending_prefix_buffer():
+    expression_tag = "<" + "x" * 120 + ">"
+
+    async def run():
+        llm = _FakeLLM(scripts=[[
+            StreamChunk(content=expression_tag),
+            StreamChunk(content="[发送"),
+            StreamChunk(content="时间：2026-09-10 10:11:12 +0800 星期四] "),
+            StreamChunk(content="真正回复"),
+            StreamChunk(finish_reason="stop"),
+        ]])
+        agent = _PipelineHarness(llm, tools=[])
+        state = AgentState.create_new("t")
+        state.add_user_message("请回复")
+        events = await _drain(agent.pipeline.execute(state))
+        return state, events
+
+    state, events = asyncio.run(run())
+    streamed = "".join(
+        event.data for event in events if event.type == EventType.TEXT_CHUNK
+    )
+
+    assert streamed == expression_tag + "真正回复"
+    assert state.messages[-1]["content"] == expression_tag + "真正回复"
+
+
+def test_pipeline_handles_long_expression_tag_split_into_characters():
+    expression_tag = "<" + "x" * 120 + ">"
+
+    async def run():
+        script = [StreamChunk(content=char) for char in expression_tag]
+        script.extend([
+            StreamChunk(content="[发送"),
+            StreamChunk(content="时间：2026-09-10 10:11:12 +0800 星期四] "),
+            StreamChunk(content="真正回复"),
+            StreamChunk(finish_reason="stop"),
+        ])
+        agent = _PipelineHarness(_FakeLLM(scripts=[script]), tools=[])
+        state = AgentState.create_new("t")
+        state.add_user_message("请回复")
+        events = await _drain(agent.pipeline.execute(state))
+        return state, events
+
+    state, events = asyncio.run(run())
+    streamed = "".join(
+        event.data for event in events if event.type == EventType.TEXT_CHUNK
+    )
+
+    assert streamed == expression_tag + "真正回复"
+    assert state.messages[-1]["content"] == expression_tag + "真正回复"
+
+
+def test_pipeline_preserves_formatting_after_removed_time_prefix():
+    async def run():
+        llm = _FakeLLM(scripts=[[
+            StreamChunk(content="[发送时间：2026-09-10 10:11:12 +0800 星期四]"),
+            StreamChunk(content="\n\n    缩进正文"),
+            StreamChunk(finish_reason="stop"),
+        ]])
+        agent = _PipelineHarness(llm, tools=[])
+        state = AgentState.create_new("t")
+        state.add_user_message("请回复")
+        events = await _drain(agent.pipeline.execute(state))
+        return state, events
+
+    state, events = asyncio.run(run())
+    streamed = "".join(
+        event.data for event in events if event.type == EventType.TEXT_CHUNK
+    )
+
+    assert streamed == "\n    缩进正文"
+    assert state.messages[-1]["content"] == "\n    缩进正文"
+
+
+def test_pipeline_handles_crlf_separator_split_across_chunks():
+    async def run():
+        llm = _FakeLLM(scripts=[[
+            StreamChunk(content="[发送时间：2026-09-10 10:11:12 +0800 星期四]"),
+            StreamChunk(content="\r"),
+            StreamChunk(content="\n真正回复"),
+            StreamChunk(finish_reason="stop"),
+        ]])
+        agent = _PipelineHarness(llm, tools=[])
+        state = AgentState.create_new("t")
+        state.add_user_message("请回复")
+        events = await _drain(agent.pipeline.execute(state))
+        return state, events
+
+    state, events = asyncio.run(run())
+    streamed = "".join(
+        event.data for event in events if event.type == EventType.TEXT_CHUNK
+    )
+
+    assert streamed == "真正回复"
+    assert state.messages[-1]["content"] == "真正回复"
+
+
+@pytest.mark.parametrize(
+    ("chunks", "expected"),
+    [
+        (["[TODO] ", "保留这段内容"], "[TODO] 保留这段内容"),
+        (["[发送", "时间：明天] 保留"], "[发送时间：明天] 保留"),
+        (
+            ["[发送时间：2026-99-99 99:99:99 +9999 星期四] ", "保留"],
+            "[发送时间：2026-99-99 99:99:99 +9999 星期四] 保留",
+        ),
+        (
+            ["正文中的 ", "[发送时间：2026-09-10 10:11:12 +0800 星期四] 要保留"],
+            "正文中的 [发送时间：2026-09-10 10:11:12 +0800 星期四] 要保留",
+        ),
+        (["<开心>", "普通回复"], "<开心>普通回复"),
+    ],
+)
+def test_pipeline_preserves_non_prefix_assistant_text(chunks, expected):
+    async def run():
+        script = [StreamChunk(content=chunk) for chunk in chunks]
+        script.append(StreamChunk(finish_reason="stop"))
+        agent = _PipelineHarness(_FakeLLM(scripts=[script]), tools=[])
+        state = AgentState.create_new("t")
+        state.add_user_message("请回复")
+        events = await _drain(agent.pipeline.execute(state))
+        return state, events
+
+    state, events = asyncio.run(run())
+    streamed = "".join(
+        event.data for event in events if event.type == EventType.TEXT_CHUNK
+    )
+
+    assert streamed == expected
+    assert state.messages[-1]["content"] == expected
+
+
+def test_pipeline_flushes_unmatched_prefix_candidate_before_stream_error():
+    class FailingLLM:
+        async def astream(self, messages, tools=None):
+            yield StreamChunk(content="[发送")
+            raise RuntimeError("流式连接中断")
+
+    async def run():
+        agent = _PipelineHarness(FailingLLM(), tools=[])
+        state = AgentState.create_new("t")
+        state.add_user_message("请回复")
+        return await _drain(agent.pipeline.execute(state))
+
+    events = asyncio.run(run())
+
+    assert [
+        event.data for event in events if event.type == EventType.TEXT_CHUNK
+    ] == ["[发送"]
+    assert events[-1].type == EventType.ERROR
+    assert events[-1].data == "流式连接中断"
+
+
+def test_pipeline_stops_buffering_overlong_unclosed_expression_tag():
+    leading = "<" + "x" * 300
+
+    async def run():
+        llm = _FakeLLM(scripts=[[
+            StreamChunk(content=leading),
+            StreamChunk(content="正文"),
+            StreamChunk(finish_reason="stop"),
+        ]])
+        agent = _PipelineHarness(llm, tools=[])
+        state = AgentState.create_new("t")
+        state.add_user_message("请回复")
+        return await _drain(agent.pipeline.execute(state))
+
+    events = asyncio.run(run())
+
+    assert [
+        event.data for event in events if event.type == EventType.TEXT_CHUNK
+    ] == [leading, "正文"]
+
+
 @pytest.mark.parametrize("content", [None, "", "   \n\t"])
 def test_pipeline_rejects_empty_final_response(content):
     async def run():

@@ -30,7 +30,7 @@ from app.agent.message import (
 )
 from app.agent.state import AgentState
 from app.agent.models.llm_client import StreamChunk
-from app.agent.message_time import RuntimeContext
+from app.agent.message_time import AssistantTimePrefixFilter, RuntimeContext
 from app.agent.core.state_manager import CheckpointType
 from app.agent.tool_result_normalizer import ToolResultNormalizer
 from app.agent.model_input import DiaryCoverage, ModelInputCoordinator
@@ -223,22 +223,34 @@ class ExecutionPipeline:
             accumulated_content = ""
             tool_calls: list[ToolCall] = []
             finish_reason: str | None = None
+            time_prefix_filter = AssistantTimePrefixFilter()
 
             try:
                 runtime_context = runtime_context or RuntimeContext.capture()
                 async for chunk in self._call_llm(state, runtime_context, checkpoint):
                     if chunk.content:
-                        accumulated_content += chunk.content
-                        yield AgentEvent(EventType.TEXT_CHUNK, chunk.content)
+                        filtered_content = time_prefix_filter.feed(chunk.content)
+                        if filtered_content:
+                            accumulated_content += filtered_content
+                            yield AgentEvent(EventType.TEXT_CHUNK, filtered_content)
                     if chunk.tool_call:
                         tool_calls.append(chunk.tool_call)
                     if chunk.finish_reason:
                         finish_reason = chunk.finish_reason
 
+                trailing_content = time_prefix_filter.finish()
+                if trailing_content:
+                    accumulated_content += trailing_content
+                    yield AgentEvent(EventType.TEXT_CHUNK, trailing_content)
+
                 if not tool_calls and not accumulated_content.strip():
                     reason = finish_reason or "unknown"
                     raise RuntimeError(f"模型未返回有效文本（finish_reason={reason}）")
             except Exception as e:
+                trailing_content = time_prefix_filter.finish()
+                if trailing_content:
+                    accumulated_content += trailing_content
+                    yield AgentEvent(EventType.TEXT_CHUNK, trailing_content)
                 logger.error("LLM 调用失败: %s", e)
                 await self._plugin_manager.run_hooks(
                     PluginHook.ON_ERROR, state, data={"error": e}
