@@ -57,7 +57,6 @@ class AgentConfig:
     context_strategy: ContextStrategyConfig
     base_url: str = "https://api.openai.com/v1"
     temperature: float = 0.7
-    max_tokens: int = 4096
     system_prompt: str = ""
     tools: list[str] = field(default_factory=list)
     plugins: list[str | dict[str, Any]] = field(default_factory=list)
@@ -101,7 +100,6 @@ class Agent:
                 api_key=config.api_key,
                 base_url=config.base_url,
                 temperature=config.temperature,
-                max_tokens=config.max_tokens,
             ))
 
         # 执行管道

@@ -20,7 +20,6 @@ from app.agent.message import (
 )
 from app.agent.model_input import (
     CONTEXT_SUMMARY_SCHEMA,
-    MAX_CONTEXT_SUMMARY_TOKENS,
     SUMMARY_SYSTEM_PROMPT,
     ContextCompactionCoordinator,
     ContextOverflowError,
@@ -868,7 +867,7 @@ def test_legacy_summary_uses_its_own_message_id_as_coverage_fallback() -> None:
     assert "_covered_through_at" not in summary
 
 
-def test_context_summary_rejects_valid_structure_over_total_token_budget() -> None:
+def test_context_summary_accepts_valid_structure_regardless_of_estimated_size() -> None:
     oversized_task = {
         "topic": "任务",
         "current_state": "中" * 800,
@@ -901,8 +900,11 @@ def test_context_summary_rejects_valid_structure_over_total_token_budget() -> No
         chat_settings=_summary_settings(),
     )
 
-    with pytest.raises(ValueError, match=rf"{MAX_CONTEXT_SUMMARY_TOKENS}"):
-        asyncio.run(coordinator.summarize_candidate(frozen, 1.0))
+    candidate = asyncio.run(coordinator.summarize_candidate(frozen, 1.0))
+
+    assert len(candidate) == 2
+    assert candidate[0]["name"] == CONTEXT_SUMMARY_MESSAGE_NAME
+    assert "中" * 800 in candidate[0]["content"]
 
 
 def test_invalid_structured_summary_does_not_replace_state_messages() -> None:

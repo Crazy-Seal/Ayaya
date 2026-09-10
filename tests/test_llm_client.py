@@ -65,6 +65,7 @@ def test_ainvoke_structured_returns_valid_json_without_retry() -> None:
             "schema": SCHEMA,
         },
     }
+    assert "max_tokens" not in calls[0]
     assert "tools" not in calls[0]
 
 

@@ -23,7 +23,6 @@ class LLMConfig:
     api_key: str
     base_url: str = "https://api.openai.com/v1"
     temperature: float = 0.7
-    max_tokens: int = 4096
     timeout: float = 120.0
 
 
@@ -95,8 +94,6 @@ class LLMClient:
             "temperature": self.config.temperature,
             **kwargs,
         }
-        if self.config.max_tokens:
-            payload["max_tokens"] = self.config.max_tokens
         return payload
 
     @staticmethod
@@ -395,7 +392,6 @@ def create_llm_client(
     api_key: str,
     base_url: str = "https://api.openai.com/v1",
     temperature: float = 0.7,
-    max_tokens: int = 4096,
     timeout: float = 120.0,
 ) -> LLMClient:
     """创建 LLM 客户端的便捷函数"""
@@ -404,7 +400,6 @@ def create_llm_client(
         api_key=api_key,
         base_url=base_url,
         temperature=temperature,
-        max_tokens=max_tokens,
         timeout=timeout,
     )
     return LLMClient(config)

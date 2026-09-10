@@ -38,7 +38,6 @@ class DiaryMemory:
             api_key=chat_settings.openai_api_key,
             base_url=chat_settings.openai_base_url,
             temperature=0.2,
-            max_tokens=1_200,
             timeout=60.0,
         ))
 
