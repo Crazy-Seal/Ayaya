@@ -1,6 +1,6 @@
 import asyncio
 
-from app.agent.context import ToolContext
+from app.agent.tools.base import ToolContext
 from app.agent.tools.control_screen_with_vlm import (
     control_screen_with_vlm,
     restore_vlm_point,

@@ -13,7 +13,7 @@ if not is_test_environment():
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
-from app.agent.core.state_manager import StateManager
+from app.agent.state.manager import StateManager
 
 from app.routes.agent import router as agent_router
 from app.routes.chat_settings import router as chat_settings_router

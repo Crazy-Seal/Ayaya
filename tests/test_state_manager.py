@@ -6,11 +6,11 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
-from app.agent.core.state_manager import StateManager
+from app.agent.state.manager import StateManager
 from app.agent.memory.store.chat_history_store import ChatHistoryStore
 from app.crud.chat_history_dao import ChatHistoryDao
 from app.agent.state import AgentState, TokenBaseline
-import app.agent.core.state_manager as state_manager_module
+import app.agent.state.manager as state_manager_module
 from app.runtime import get_agent_state_db, get_chat_history_db, get_checkpoint_db
 
 

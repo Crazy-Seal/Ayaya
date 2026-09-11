@@ -9,7 +9,7 @@
 
 import logging
 
-from app.agent.message import is_real_human_message, is_user_message
+from app.agent.state.messages import is_real_human_message, is_user_message
 
 logger = logging.getLogger(__name__)
 

@@ -4,9 +4,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from app.agent import agent as agent_module
-from app.agent.core import state_manager as state_manager_module
+from app.agent.state import manager as state_manager_module
 from app.agent.agent import Agent, AgentConfig
-from app.agent.context_strategy import ContextStrategyConfig
+from app.agent.context import ContextStrategyConfig
 from app.agent.models import vlm
 from app.agent.state import AgentState
 from app.agent.utils.domain import images as image_utils

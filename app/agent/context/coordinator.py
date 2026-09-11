@@ -7,21 +7,23 @@ import logging
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Annotated, AsyncGenerator, Protocol, TYPE_CHECKING
+from typing import Annotated, AsyncGenerator, TYPE_CHECKING
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
-from app.agent.context_strategy import (
+from app.agent.context._budget import ContextBudgetService, TokenAssessment
+from app.agent.context._compaction import (
     CONTEXT_SUMMARY_NAME,
     CONTEXT_SUMMARY_PREFIX,
-    ContextStrategyManager,
-    TokenAssessment,
-    TurnModelContext,
-    append_transient_context,
+    ContextCompressionPolicy,
 )
-from app.agent.message_time import normalize_utc, utc_now
-from app.agent.state import AgentState
+from app.agent.context._projection import append_transient_context, build_model_window
+from app.agent.context.config import ContextStrategyConfig
+from app.agent.context.ports import DiaryCoverage, SummaryClient
+from app.agent.context.runtime import RuntimeContext
+from app.agent.state.model import AgentState
+from app.agent.state.time import normalize_utc, utc_now
 
 if TYPE_CHECKING:
     from app.schemas.chat_settings import ChatSettings
@@ -141,21 +143,6 @@ CONTEXT_SUMMARY_SCHEMA = {
 }
 
 
-class SummaryClient(Protocol):
-    async def ainvoke_structured(
-        self,
-        messages: list[dict],
-        schema: dict,
-        **kwargs,
-    ) -> dict: ...
-
-
-class DiaryCoverage(Protocol):
-    """上下文摘要清理所需的日记覆盖查询端口。"""
-
-    async def has_diary_for_effective_date(self, effective_date: str) -> bool: ...
-
-
 class ContextOverflowError(RuntimeError):
     """两次摘要压缩后仍无法安全调用主模型。"""
 
@@ -199,13 +186,14 @@ class ContextCompactionCoordinator:
 
     def __init__(
         self,
-        strategy: ContextStrategyManager,
+        budget: ContextBudgetService,
         summary_client: SummaryClient,
         diary_coverage: DiaryCoverage | None = None,
         *,
         chat_settings: "ChatSettings | None" = None,
     ) -> None:
-        self.strategy = strategy
+        self.budget = budget
+        self.policy = ContextCompressionPolicy()
         self.summary_client = summary_client
         self.diary_coverage = diary_coverage
         self.chat_settings = chat_settings
@@ -221,7 +209,7 @@ class ContextCompactionCoordinator:
 {SUMMARY_SYSTEM_PROMPT}"""
 
     def compress_tool_results(self, state: AgentState) -> int:
-        return self.strategy.policy.compress_old_tool_results(
+        return self.policy.compress_old_tool_results(
             state.messages,
             protected_tool_call_ids=(
                 item.get("id") for item in state.pending_tool_calls if item.get("id")
@@ -296,15 +284,15 @@ class ContextCompactionCoordinator:
 - 只返回符合指定 JSON Schema 的对象，不要添加解释、Markdown 或代码块。"""
 
     async def summarize_candidate(self, frozen: list[dict], ratio: float) -> list[dict]:
-        selected = self.strategy.policy.select_prefix(
-            frozen, self.strategy.budget, ratio=ratio
+        selected = self.policy.select_prefix(
+            frozen, self.budget, ratio=ratio
         )
         if not selected:
             raise ContextOverflowError("没有可安全压缩的已完成历史轮次")
         selected_set = set(selected)
         selected_messages = [frozen[index] for index in selected]
         validate_openai_protocol(selected_messages)
-        source = self.strategy.build_model_window(selected_messages)
+        source = build_model_window(selected_messages)
         response = await self.summary_client.ainvoke_structured(
             [
                 {"role": "system", "content": self._build_summary_system_prompt()},
@@ -320,11 +308,11 @@ class ContextCompactionCoordinator:
             ensure_ascii=False,
             separators=(",", ":"),
         )
-        summary_tokens = max(self.strategy.budget.estimate_value(summary), 1)
+        summary_tokens = max(self.budget.estimate_value(summary), 1)
         created_at = utc_now()
         covered_message_id, effective_date = self._coverage_marker(selected_messages)
         source_tokens = sum(
-            self.strategy.budget.estimate_message(message) for message in selected_messages
+            self.budget.estimate_message(message) for message in selected_messages
         )
         summary_message = {
             "role": "user",
@@ -349,16 +337,16 @@ class ModelInputCoordinator:
 
     def __init__(
         self,
-        strategy: ContextStrategyManager,
+        config: ContextStrategyConfig,
         summary_client: SummaryClient,
         *,
         diary_coverage: DiaryCoverage | None = None,
         chat_settings: "ChatSettings | None" = None,
         accounting_key: str = "openai-chat-completions:default",
     ) -> None:
-        self.strategy = strategy
+        self.budget = ContextBudgetService(config)
         self.compaction = ContextCompactionCoordinator(
-            strategy,
+            self.budget,
             summary_client,
             diary_coverage,
             chat_settings=chat_settings,
@@ -370,12 +358,12 @@ class ModelInputCoordinator:
         state: AgentState,
         system_prompt: str,
         tools: list[dict],
-        turn_context: TurnModelContext,
+        turn_context: RuntimeContext,
     ) -> tuple[list[dict], TokenAssessment]:
         transient = append_transient_context(state.messages, turn_context)
-        history = self.strategy.build_model_window(transient)
+        history = build_model_window(transient)
         messages = ([{"role": "system", "content": system_prompt}] if system_prompt else []) + history
-        assessment = self.strategy.budget.assess(
+        assessment = self.budget.assess(
             system_prompt=system_prompt,
             tools=tools,
             messages=history,
@@ -400,22 +388,22 @@ class ModelInputCoordinator:
         state: AgentState,
         system_prompt: str,
         tools: list[dict],
-        turn_context: TurnModelContext,
+        turn_context: RuntimeContext,
     ) -> PreparedModelInput:
         messages, assessment = self._view(state, system_prompt, tools, turn_context)
-        if not self.strategy.budget.should_compact(assessment.estimated_prompt_tokens):
+        if not self.budget.should_compact(assessment.estimated_prompt_tokens):
             return PreparedModelInput(messages, assessment)
 
         changed = bool(self.compaction.compress_tool_results(state))
         messages, assessment = self._view(state, system_prompt, tools, turn_context)
-        if not self.strategy.budget.should_compact(assessment.estimated_prompt_tokens):
+        if not self.budget.should_compact(assessment.estimated_prompt_tokens):
             return PreparedModelInput(messages, assessment, state_changed=changed)
 
         removed_summaries = await self.compaction.drop_diary_covered_summaries(state)
         changed = changed or bool(removed_summaries)
         if removed_summaries:
             messages, assessment = self._view(state, system_prompt, tools, turn_context)
-            if not self.strategy.budget.should_compact(assessment.estimated_prompt_tokens):
+            if not self.budget.should_compact(assessment.estimated_prompt_tokens):
                 return PreparedModelInput(messages, assessment, state_changed=True)
 
         frozen = [dict(message) for message in state.messages]
@@ -426,7 +414,7 @@ class ModelInputCoordinator:
             candidate_messages, candidate_assessment = self._view(
                 candidate_state, system_prompt, tools, turn_context
             )
-            if not self.strategy.budget.should_compact(
+            if not self.budget.should_compact(
                 candidate_assessment.estimated_prompt_tokens
             ):
                 state.messages = candidate
@@ -445,7 +433,7 @@ class ModelInputCoordinator:
         prepared: PreparedModelInput,
         prompt_tokens: int,
     ) -> None:
-        baseline = self.strategy.budget.observe(
+        baseline = self.budget.observe(
             prepared.token_assessment,
             actual_prompt_tokens=prompt_tokens,
         )
@@ -469,7 +457,7 @@ class ModelInputCoordinator:
         state: AgentState,
         system_prompt: str,
         tools: list[dict],
-        turn_context: TurnModelContext,
+        turn_context: RuntimeContext,
     ) -> AsyncGenerator[PreparedModelInput, None]:
         """按需提供两次强制压缩输入；冻结源仅在本次恢复期间存活。"""
         self.compaction.compress_tool_results(state)

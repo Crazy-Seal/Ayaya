@@ -9,9 +9,9 @@ from mcp.shared.exceptions import McpError
 from mcp.types import CONNECTION_CLOSED, INVALID_PARAMS, ErrorData
 from pydantic import BaseModel, ValidationError
 
-from app.agent.context_strategy import ContextStrategyConfig
+from app.agent.context import ContextStrategyConfig
 from app.agent.agent import Agent, AgentConfig
-from app.agent.context import BaseTool, ToolContext, ToolResult
+from app.agent.tools.base import BaseTool, ToolContext, ToolResult
 from app.agent.core.event_router import AgentEvent, EventType
 from app.agent.state import AgentState
 from app.agent.mcp.adapter import MCPToolAdapter, build_exposed_tool_name

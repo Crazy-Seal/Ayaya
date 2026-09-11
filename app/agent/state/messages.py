@@ -9,8 +9,8 @@ from datetime import datetime
 from enum import Enum
 import json
 
-from app.agent.message_time import normalize_utc, utc_now
-from app.agent.message_names import (
+from app.agent.state.time import normalize_utc, utc_now
+from app.agent.state.message_names import (
     CONTEXT_SUMMARY_MESSAGE_NAME,
     MCP_TOOL_IMAGE_MESSAGE_NAME,
     SCREENSHOT_COMPRESSED_NAME,

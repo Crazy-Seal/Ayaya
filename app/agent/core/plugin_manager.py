@@ -8,7 +8,7 @@ import logging
 from collections import defaultdict
 from typing import Any
 
-from app.agent.context import BasePlugin, PluginHook, HookContext
+from app.agent.plugins.base import BasePlugin, HookContext, PluginHook
 
 logger = logging.getLogger(__name__)
 

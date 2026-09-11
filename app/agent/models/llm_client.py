@@ -11,7 +11,7 @@ from typing import AsyncIterator, Any
 
 from openai import AsyncOpenAI
 
-from app.agent.message import ToolCall
+from app.agent.state.messages import ToolCall
 
 logger = logging.getLogger(__name__)
 

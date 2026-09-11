@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.crud.chat_settings_dao import ChatSettingsDao
-from app.agent.context_strategy import ContextStrategyConfig
+from app.agent.context import ContextStrategyConfig
 from app.schemas.chat_settings import AgentPluginSettings, ChatSettings
 
 

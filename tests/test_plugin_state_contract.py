@@ -3,9 +3,9 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from app.agent.context import BasePlugin, HookContext, PluginHook
+from app.agent.plugins.base import BasePlugin, HookContext, PluginHook
 from app.agent.agent import Agent, AgentConfig
-from app.agent.context_strategy import ContextStrategyConfig
+from app.agent.context import ContextStrategyConfig
 from app.agent.core.event_router import EventType
 from app.agent.core.plugin_manager import PluginManager
 from app.agent.models.llm_client import StreamChunk

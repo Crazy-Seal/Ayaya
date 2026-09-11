@@ -5,18 +5,19 @@ from pathlib import Path
 import pytest
 
 from app.agent.agent import Agent, AgentConfig, INTERRUPTED_TOOL_RESULT
-from app.agent.context import BasePlugin, BaseTool, HookContext, PluginHook, ToolContext, ToolResult
-from app.agent.context_strategy import ContextStrategyConfig, ContextStrategyManager
+from app.agent.context import ContextStrategyConfig, ModelInputCoordinator
 from app.agent.core.event_router import EventType
 from app.agent.core.pipeline import ExecutionPipeline
-from app.agent.core.state_manager import CheckpointType, StateManager
-from app.agent.message import (
+from app.agent.plugins.base import BasePlugin, HookContext, PluginHook
+from app.agent.state.manager import CheckpointType, StateManager
+from app.agent.state.messages import (
     MCP_TOOL_IMAGE_MESSAGE_NAME,
     TOOL_IMAGE_MESSAGE_NAME,
     ToolCall,
 )
 from app.agent.models.llm_client import StreamChunk
 from app.agent.state import AgentState
+from app.agent.tools.base import BaseTool, ToolContext, ToolResult
 from app.schemas.chat import AgentInput
 from app.services.agent_service import AgentService
 
@@ -691,7 +692,6 @@ def test_checkpoint_failure_keeps_tool_marked_pending() -> None:
                 api_key="test",
                 context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100),
             )
-            self.context_strategy = ContextStrategyManager(self.config.context_strategy)
             self.plugin_manager = PluginManager()
             self.tool_manager = ToolManager()
             self.tool_manager.register(StepTool())
@@ -705,9 +705,12 @@ def test_checkpoint_failure_keeps_tool_marked_pending() -> None:
             llm_client=agent.llm_client,
             tool_manager=agent.tool_manager,
             plugin_manager=agent.plugin_manager,
-            context_strategy=agent.context_strategy,
+            model_input=ModelInputCoordinator(
+                agent.config.context_strategy,
+                agent.llm_client,
+                accounting_key="test",
+            ),
             emit_event=agent.event_router.emit,
-            accounting_key="test",
         )
         state = AgentState.create_new("test")
         state.add_user_message("执行工具")

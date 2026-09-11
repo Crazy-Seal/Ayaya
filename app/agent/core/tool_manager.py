@@ -7,7 +7,7 @@
 import logging
 from typing import Any
 
-from app.agent.context import BaseTool
+from app.agent.tools.base import BaseTool
 
 logger = logging.getLogger(__name__)
 

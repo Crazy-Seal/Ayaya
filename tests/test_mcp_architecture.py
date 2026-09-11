@@ -3,8 +3,8 @@ from pathlib import Path
 import pytest
 
 from app.agent.agent import Agent, AgentConfig
-from app.agent.context import BaseTool, ToolContext, ToolResult
-from app.agent.context_strategy import ContextStrategyConfig
+from app.agent.context import ContextStrategyConfig
+from app.agent.tools.base import BaseTool, ToolContext, ToolResult
 from app.mcp.identity import server_identity_fingerprint
 from app.mcp.types import MCPToolDescriptor
 from app.schemas.chat_settings import ChatSettings

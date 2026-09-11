@@ -12,11 +12,11 @@ from app.agent.memory.memories.semantic_mem0 import Mem0SemanticMemory
 from app.agent.memory.memories.semantic_mem0 import MEM0_CUSTOM_INSTRUCTIONS
 from app.agent.memory.memories.diary import DiaryMemory
 from app.agent.memory.store.chat_history_store import ChatHistoryStore
-from app.agent.message import Message, MessageRole, SYSTEM_INJECTED_USER_MESSAGE_NAMES
+from app.agent.state.messages import Message, MessageRole, SYSTEM_INJECTED_USER_MESSAGE_NAMES
 from app.agent.utils.domain.text import extract_text
-from app.agent.message_time import render_timed_text
-from app.agent.tool_result_normalizer import truncate_weighted_text
-from app.agent.context_strategy import RoughTokenEstimator
+from app.agent.state.time import render_timed_text
+from app.agent.utils.domain.weighted_text import truncate_weighted_text
+from app.agent.utils.domain.token_estimation import RoughTokenEstimator
 from app.crud.chat_settings_dao import ChatSettingsDao
 from app.schemas.chat_settings import MEMORY_DEFAULT_CONFIG, ChatSettings
 

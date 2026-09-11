@@ -2,23 +2,23 @@ import asyncio
 import json
 import pytest
 from pydantic import ValidationError
-from app.agent.context_strategy import (
-    COMPRESSED_TOOL_RESULT,
+from app.agent.context import ContextStrategyConfig, RuntimeContext
+from app.agent.context._budget import (
     ContextBudgetService,
-    ContextCompressionPolicy,
-    ContextStrategyConfig,
-    ContextStrategyManager,
     TokenAssessment,
-    TurnModelContext,
-    append_transient_context,
 )
-from app.agent.message import (
+from app.agent.context._compaction import (
+    COMPRESSED_TOOL_RESULT,
+    ContextCompressionPolicy,
+)
+from app.agent.context._projection import append_transient_context
+from app.agent.state.messages import (
     CONTEXT_SUMMARY_MESSAGE_NAME,
     MCP_TOOL_IMAGE_MESSAGE_NAME,
     SCREENSHOT_COMPRESSED_NAME,
     SCREENSHOT_MESSAGE_NAME,
 )
-from app.agent.model_input import (
+from app.agent.context.coordinator import (
     CONTEXT_SUMMARY_SCHEMA,
     SUMMARY_SYSTEM_PROMPT,
     ContextCompactionCoordinator,
@@ -276,16 +276,14 @@ def test_image_only_compaction_marks_prepared_state_as_changed() -> None:
             "_created_at": "2026-08-29T00:00:03+00:00",
         })
         state = AgentState(session_id="session-image-only", messages=messages)
-        strategy = ContextStrategyManager(
-            ContextStrategyConfig(compression_trigger_tokens_k=10)
-        )
-        coordinator = ModelInputCoordinator(strategy, SimpleNamespace())
+        config = ContextStrategyConfig(compression_trigger_tokens_k=10)
+        coordinator = ModelInputCoordinator(config, SimpleNamespace())
 
         prepared = await coordinator.prepare(
             state=state,
             system_prompt="fixed",
             tools=[],
-            turn_context=TurnModelContext(
+            turn_context=RuntimeContext(
                 latest_human_message_id="human-latest",
                 captured_at=datetime(2026, 8, 29, tzinfo=timezone.utc),
             ),
@@ -308,9 +306,9 @@ def test_diary_coverage_port_removes_only_covered_context_summaries() -> None:
             return effective_date == "2026-08-28"
 
     async def scenario() -> tuple[int, list[str | None]]:
-        strategy = ContextStrategyManager(ContextStrategyConfig(compression_trigger_tokens_k=10))
+        budget = ContextBudgetService(ContextStrategyConfig(compression_trigger_tokens_k=10))
         coordinator = ContextCompactionCoordinator(
-            strategy,
+            budget,
             SimpleNamespace(),
             Coverage(),
         )
@@ -519,7 +517,7 @@ def test_transient_context_is_appended_to_copy_of_latest_human_message() -> None
         "_message_id": "human-1",
         "_created_at": "2026-08-29T00:00:00+00:00",
     }]
-    turn = TurnModelContext(
+    turn = RuntimeContext(
         latest_human_message_id="human-1",
         captured_at=datetime(2026, 8, 29, tzinfo=timezone.utc),
         recalled_memory="用户喜欢简洁回答",
@@ -596,7 +594,7 @@ def test_context_summary_schema_rejects_invalid_shapes(payload: dict) -> None:
 
 def test_context_summary_prompt_separates_work_state_from_conversation_summary() -> None:
     coordinator = ContextCompactionCoordinator(
-        ContextStrategyManager(ContextStrategyConfig()),
+        ContextBudgetService(ContextStrategyConfig()),
         SimpleNamespace(),
         chat_settings=_summary_settings(address="主人"),
     )
@@ -685,9 +683,9 @@ def test_model_input_coordinator_replaces_old_turns_with_state_only_summary() ->
                 },
             ])
         summary_client = _SummaryClient()
-        strategy = ContextStrategyManager(ContextStrategyConfig(compression_trigger_tokens_k=10))
+        config = ContextStrategyConfig(compression_trigger_tokens_k=10)
         coordinator = ModelInputCoordinator(
-            strategy,
+            config,
             summary_client,
             chat_settings=SimpleNamespace(
                 name="Ayaya",
@@ -697,7 +695,7 @@ def test_model_input_coordinator_replaces_old_turns_with_state_only_summary() ->
                 characteristic="忠实记录共同经历。",
             ),
         )
-        turn = TurnModelContext(
+        turn = RuntimeContext(
             latest_human_message_id="human-11",
             captured_at=datetime(2026, 8, 29, tzinfo=timezone.utc),
             recalled_memory="仅存在于本轮输入的召回记忆",
@@ -709,9 +707,9 @@ def test_model_input_coordinator_replaces_old_turns_with_state_only_summary() ->
             tools=[],
             turn_context=turn,
         )
-        return state, summary_client, strategy, prepared
+        return state, summary_client, config, prepared
 
-    state, summary_client, strategy, prepared = asyncio.run(scenario())
+    state, summary_client, config, prepared = asyncio.run(scenario())
 
     summaries = [message for message in state.messages if message.get("name") == "context_summary"]
     assert prepared.state_changed is True
@@ -741,14 +739,14 @@ def test_model_input_coordinator_replaces_old_turns_with_state_only_summary() ->
     assert all("仅存在于本轮输入的召回记忆" not in str(message.get("content")) for message in state.messages)
     assert all(extraction_prompt not in str(message.get("content")) for message in state.messages)
     assert any("仅存在于本轮输入的召回记忆" in str(message.get("content")) for message in prepared.messages)
-    assert prepared.estimated_tokens < strategy.config.compression_trigger_tokens
+    assert prepared.estimated_tokens < config.compression_trigger_tokens
 
 
 def test_context_summary_persona_is_built_directly_from_optional_chat_settings() -> None:
     async def scenario() -> list[dict]:
         client = _SummaryClient()
         coordinator = ContextCompactionCoordinator(
-            ContextStrategyManager(ContextStrategyConfig()),
+            ContextBudgetService(ContextStrategyConfig()),
             client,
             chat_settings=SimpleNamespace(
                 name=None,
@@ -818,7 +816,7 @@ def test_repeated_compaction_advances_coverage_from_old_summary_to_latest_raw_me
         ]
         client = _SummaryClient()
         coordinator = ContextCompactionCoordinator(
-            ContextStrategyManager(ContextStrategyConfig()),
+            ContextBudgetService(ContextStrategyConfig()),
             client,
             chat_settings=_summary_settings(),
         )
@@ -853,7 +851,7 @@ def test_legacy_summary_uses_its_own_message_id_as_coverage_fallback() -> None:
             },
         ]
         coordinator = ContextCompactionCoordinator(
-            ContextStrategyManager(ContextStrategyConfig()),
+            ContextBudgetService(ContextStrategyConfig()),
             _SummaryClient(),
             chat_settings=_summary_settings(),
         )
@@ -895,7 +893,7 @@ def test_context_summary_accepts_valid_structure_regardless_of_estimated_size() 
         },
     ]
     coordinator = ContextCompactionCoordinator(
-        ContextStrategyManager(ContextStrategyConfig()),
+        ContextBudgetService(ContextStrategyConfig()),
         client,
         chat_settings=_summary_settings(),
     )
@@ -932,9 +930,7 @@ def test_invalid_structured_summary_does_not_replace_state_messages() -> None:
             "extra": "forbidden",
         })
         coordinator = ModelInputCoordinator(
-            ContextStrategyManager(
-                ContextStrategyConfig(compression_trigger_tokens_k=10)
-            ),
+            ContextStrategyConfig(compression_trigger_tokens_k=10),
             client,
             chat_settings=_summary_settings(),
         )
@@ -943,7 +939,7 @@ def test_invalid_structured_summary_does_not_replace_state_messages() -> None:
                 state=state,
                 system_prompt="fixed",
                 tools=[],
-                turn_context=TurnModelContext(
+                turn_context=RuntimeContext(
                     latest_human_message_id="human-11",
                     captured_at=datetime(2026, 8, 29, tzinfo=timezone.utc),
                 ),
@@ -971,12 +967,12 @@ def test_model_input_expands_from_frozen_source_to_75_percent() -> None:
                 "_created_at": "2026-08-29T00:00:00+00:00",
             },
         ])
-        strategy = ContextStrategyManager(ContextStrategyConfig(compression_trigger_tokens_k=10))
-        strategy.budget = _RatioBudget(strategy.config, accept_75=accept_75)
-        coordinator = ModelInputCoordinator(strategy, _SummaryClient())
+        config = ContextStrategyConfig(compression_trigger_tokens_k=10)
+        coordinator = ModelInputCoordinator(config, _SummaryClient())
+        coordinator.budget = _RatioBudget(config, accept_75=accept_75)
         compaction = _RatioCompaction()
         coordinator.compaction = compaction
-        turn = TurnModelContext(
+        turn = RuntimeContext(
             latest_human_message_id="human-latest",
             captured_at=datetime(2026, 8, 29, tzinfo=timezone.utc),
         )
@@ -1012,9 +1008,9 @@ def test_model_input_stops_before_main_model_when_75_percent_is_still_over_budge
             },
         ])
         original = state.to_checkpoint()
-        strategy = ContextStrategyManager(ContextStrategyConfig(compression_trigger_tokens_k=10))
-        strategy.budget = _RatioBudget(strategy.config, accept_75=False)
-        coordinator = ModelInputCoordinator(strategy, _SummaryClient())
+        config = ContextStrategyConfig(compression_trigger_tokens_k=10)
+        coordinator = ModelInputCoordinator(config, _SummaryClient())
+        coordinator.budget = _RatioBudget(config, accept_75=False)
         compaction = _RatioCompaction()
         coordinator.compaction = compaction
         with pytest.raises(ContextOverflowError):
@@ -1022,7 +1018,7 @@ def test_model_input_stops_before_main_model_when_75_percent_is_still_over_budge
                 state=state,
                 system_prompt="fixed",
                 tools=[],
-                turn_context=TurnModelContext(
+                turn_context=RuntimeContext(
                     latest_human_message_id="human-latest",
                     captured_at=datetime(2026, 8, 29, tzinfo=timezone.utc),
                 ),

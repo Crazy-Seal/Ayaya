@@ -11,7 +11,7 @@
 
 from app.agent.core.tool_manager import ToolManager
 from app.agent.core.plugin_manager import PluginManager, PluginHook
-from app.agent.core.state_manager import StateManager
+from app.agent.state.manager import StateManager
 from app.agent.core.event_router import EventRouter, EventType, AgentEvent
 from app.agent.core.pipeline import ExecutionPipeline
 

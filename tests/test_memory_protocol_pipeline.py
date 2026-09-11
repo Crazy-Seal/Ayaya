@@ -3,15 +3,15 @@ from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 
-from app.agent.context import HookContext, PluginHook
-from app.agent.core.state_manager import StateManager
+from app.agent.plugins.base import HookContext, PluginHook
+from app.agent.state.manager import StateManager
 from app.agent.memory.manager import MemoryManager
 from app.agent.memory.memories.diary import DiaryMemory
 from app.agent.memory.memories.episodic import EpisodicMemory
 from app.agent.memory.memories.semantic_mem0 import MEM0_CUSTOM_INSTRUCTIONS
 from app.agent.memory.store.chat_history_store import ChatHistoryStore
 from app.agent.memory.store.diary_sqlite_store import DiarySqliteStore
-from app.agent.message import messages_from_openai_format
+from app.agent.state.messages import messages_from_openai_format
 from app.agent.plugins.memory import MemoryPlugin
 from app.agent.state import AgentState
 import app.agent.plugins.memory as memory_plugin_module

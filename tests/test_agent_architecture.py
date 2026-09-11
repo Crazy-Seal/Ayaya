@@ -1,22 +1,15 @@
 import ast
 import asyncio
 import gc
+import inspect
 from pathlib import Path
 from types import SimpleNamespace
 import weakref
 
 from app.agent.agent import Agent, AgentConfig
 from app.agent.context import (
-    BasePlugin,
-    BaseTool,
-    HookContext,
-    PluginHook,
-    ToolContext,
-    ToolResult,
-)
-from app.agent.context_strategy import (
     ContextStrategyConfig,
-    ContextStrategyManager,
+    ModelInputCoordinator,
     build_token_accounting_key,
 )
 from app.agent.core.event_router import EventRouter, EventType
@@ -24,8 +17,10 @@ from app.agent.core.pipeline import ExecutionPipeline
 from app.agent.core.plugin_manager import PluginManager
 from app.agent.core.tool_manager import ToolManager
 from app.agent.models.llm_client import StreamChunk, TokenUsage
-from app.agent.message import ToolCall
+from app.agent.plugins.base import BasePlugin, HookContext, PluginHook
 from app.agent.state import AgentState
+from app.agent.state.messages import ToolCall
+from app.agent.tools.base import BaseTool, ToolContext, ToolResult
 
 
 class _ScriptedLLM:
@@ -101,9 +96,12 @@ def _pipeline(
         llm_client=llm,
         tool_manager=ToolManager(),
         plugin_manager=PluginManager(),
-        context_strategy=ContextStrategyManager(config.context_strategy),
+        model_input=ModelInputCoordinator(
+            config.context_strategy,
+            llm,
+            accounting_key=accounting_key,
+        ),
         emit_event=router.emit,
-        accounting_key=accounting_key,
     )
 
 
@@ -301,3 +299,54 @@ def test_agent_runtime_import_graph_is_acyclic() -> None:
 
     for module in graph:
         assert_acyclic(module, ())
+
+
+def test_state_and_context_are_deep_packages_with_a_narrow_pipeline_seam() -> None:
+    agent_root = Path(__file__).parents[1] / "app" / "agent"
+    expected_modules = {
+        "state/model.py",
+        "state/messages.py",
+        "state/time.py",
+        "state/manager.py",
+        "context/config.py",
+        "context/runtime.py",
+        "context/coordinator.py",
+        "context/ports.py",
+        "context/_budget.py",
+        "context/_projection.py",
+        "context/_compaction.py",
+        "core/response_filter.py",
+        "utils/domain/weighted_text.py",
+    }
+    retired_modules = {
+        "context.py",
+        "context_strategy.py",
+        "message.py",
+        "message_names.py",
+        "message_time.py",
+        "model_input.py",
+        "state.py",
+        "tool_result_normalizer.py",
+        "tool_schema_compat.py",
+        "core/state_manager.py",
+    }
+
+    assert not {
+        path for path in expected_modules if not (agent_root / path).is_file()
+    }
+    assert not {
+        path for path in retired_modules if (agent_root / path).exists()
+    }
+
+    parameters = inspect.signature(ExecutionPipeline.__init__).parameters
+    assert "model_input" in parameters
+    assert {
+        "context_strategy",
+        "accounting_key",
+        "diary_coverage",
+        "chat_settings",
+    }.isdisjoint(parameters)
+
+    for relative_path in ("context/_compaction.py", "memory/manager.py"):
+        source = (agent_root / relative_path).read_text(encoding="utf-8")
+        assert "app.agent.tools.result_normalizer" not in source

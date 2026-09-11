@@ -8,14 +8,14 @@ from typing import Any
 from datetime import datetime
 from uuid import uuid4
 
-from app.agent.message import (
+from app.agent.state.messages import (
     TOOL_IMAGE_MESSAGE_NAME,
     Message,
     ContentPart,
     ToolCall,
     messages_from_openai_format,
 )
-from app.agent.message_time import utc_now
+from app.agent.state.time import utc_now
 
 
 class TokenBaseline(BaseModel):
@@ -132,7 +132,7 @@ class AgentState(BaseModel):
 
     def get_pending_tool_calls(self) -> list[ToolCall]:
         """获取待执行的工具调用列表"""
-        from app.agent.message import ToolCall
+        from app.agent.state.messages import ToolCall
         return [ToolCall.from_dict(tc) for tc in self.pending_tool_calls]
 
     def flush_deferred_tool_images(self) -> None:

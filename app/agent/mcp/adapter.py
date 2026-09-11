@@ -9,8 +9,8 @@ import re
 from collections import Counter
 from typing import Any, TYPE_CHECKING
 
-from app.agent.context import BaseTool, ToolContext, ToolResult
-from app.agent.message import MCP_TOOL_IMAGE_MESSAGE_NAME
+from app.agent.state.messages import MCP_TOOL_IMAGE_MESSAGE_NAME
+from app.agent.tools.base import BaseTool, ToolContext, ToolResult
 from app.mcp.identity import tool_contract_fingerprint
 from app.mcp.types import MCPToolDescriptor
 from app.mcp.limits import (

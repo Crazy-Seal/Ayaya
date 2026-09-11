@@ -1,6 +1,6 @@
 import pytest
 
-from app.agent.context_strategy import ContextStrategyConfig
+from app.agent.context import ContextStrategyConfig
 from app.routes.chat_settings import add_chat_settings, update_chat_settings
 from app.schemas.chat_settings import ChatSettings
 

@@ -1,4 +1,4 @@
-"""系统注入消息名称的统一定义。"""
+"""持久化消息名称与分类常量。"""
 
 SCREENSHOT_MESSAGE_NAME = "system_screenshot"
 SCREENSHOT_COMPRESSED_NAME = "system_screenshot_compressed"

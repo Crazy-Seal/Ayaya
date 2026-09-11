@@ -1,7 +1,7 @@
 import base64
 
-from app.agent.context import ToolResult
-from app.agent.tool_result_normalizer import (
+from app.agent.tools.base import ToolResult
+from app.agent.tools.result_normalizer import (
     TOOL_RESULT_TRUNCATED_MARKER,
     ToolResultNormalizer,
     truncate_weighted_text,

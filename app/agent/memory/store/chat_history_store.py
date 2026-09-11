@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 import aiosqlite
 
-from app.agent.message import is_real_human_message
+from app.agent.state.messages import is_real_human_message
 from app.runtime import get_chat_history_db
 
 

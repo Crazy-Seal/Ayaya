@@ -2,12 +2,11 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from app.agent.context_strategy import ContextStrategyConfig, ContextStrategyManager
-from app.agent.message import Message, messages_from_openai_format
-from app.agent.message_time import project_messages_with_time
+from app.agent.context._projection import build_model_window, project_messages_with_time
 from app.agent.memory.manager import MemoryManager
 from app.agent.memory.memories.semantic_mem0 import Mem0SemanticMemory
 from app.agent.state import AgentState
+from app.agent.state.messages import Message, messages_from_openai_format
 
 
 FIXED_TIME = datetime(2026, 7, 12, 3, 4, 5, tzinfo=timezone.utc)
@@ -60,9 +59,7 @@ def test_context_strategy_projects_time_and_removes_internal_metadata() -> None:
     state.messages = [
         {"role": "user", "content": "你好", "_created_at": FIXED_TIME.isoformat()}
     ]
-    manager = ContextStrategyManager(ContextStrategyConfig(compression_trigger_tokens_k=100))
-
-    result = manager.build_model_window(state)
+    result = build_model_window(state)
 
     assert "发送时间" in result[0]["content"]
     assert "_created_at" not in result[0]

@@ -5,9 +5,9 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.agent.context import BasePlugin, PluginHook, HookContext
+from app.agent.plugins.base import BasePlugin, HookContext, PluginHook
 from app.agent.memory.manager import get_memory_manager
-from app.agent.message import (
+from app.agent.state.messages import (
     is_real_human_message,
     messages_from_openai_format,
 )

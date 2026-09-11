@@ -13,8 +13,8 @@ Ayaya Agent
 
 from app.agent.agent import Agent
 from app.agent.state import AgentState
-from app.agent.message import Message, ContentPart, ToolCall
-from app.agent.context import ToolContext, ToolResult, InterruptEvent
+from app.agent.state.messages import Message, ContentPart, ToolCall
+from app.agent.tools.base import ToolContext, ToolResult, InterruptEvent
 
 __all__ = [
     "Agent",

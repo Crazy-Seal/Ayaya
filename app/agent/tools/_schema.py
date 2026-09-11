@@ -1,4 +1,4 @@
-"""把标准 JSON Schema 收窄为主流模型工具 API 的兼容子集。"""
+"""工具定义内部使用的模型 JSON Schema 兼容转换。"""
 
 from __future__ import annotations
 

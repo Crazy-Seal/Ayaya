@@ -8,7 +8,7 @@ import os
 import pkgutil
 from typing import Type
 
-from app.agent.context import BasePlugin
+from app.agent.plugins.base import BasePlugin
 
 logger = logging.getLogger(__name__)
 

@@ -15,8 +15,8 @@ from app.agent.memory.memories.mem0_llm_compat import (
     MEM0_FACT_EXTRACTION_MARKER,
     Mem0FactExtractionLLMAdapter,
 )
-from app.agent.message import Message, MessageRole, SYSTEM_INJECTED_USER_MESSAGE_NAMES
-from app.agent.message_time import render_timed_text
+from app.agent.state.messages import Message, MessageRole, SYSTEM_INJECTED_USER_MESSAGE_NAMES
+from app.agent.state.time import render_timed_text
 from app.schemas.chat_settings import ChatSettings
 
 logger = logging.getLogger(__name__)

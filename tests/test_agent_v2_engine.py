@@ -12,13 +12,12 @@ import types
 import pytest
 
 from app.agent.agent import AgentConfig
-from app.agent.context import BaseTool, ToolResult
-from app.agent.context_strategy import ContextStrategyConfig, ContextStrategyManager
+from app.agent.context import ContextStrategyConfig, ModelInputCoordinator
 from app.agent.core.event_router import EventRouter, EventType
 from app.agent.core.pipeline import ExecutionPipeline
 from app.agent.core.plugin_manager import PluginManager
 from app.agent.core.tool_manager import ToolManager
-from app.agent.message import (
+from app.agent.state.messages import (
     SCREENSHOT_MESSAGE_NAME,
     AssistantMessageWithTools,
     MessageRole,
@@ -26,6 +25,7 @@ from app.agent.message import (
 )
 from app.agent.state import AgentState
 from app.agent.models.llm_client import LLMClient, LLMConfig, StreamChunk
+from app.agent.tools.base import BaseTool, ToolResult
 
 
 # ==================== 测试替身 ====================
@@ -100,16 +100,18 @@ class _PipelineHarness:
             self.tool_manager.register(t)
         self.plugin_manager = PluginManager()
         self.event_router = EventRouter()
-        self.context_strategy = ContextStrategyManager(self.config.context_strategy)
         self.llm_client = llm
         self.pipeline = ExecutionPipeline(
             prompt_source=self.config,
             llm_client=self.llm_client,
             tool_manager=self.tool_manager,
             plugin_manager=self.plugin_manager,
-            context_strategy=self.context_strategy,
+            model_input=ModelInputCoordinator(
+                self.config.context_strategy,
+                self.llm_client,
+                accounting_key="test",
+            ),
             emit_event=self.event_router.emit,
-            accounting_key="test",
         )
 
 

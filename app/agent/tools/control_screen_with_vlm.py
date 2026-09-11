@@ -6,8 +6,8 @@
 
 from typing import Annotated, Literal
 
-from app.agent.context import ToolContext, ToolResult
-from app.agent.message import SCREENSHOT_MESSAGE_NAME
+from app.agent.state.messages import SCREENSHOT_MESSAGE_NAME
+from app.agent.tools.base import ToolContext, ToolResult
 from app.agent.models.vlm import VLMService, clamp_bbox
 from app.agent.tools.decorator import tool
 

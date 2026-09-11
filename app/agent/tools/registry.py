@@ -9,7 +9,7 @@ import pkgutil
 from typing import Type
 import logging
 
-from app.agent.context import BaseTool
+from app.agent.tools.base import BaseTool
 
 logger = logging.getLogger(__name__)
 

@@ -3,7 +3,7 @@
 from datetime import date
 from typing import Annotated
 
-from app.agent.context import ToolContext
+from app.agent.tools.base import ToolContext
 from app.agent.tools.decorator import tool
 
 

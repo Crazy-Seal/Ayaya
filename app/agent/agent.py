@@ -9,22 +9,23 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, TYPE_CHECKING
 
-from app.agent.state import AgentState
-from app.agent.message import ContentPart, ToolCall
-from app.agent.context import BaseTool, BasePlugin, PluginHook
+from app.agent.context import (
+    ContextStrategyConfig,
+    DiaryCoverage,
+    ModelInputCoordinator,
+    RuntimeContext,
+    build_token_accounting_key,
+)
 from app.agent.core.tool_manager import ToolManager
 from app.agent.core.plugin_manager import PluginManager
-from app.agent.core.state_manager import StateManager
 from app.agent.core.event_router import EventRouter, EventType, AgentEvent
 from app.agent.core.pipeline import ExecutionPipeline
 from app.agent.models.llm_client import LLMClient, LLMConfig
-from app.agent.context_strategy import (
-    ContextStrategyConfig,
-    ContextStrategyManager,
-    build_token_accounting_key,
-)
-from app.agent.message_time import RuntimeContext
-from app.agent.model_input import DiaryCoverage
+from app.agent.plugins.base import BasePlugin, PluginHook
+from app.agent.state import AgentState
+from app.agent.state.manager import StateManager
+from app.agent.state.messages import ContentPart, ToolCall
+from app.agent.tools.base import BaseTool
 from app.agent.utils.domain.images import save_multiple_images
 from app.schemas.mcp import MCPModelSettings
 
@@ -90,8 +91,6 @@ class Agent:
         else:
             self.state_manager = StateManager(config.session_id)
         self.event_router = EventRouter()
-        self.context_strategy = ContextStrategyManager(config.context_strategy)
-
         # LLM 客户端
         self.llm_client = llm_client
         if self.llm_client is None:
@@ -102,21 +101,25 @@ class Agent:
                 temperature=config.temperature,
             ))
 
-        # 执行管道
-        self.pipeline = ExecutionPipeline(
-            prompt_source=self.config,
-            llm_client=self.llm_client,
-            tool_manager=self.tool_manager,
-            plugin_manager=self.plugin_manager,
-            context_strategy=self.context_strategy,
-            emit_event=self.event_router.emit,
+        # 模型输入与执行管道
+        model_input = ModelInputCoordinator(
+            config.context_strategy,
+            self.llm_client,
+            diary_coverage=diary_coverage,
+            chat_settings=chat_settings,
             accounting_key=build_token_accounting_key(
                 protocol="openai_chat_completions",
                 model=config.model_name,
                 endpoint=config.base_url,
             ),
-            diary_coverage=diary_coverage,
-            chat_settings=chat_settings,
+        )
+        self.pipeline = ExecutionPipeline(
+            prompt_source=self.config,
+            llm_client=self.llm_client,
+            tool_manager=self.tool_manager,
+            plugin_manager=self.plugin_manager,
+            model_input=model_input,
+            emit_event=self.event_router.emit,
         )
 
         # 初始化标志

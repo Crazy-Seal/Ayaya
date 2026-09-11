@@ -4,13 +4,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.agent.context_strategy import COMPRESSED_TOOL_RESULT, ContextStrategyConfig, ContextStrategyManager
+from app.agent.context import ContextStrategyConfig, ModelInputCoordinator
+from app.agent.context._compaction import COMPRESSED_TOOL_RESULT
 from app.agent.core.event_router import EventRouter, EventType
 from app.agent.core.pipeline import ExecutionPipeline
 from app.agent.core.plugin_manager import PluginManager
 from app.agent.core.tool_manager import ToolManager
 from app.agent.models.llm_client import StreamChunk
-from app.agent.message import ToolCall
+from app.agent.state.messages import ToolCall
 from app.agent.state import AgentState
 
 
@@ -51,13 +52,24 @@ def history():
 
 
 async def run(model, state, *, checkpoint_error=False):
-    strategy = ContextStrategyManager(ContextStrategyConfig(compression_trigger_tokens_k=100))
+    config = ContextStrategyConfig(compression_trigger_tokens_k=100)
+    model_input = ModelInputCoordinator(
+        config,
+        model,
+        accounting_key="test",
+        chat_settings=SimpleNamespace(
+            name="助手",
+            address="用户",
+            feature="",
+            character="",
+            characteristic="",
+        ),
+    )
     pipeline = ExecutionPipeline(
         prompt_source=SimpleNamespace(system_prompt="固定提示"), llm_client=model,
         tool_manager=ToolManager(), plugin_manager=PluginManager(),
-        context_strategy=strategy, emit_event=EventRouter().emit,
-        accounting_key="test",
-        chat_settings=SimpleNamespace(name="助手", address="用户", feature="", character="", characteristic=""),
+        model_input=model_input,
+        emit_event=EventRouter().emit,
     )
     checkpoints = []
 
@@ -68,7 +80,7 @@ async def run(model, state, *, checkpoint_error=False):
         checkpoints.append(deepcopy(state.messages))
 
     events = [event async for event in pipeline.execute(state, checkpoint=save)]
-    return events, checkpoints, strategy
+    return events, checkpoints, model_input
 
 
 def test_rejected_input_forces_both_compaction_steps_below_budget():

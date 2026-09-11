@@ -1,12 +1,12 @@
 import asyncio
 from datetime import date
 
-from app.agent.context_strategy import ContextStrategyConfig
+from app.agent.context import ContextStrategyConfig
 from app.agent.memory import manager as memory_manager_module
 from app.agent.memory.config import MemoryConfig
 from app.agent.memory.manager import MemoryManager
 from app.agent.memory.memories import episodic as episodic_module
-from app.agent.message import Message
+from app.agent.state.messages import Message
 from app.schemas.chat_settings import AgentPluginSettings, ChatSettings
 
 

@@ -9,7 +9,7 @@ from typing import AsyncIterator, Callable
 
 from app.agent.agent import Agent
 from app.agent.core.event_router import EventType
-from app.agent.core.state_manager import StateManager
+from app.agent.state.manager import StateManager
 from app.crud.chat_history_dao import ChatHistoryDao
 from app.schemas.chat import AgentInput
 from app.schemas.chat_settings import ChatSettings

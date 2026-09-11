@@ -1,7 +1,7 @@
 import asyncio
 from types import SimpleNamespace
 
-from app.agent.message import (
+from app.agent.state.messages import (
     MCP_TOOL_IMAGE_MESSAGE_NAME,
     SCREENSHOT_COMPRESSED_NAME,
     SCREENSHOT_MESSAGE_NAME,

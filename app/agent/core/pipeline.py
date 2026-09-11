@@ -9,19 +9,17 @@ tool_call_id/tool_args/resume_state）写入 state.interrupt_data，使恢复能
 """
 
 import logging
-from typing import Any, AsyncIterator, Awaitable, Callable, Protocol, TYPE_CHECKING
+from typing import Any, AsyncIterator, Awaitable, Callable, Protocol
 
-from app.agent.context import (
-    InterruptEvent,
-    ToolContext,
-    ToolResult,
-    PluginHook,
-)
+from app.agent.context import ModelInputCoordinator, RuntimeContext
 from app.agent.core.event_router import EventType, AgentEvent
 from app.agent.core.plugin_manager import PluginManager
+from app.agent.core.response_filter import AssistantTimePrefixFilter
 from app.agent.core.tool_manager import ToolManager
-from app.agent.context_strategy import ContextStrategyManager
-from app.agent.message import (
+from app.agent.models.llm_client import StreamChunk
+from app.agent.plugins.base import PluginHook
+from app.agent.state.manager import CheckpointType
+from app.agent.state.messages import (
     TOOL_IMAGE_MESSAGE_NAME,
     ToolCall,
     MessageRole,
@@ -29,14 +27,8 @@ from app.agent.message import (
     is_real_human_message,
 )
 from app.agent.state import AgentState
-from app.agent.models.llm_client import StreamChunk
-from app.agent.message_time import AssistantTimePrefixFilter, RuntimeContext
-from app.agent.core.state_manager import CheckpointType
-from app.agent.tool_result_normalizer import ToolResultNormalizer
-from app.agent.model_input import DiaryCoverage, ModelInputCoordinator
-
-if TYPE_CHECKING:
-    from app.schemas.chat_settings import ChatSettings
+from app.agent.tools.base import InterruptEvent, ToolContext, ToolResult
+from app.agent.tools.result_normalizer import ToolResultNormalizer
 
 logger = logging.getLogger(__name__)
 
@@ -81,11 +73,8 @@ class ExecutionPipeline:
         llm_client: StreamingLLMClient,
         tool_manager: ToolManager,
         plugin_manager: PluginManager,
-        context_strategy: ContextStrategyManager,
+        model_input: ModelInputCoordinator,
         emit_event: EventEmitter,
-        accounting_key: str,
-        diary_coverage: DiaryCoverage | None = None,
-        chat_settings: "ChatSettings | None" = None,
     ) -> None:
         self._prompt_source = prompt_source
         self._llm_client = llm_client
@@ -93,13 +82,7 @@ class ExecutionPipeline:
         self._plugin_manager = plugin_manager
         self._emit_event = emit_event
         self._tool_result_normalizer = ToolResultNormalizer()
-        self._model_input = ModelInputCoordinator(
-            context_strategy,
-            llm_client,
-            diary_coverage=diary_coverage,
-            chat_settings=chat_settings,
-            accounting_key=accounting_key,
-        )
+        self._model_input = model_input
 
     # ==================== 主入口 ====================
 

@@ -8,8 +8,8 @@
 
 import logging
 
-from app.agent.context import ToolContext, ToolResult
-from app.agent.message import SCREENSHOT_MESSAGE_NAME
+from app.agent.state.messages import SCREENSHOT_MESSAGE_NAME
+from app.agent.tools.base import ToolContext, ToolResult
 from app.agent.tools.decorator import tool
 
 logger = logging.getLogger(__name__)

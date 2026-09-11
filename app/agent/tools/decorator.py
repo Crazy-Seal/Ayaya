@@ -20,7 +20,7 @@ from typing import Any, Callable, Type, Union, Literal, get_args, get_origin
 
 from pydantic import BaseModel
 
-from app.agent.context import BaseTool, ToolContext, ToolResult
+from app.agent.tools.base import BaseTool, ToolContext, ToolResult
 from app.agent.utils.infra.log import log_tool_call_result
 
 # Python 基础类型 → JSON Schema 类型

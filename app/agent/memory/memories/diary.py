@@ -9,7 +9,7 @@ from typing import Any
 from app.agent.memory.config import MemoryConfig
 from app.agent.memory.store.chat_history_store import ChatHistoryStore
 from app.agent.memory.store.diary_sqlite_store import DiarySqliteStore
-from app.agent.message import is_system_injected_user_message
+from app.agent.state.messages import is_system_injected_user_message
 from app.agent.models.llm_client import LLMClient, LLMConfig
 from app.agent.utils.domain.text import extract_text
 from app.schemas.chat_settings import ChatSettings

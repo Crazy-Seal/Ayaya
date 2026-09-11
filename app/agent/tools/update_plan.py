@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
-from app.agent.context import ToolContext, ToolResult
+from app.agent.tools.base import ToolContext, ToolResult
 from app.agent.tools.decorator import tool
 
 

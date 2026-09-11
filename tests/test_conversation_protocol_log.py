@@ -5,7 +5,7 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
-from app.agent.core.state_manager import StateManager
+from app.agent.state.manager import StateManager
 from app.agent.state import AgentState
 from app.crud.chat_history_dao import ChatHistoryDao
 

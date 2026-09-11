@@ -1,7 +1,7 @@
 from copy import deepcopy
 
-from app.agent.context import BaseTool, ToolContext, ToolResult
-from app.agent.tool_schema_compat import normalize_tool_schema_for_model
+from app.agent.tools._schema import normalize_tool_schema_for_model
+from app.agent.tools.base import BaseTool, ToolContext, ToolResult
 
 
 class _NullableSchemaTool(BaseTool):

@@ -3,15 +3,14 @@ from pathlib import Path
 from pydantic import ValidationError
 import pytest
 
-from app.agent.context_strategy import ContextStrategyConfig, ContextStrategyManager
-from app.agent.message_time import RuntimeContext
+from app.agent.context import ContextStrategyConfig, ModelInputCoordinator, RuntimeContext
 from app.agent.plugins.memory import MemoryPluginConfig
 from app.agent.state import AgentState
 
 
 def test_retired_context_window_api_is_removed() -> None:
     assert set(ContextStrategyConfig.model_fields) == {"compression_trigger_tokens_k"}
-    assert not hasattr(ContextStrategyManager, "compact_checkpoint")
+    assert not hasattr(ModelInputCoordinator, "compact_checkpoint")
 
     with pytest.raises(ValidationError):
         ContextStrategyConfig(max_context_tokens=128_000)
