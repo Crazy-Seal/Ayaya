@@ -102,7 +102,7 @@ async def control_screen(
     每轮工具调用中只允许使用一次该工具；收到操作后的截图后再判断下一步操作。
     """
     if context is None:
-        return ToolResult.error("缺少工具上下文。")
+        return ToolResult(content="错误: 缺少工具上下文。")
 
     normalized = _validate_args(
         target,
@@ -114,7 +114,7 @@ async def control_screen(
         scroll_direction,
     )
     if isinstance(normalized, str):
-        return ToolResult.error(normalized)
+        return ToolResult(content=f"错误: {normalized}")
 
     (
         resolved_target,
@@ -139,7 +139,7 @@ async def control_screen(
     if context.resume_data is not None:
         phase = (context.resume_state or {}).get("phase")
         if phase != "awaiting_execution":
-            return ToolResult.error("屏幕操作恢复状态无效。")
+            return ToolResult(content="错误: 屏幕操作恢复状态无效。")
         if not context.resume_data.get("approved"):
             return ToolResult.success("屏幕操作请求被用户拒绝。")
         if not context.resume_data.get("executed", False):

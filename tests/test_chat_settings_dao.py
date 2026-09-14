@@ -58,6 +58,27 @@ def test_skills_survive_round_trip(tmp_path: Path) -> None:
     assert reloaded.agent_plugins["memory"].enabled is True
 
 
+def test_legacy_builtin_file_tools_are_migrated_to_apply_patch() -> None:
+    settings = ChatSettings(
+        session_id="test-session",
+        model_name="test-model",
+        openai_api_key="test-key",
+        openai_base_url="http://127.0.0.1:1/v1",
+        temperature=0.1,
+        system_prompt="test",
+        tools_list=[
+            "read_file",
+            "write_file",
+            "edit_file",
+            "delete_file",
+            "apply_patch",
+        ],
+        context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100),
+    )
+
+    assert settings.tools_list == ["read_file", "apply_patch"]
+
+
 def test_agent_plugins_round_trip_with_long_term_memory_interval(tmp_path: Path) -> None:
     config_file = tmp_path / "chat_settings.yaml"
     config_file.write_text("chat_models: []\n", encoding="utf-8")

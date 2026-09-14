@@ -111,11 +111,6 @@ class ToolResult:
         )
 
     @classmethod
-    def error(cls, error_message: str) -> "ToolResult":
-        """创建错误结果"""
-        return cls(content=f"错误: {error_message}")
-
-    @classmethod
     def interrupt_result(cls, interrupt: InterruptEvent) -> "ToolResult":
         """创建中断结果"""
         return cls(content="", interrupt=interrupt)
@@ -153,6 +148,7 @@ class BaseTool(ABC):
     parameters_schema: dict      # JSON Schema 格式的参数定义
     is_resumable: bool = False   # 是否为可恢复工具（execute 内靠 context.resume_data 分支）
     compressible: bool = False   # 旧结果是否允许从活跃模型上下文回收，不代表允许重放工具
+    persist_oversized_result: bool = True  # 超长结果是否允许保存为 tool-result artifact
 
     @abstractmethod
     async def execute(

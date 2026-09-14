@@ -141,7 +141,7 @@ async def _run_command(command: str) -> str:
             )
 
         out = (stdout + stderr).strip()
-        return out[:50000] if out else "(无输出)"
+        return out if out else "(无输出)"
     except Exception as e:
         return f"错误: 命令执行失败: {e}"
 

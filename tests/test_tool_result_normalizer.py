@@ -1,12 +1,19 @@
 import base64
+from pathlib import Path
 
 from app.agent.tools.base import ToolResult
+from app.agent.tools.result_artifacts import ToolResultArtifactStore
 from app.agent.tools.result_normalizer import (
+    TOOL_RESULT_TOO_LARGE_MARKER,
     TOOL_RESULT_TRUNCATED_MARKER,
     ToolResultNormalizer,
     truncate_weighted_text,
     weighted_char_count,
 )
+
+
+def test_tool_result_has_no_fake_error_constructor() -> None:
+    assert not hasattr(ToolResult, "error")
 
 
 def test_weighted_text_limit_treats_ascii_as_quarter_character() -> None:
@@ -56,3 +63,81 @@ def test_builtin_images_share_strict_mcp_validation() -> None:
     assert normalized.image_urls == [valid]
     assert "文件签名不匹配" in normalized.content
     assert "必须使用完整 data URL" in normalized.content
+
+
+def test_oversized_result_is_saved_and_preview_references_artifact(tmp_path: Path) -> None:
+    store = ToolResultArtifactStore(tmp_path / "tool_results")
+    normalizer = ToolResultNormalizer(artifact_store=store)
+    original = "头" * 8_001 + "中间" * 2_000 + "尾" * 2_001
+
+    normalized = normalizer.normalize(
+        ToolResult.success(original),
+        session_id="session-a",
+        persist_overflow=True,
+    )
+
+    assert "头" * 8_000 in normalized.content
+    assert "尾" * 2_000 in normalized.content
+    assert "tool-result://session-a/" in normalized.content
+    uri = normalized.content.split("tool-result://", 1)[1].split("；", 1)[0]
+    artifact = store.resolve("session-a", f"tool-result://{uri}")
+    assert artifact.read_text(encoding="utf-8") == original
+
+
+def test_read_result_preview_does_not_create_another_artifact(tmp_path: Path) -> None:
+    store = ToolResultArtifactStore(tmp_path / "tool_results")
+    normalizer = ToolResultNormalizer(artifact_store=store)
+
+    normalized = normalizer.normalize(
+        ToolResult.success("内容" * 10_001),
+        session_id="session-a",
+        persist_overflow=False,
+    )
+
+    assert "请缩小读取范围后重试" in normalized.content
+    assert not (tmp_path / "tool_results").exists()
+
+
+def test_result_over_10_mib_is_not_saved(tmp_path: Path) -> None:
+    store = ToolResultArtifactStore(tmp_path / "tool_results")
+    normalizer = ToolResultNormalizer(artifact_store=store)
+
+    normalized = normalizer.normalize(
+        ToolResult.success("x" * (10 * 1024 * 1024 + 1)),
+        session_id="session-a",
+        persist_overflow=True,
+    )
+
+    assert TOOL_RESULT_TOO_LARGE_MARKER.strip() in normalized.content
+    assert not (tmp_path / "tool_results").exists()
+
+
+def test_artifact_uri_is_scoped_to_current_session(tmp_path: Path) -> None:
+    store = ToolResultArtifactStore(tmp_path / "tool_results")
+    reference = store.save("session-a", "secret")
+
+    assert reference.path == tmp_path / "tool_results" / "session-a" / f"{reference.artifact_id}.txt"
+    assert store.resolve("session-a", reference.uri) == reference.path
+
+    try:
+        store.resolve("session-b", reference.uri)
+    except ValueError as exc:
+        assert "不属于当前会话" in str(exc)
+    else:
+        raise AssertionError("跨会话 artifact URI 应被拒绝")
+
+
+def test_image_diagnostics_are_included_before_text_budgeting(tmp_path: Path) -> None:
+    store = ToolResultArtifactStore(tmp_path / "tool_results")
+    normalizer = ToolResultNormalizer(artifact_store=store)
+
+    normalized = normalizer.normalize(
+        ToolResult.success("汉" * 10_000, image_urls=["invalid"]),
+        session_id="session-a",
+        persist_overflow=True,
+    )
+
+    assert "tool-result://session-a/" in normalized.content
+    uri = "tool-result://" + normalized.content.split("tool-result://", 1)[1].split("；", 1)[0]
+    saved = store.resolve("session-a", uri).read_text(encoding="utf-8")
+    assert saved.endswith("[已忽略 1 张工具图片：必须使用完整 data URL]")

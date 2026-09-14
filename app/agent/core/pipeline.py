@@ -370,7 +370,7 @@ class ExecutionPipeline:
         tool = self._tool_manager.get(tool_call.name)
         if not tool:
             logger.warning("工具 '%s' 不存在", tool_call.name)
-            return ToolResult.error(f"工具 '{tool_call.name}' 不存在")
+            return ToolResult(content=f"错误: 工具 '{tool_call.name}' 不存在")
 
         context = ToolContext(
             session_id=state.session_id,
@@ -386,9 +386,13 @@ class ExecutionPipeline:
             result = await tool.execute(tool_call.args, context)
         except Exception as e:
             logger.error("工具 '%s' 执行失败: %s", tool_call.name, e)
-            result = ToolResult.error(str(e))
+            result = ToolResult(content=f"错误: {e}")
 
-        result = self._tool_result_normalizer.normalize(result)
+        result = self._tool_result_normalizer.normalize(
+            result,
+            session_id=state.session_id,
+            persist_overflow=tool.persist_oversized_result,
+        )
 
         await self._plugin_manager.run_hooks(
             PluginHook.AFTER_TOOL, state,

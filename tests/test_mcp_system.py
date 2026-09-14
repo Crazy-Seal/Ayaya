@@ -12,6 +12,7 @@ from pydantic import BaseModel, ValidationError
 from app.agent.context import ContextStrategyConfig
 from app.agent.agent import Agent, AgentConfig
 from app.agent.tools.base import BaseTool, ToolContext, ToolResult
+from app.agent.tools.result_normalizer import ToolResultNormalizer
 from app.agent.core.event_router import AgentEvent, EventType
 from app.agent.state import AgentState
 from app.agent.mcp.adapter import MCPToolAdapter, build_exposed_tool_name
@@ -632,7 +633,7 @@ async def test_ask_adapter_requires_single_approval_and_converts_results() -> No
         _tool_context({"approved": True}, pending.resume_state),
     )
     assert "完成" in approved.content
-    assert '"ok": true' in approved.content
+    assert '"ok":true' in approved.content
     assert approved.image_urls == ["data:image/png;base64,iVBORw0KGgo="]
     assert session.calls == [("write_file", {"path": "README.md"})]
     await manager.close()
@@ -914,7 +915,7 @@ async def test_call_timeout_is_not_replayed_keeps_generation_and_redacts_secret(
     assert closed == 1
 
 
-def test_adapter_converts_errors_multiple_images_unsupported_content_and_truncation() -> None:
+def test_adapter_converts_errors_multiple_images_and_unsupported_content() -> None:
     error = MCPToolAdapter._convert_result(SimpleNamespace(
         isError=True,
         content=[SimpleNamespace(type="text", text="remote failed")],
@@ -938,18 +939,20 @@ def test_adapter_converts_errors_multiple_images_unsupported_content_and_truncat
     ]
     assert converted.image_message_name == "mcp_tool_image"
     assert "已忽略 3 个不支持的 MCP 内容类型" in converted.content
-    assert "结果已截断" in converted.content
-    assert len(converted.content) < 50_100
+    assert "x" * 60_000 in converted.content
 
 
-def test_adapter_applies_error_and_image_quotas() -> None:
-    """错误文本、图片数量、Base64 和 MIME 均受统一配额约束。"""
+def test_adapter_preserves_large_error_for_unified_normalization() -> None:
     huge_error = MCPToolAdapter._convert_result(SimpleNamespace(
         isError=True,
         content=[SimpleNamespace(type="text", text="x" * 100_000)],
     ))
-    assert "结果已截断" in huge_error.content
-    assert len(huge_error.content) < 51_000
+
+    assert huge_error.content == "错误: " + "x" * 100_000
+
+
+def test_adapter_applies_image_quotas() -> None:
+    """图片数量、Base64 和 MIME 均受配额约束。"""
 
     images = [
         SimpleNamespace(type="image", data="iVBORw0KGgo=", mimeType="image/png")
@@ -960,11 +963,48 @@ def test_adapter_applies_error_and_image_quotas() -> None:
         SimpleNamespace(type="image", data="iVBORw0KGgo=", mimeType="image/gif"),
     ])
     converted = MCPToolAdapter._convert_result(SimpleNamespace(isError=False, content=images))
-    assert len(converted.image_urls) == 5
-    assert "已忽略 3 张 MCP 图片：图片数量超过限制" in converted.content
+    normalized = ToolResultNormalizer().normalize(converted)
+    assert len(normalized.image_urls) == 5
+    assert "已忽略 3 张工具图片：图片数量超过限制" in normalized.content
 
 
-def test_adapter_limits_total_content_parts_and_summarizes_ignored_images(monkeypatch) -> None:
+def test_adapter_deduplicates_exact_structured_serialization() -> None:
+    structured = {"items": [1, 2], "message": "你好"}
+    serialized = '{"items":[1,2],"message":"你好"}'
+
+    converted = MCPToolAdapter._convert_result(SimpleNamespace(
+        isError=False,
+        content=[SimpleNamespace(type="text", text=f"结果如下：\n{serialized}")],
+        structuredContent=structured,
+    ))
+
+    assert converted.content == f"结果如下：\n{serialized}"
+
+
+def test_adapter_appends_structured_content_when_exact_serialization_is_absent() -> None:
+    converted = MCPToolAdapter._convert_result(SimpleNamespace(
+        isError=False,
+        content=[SimpleNamespace(type="text", text='结果如下： {"value": 1}')],
+        structuredContent={"value": 1},
+    ))
+
+    assert converted.content == (
+        '结果如下： {"value": 1}\n\n[structuredContent]\n{"value":1}'
+    )
+
+
+def test_adapter_accepts_structured_result_larger_than_schema_limit() -> None:
+    converted = MCPToolAdapter._convert_result(SimpleNamespace(
+        isError=False,
+        content=[],
+        structuredContent={"value": "x" * (300 * 1024)},
+    ))
+
+    assert converted.content.startswith('{"value":"')
+    assert "已忽略 structured content" not in converted.content
+
+
+def test_adapter_and_normalizer_limit_content_parts_and_summarize_images(monkeypatch) -> None:
     """无效图片不得造成无界解码、原因列表或二次遍历。"""
     class _RepeatedInvalidImages:
         def __len__(self) -> int:
@@ -975,23 +1015,26 @@ def test_adapter_limits_total_content_parts_and_summarizes_ignored_images(monkey
                 yield SimpleNamespace(type="image", data="%%%", mimeType="image/png")
 
     decode_calls = 0
-    original_decode = __import__("app.agent.mcp.adapter", fromlist=["base64"]).base64.b64decode
+    original_decode = __import__(
+        "app.agent.tools.result_normalizer", fromlist=["base64"]
+    ).base64.b64decode
 
     def counted_decode(*args, **kwargs):
         nonlocal decode_calls
         decode_calls += 1
         return original_decode(*args, **kwargs)
 
-    monkeypatch.setattr("app.agent.mcp.adapter.base64.b64decode", counted_decode)
+    monkeypatch.setattr("app.agent.tools.result_normalizer.base64.b64decode", counted_decode)
     converted = MCPToolAdapter._convert_result(SimpleNamespace(
         isError=False,
         content=_RepeatedInvalidImages(),
     ))
+    normalized = ToolResultNormalizer().normalize(converted)
 
     assert decode_calls == 1_000
-    assert converted.content.count("Base64 非法") == 1
-    assert "已忽略 1000 张 MCP 图片" in converted.content
-    assert "已忽略 99000 个 MCP content parts" in converted.content
+    assert normalized.content.count("Base64 非法") == 1
+    assert "已忽略 1000 张工具图片" in normalized.content
+    assert "已忽略 99000 个 MCP content parts" in normalized.content
 
 
 def test_adapter_does_not_preserve_untrusted_content_type_or_mime_values() -> None:
@@ -1003,11 +1046,12 @@ def test_adapter_does_not_preserve_untrusted_content_type_or_mime_values() -> No
     parts.extend(SimpleNamespace(type=f"attacker-{index}") for index in range(500))
 
     converted = MCPToolAdapter._convert_result(SimpleNamespace(isError=False, content=parts))
+    normalized = ToolResultNormalizer().normalize(converted)
 
-    assert "image/attacker-" not in converted.content
-    assert "attacker-" not in converted.content
-    assert converted.content.count("MIME 不支持") == 1
-    assert converted.content.count("不支持的 MCP 内容类型") == 1
+    assert "image/attacker-" not in normalized.content
+    assert "attacker-" not in normalized.content
+    assert normalized.content.count("MIME 不支持") == 1
+    assert normalized.content.count("不支持的 MCP 内容类型") == 1
 
 
 @pytest.mark.parametrize("part_type", ["text", "audio", "resource", "unknown"])
@@ -1031,7 +1075,7 @@ def test_adapter_applies_content_part_limit_to_every_part_type(part_type: str) -
         assert "已忽略 1000 个不支持的 MCP 内容类型" in converted.content
 
 
-def test_adapter_stops_image_signature_checks_at_content_part_limit(monkeypatch) -> None:
+def test_unified_image_normalizer_stops_at_mcp_content_part_limit(monkeypatch) -> None:
     """达到 content parts 上限后不得继续执行图片签名校验。"""
     class _RepeatedImages:
         def __len__(self) -> int:
@@ -1048,15 +1092,19 @@ def test_adapter_stops_image_signature_checks_at_content_part_limit(monkeypatch)
         signature_calls += 1
         return False
 
-    monkeypatch.setattr(MCPToolAdapter, "_has_valid_image_signature", counted_signature)
+    monkeypatch.setattr(
+        "app.agent.tools.result_normalizer._has_valid_signature",
+        counted_signature,
+    )
     converted = MCPToolAdapter._convert_result(SimpleNamespace(
         isError=False,
         content=_RepeatedImages(),
     ))
+    normalized = ToolResultNormalizer().normalize(converted)
 
     assert signature_calls == 1_000
-    assert "已忽略 1000 张 MCP 图片：文件签名不匹配" in converted.content
-    assert "已忽略 99000 个 MCP content parts" in converted.content
+    assert "已忽略 1000 张工具图片：文件签名不匹配" in normalized.content
+    assert "已忽略 99000 个 MCP content parts" in normalized.content
 
 
 def test_tool_catalog_and_instructions_quotas() -> None:

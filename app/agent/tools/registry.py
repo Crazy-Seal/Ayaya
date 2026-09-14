@@ -122,7 +122,14 @@ class ToolRegistry:
 # ==================== 自动扫描发现工具 ====================
 
 # 约定：tools/ 下每个 .py 文件 = 一个工具，文件名即工具名；下列模块不是工具，跳过。
-_NON_TOOL_MODULES = {"registry", "base", "decorator"}
+_NON_TOOL_MODULES = {
+    "registry",
+    "base",
+    "decorator",
+    "result_artifacts",
+    "result_limits",
+    "result_normalizer",
+}
 
 
 def _discover_tools() -> None:

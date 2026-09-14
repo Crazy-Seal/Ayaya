@@ -97,7 +97,7 @@ async def control_screen_with_vlm(
     """
     normalized = _validate_args(target, operation, text, press_enter, wait_seconds, scroll_direction)
     if isinstance(normalized, str):
-        return ToolResult.error(normalized)
+        return ToolResult(content=f"错误: {normalized}")
 
     resolved_target, resolved_operation, resolved_text, resolved_press_enter, resolved_wait, resolved_scroll = normalized
     action_state = {
@@ -110,7 +110,7 @@ async def control_screen_with_vlm(
     }
 
     if context is None:
-        return ToolResult.error("缺少工具上下文。")
+        return ToolResult(content="错误: 缺少工具上下文。")
 
     if context.resume_data is None:
         return ToolResult.needs_input(
@@ -145,9 +145,9 @@ async def control_screen_with_vlm(
     width = context.resume_data.get("width")
     height = context.resume_data.get("height")
     if not screenshot_data:
-        return ToolResult.error("未收到用于定位的屏幕截图。")
+        return ToolResult(content="错误: 未收到用于定位的屏幕截图。")
     if not isinstance(width, int) or not isinstance(height, int):
-        return ToolResult.error("未收到有效的截图尺寸。")
+        return ToolResult(content="错误: 未收到有效的截图尺寸。")
 
     bbox = await VLMService().locate(resolved_target, screenshot_data)
     coordinates = restore_vlm_point(bbox, width, height)

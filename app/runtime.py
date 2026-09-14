@@ -127,3 +127,8 @@ def get_checkpoint_db() -> Path:
 
 def get_images_dir() -> Path:
     return get_data_dir() / "images"
+
+
+def get_tool_results_dir() -> Path:
+    """返回按会话保存超长工具结果的根目录。"""
+    return get_data_dir() / "tool_results"

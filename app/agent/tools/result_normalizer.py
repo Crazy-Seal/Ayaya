@@ -9,17 +9,30 @@ from collections import Counter
 from dataclasses import replace
 
 from app.agent.tools.base import ToolResult
-from app.agent.utils.domain.weighted_text import (
-    WEIGHTED_TEXT_TRUNCATED_MARKER as TOOL_RESULT_TRUNCATED_MARKER,
-    truncate_weighted_text,
-    weighted_char_count,
-)
-from app.mcp.limits import (
+from app.agent.tools.result_artifacts import ToolResultArtifactStore
+from app.agent.tools.result_limits import (
     ALLOWED_IMAGE_MIME_TYPES,
     MAX_IMAGE_BYTES,
     MAX_IMAGES_PER_CALL,
     MAX_TOTAL_IMAGE_BYTES,
 )
+from app.agent.utils.domain.weighted_text import (
+    WEIGHTED_TEXT_TRUNCATED_MARKER as TOOL_RESULT_TRUNCATED_MARKER,
+    truncate_weighted_text,
+    weighted_char_count,
+)
+
+
+MAX_TOOL_RESULT_BYTES = 10 * 1024 * 1024
+TOOL_RESULT_TOO_LARGE_MARKER = (
+    "\n\n[系统提示：工具返回结果超过 10 MiB 安全上限，未保存完整内容。 "
+    "请缩小查询范围、增加过滤条件或让工具分页返回后重试。]\n\n"
+)
+TOOL_RESULT_READ_RANGE_MARKER = (
+    "\n\n[系统提示：工具返回结果过长，中间部分已截断。"
+    "该读取工具不会再次保存结果，请缩小读取范围后重试。]\n\n"
+)
+
 
 def _has_valid_signature(mime_type: str, data: bytes) -> bool:
     if mime_type == "image/png":
@@ -40,8 +53,17 @@ _DATA_URL_PATTERN = re.compile(
 class ToolResultNormalizer:
     """规范化内置工具和已适配 MCP 工具的最终 ``ToolResult``。"""
 
-    def normalize(self, result: ToolResult) -> ToolResult:
-        content = truncate_weighted_text(str(result.content or ""))
+    def __init__(self, artifact_store: ToolResultArtifactStore | None = None) -> None:
+        self._artifact_store = artifact_store
+
+    def normalize(
+        self,
+        result: ToolResult,
+        *,
+        session_id: str = "default",
+        persist_overflow: bool = True,
+    ) -> ToolResult:
+        content = str(result.content or "")
         candidates = list(result.image_urls)
         if result.image_url and result.image_url not in candidates:
             candidates.insert(0, result.image_url)
@@ -87,9 +109,37 @@ class ToolResultNormalizer:
             separator = "\n\n" if content else ""
             content += f"{separator}[已忽略 {count} 张工具图片：{reason}]"
 
+        content = self._normalize_text(
+            content,
+            session_id=session_id,
+            persist_overflow=persist_overflow,
+        )
+
         return replace(
             result,
             content=content,
             image_url=accepted[0] if accepted else None,
             image_urls=accepted,
         )
+
+    def _normalize_text(
+        self,
+        content: str,
+        *,
+        session_id: str,
+        persist_overflow: bool,
+    ) -> str:
+        if weighted_char_count(content) <= 10_000:
+            return content
+        if len(content.encode("utf-8")) > MAX_TOOL_RESULT_BYTES:
+            marker = TOOL_RESULT_TOO_LARGE_MARKER
+        elif not persist_overflow:
+            marker = TOOL_RESULT_READ_RANGE_MARKER
+        else:
+            store = self._artifact_store or ToolResultArtifactStore()
+            reference = store.save(session_id, content)
+            marker = (
+                "\n\n[系统提示：工具返回结果过长，中间部分已截断。"
+                f"完整内容已保存至 {reference.uri}；请使用 read_file 分段读取。]\n\n"
+            )
+        return truncate_weighted_text(content, marker=marker)

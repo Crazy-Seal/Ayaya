@@ -42,6 +42,7 @@ def truncate_weighted_text(
     max_weight: float = 10000,
     head_weight: float = 8000,
     tail_weight: float = 2000,
+    marker: str = WEIGHTED_TEXT_TRUNCATED_MARKER,
 ) -> str:
     """按权重保留原文头尾，结构提示不占原文额度。"""
     if head_weight + tail_weight > max_weight:
@@ -50,7 +51,7 @@ def truncate_weighted_text(
         return value
     return (
         _take_weighted_prefix(value, head_weight)
-        + WEIGHTED_TEXT_TRUNCATED_MARKER
+        + marker
         + _take_weighted_suffix(value, tail_weight)
     )
 

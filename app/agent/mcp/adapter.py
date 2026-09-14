@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import base64
-import binascii
 import hashlib
+import json
 import re
-from collections import Counter
 from typing import Any, TYPE_CHECKING
 
 from app.agent.state.messages import MCP_TOOL_IMAGE_MESSAGE_NAME
@@ -14,16 +12,9 @@ from app.agent.tools.base import BaseTool, ToolContext, ToolResult
 from app.mcp.identity import tool_contract_fingerprint
 from app.mcp.types import MCPToolDescriptor
 from app.mcp.limits import (
-    ALLOWED_IMAGE_MIME_TYPES,
-    BoundedTextBuilder,
     MAX_CONTENT_PARTS,
-    MAX_IMAGE_BYTES,
-    MAX_IMAGES_PER_CALL,
-    MAX_SCHEMA_BYTES,
     MAX_SCHEMA_DEPTH,
     MAX_SCHEMA_NODES,
-    MAX_TOTAL_IMAGE_BYTES,
-    append_json,
     validate_json_value,
 )
 from app.schemas.mcp import MCPToolPolicy
@@ -101,7 +92,7 @@ class MCPToolAdapter(BaseTool):
             执行结果、授权中断或安全校验错误。
         """
         if context.resume_data is not None and context.resume_data.get("approved") is not True:
-            return ToolResult.error("用户拒绝了本次 MCP 工具调用")
+            return ToolResult(content="错误: 用户拒绝了本次 MCP 工具调用")
 
         policy = self._policy_resolver.get_policy(
             self.session_id,
@@ -109,7 +100,7 @@ class MCPToolAdapter(BaseTool):
             self.remote_tool_name,
         )
         if policy == MCPToolPolicy.DENY:
-            return ToolResult.error("此 MCP 工具不允许使用")
+            return ToolResult(content="错误: 此 MCP 工具不允许使用")
 
         if context.resume_data is not None:
             snapshot = context.resume_state or {}
@@ -121,13 +112,16 @@ class MCPToolAdapter(BaseTool):
                 or snapshot.get("tool_contract_fingerprint") != self.tool_contract_fingerprint
                 or snapshot.get("arguments") != args
             ):
-                return ToolResult.error(
-                    "MCP_APPROVAL_STALE: MCP 服务器配置或工具定义已变化，请重新发起调用并确认"
+                return ToolResult(
+                    content=(
+                        "错误: MCP_APPROVAL_STALE: MCP 服务器配置或工具定义已变化，"
+                        "请重新发起调用并确认"
+                    )
                 )
 
         identity_error = self._validate_policy_identity()
         if identity_error:
-            return ToolResult.error(identity_error)
+            return ToolResult(content=f"错误: {identity_error}")
 
         if policy == MCPToolPolicy.ASK:
             if context.resume_data is None:
@@ -163,7 +157,7 @@ class MCPToolAdapter(BaseTool):
                 execution_guard=lambda: self._execution_guard(approved_contract),
             )
         except Exception as exc:
-            return ToolResult.error(str(exc))
+            return ToolResult(content=f"错误: {exc}")
         return self._convert_result(result)
 
     def _execution_guard(self, approved_contract: str | None = None) -> str | None:
@@ -218,17 +212,14 @@ class MCPToolAdapter(BaseTool):
         Returns:
             包含文本、结构化内容和图片的统一工具结果。
         """
-        builder = BoundedTextBuilder()
-        needs_separator = False
         structured = getattr(result, "structuredContent", None)
         if structured is None:
             structured = getattr(result, "structured_content", None)
 
         images: list[str] = []
-        ignored_images: Counter[str] = Counter()
         unsupported_count = 0
         skipped_content_parts = 0
-        total_image_bytes = 0
+        text_parts: list[str] = []
         content_parts = getattr(result, "content", None) or []
         try:
             content_part_count = len(content_parts)
@@ -246,89 +237,57 @@ class MCPToolAdapter(BaseTool):
             if part_type == "text":
                 text = getattr(part, "text", None)
                 if text:
-                    if needs_separator:
-                        builder.append("\n")
-                    builder.append(text)
-                    needs_separator = True
+                    text_parts.append(str(text))
             elif part_type == "image":
                 data = getattr(part, "data", "")
                 mime_value = getattr(part, "mimeType", getattr(part, "mime_type", ""))
                 mime_type = mime_value if isinstance(mime_value, str) else ""
-                reason: str | None = None
-                decoded = b""
-                if len(images) >= MAX_IMAGES_PER_CALL:
-                    reason = "图片数量超过限制"
-                elif mime_type not in ALLOWED_IMAGE_MIME_TYPES:
-                    reason = "MIME 不支持"
-                elif not isinstance(data, str) or (len(data) * 3) // 4 > MAX_IMAGE_BYTES:
-                    reason = "单张图片超过限制"
-                else:
-                    try:
-                        decoded = base64.b64decode(data, validate=True)
-                    except (binascii.Error, ValueError):
-                        reason = "Base64 非法"
-                if reason is None and len(decoded) > MAX_IMAGE_BYTES:
-                    reason = "单张图片超过限制"
-                if reason is None and total_image_bytes + len(decoded) > MAX_TOTAL_IMAGE_BYTES:
-                    reason = "图片总量超过限制"
-                if reason is None and not MCPToolAdapter._has_valid_image_signature(mime_type, decoded):
-                    reason = "文件签名不匹配"
-                if reason is not None:
-                    ignored_images[reason] += 1
-                else:
-                    total_image_bytes += len(decoded)
-                    images.append(f"data:{mime_type};base64,{data}")
+                encoded = data if isinstance(data, str) else str(data)
+                images.append(f"data:{mime_type};base64,{encoded}")
             elif part_type != "text":
                 unsupported_count += 1
 
+        content = "\n".join(text_parts)
+
+        def append_section(value: str) -> None:
+            nonlocal content
+            content += ("\n\n" if content else "") + value
+
         if unsupported_count:
-            if needs_separator:
-                builder.append("\n\n")
-            builder.append(f"[已忽略 {unsupported_count} 个不支持的 MCP 内容类型]")
-            needs_separator = True
-        for reason, count in ignored_images.items():
-            if needs_separator:
-                builder.append("\n\n")
-            builder.append(f"[已忽略 {count} 张 MCP 图片：{reason}]")
-            needs_separator = True
+            append_section(f"[已忽略 {unsupported_count} 个不支持的 MCP 内容类型]")
         if skipped_content_parts:
-            if needs_separator:
-                builder.append("\n\n")
-            builder.append(
+            append_section(
                 f"[已忽略 {skipped_content_parts} 个 MCP content parts：超过总数限制]"
             )
-            needs_separator = True
         if structured is not None:
-            if needs_separator:
-                builder.append("\n\n")
             try:
                 validate_json_value(
                     structured,
                     label="MCP structured content",
                     max_depth=MAX_SCHEMA_DEPTH,
                     max_nodes=MAX_SCHEMA_NODES,
-                    max_bytes=MAX_SCHEMA_BYTES,
+                    max_bytes=None,
                 )
-                append_json(builder, structured)
-            except ValueError as exc:
-                builder.append(f"[已忽略 structured content: {exc}]")
+                structured_text = json.dumps(
+                    structured,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                )
+                if structured_text not in content:
+                    append_section(
+                        structured_text
+                        if not content
+                        else f"[structuredContent]\n{structured_text}"
+                    )
+            except (TypeError, ValueError) as exc:
+                append_section(f"[已忽略 structured content: {exc}]")
 
-        content = builder.build() or "(MCP 工具未返回内容)"
+        content = content or "(MCP 工具未返回内容)"
         if bool(getattr(result, "isError", getattr(result, "is_error", False))):
-            return ToolResult.error(content or "MCP Server 返回错误")
+            return ToolResult(content=f"错误: {content or 'MCP Server 返回错误'}")
         return ToolResult.success(
             content,
             image_urls=images,
             image_message_name=MCP_TOOL_IMAGE_MESSAGE_NAME,
         )
-
-    @staticmethod
-    def _has_valid_image_signature(mime_type: str, data: bytes) -> bool:
-        """校验已解码图片的魔数是否与声明 MIME 匹配。"""
-        if mime_type == "image/png":
-            return data.startswith(b"\x89PNG\r\n\x1a\n")
-        if mime_type == "image/jpeg":
-            return data.startswith(b"\xff\xd8\xff")
-        if mime_type == "image/webp":
-            return len(data) >= 12 and data.startswith(b"RIFF") and data[8:12] == b"WEBP"
-        return False

@@ -177,6 +177,7 @@ def tool(
     name: str | None = None,
     is_resumable: bool = False,
     compressible: bool = False,
+    persist_oversized_result: bool = True,
     parameters_schema: dict | None = None,
 ) -> Any:
     """把 async 函数变成 BaseTool 子类的装饰器。
@@ -191,6 +192,7 @@ def tool(
         name: 覆盖工具名（默认取函数名）。
         is_resumable: 标记为可恢复工具（execute 内靠 context.resume_data 分支）。
         compressible: 标记旧工具结果允许从活跃模型上下文回收，不代表允许重放工具。
+        persist_oversized_result: 超过模型预览预算时是否允许保存完整结果。
         parameters_schema: 逃生口——直接给定 JSON Schema，跳过自动推导。
             用于嵌套/复杂参数（如 update_plan 的 array-of-object），签名无法表达时。
     """
@@ -222,6 +224,7 @@ def tool(
             "parameters_schema": schema,
             "is_resumable": is_resumable,
             "compressible": compressible,
+            "persist_oversized_result": persist_oversized_result,
             "execute": execute,
             "_tool_func": staticmethod(fn),
         })

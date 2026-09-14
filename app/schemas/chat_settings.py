@@ -13,6 +13,8 @@ MEMORY_DEFAULT_CONFIG = {
     "long_term_memory_every_human_messages": 10,
 }
 
+LEGACY_FILE_MUTATION_TOOLS = frozenset({"write_file", "edit_file", "delete_file"})
+
 
 class AgentPluginSettings(BaseModel):
     enabled: bool = True
@@ -55,6 +57,16 @@ class ChatSettings(BaseModel):
     address: str | None = None
     characteristic: str | None = None
     constraint: str | None = None
+
+    @model_validator(mode="after")
+    def normalize_tools_list(self) -> "ChatSettings":
+        normalized_tools: list[str] = []
+        for tool_name in self.tools_list:
+            current = "apply_patch" if tool_name in LEGACY_FILE_MUTATION_TOOLS else tool_name
+            if current not in normalized_tools:
+                normalized_tools.append(current)
+        self.tools_list = normalized_tools
+        return self
 
     @model_validator(mode="after")
     def normalize_agent_plugins(self) -> "ChatSettings":
