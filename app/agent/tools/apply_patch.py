@@ -168,9 +168,24 @@ def _write_changes(prepared: dict[Path, str | None]) -> None:
 async def apply_patch(
     patch: Annotated[
         str,
-        "完整补丁文本。使用 *** Begin Patch 和 *** End Patch 包围；"
-        "文件操作头为 *** Add File:、*** Update File: 或 *** Delete File:；"
-        "新增内容行以 + 开头，修改块以 @@ 开始并使用空格、+、- 行前缀。",
+        "完整补丁文本。补丁必须由 *** Begin Patch 和 *** End Patch 包围。"
+        "每个文件使用 *** Add File: <路径>、*** Update File: <路径> 或 "
+        "*** Delete File: <路径>，同一路径在一个补丁中只能操作一次。"
+        "Add File 的每行内容以 + 开头；Update File 的每个变更块以 @@ 开始，"
+        "随后每行分别以空格（表示定位用的上下文）、-（表示删除）或 +（表示新增）开头，原文和上下文必须在文件中唯一匹配；"
+        "Delete File 后不能有内容。使用本工具时，请使用相对路径，该相对路径会自动定位于你的工作区内\n\n"
+        "示例：\n"
+        "*** Begin Patch\n"
+        "*** Add File: notes/new.txt\n"
+        "+第一行\n"
+        "*** Update File: app/example.py\n"
+        "@@\n"
+        " unchanged()\n"
+        "-old_value = 1\n"
+        "+old_value = 2\n"
+        " unchanged()\n"
+        "*** Delete File: notes/obsolete.txt\n"
+        "*** End Patch",
     ],
 ) -> str:
     """使用一个补丁新增、修改或删除一个或多个工作区文件。"""

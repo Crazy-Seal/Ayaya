@@ -220,3 +220,15 @@ def test_apply_patch_schema_explains_the_supported_patch_grammar() -> None:
     assert "*** Update File:" in description
     assert "*** Delete File:" in description
     assert "@@" in description
+    assert "同一路径在一个补丁中只能操作一次" in description
+    assert "原文和上下文必须在文件中唯一匹配" in description
+    assert "*** Add File: notes/new.txt\n+第一行" in description
+    assert (
+        "*** Update File: app/example.py\n"
+        "@@\n"
+        " unchanged()\n"
+        "-old_value = 1\n"
+        "+old_value = 2\n"
+        " unchanged()"
+    ) in description
+    assert "*** Delete File: notes/obsolete.txt" in description
