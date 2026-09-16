@@ -4,30 +4,29 @@ import test from "node:test";
 import { buildEnabledServerPolicy, fingerprintMcpConfig } from "../src/settings/mcp-config.js";
 import type { MCPServerConfig } from "../shared-types.js";
 
-test("首次启用服务器时已发现工具默认 ask", () => {
+test("首次启用服务器只写入服务开关", () => {
   assert.deepEqual(buildEnabledServerPolicy(undefined, ["read_file", "write_file"]), {
     enabled: true,
-    tools: { read_file: "ask", write_file: "ask" },
   });
 });
 
-test("已启用服务器的新发现工具默认 ask", () => {
+test("重新启用服务器保留身份绑定", () => {
   const policy = buildEnabledServerPolicy(
-    { enabled: true, tools: { read_file: "allow" } },
+    { enabled: true, identity_fingerprint: "a".repeat(64) },
     ["read_file", "delete_file"]
   );
   assert.deepEqual(policy, {
     enabled: true,
-    tools: { read_file: "allow", delete_file: "ask" },
+    identity_fingerprint: "a".repeat(64),
   });
 });
 
-test("曾启用后又关闭的服务器，新工具仍默认 ask", () => {
+test("工具目录不会写回 MCP 服务策略", () => {
   const policy = buildEnabledServerPolicy(
-    { enabled: false, tools: { read_file: "ask" } },
+    { enabled: false },
     ["read_file", "new_tool"]
   );
-  assert.equal(policy.tools.new_tool, "ask");
+  assert.deepEqual(policy, { enabled: true });
 });
 
 test("MCP 配置指纹不受 env 键顺序影响", () => {

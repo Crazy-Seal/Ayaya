@@ -80,7 +80,11 @@ def restore_vlm_point(
     }
 
 
-@tool(is_resumable=True, compressible=True)
+@tool(
+    is_resumable=True,
+    compressible=True,
+    authorization_timing="after_prepare",
+)
 async def control_screen_with_vlm(
     target: Annotated[str, "操作时的光标位置描述，换句话说就是操作的时候把光标放在哪，例如'页面上方的搜索框'。必须输入。"],
     operation: Annotated[Operation, "操作方式：click 单击、double 双击、right 右键、scroll 滚动。"] = "double",
@@ -90,7 +94,7 @@ async def control_screen_with_vlm(
     scroll_direction: Annotated[ScrollDirection, "滚动方向：none、down 或 up。仅 scroll 操作使用，默认 down。"] = "down",
     context: ToolContext | None = None,
 ) -> ToolResult:
-    """使用独立 VLM 操作用户的屏幕，并回传操作后的屏幕截图。
+    """操作用户的屏幕，并回传操作后的屏幕截图。
 
     调用此工具前，你需要知道屏幕上的情况，如不知道，可以通过截屏工具获取。
     注意：每轮工具调用中，只允许使用一次该工具；该工具传回操作后的截图后再判断下一步操作。
@@ -113,9 +117,9 @@ async def control_screen_with_vlm(
         return ToolResult(content="错误: 缺少工具上下文。")
 
     if context.resume_data is None:
-        return ToolResult.needs_input(
-            type="control_screen_capture_request",
-            message="Agent 需要截取屏幕以定位要操作的位置。",
+        return ToolResult.continuation(
+            "capture_screen",
+            "正在截取屏幕以定位要操作的位置。",
             resume_state={
                 "phase": "awaiting_capture",
                 "action": action_state,
@@ -125,9 +129,6 @@ async def control_screen_with_vlm(
     phase = (context.resume_state or {}).get("phase")
 
     if phase == "awaiting_execution":
-        if not context.resume_data.get("approved"):
-            return ToolResult.success("屏幕操作请求被用户拒绝。")
-
         if not context.resume_data.get("executed", False):
             error_message = context.resume_data.get("error") or "前端未完成屏幕操作。"
             return ToolResult.success(f"屏幕操作失败: {error_message}")
@@ -139,6 +140,24 @@ async def control_screen_with_vlm(
             "屏幕操作完成，已收到操作后的截图。",
             image_url=screenshot_data,
             image_message_name=SCREENSHOT_MESSAGE_NAME,
+        )
+
+    if phase == "awaiting_authorization":
+        if context.resume_data.get("kind") != "authorization_granted":
+            return ToolResult(content="错误: 屏幕操作授权恢复状态无效。")
+        execute_data = {
+            **action_state,
+            "coordinates": (context.resume_state or {}).get("coordinates"),
+        }
+        return ToolResult.continuation(
+            "perform_screen_action",
+            f"正在对“{resolved_target}”执行 {resolved_operation} 操作。",
+            payload=execute_data,
+            resume_state={
+                "phase": "awaiting_execution",
+                "action": action_state,
+                "coordinates": execute_data["coordinates"],
+            },
         )
 
     screenshot_data = context.resume_data.get("screenshot_data")
@@ -156,15 +175,10 @@ async def control_screen_with_vlm(
         "coordinates": coordinates,
     }
 
-    return ToolResult.needs_input(
-        type="control_screen_execute_request",
-        message=(
-            f"Agent 请求对“{resolved_target}”执行 {resolved_operation} 操作。"
-            "请确认是否允许。"
-        ),
-        data=execute_data,
+    return ToolResult.prepared(
+        execute_data,
         resume_state={
-            "phase": "awaiting_execution",
+            "phase": "awaiting_authorization",
             "action": action_state,
             "coordinates": coordinates,
         },

@@ -129,6 +129,7 @@ _NON_TOOL_MODULES = {
     "result_artifacts",
     "result_limits",
     "result_normalizer",
+    "authorization",
 }
 
 

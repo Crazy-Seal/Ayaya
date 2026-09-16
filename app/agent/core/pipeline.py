@@ -27,8 +27,10 @@ from app.agent.state.messages import (
     is_real_human_message,
 )
 from app.agent.state import AgentState
-from app.agent.tools.base import InterruptEvent, ToolContext, ToolResult
+from app.agent.tools.base import BaseTool, InterruptEvent, ToolContext, ToolResult
 from app.agent.tools.result_normalizer import ToolResultNormalizer
+from app.agent.tools.authorization.manager import ToolAuthorization, descriptor_for_tool
+from app.agent.tools.authorization.models import AuthorizationRequired, ToolInvocation
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +77,7 @@ class ExecutionPipeline:
         plugin_manager: PluginManager,
         model_input: ModelInputCoordinator,
         emit_event: EventEmitter,
+        tool_authorization: ToolAuthorization | None = None,
     ) -> None:
         self._prompt_source = prompt_source
         self._llm_client = llm_client
@@ -83,6 +86,7 @@ class ExecutionPipeline:
         self._emit_event = emit_event
         self._tool_result_normalizer = ToolResultNormalizer()
         self._model_input = model_input
+        self._tool_authorization = tool_authorization
 
     # ==================== 主入口 ====================
 
@@ -362,15 +366,71 @@ class ExecutionPipeline:
         resume_state: dict | None = None,
     ) -> ToolResult:
         """执行单个工具（支持中断后恢复执行：传入 resume_data + resume_state）"""
-        await self._plugin_manager.run_hooks(
-            PluginHook.BEFORE_TOOL, state,
-            data={"tool_call": tool_call.to_dict()},
-        )
-
         tool = self._tool_manager.get(tool_call.name)
         if not tool:
             logger.warning("工具 '%s' 不存在", tool_call.name)
             return ToolResult(content=f"错误: 工具 '{tool_call.name}' 不存在")
+
+        grant: dict | None = None
+        prepared_action: dict | None = None
+        tool_resume_state = resume_state
+        effective_resume_data = resume_data
+        descriptor = descriptor_for_tool(tool)
+        hooks_started = False
+
+        if self._tool_authorization is not None:
+            envelope = resume_state or {}
+            hooks_started = bool(envelope.get("hooks_started"))
+            prepared_action = envelope.get("prepared_action")
+            invocation = ToolInvocation(
+                session_id=state.session_id,
+                tool_call_id=tool_call.id,
+                descriptor=descriptor,
+                arguments=tool_call.args,
+                prepared_action=prepared_action,
+            )
+
+            if "authorization_request" in envelope:
+                outcome = self._tool_authorization.resolve_authorization(
+                    invocation,
+                    decision=self._normalize_authorization_decision(resume_data),
+                    authorization_snapshot=envelope.get("authorization_request") or {},
+                )
+                if isinstance(outcome, ToolResult):
+                    return outcome
+                if isinstance(outcome, AuthorizationRequired):
+                    return self._authorization_result(
+                        outcome,
+                        tool_resume_state=envelope.get("tool_resume_state") or {},
+                        prepared_action=prepared_action,
+                        hooks_started=hooks_started,
+                    )
+                grant = outcome.grant.to_dict() if outcome.grant else None
+                tool_resume_state = envelope.get("tool_resume_state") or {}
+                effective_resume_data = (
+                    {"kind": "authorization_granted"}
+                    if prepared_action is not None
+                    else None
+                )
+            elif "continuation" in envelope:
+                grant = envelope.get("authorization_grant")
+                if not self._tool_authorization.validate_grant(invocation, grant):
+                    return ToolResult(content="错误: 工具授权已失效，请重新发起调用")
+                tool_resume_state = envelope.get("tool_resume_state") or {}
+            else:
+                outcome = self._tool_authorization.authorize(invocation)
+                if isinstance(outcome, ToolResult):
+                    return outcome
+                if isinstance(outcome, AuthorizationRequired):
+                    return self._authorization_result(outcome)
+                grant = outcome.grant.to_dict() if outcome.grant else None
+
+        if not hooks_started:
+            await self._plugin_manager.run_hooks(
+                PluginHook.BEFORE_TOOL, state,
+                data={"tool_call": tool_call.to_dict()},
+            )
+            hooks_started = True
 
         context = ToolContext(
             session_id=state.session_id,
@@ -378,8 +438,9 @@ class ExecutionPipeline:
             emit_event=self._emit_event,
             get_checkpoint=state.to_checkpoint,
             set_checkpoint=lambda d: state.update_extra(d),
-            resume_data=resume_data,
-            resume_state=resume_state,
+            resume_data=effective_resume_data,
+            resume_state=tool_resume_state,
+            authorization_grant=grant,
         )
 
         try:
@@ -394,12 +455,143 @@ class ExecutionPipeline:
             persist_overflow=tool.persist_oversized_result,
         )
 
+        if self._tool_authorization is not None and result.prepared_action is not None:
+            prepared_invocation = ToolInvocation(
+                session_id=state.session_id,
+                tool_call_id=tool_call.id,
+                descriptor=descriptor,
+                arguments=tool_call.args,
+                prepared_action=result.prepared_action,
+            )
+            outcome = self._tool_authorization.authorize(prepared_invocation)
+            if isinstance(outcome, ToolResult):
+                return outcome
+            if isinstance(outcome, AuthorizationRequired):
+                return self._authorization_result(
+                    outcome,
+                    tool_resume_state=result.resume_state,
+                    prepared_action=result.prepared_action,
+                    hooks_started=hooks_started,
+                )
+            grant = outcome.grant.to_dict() if outcome.grant else None
+            result = await self._call_prepared_tool(
+                state,
+                tool_call,
+                tool,
+                result.resume_state,
+                grant,
+            )
+            prepared_action = prepared_invocation.prepared_action
+
+        if result.interrupt and result.interrupt.type == "continuation_request":
+            continuation_kind = result.interrupt.data.get("kind")
+            if (
+                self._tool_authorization is not None
+                and descriptor.authorization_timing == "after_prepare"
+                and prepared_action is None
+                and continuation_kind != "capture_screen"
+            ):
+                return ToolResult(
+                    content="错误: after_prepare 工具在授权前只能请求只读准备数据"
+                )
+            result.resume_state = {
+                "continuation": continuation_kind,
+                "tool_resume_state": result.resume_state,
+                "authorization_grant": grant,
+                "prepared_action": prepared_action,
+                "hooks_started": hooks_started,
+            }
+            return result
+
         await self._plugin_manager.run_hooks(
             PluginHook.AFTER_TOOL, state,
             data={"tool_call": tool_call.to_dict(), "result": result},
         )
-
         return result
+
+    @staticmethod
+    def _authorization_result(
+        outcome: AuthorizationRequired,
+        *,
+        tool_resume_state: dict | None = None,
+        prepared_action: dict | None = None,
+        hooks_started: bool = False,
+    ) -> ToolResult:
+        return ToolResult(
+            content="",
+            interrupt=outcome.interrupt,
+            resume_state={
+                "authorization_request": outcome.resume_state,
+                "tool_resume_state": tool_resume_state or {},
+                "prepared_action": prepared_action,
+                "hooks_started": hooks_started,
+            },
+        )
+
+    async def _call_prepared_tool(
+        self,
+        state: AgentState,
+        tool_call: ToolCall,
+        tool: BaseTool,
+        resume_state: dict,
+        grant: dict | None,
+    ) -> ToolResult:
+        context = ToolContext(
+            session_id=state.session_id,
+            state=state,
+            emit_event=self._emit_event,
+            get_checkpoint=state.to_checkpoint,
+            set_checkpoint=lambda data: state.update_extra(data),
+            resume_data={"kind": "authorization_granted"},
+            resume_state=resume_state,
+            authorization_grant=grant,
+        )
+        try:
+            result = await tool.execute(tool_call.args, context)
+        except Exception as exc:
+            logger.error("工具 '%s' 执行失败: %s", tool_call.name, exc)
+            result = ToolResult(content=f"错误: {exc}")
+        return self._tool_result_normalizer.normalize(
+            result,
+            session_id=state.session_id,
+            persist_overflow=tool.persist_oversized_result,
+        )
+
+    @staticmethod
+    def _normalize_authorization_decision(resume_data: dict | None) -> dict[str, Any]:
+        if resume_data and resume_data.get("kind") in {"approve", "reject", "steer"}:
+            return resume_data
+        return {
+            "kind": "approve"
+            if resume_data and resume_data.get("approved") is True
+            else "reject"
+        }
+
+    def validate_pending_continuation(self, interrupt_data: dict[str, Any]) -> bool:
+        """在前端执行 continuation 前复核当前策略、契约和单次授权。"""
+        if self._tool_authorization is None:
+            return False
+        tool = self._tool_manager.get(str(interrupt_data.get("tool_name") or ""))
+        if tool is None:
+            return False
+        envelope = interrupt_data.get("resume_state") or {}
+        continuation = interrupt_data.get("data") or {}
+        if (
+            envelope.get("continuation") != continuation.get("kind")
+            or "continuation" not in envelope
+        ):
+            return False
+        invocation = ToolInvocation(
+            session_id=str(interrupt_data.get("session_id") or ""),
+            tool_call_id=str(interrupt_data.get("tool_call_id") or ""),
+            descriptor=descriptor_for_tool(tool),
+            arguments=interrupt_data.get("tool_args") or {},
+            prepared_action=envelope.get("prepared_action"),
+        )
+        return self._tool_authorization.validate_grant(
+            invocation,
+            envelope.get("authorization_grant"),
+        )
 
     async def _commit_completed_tool_call(
         self,

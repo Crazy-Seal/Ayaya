@@ -82,12 +82,14 @@ def test_initial_call_directly_requests_execution() -> None:
     result = asyncio.run(run())
 
     assert result.interrupt is not None
-    assert result.interrupt.type == "control_screen_execute_request"
-    assert result.interrupt.data["target"] == "search box"
-    assert result.interrupt.data["operation"] == "click"
-    assert result.interrupt.data["text"] == "hello"
-    assert result.interrupt.data["press_enter"] is False
-    assert result.interrupt.data["coordinates"] == {
+    assert result.interrupt.type == "continuation_request"
+    assert result.interrupt.data["kind"] == "perform_screen_action"
+    payload = result.interrupt.data["payload"]
+    assert payload["target"] == "search box"
+    assert payload["operation"] == "click"
+    assert payload["text"] == "hello"
+    assert payload["press_enter"] is False
+    assert payload["coordinates"] == {
         "bbox": [400, 200, 600, 400],
         "x_ratio": 0.5,
         "y_ratio": 0.3,
@@ -105,7 +107,7 @@ def test_initial_call_does_not_reorder_xyxy_coordinates() -> None:
     result = asyncio.run(run())
 
     assert result.interrupt is not None
-    assert result.interrupt.data["coordinates"] == {
+    assert result.interrupt.data["payload"]["coordinates"] == {
         "bbox": [200, 400, 400, 600],
         "x_ratio": 0.3,
         "y_ratio": 0.5,
@@ -135,7 +137,7 @@ def test_control_screen_defaults_scroll_direction_to_down() -> None:
     result = asyncio.run(run())
 
     assert result.interrupt is not None
-    assert result.interrupt.data["scroll_direction"] == "down"
+    assert result.interrupt.data["payload"]["scroll_direction"] == "down"
 
 
 def test_control_screen_rejects_invalid_scroll_direction() -> None:
@@ -171,19 +173,19 @@ def test_control_screen_execution_resume_injects_screenshot() -> None:
     assert result.image_url == "data:image/png;base64,BBB"
 
 
-def test_control_screen_execution_resume_handles_rejection() -> None:
+def test_control_screen_execution_resume_requires_frontend_result() -> None:
     async def run():
         return await control_screen().execute(
             _args(),
             _context(
-                resume_data={"approved": False},
+                resume_data={},
                 resume_state={"phase": "awaiting_execution"},
             ),
         )
 
     result = asyncio.run(run())
 
-    assert result.content == "屏幕操作请求被用户拒绝。"
+    assert result.content == "屏幕操作失败: 前端未完成屏幕操作。"
     assert result.image_url is None
 
 

@@ -304,11 +304,12 @@ class SettingsApp {
 
     if (pageName === "tools") {
       try {
-        const result = await window.desktopPetApi.getAvailableTools();
-        deps.availableTools = result.tools;
+        deps.toolPolicies = await window.desktopPetApi.getToolPermissions(
+          this.savedState?.session_id ?? ""
+        );
       } catch (error) {
-        this.toast.error(appendErrorMessage("读取工具列表失败", error));
-        deps.availableTools = [];
+        this.toast.error(appendErrorMessage("读取工具权限失败", error));
+        deps.toolPolicies = [];
       }
     }
 
@@ -527,12 +528,16 @@ class SettingsApp {
       return;
     }
 
-    const newState: ChatSettingsState = {
+    const views = await window.desktopPetApi.updateToolPermissions(
+      this.savedState.session_id,
+      toolsData.tool_permissions,
+    );
+    this.savedState = {
       ...this.savedState,
-      tools_list: toolsData.tools_list,
+      tool_permissions: Object.fromEntries(
+        views.map((item) => [item.stable_key, item.policy])
+      ),
     };
-
-    this.savedState = await window.desktopPetApi.updateChatSettings(newState);
   }
 
   /**

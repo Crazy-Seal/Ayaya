@@ -3,7 +3,6 @@ import type {
   MCPServerConfig,
   MCPServerView,
   MCPToolInfo,
-  MCPToolPolicy,
 } from "../../../shared-types.js";
 import type { ISettingsPage, PageEditingData, PageEventCallback, PageRenderData } from "../types.js";
 import type { ConfirmDialog } from "../components/confirm-dialog.js";
@@ -185,52 +184,19 @@ export class McpPage implements ISettingsPage {
     toggle.checked = Boolean(this.policies.servers[server.config.id]?.enabled);
     toggleLabel.append(toggle, document.createTextNode("当前模型启用此服务"));
     panel.append(toggleLabel);
-    const tools = this.tools.get(server.config.id) ?? [];
-    const toolList = document.createElement("div");
-    toolList.className = "mcp-tool-policy-list";
-    /** 使用当前模型权限重新渲染工具策略选择器。 */
-    const renderTools = (): void => {
-      toolList.replaceChildren();
-      const current = this.policies.servers[server.config.id];
-      for (const tool of tools) {
-        const row = document.createElement("label");
-        row.textContent = tool.name;
-        const select = document.createElement("select");
-        select.className = "ui-control ui-control--small ui-select";
-        for (const value of ["allow", "ask", "deny"] as MCPToolPolicy[]) {
-          const option = document.createElement("option");
-          option.value = value;
-          option.textContent = value;
-          select.append(option);
-        }
-        select.value = current?.tools[tool.name] ?? "ask";
-        select.disabled = !current?.enabled;
-        select.addEventListener("change", () => {
-          const policy = this.policies.servers[server.config.id];
-          if (policy) policy.tools[tool.name] = select.value as MCPToolPolicy;
-        });
-        row.append(select);
-        toolList.append(row);
-      }
-      if (tools.length === 0) toolList.textContent = "尚未获取工具目录";
-    };
     toggle.addEventListener("change", () => {
       if (toggle.checked) {
         this.policies.servers[server.config.id] = buildEnabledServerPolicy(
-          this.policies.servers[server.config.id], tools.map((tool) => tool.name)
+          this.policies.servers[server.config.id]
         );
       } else {
         const current = this.policies.servers[server.config.id];
         this.policies.servers[server.config.id] = {
           ...current,
           enabled: false,
-          tools: current?.tools ?? {},
         };
       }
-      renderTools();
     });
-    panel.append(toolList);
-    renderTools();
     return panel;
   }
 

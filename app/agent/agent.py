@@ -26,13 +26,13 @@ from app.agent.state import AgentState
 from app.agent.state.manager import StateManager
 from app.agent.state.messages import ContentPart, ToolCall
 from app.agent.tools.base import BaseTool
+from app.agent.tools.authorization.manager import ToolAuthorization
 from app.agent.utils.domain.images import save_multiple_images
 from app.schemas.mcp import MCPModelSettings
 
 if TYPE_CHECKING:
     from app.schemas.chat_settings import ChatSettings
     from app.services.mcp_connection_manager import MCPConnectionManager
-    from app.services.mcp_policy_resolver import MCPPolicyResolver
 
 logger = logging.getLogger(__name__)
 
@@ -73,18 +73,23 @@ class Agent:
         config: AgentConfig,
         db_path: str | None = None,
         mcp_connection_manager: "MCPConnectionManager | None" = None,
-        mcp_policy_resolver: "MCPPolicyResolver | None" = None,
         *,
         llm_client: LLMClient | None = None,
         diary_coverage: DiaryCoverage | None = None,
         chat_settings: "ChatSettings | None" = None,
+        tool_authorization: ToolAuthorization | None = None,
     ):
         self.config = config
         self.mcp_connection_manager = mcp_connection_manager
-        self.mcp_policy_resolver = mcp_policy_resolver
 
         # 核心管理器
-        self.tool_manager = ToolManager()
+        self.tool_authorization = tool_authorization
+        if self.tool_authorization is None and chat_settings is not None:
+            self.tool_authorization = ToolAuthorization(lambda _session_id: chat_settings)
+        self.tool_manager = ToolManager(
+            session_id=config.session_id,
+            authorization=self.tool_authorization,
+        )
         self.plugin_manager = PluginManager()
         if db_path:
             self.state_manager = StateManager(config.session_id, db_path=db_path)
@@ -120,6 +125,7 @@ class Agent:
             plugin_manager=self.plugin_manager,
             model_input=model_input,
             emit_event=self.event_router.emit,
+            tool_authorization=self.tool_authorization,
         )
 
         # 初始化标志
@@ -151,7 +157,14 @@ class Agent:
         # 从工具注册表加载
         from app.agent.tools.registry import ToolRegistry
 
-        for tool_name in self.config.tools or []:
+        tool_names = (
+            ToolRegistry.list_tools()
+            if self.tool_authorization is not None
+            else list(self.config.tools or [])
+        )
+        for tool_name in tool_names:
+            if self.tool_manager.has(tool_name):
+                continue
             tool_class = ToolRegistry.get(tool_name)
             if tool_class:
                 tool = tool_class()
@@ -232,12 +245,11 @@ class Agent:
         """连接当前模型启用的 Server 并组装 MCP 模型工具空间。"""
         if not self.config.mcp.servers:
             return
-        if self.mcp_connection_manager is None or self.mcp_policy_resolver is None:
-            logger.warning("MCP 配置已启用，但连接管理器或权限解析器未注入")
+        if self.mcp_connection_manager is None or self.tool_authorization is None:
+            logger.warning("MCP 配置已启用，但连接管理器或统一权限层未注入")
             return
 
         from app.agent.mcp.adapter import MCPToolAdapter
-        from app.schemas.mcp import MCPToolPolicy
         from app.services.mcp_connection_manager import MCPConnectionError
 
         for server_id, server_policy in self.config.mcp.servers.items():
@@ -254,17 +266,13 @@ class Agent:
                 logger.error("MCP Server '%s' 连接失败，已跳过: %s", server_id, exc)
                 continue
             for descriptor in descriptors:
-                policy = server_policy.tools.get(descriptor.name, MCPToolPolicy.ASK)
-                if policy == MCPToolPolicy.DENY:
-                    continue
                 adapter = MCPToolAdapter(
                     session_id=self.config.session_id,
                     server_id=server_id,
                     server_name=server_config.name,
                     descriptor=descriptor,
-                    policy=policy,
                     connection_manager=self.mcp_connection_manager,
-                    policy_resolver=self.mcp_policy_resolver,
+                    authorization=self.tool_authorization,
                 )
                 if self.tool_manager.has(adapter.name):
                     logger.error("MCP 工具名称与现有工具冲突，已跳过: %s", adapter.name)
@@ -351,6 +359,14 @@ class Agent:
             failure_message="本轮执行出错，已保留最近工具进度，未写入最终 checkpoint",
         ):
             yield event
+
+    async def validate_pending_continuation(self, interrupt_data: dict) -> bool:
+        """初始化当前工具目录，并在前端副作用发生前复核 continuation。"""
+        await self.initialize()
+        return self.pipeline.validate_pending_continuation({
+            **interrupt_data,
+            "session_id": self.config.session_id,
+        })
 
     async def _commit_user_input(
         self,

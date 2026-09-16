@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.agent.context import ContextStrategyConfig
 from app.schemas.mcp import MCPModelSettings
+from app.schemas.tool_permissions import TOOL_PERMISSIONS_SCHEMA_VERSION, ToolPolicy
 
 
 MEMORY_DEFAULT_CONFIG = {
@@ -45,7 +46,10 @@ class ChatSettings(BaseModel):
     openai_base_url: str
     temperature: float
     system_prompt: str
-    tools_list: list[str]
+    # 兼容旧请求一个迁移周期；持久化时只写 tool_permissions。
+    tools_list: list[str] = Field(default_factory=list, exclude=True)
+    tool_permissions: dict[str, ToolPolicy] = Field(default_factory=dict)
+    tool_permissions_schema_version: int = TOOL_PERMISSIONS_SCHEMA_VERSION
     context_strategy: ContextStrategyConfig
     agent_plugins: dict[str, AgentPluginSettings] | None = None
     skills: list[str] | None = None
@@ -66,6 +70,15 @@ class ChatSettings(BaseModel):
             if current not in normalized_tools:
                 normalized_tools.append(current)
         self.tools_list = normalized_tools
+        if normalized_tools and not any(key.startswith("local:") for key in self.tool_permissions):
+            approval_tools = {"screenshot", "control_screen", "control_screen_with_vlm"}
+            self.tool_permissions.update({
+                f"local:{name}": ToolPolicy.ASK if name in approval_tools else ToolPolicy.ALLOW
+                for name in normalized_tools
+            })
+        for server_id, server in self.mcp.servers.items():
+            for name, policy in server.tools.items():
+                self.tool_permissions.setdefault(f"mcp:{server_id}:{name}", ToolPolicy(policy))
         return self
 
     @model_validator(mode="after")
@@ -106,7 +119,7 @@ class ChatSettings(BaseModel):
             self.openai_base_url,
             self.temperature,
             self.system_prompt,
-            tuple(self.tools_list),
+            tuple(sorted((name, value.value) for name, value in self.tool_permissions.items())),
             tuple(sorted(self.context_strategy.model_dump().items())),
             tuple(
                 (name, settings.enabled, tuple(sorted(settings.config.items())))
@@ -118,7 +131,6 @@ class ChatSettings(BaseModel):
                     server_id,
                     policy.enabled,
                     policy.identity_fingerprint,
-                    tuple(sorted((name, value.value) for name, value in policy.tools.items())),
                 )
                 for server_id, policy in sorted(self.mcp.servers.items())
             ),

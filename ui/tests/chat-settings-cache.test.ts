@@ -23,6 +23,8 @@ const savedSettings: ChatSettingsData = {
   temperature: 0.7,
   system_prompt: "saved prompt",
   tools_list: [],
+  tool_permissions: {},
+  tool_permissions_schema_version: 1,
   mcp: { servers: {} },
   context_strategy: {
     compression_trigger_tokens_k: 100,
@@ -104,13 +106,16 @@ test("更新 ChatSettings 时不再发送旧记忆插件字段", async () => {
   assert.equal(Object.hasOwn(requestBody, "memory" + "_plugins"), false);
 });
 
-test("更新 ChatSettings 时完整往返 MCP 模型权限", async () => {
+test("更新 ChatSettings 时完整往返统一工具权限", async () => {
   let requestBody: Record<string, unknown> | null = null;
   globalThis.fetch = async (_input, init) => {
     requestBody = JSON.parse(String(init?.body));
     const normalized = {
       ...settings,
-      mcp: { servers: { filesystem: { enabled: true, tools: { read_file: "ask", write_file: "ask" } } } },
+      tool_permissions: {
+        "mcp:filesystem:read_file": "ask",
+        "mcp:filesystem:write_file": "ask",
+      },
     } satisfies ChatSettingsData;
     return new Response(JSON.stringify({ code: 200, msg: "success", data: normalized }), {
       status: 200,
@@ -121,15 +126,19 @@ test("更新 ChatSettings 时完整往返 MCP 模型权限", async () => {
     ...savedSettings,
     mcp: {
       servers: {
-        filesystem: { enabled: true, tools: { read_file: "allow", write_file: "ask" } },
+        filesystem: { enabled: true },
       },
+    },
+    tool_permissions: {
+      "mcp:filesystem:read_file": "allow",
+      "mcp:filesystem:write_file": "ask",
     },
   };
 
   await updateChatSettings(settings);
 
   assert.deepEqual((requestBody as Record<string, unknown> | null)?.mcp, settings.mcp);
-  assert.equal(getChatSettingsCache()?.mcp.servers.filesystem?.tools.read_file, "ask");
+  assert.equal(getChatSettingsCache()?.tool_permissions["mcp:filesystem:read_file"], "ask");
 });
 
 test("MCP 更新或删除成功后清除 ChatSettings 缓存", async () => {

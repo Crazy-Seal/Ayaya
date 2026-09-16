@@ -55,7 +55,9 @@ export type ChatSettingsData = {
   openai_base_url: string;
   temperature: number;
   system_prompt: string;
-  tools_list: string[];
+  tools_list?: string[];
+  tool_permissions: Record<string, ToolPolicy>;
+  tool_permissions_schema_version: number;
   mcp: MCPModelSettings;
   context_strategy: ContextStrategyConfig;
   agent_plugins?: Record<string, AgentPluginSettings> | null;
@@ -67,12 +69,12 @@ export type ChatSettingsData = {
   constraint?: string | null;
 };
 
-export type MCPToolPolicy = "allow" | "ask" | "deny";
+export type ToolPolicy = "allow" | "ask" | "deny";
+export type MCPToolPolicy = ToolPolicy;
 
 export type MCPModelSettings = {
   servers: Record<string, {
     enabled: boolean;
-    tools: Record<string, MCPToolPolicy>;
     identity_fingerprint?: string | null;
   }>;
 };
@@ -149,6 +151,19 @@ export type PluginItem = {
 export type ToolItem = {
   name: string;
   description: string;
+};
+
+export type ToolPolicyView = {
+  stable_key: string;
+  source: "local" | "mcp";
+  name: string;
+  display_name: string;
+  description: string;
+  policy: ToolPolicy;
+  server_id?: string | null;
+  server_name?: string | null;
+  available: boolean;
+  unavailable_reason?: string | null;
 };
 
 export type ChatHistoryItem = {
@@ -246,11 +261,43 @@ export type MCPToolApprovalInterruptData = {
   };
 };
 
+export type AuthorizationRequestData = {
+  type: "authorization_request";
+  request_id: string;
+  message: string;
+  data: {
+    tool_call_id: string;
+    tool_identity: string;
+    tool_name: string;
+    source: "local" | "mcp";
+    arguments: Record<string, unknown>;
+    prepared_action?: Record<string, unknown> | null;
+    contract_fingerprint: string;
+  };
+};
+
+export type ContinuationRequestData = {
+  type: "continuation_request";
+  request_id: string;
+  message: string;
+  data: {
+    kind: "capture_screen" | "perform_screen_action";
+    payload: Record<string, unknown>;
+  };
+};
+
+export type ApprovalDecision =
+  | { kind: "approve" }
+  | { kind: "reject" }
+  | { kind: "steer"; message: string };
+
 export type ChatInterruptData =
   | ScreenshotInterruptData
   | ControlScreenCaptureInterruptData
   | ControlScreenExecuteInterruptData
-  | MCPToolApprovalInterruptData;
+  | MCPToolApprovalInterruptData
+  | AuthorizationRequestData
+  | ContinuationRequestData;
 
 export type ChatInterruptPayload = {
   value: ChatInterruptData;
@@ -372,6 +419,11 @@ export interface DesktopPetApi {
   getChatHistoryLastN: (sessionId: string, n: number) => Promise<ChatHistoryItem[]>;
   getPendingInterrupt: (sessionId: string) => Promise<PendingInterruptResult>;
   updateChatSettings: (settings: ChatSettingsData) => Promise<ChatSettingsData>;
+  getToolPermissions: (sessionId: string) => Promise<ToolPolicyView[]>;
+  updateToolPermissions: (
+    sessionId: string,
+    permissions: Record<string, ToolPolicy>
+  ) => Promise<ToolPolicyView[]>;
   getAvailableTools: () => Promise<{ tools: ToolItem[] }>;
   getAvailablePlugins: () => Promise<{ plugins: PluginItem[] }>;
   getMcpServers: () => Promise<MCPServerView[]>;
@@ -413,6 +465,22 @@ export interface DesktopPetApi {
     streamRequestId?: string;
     approved: boolean;
   }) => Promise<ChatResult>;
+  toolAuthorizationRespond?: (payload: {
+    sessionId: string;
+    requestId: string;
+    streamRequestId?: string;
+    decision: ApprovalDecision;
+  }) => Promise<ChatResult>;
+  toolContinuationRespond?: (payload: {
+    sessionId: string;
+    requestId: string;
+    streamRequestId?: string;
+    response: Record<string, unknown>;
+  }) => Promise<ChatResult>;
+  claimToolContinuation?: (payload: {
+    sessionId: string;
+    requestId: string;
+  }) => Promise<void>;
   captureScreen?: () => Promise<{ dataUrl: string; width: number; height: number }>;
   resolveScreenActionPoint?: (coordinates: ControlScreenCoordinates) => Promise<ScreenActionPoint>;
   performScreenAction?: (payload: ScreenActionRequest) => Promise<ScreenActionResult>;

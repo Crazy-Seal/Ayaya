@@ -4,6 +4,68 @@ import yaml
 
 from app.schemas.chat_settings import ChatSettings
 from app.runtime import get_chat_settings_file
+from app.schemas.tool_permissions import TOOL_PERMISSIONS_SCHEMA_VERSION
+
+
+_LEGACY_APPROVAL_TOOLS = frozenset({
+    "screenshot",
+    "control_screen",
+    "control_screen_with_vlm",
+})
+
+
+def _known_local_tool_names() -> list[str]:
+    from app.agent.tools.registry import ToolRegistry
+
+    return ToolRegistry.list_tools()
+
+
+def _migrate_model_tool_permissions(item: dict) -> bool:
+    """把单个模型的旧工具配置迁移到统一 stable-key 映射。"""
+    changed = False
+    version = item.get("tool_permissions_schema_version")
+    permissions = dict(item.get("tool_permissions") or {})
+    legacy_tools = {
+        "apply_patch" if name in {"write_file", "edit_file", "delete_file"} else name
+        for name in (item.get("tools_list") or [])
+    }
+
+    if version != TOOL_PERMISSIONS_SCHEMA_VERSION:
+        for name in _known_local_tool_names():
+            key = f"local:{name}"
+            if key not in permissions:
+                if name not in legacy_tools:
+                    permissions[key] = "deny"
+                elif name in _LEGACY_APPROVAL_TOOLS:
+                    permissions[key] = "ask"
+                else:
+                    permissions[key] = "allow"
+        for server_id, server in (((item.get("mcp") or {}).get("servers")) or {}).items():
+            if not isinstance(server, dict):
+                continue
+            for name, policy in (server.get("tools") or {}).items():
+                permissions.setdefault(f"mcp:{server_id}:{name}", policy)
+        changed = True
+    else:
+        # 迁移完成后新发现的本地工具安全默认为 ASK。
+        for name in _known_local_tool_names():
+            key = f"local:{name}"
+            if key not in permissions:
+                permissions[key] = "ask"
+                changed = True
+
+    if item.pop("tools_list", None) is not None:
+        changed = True
+    for server in (((item.get("mcp") or {}).get("servers")) or {}).values():
+        if isinstance(server, dict) and server.pop("tools", None) is not None:
+            changed = True
+    if item.get("tool_permissions") != permissions:
+        item["tool_permissions"] = permissions
+        changed = True
+    if item.get("tool_permissions_schema_version") != TOOL_PERMISSIONS_SCHEMA_VERSION:
+        item["tool_permissions_schema_version"] = TOOL_PERMISSIONS_SCHEMA_VERSION
+        changed = True
+    return changed
 
 
 class ChatSettingsDao:
@@ -16,7 +78,13 @@ class ChatSettingsDao:
             raise RuntimeError(f"Config file not found: {self.config_file}")
 
         with self.config_file.open("r", encoding="utf-8") as file:
-            return yaml.safe_load(file)
+            data = yaml.safe_load(file) or {"chat_models": []}
+        migrated = False
+        for item in data.get("chat_models", []):
+            migrated = _migrate_model_tool_permissions(item) or migrated
+        if migrated:
+            self._save_chat_settings_file(data)
+        return data
 
     def _save_chat_settings_file(self, data: dict) -> None:
         self.config_file.parent.mkdir(parents=True, exist_ok=True)
@@ -41,7 +109,11 @@ class ChatSettingsDao:
             openai_base_url=item["openai_base_url"],
             temperature=item["temperature"],
             system_prompt=item["system_prompt"],
-            tools_list=item["tools_list"],
+            tools_list=item.get("tools_list") or [],
+            tool_permissions=item.get("tool_permissions") or {},
+            tool_permissions_schema_version=item.get(
+                "tool_permissions_schema_version", TOOL_PERMISSIONS_SCHEMA_VERSION
+            ),
             context_strategy=item["context_strategy"],
             agent_plugins=item.get("agent_plugins") or {},
             skills=item.get("skills"),
@@ -124,6 +196,12 @@ class ChatSettingsDao:
                 continue
             del servers[server_id]
             item["mcp"] = {"servers": servers}
+            prefix = f"mcp:{server_id}:"
+            item["tool_permissions"] = {
+                key: value
+                for key, value in (item.get("tool_permissions") or {}).items()
+                if not key.startswith(prefix)
+            }
             affected.append(item["session_id"])
         if affected:
             self._save_chat_settings_file(data)
@@ -154,11 +232,18 @@ class ChatSettingsDao:
             if not isinstance(policy, dict):
                 continue
             same_identity = policy.get("identity_fingerprint") == identity_fingerprint
-            previous_tools = policy.get("tools") or {}
-            policy["tools"] = {
-                name: previous_tools.get(name, "ask") if same_identity else "ask"
-                for name in tool_names
+            prefix = f"mcp:{server_id}:"
+            previous_permissions = item.get("tool_permissions") or {}
+            item["tool_permissions"] = {
+                key: value
+                for key, value in previous_permissions.items()
+                if not key.startswith(prefix)
             }
+            item["tool_permissions"].update({
+                f"{prefix}{name}": previous_permissions.get(f"{prefix}{name}", "ask")
+                if same_identity else "ask"
+                for name in tool_names
+            })
             policy["identity_fingerprint"] = identity_fingerprint
             affected.append(item["session_id"])
         if affected:
@@ -181,7 +266,12 @@ class ChatSettingsDao:
             policy = (((item.get("mcp") or {}).get("servers") or {}).get(server_id))
             if not isinstance(policy, dict):
                 continue
-            policy["tools"] = {name: "ask" for name in (policy.get("tools") or {})}
+            prefix = f"mcp:{server_id}:"
+            permissions = item.get("tool_permissions") or {}
+            item["tool_permissions"] = {
+                key: "ask" if key.startswith(prefix) else value
+                for key, value in permissions.items()
+            }
             affected.append(item["session_id"])
         if affected:
             self._save_chat_settings_file(data)

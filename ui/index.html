@@ -55,8 +55,10 @@
           <div class="screenshot-confirm-message" id="screenshot-confirm-message">
             Agent 请求截取屏幕，是否允许？
           </div>
+          <textarea id="tool-steer-input" class="tool-steer-input" hidden aria-label="引导 Agent 下一步操作" placeholder="告诉 Agent 接下来应该怎么做"></textarea>
           <div class="screenshot-confirm-actions">
             <button id="screenshot-deny-btn" type="button" class="screenshot-btn screenshot-btn-deny">拒绝</button>
+            <button id="tool-steer-btn" type="button" class="screenshot-btn screenshot-btn-steer">引导</button>
             <button id="screenshot-allow-btn" type="button" class="screenshot-btn screenshot-btn-allow">允许</button>
           </div>
         </div>

@@ -10,11 +10,17 @@ from app.schemas.chat_settings import ChatSettings
 from app.services.agent_service import AgentService
 from app.services.agent_factory import build_agent
 from app.services.mcp_connection_manager import MCPConnectionManager
-from app.services.mcp_policy_resolver import MCPPolicyResolver
 from app.services.mcp_service import MCPService
 from app.services.chat_settings_service import ChatSettingsService
 from app.services.chat_history_service import ChatHistoryService
+from app.services.tool_permission_service import ToolPermissionService
 from app.services.settings_mutation import SettingsMutationCoordinator
+from app.agent.tools.authorization.manager import ToolAuthorization
+from app.agent.tools.authorization.catalog import (
+    LocalToolCatalogAdapter,
+    MCPToolCatalogAdapter,
+    UnifiedToolCatalog,
+)
 
 
 @lru_cache(maxsize=1)
@@ -59,13 +65,21 @@ def get_mcp_connection_manager() -> MCPConnectionManager:
 
 
 @lru_cache(maxsize=1)
-def get_mcp_policy_resolver() -> MCPPolicyResolver:
-    """构造并缓存无会话权限缓存的 MCP 权限解析器。
-
-    Returns:
-        每次查询均读取最新聊天配置的权限解析器。
-    """
-    return MCPPolicyResolver(get_chat_settings_dao().get_chat_settings)
+def get_tool_authorization() -> ToolAuthorization:
+    """提供按调用读取最新会话配置的统一工具授权层。"""
+    chat_dao = get_chat_settings_dao()
+    return ToolAuthorization(
+        chat_dao.get_chat_settings,
+        catalog=UnifiedToolCatalog(
+            LocalToolCatalogAdapter(),
+            MCPToolCatalogAdapter(
+                get_mcp_settings_dao(),
+                get_mcp_connection_manager(),
+            ),
+        ),
+        settings_writer=chat_dao.update_chat_settings,
+        mutation_coordinator=get_settings_mutation_coordinator(),
+    )
 
 
 def get_chat_settings_loader(
@@ -80,7 +94,7 @@ def get_agent_service(
     chat_history_dao: ChatHistoryDao = Depends(get_chat_history_dao),
     chat_settings_loader: Callable[[str], ChatSettings] = Depends(get_chat_settings_loader),
     mcp_connection_manager: MCPConnectionManager = Depends(get_mcp_connection_manager),
-    mcp_policy_resolver: MCPPolicyResolver = Depends(get_mcp_policy_resolver),
+    tool_authorization: ToolAuthorization = Depends(get_tool_authorization),
 ) -> AgentService:
     return AgentService(
         chat_history_dao=chat_history_dao,
@@ -88,7 +102,7 @@ def get_agent_service(
         agent_factory=lambda settings: build_agent(
             settings,
             mcp_connection_manager,
-            mcp_policy_resolver,
+            tool_authorization,
         ),
     )
 
@@ -131,6 +145,12 @@ def get_mcp_service(
         connection_manager,
         mutation_coordinator,
     )
+
+
+def get_tool_permission_service(
+    authorization: ToolAuthorization = Depends(get_tool_authorization),
+) -> ToolPermissionService:
+    return ToolPermissionService(authorization)
 
 
 @lru_cache(maxsize=1)

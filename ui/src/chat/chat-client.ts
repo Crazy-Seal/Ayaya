@@ -4,7 +4,7 @@
 
 import { BubbleManager } from "./bubble.js";
 import { ChatHistoryManager } from "./chat-history-manager.js";
-import { ScreenshotConfirmDialog } from "./screenshot-confirm-dialog.js";
+import { ToolApprovalDialog } from "./tool-approval-dialog.js";
 import { formatMcpApprovalMessage } from "./mcp-approval.js";
 import { buildInterruptResponseMeta } from "./interrupt-response.js";
 import { formatControlScreenApprovalMessage } from "./control-screen-approval.js";
@@ -13,11 +13,12 @@ import {
   isControlScreenExecuteInterrupt,
 } from "./control-screen-interrupt.js";
 import { ToolCallToastManager } from "./tool-call-toast.js";
-import type { ChatInterruptPayload, ChatResult, ControlScreenActionData, DesktopPetApi } from "../types.js";
+import type { ApprovalDecision, ChatInterruptPayload, ChatResult, ControlScreenActionData, DesktopPetApi } from "../types.js";
 
 type ChatBridge = Pick<DesktopPetApi,
   "chat" | "onChatChunk" | "onToolCall" | "onChatInterrupt" | "getFrontendSettings" |
   "captureScreen" | "screenshotRespond" | "controlScreenRespond" | "mcpToolRespond" |
+  "toolAuthorizationRespond" | "toolContinuationRespond" | "claimToolContinuation" |
   "resolveScreenActionPoint" | "performScreenAction"
 >;
 type ChatHistory = Pick<ChatHistoryManager,
@@ -37,7 +38,7 @@ export interface ChatClientOptions {
   sessionId: string;
   onChatComplete?: () => void;
   bridge?: ChatBridge;
-  confirmDialog?: Pick<ScreenshotConfirmDialog, "open" | "isOpen">;
+  confirmDialog?: { open: (...args: any[]) => Promise<any>; isOpen: () => boolean };
   toolCallToast?: Pick<ToolCallToastManager, "show" | "showError">;
   playMotion?: (tag: string) => void;
 }
@@ -53,7 +54,7 @@ export class ChatClient {
   private sessionId: string;
   private onChatComplete?: () => void;
   private hasUserSubmittedMessage = false;
-  private screenshotConfirmDialog: Pick<ScreenshotConfirmDialog, "open" | "isOpen">;
+  private screenshotConfirmDialog: { open: (...args: any[]) => Promise<any>; isOpen: () => boolean };
   private toolCallToast: Pick<ToolCallToastManager, "show" | "showError">;
   private bridge: ChatBridge;
   private playMotion: (tag: string) => void;
@@ -102,7 +103,7 @@ export class ChatClient {
     this.input = options.input;
     this.sessionId = options.sessionId;
     this.onChatComplete = options.onChatComplete;
-    this.screenshotConfirmDialog = options.confirmDialog ?? new ScreenshotConfirmDialog();
+    this.screenshotConfirmDialog = options.confirmDialog ?? new ToolApprovalDialog();
     this.toolCallToast = options.toolCallToast ?? new ToolCallToastManager();
     this.bridge = options.bridge ?? window.desktopPetApi;
     this.playMotion = options.playMotion ?? ((tag) => window.playMotionByLabel?.(tag));
@@ -201,10 +202,70 @@ export class ChatClient {
     };
     const interruptValue = interruptData.value;
     const responseMeta = buildInterruptResponseMeta(interruptValue, streamRequestId);
+    if (interruptValue.type === "authorization_request") {
+      const rawDecision = await this.screenshotConfirmDialog.open({
+        title: interruptValue.data.source === "mcp"
+          ? "MCP 工具调用确认"
+          : "本地工具调用确认",
+        message: `${interruptValue.message}\n来源：${interruptValue.data.tool_identity}`,
+        details: JSON.stringify(
+          interruptValue.data.prepared_action ?? interruptValue.data.arguments,
+          null,
+          2,
+        ),
+        allowSteer: true,
+      });
+      const decision: ApprovalDecision = typeof rawDecision === "boolean"
+        ? { kind: rawDecision ? "approve" : "reject" }
+        : rawDecision;
+      return await submit(() => this.bridge.toolAuthorizationRespond?.({
+        sessionId,
+        ...responseMeta,
+        decision,
+      }));
+    }
+
+    if (interruptValue.type === "continuation_request") {
+      if (!this.bridge.claimToolContinuation) {
+        throw new Error("continuation 执行前复核桥接未就绪");
+      }
+      await this.bridge.claimToolContinuation({
+        sessionId,
+        requestId: responseMeta.requestId,
+      });
+      if (interruptValue.data.kind === "capture_screen") {
+        const screenshot = await this.captureScreenWithUserPreference();
+        return await submit(() => this.bridge.toolContinuationRespond?.({
+          sessionId,
+          ...responseMeta,
+          response: {
+            screenshot_data: screenshot?.dataUrl,
+            width: screenshot?.width,
+            height: screenshot?.height,
+          },
+        }));
+      }
+
+      const action = interruptValue.data.payload as ControlScreenActionData;
+      const actionResult = await this.performControlScreenAction(action);
+      return await submit(() => this.bridge.toolContinuationRespond?.({
+        sessionId,
+        ...responseMeta,
+        response: {
+          executed: actionResult.executed,
+          error: actionResult.error,
+          screenshot_data: actionResult.screenshot?.dataUrl,
+          width: actionResult.screenshot?.width,
+          height: actionResult.screenshot?.height,
+        },
+      }));
+    }
+
     if (interruptValue.type === "screenshot_request") {
-      const approved = await this.screenshotConfirmDialog.open(
+      const approval = await this.screenshotConfirmDialog.open(
         interruptValue.message || "Agent 请求截取屏幕，是否允许？"
       );
+      const approved = typeof approval === "boolean" ? approval : approval.kind === "approve";
       if (!approved) {
         return await submit(() => this.bridge.screenshotRespond?.({
           sessionId,
@@ -235,12 +296,13 @@ export class ChatClient {
     }
 
     if (interruptValue.type === "mcp_tool_approval_request") {
-      const approved = await this.screenshotConfirmDialog.open(
+      const approval = await this.screenshotConfirmDialog.open(
         formatMcpApprovalMessage(interruptValue),
         "MCP 工具调用确认",
         "允许本次调用",
         "拒绝"
       );
+      const approved = typeof approval === "boolean" ? approval : approval.kind === "approve";
       return await submit(() => this.bridge.mcpToolRespond?.({
         sessionId,
         ...responseMeta,
@@ -257,9 +319,10 @@ export class ChatClient {
     if (!screenPoint) {
       throw new Error("无法解析屏幕操作的真实坐标");
     }
-    const approved = await this.screenshotConfirmDialog.open(
+    const approval = await this.screenshotConfirmDialog.open(
       formatControlScreenApprovalMessage(action, screenPoint)
     );
+    const approved = typeof approval === "boolean" ? approval : approval.kind === "approve";
     if (!approved) {
       return await submit(() => this.bridge.controlScreenRespond?.({
         sessionId,

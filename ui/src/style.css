@@ -734,6 +734,23 @@ body {
   line-height: 1.5;
 }
 
+.tool-steer-input {
+  width: 100%;
+  min-height: 72px;
+  margin: 0 0 var(--spacing-md);
+  padding: var(--spacing-sm);
+  resize: vertical;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font: inherit;
+}
+
+.tool-steer-input[hidden] {
+  display: none;
+}
+
 .screenshot-confirm-actions {
   display: flex;
   gap: var(--spacing-md);

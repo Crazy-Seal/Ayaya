@@ -8,6 +8,7 @@ import {
 } from "./config.js";
 import { backendFetch } from "./backend-client.js";
 import type { ChatSettingsData, ChatHistoryItem, ApiResponse, ToolItem, PluginItem } from "./types.js";
+import type { ToolPolicy, ToolPolicyView } from "../shared-types.js";
 import { getActiveModelRecord } from "./model-manager.js";
 
 /**
@@ -105,6 +106,10 @@ export const fetchChatSettingsBySessionId = async (
     tools_list: Array.isArray(result.data.tools_list)
       ? result.data.tools_list.map((item) => String(item))
       : [],
+    tool_permissions: result.data.tool_permissions && typeof result.data.tool_permissions === "object"
+      ? result.data.tool_permissions
+      : {},
+    tool_permissions_schema_version: Number(result.data.tool_permissions_schema_version ?? 1),
     mcp: result.data.mcp && typeof result.data.mcp === "object"
       ? result.data.mcp
       : { servers: {} },
@@ -225,6 +230,8 @@ export const createEmptyChatSettings = async (sessionId: string): Promise<ChatSe
     temperature: 0,
     system_prompt: "",
     tools_list: [],
+    tool_permissions: {},
+    tool_permissions_schema_version: 1,
     mcp: { servers: {} },
     context_strategy: { ...DEFAULT_CONTEXT_STRATEGY },
     agent_plugins: DEFAULT_AGENT_PLUGINS,
@@ -376,6 +383,28 @@ export const fetchAvailableTools = async (): Promise<ToolItem[]> => {
     name: String(item.name ?? ""),
     description: String(item.description ?? ""),
   }));
+};
+
+export const fetchToolPermissions = async (sessionId: string): Promise<ToolPolicyView[]> => {
+  const res = await backendFetch(`/tool-permissions/${encodeURIComponent(sessionId)}`);
+  const result = await parseJsonSafe<ApiResponse<{ tools: ToolPolicyView[] }>>(res);
+  if (!res.ok || !result?.data?.tools) throw new Error(result?.msg || "读取工具权限失败");
+  return result.data.tools;
+};
+
+export const saveToolPermissions = async (
+  sessionId: string,
+  toolPermissions: Record<string, ToolPolicy>
+): Promise<ToolPolicyView[]> => {
+  const res = await backendFetch(`/tool-permissions/${encodeURIComponent(sessionId)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tool_permissions: toolPermissions }),
+  });
+  const result = await parseJsonSafe<ApiResponse<{ tools: ToolPolicyView[] }>>(res);
+  if (!res.ok || !result?.data?.tools) throw new Error(result?.msg || "保存工具权限失败");
+  clearChatSettingsCache();
+  return result.data.tools;
 };
 
 /**

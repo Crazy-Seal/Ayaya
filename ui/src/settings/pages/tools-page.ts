@@ -3,8 +3,7 @@
  */
 
 import type {
-  ChatSettingsState,
-  ToolItem,
+  ToolPolicyView,
   ISettingsPage,
   PageRenderData,
   PageEditingData,
@@ -53,13 +52,7 @@ export class ToolsPage implements ISettingsPage {
    * 渲染页面
    */
   render(data: PageRenderData): void {
-    // 获取可用工具列表
-    const availableTools = data.dependencies?.availableTools || [];
-
-    // 获取选中的工具列表（只使用已保存状态）
-    const selectedTools = data.saved.tools_list;
-
-    this.renderToolsTable(availableTools, selectedTools);
+    this.renderToolsTable(data.dependencies?.toolPolicies || []);
   }
 
   /**
@@ -68,7 +61,7 @@ export class ToolsPage implements ISettingsPage {
   getEditingData(): PageEditingData {
     return {
       tools: {
-        tools_list: this.collectSelectedTools(),
+        tool_permissions: this.collectPolicies(),
       },
     };
   }
@@ -76,7 +69,7 @@ export class ToolsPage implements ISettingsPage {
   /**
    * 渲染工具表格
    */
-  private renderToolsTable(tools: ToolItem[], selectedTools: string[]): void {
+  private renderToolsTable(tools: ToolPolicyView[]): void {
     this.toolsTableBody.innerHTML = "";
 
     if (tools.length === 0) {
@@ -85,23 +78,60 @@ export class ToolsPage implements ISettingsPage {
     }
 
     this.toolsEmpty.hidden = true;
+    let currentGroup = "";
     for (const tool of tools) {
+      const group = tool.source === "local"
+        ? "本地工具"
+        : `MCP · ${tool.server_name || tool.server_id || "未知"}`;
+      if (group !== currentGroup) {
+        const groupRow = document.createElement("tr");
+        groupRow.className = "tool-permission-group";
+        const groupCell = document.createElement("th");
+        groupCell.colSpan = 4;
+        groupCell.scope = "rowgroup";
+        groupCell.textContent = group;
+        groupRow.append(groupCell);
+        this.toolsTableBody.appendChild(groupRow);
+        currentGroup = group;
+      }
       const row = document.createElement("tr");
 
-      const checkCell = document.createElement("td");
-      checkCell.className = "col-check";
-      const checkbox = document.createElement("input");
-      checkbox.type = "checkbox";
-      checkbox.className = "ui-checkbox";
-      checkbox.dataset.toolName = tool.name;
-      checkbox.checked = selectedTools.includes(tool.name);
-      checkCell.appendChild(checkbox);
-
       const nameCell = document.createElement("td");
-      nameCell.textContent = tool.name;
+      nameCell.textContent = tool.display_name;
+      const sourceCell = document.createElement("td");
+      sourceCell.textContent = tool.source === "local" ? "本地" : "MCP";
+      const policyCell = document.createElement("td");
+      const select = document.createElement("select");
+      select.className = "tool-policy-select ui-control ui-control--small ui-select";
+      select.dataset.stableKey = tool.stable_key;
+      select.setAttribute("aria-label", `${tool.display_name} 工具权限`);
+      for (const [value, label] of [
+        ["ask", "ASK"],
+        ["allow", "ALLOW"],
+        ["deny", "DENY"],
+      ] as const) {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        select.append(option);
+      }
+      select.value = tool.policy;
+      select.disabled = !tool.available;
+      policyCell.append(select);
+      const statusCell = document.createElement("td");
+      const description = document.createElement("details");
+      description.className = "tool-description";
+      const summary = document.createElement("summary");
+      summary.textContent = tool.available ? "查看说明" : "不可用 · 查看原因";
+      const descriptionText = document.createElement("div");
+      descriptionText.className = "tool-description-text";
+      descriptionText.textContent = tool.available
+        ? tool.description || "暂无说明"
+        : tool.unavailable_reason || "工具当前不可用";
+      description.append(summary, descriptionText);
+      statusCell.append(description);
 
-      row.appendChild(checkCell);
-      row.appendChild(nameCell);
+      row.append(sourceCell, nameCell, policyCell, statusCell);
       this.toolsTableBody.appendChild(row);
     }
   }
@@ -109,13 +139,13 @@ export class ToolsPage implements ISettingsPage {
   /**
    * 收集选中的工具
    */
-  private collectSelectedTools(): string[] {
-    const selected: string[] = [];
-    this.toolsTableBody.querySelectorAll<HTMLInputElement>('input[type="checkbox"][data-tool-name]').forEach((input) => {
-      if (input.checked && input.dataset.toolName) {
-        selected.push(input.dataset.toolName);
+  private collectPolicies(): Record<string, "deny" | "ask" | "allow"> {
+    const policies: Record<string, "deny" | "ask" | "allow"> = {};
+    this.toolsTableBody.querySelectorAll<HTMLSelectElement>('select[data-stable-key]').forEach((select) => {
+      if (select.dataset.stableKey) {
+        policies[select.dataset.stableKey] = select.value as "deny" | "ask" | "allow";
       }
     });
-    return selected;
+    return policies;
   }
 }

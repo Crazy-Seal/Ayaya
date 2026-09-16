@@ -32,4 +32,4 @@ class _NormalizingService:
 async def test_chat_settings_write_returns_normalized_saved_object(handler) -> None:
     result = await handler(_settings("allow"), _NormalizingService())
 
-    assert result.data.mcp.servers["filesystem"].tools["read"].value == "ask"
+    assert result.data.tool_permissions["mcp:filesystem:read"].value == "ask"

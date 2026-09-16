@@ -2,7 +2,8 @@ from app.crud.chat_settings_dao import ChatSettingsDao
 from app.crud.mcp_settings_dao import MCPSettingsDao
 from app.mcp.identity import server_identity_fingerprint
 from app.schemas.chat_settings import ChatSettings
-from app.schemas.mcp import MCPModelSettings, MCPServerPolicy, MCPToolPolicy
+from app.schemas.mcp import MCPModelSettings, MCPServerPolicy
+from app.schemas.tool_permissions import ToolPolicy
 from app.services.mcp_connection_manager import MCPConnectionManager
 from app.services.settings_mutation import SettingsMutationCoordinator
 
@@ -89,6 +90,11 @@ class ChatSettingsService:
             return chat_settings
         configs = {server.id: server for server in self.mcp_settings_dao.load().servers}
         normalized: dict[str, MCPServerPolicy] = {}
+        permissions = {
+            key: value
+            for key, value in chat_settings.tool_permissions.items()
+            if not key.startswith("mcp:")
+        }
         for server_id, incoming in chat_settings.mcp.servers.items():
             config = configs.get(server_id)
             if config is None:
@@ -112,32 +118,53 @@ class ChatSettingsService:
                 tool_names = (
                     available_tools
                     if available_tools is not None
-                    else list(dict.fromkeys([*previous.tools, *incoming.tools]))
+                    else list(dict.fromkeys([
+                        *self._mcp_tool_names(existing, server_id),
+                        *self._mcp_tool_names(chat_settings, server_id),
+                    ]))
                 )
                 normalized[server_id] = MCPServerPolicy(
                     enabled=incoming.enabled,
-                    tools={
-                        name: incoming.tools.get(name, MCPToolPolicy.ASK)
-                        if name in previous.tools
-                        else MCPToolPolicy.ASK
-                        for name in tool_names
-                    },
                     identity_fingerprint=identity,
                 )
+                for name in tool_names:
+                    key = f"mcp:{server_id}:{name}"
+                    permissions[key] = (
+                        chat_settings.tool_permissions.get(key, ToolPolicy.ASK)
+                        if key in existing.tool_permissions
+                        else ToolPolicy.ASK
+                    )
                 continue
 
             if available_tools is not None:
                 tool_names = available_tools
                 fingerprint = identity
             else:
-                tool_names = list(incoming.tools)
+                tool_names = self._mcp_tool_names(chat_settings, server_id)
                 fingerprint = previous.identity_fingerprint if previous else None
             normalized[server_id] = MCPServerPolicy(
                 enabled=incoming.enabled,
-                tools={name: MCPToolPolicy.ASK for name in tool_names},
                 identity_fingerprint=fingerprint,
             )
+            permissions.update({
+                f"mcp:{server_id}:{name}": ToolPolicy.ASK
+                for name in tool_names
+            })
 
         return chat_settings.model_copy(
-            update={"mcp": MCPModelSettings(servers=normalized)}
+            update={
+                "mcp": MCPModelSettings(servers=normalized),
+                "tool_permissions": permissions,
+            }
         )
+
+    @staticmethod
+    def _mcp_tool_names(settings: ChatSettings | None, server_id: str) -> list[str]:
+        if settings is None:
+            return []
+        prefix = f"mcp:{server_id}:"
+        return [
+            key[len(prefix):]
+            for key in settings.tool_permissions
+            if key.startswith(prefix)
+        ]

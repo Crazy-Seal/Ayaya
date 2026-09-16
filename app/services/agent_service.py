@@ -51,6 +51,7 @@ class AgentService:
         expected_types: frozenset[str],
         resume_data: dict,
         operation_name: str,
+        require_continuation_claim: bool = False,
     ) -> AsyncIterator:
         """校验并恢复当前会话中的指定中断。
 
@@ -79,6 +80,10 @@ class AgentService:
                     raise ValueError("当前确认请求类型与响应接口不匹配")
                 if not request_id or interrupt.get("request_id") != request_id:
                     raise ValueError("确认请求已过期")
+                if require_continuation_claim and not (
+                    (interrupt.get("resume_state") or {}).get("continuation_claimed")
+                ):
+                    raise ValueError("工具 continuation 尚未通过执行前复核")
             finally:
                 await state_manager.close()
 
@@ -217,6 +222,104 @@ class AgentService:
             operation_name="恢复 MCP 工具调用",
         ):
             yield event
+
+    async def resume_after_tool_authorization(
+        self,
+        session_id: str,
+        *,
+        request_id: str,
+        decision: dict,
+    ) -> AsyncIterator:
+        """消费统一工具审批；引导决定转成新用户输入而不恢复旧工具链。"""
+        if decision.get("kind") == "steer":
+            message = str(decision.get("message") or "").strip()
+            if not message:
+                raise ValueError("引导消息不能为空")
+            async with self._get_session_lock(session_id):
+                state_manager = StateManager(session_id)
+                try:
+                    state = await state_manager.load()
+                    interrupt = state.interrupt_data or {}
+                    if interrupt.get("type") != "authorization_request":
+                        raise ValueError("当前确认请求类型与响应接口不匹配")
+                    if interrupt.get("request_id") != request_id:
+                        raise ValueError("确认请求已过期")
+                finally:
+                    await state_manager.close()
+                settings = self.chat_settings_loader(session_id)
+                agent = self.agent_factory(settings)
+                try:
+                    async for event in agent.run(message):
+                        if event.type == EventType.ERROR:
+                            raise RuntimeError(event.data)
+                        if event.type != EventType.DONE:
+                            yield event
+                finally:
+                    await self._close(session_id, agent)
+            return
+
+        async for event in self._resume_interrupted(
+            session_id,
+            request_id=request_id,
+            expected_types=frozenset({"authorization_request"}),
+            resume_data=decision,
+            operation_name="恢复工具授权",
+        ):
+            yield event
+
+    async def resume_after_tool_continuation(
+        self,
+        session_id: str,
+        *,
+        request_id: str,
+        response: dict,
+    ) -> AsyncIterator:
+        """消费 Adapter 返回的 continuation 数据。"""
+        async for event in self._resume_interrupted(
+            session_id,
+            request_id=request_id,
+            expected_types=frozenset({"continuation_request"}),
+            resume_data=response,
+            operation_name="恢复工具 continuation",
+            require_continuation_claim=True,
+        ):
+            yield event
+
+    async def claim_tool_continuation(
+        self,
+        session_id: str,
+        *,
+        request_id: str,
+    ) -> None:
+        """在前端 Adapter 产生副作用前认领并复核当前 continuation。"""
+        async with self._get_session_lock(session_id):
+            state_manager = StateManager(session_id)
+            agent: Agent | None = None
+            try:
+                state = await state_manager.load()
+                interrupt = dict(state.interrupt_data or {})
+                if interrupt.get("type") != "continuation_request":
+                    raise ValueError("当前确认请求类型与响应接口不匹配")
+                if interrupt.get("request_id") != request_id:
+                    raise ValueError("确认请求已过期")
+
+                resume_state = dict(interrupt.get("resume_state") or {})
+                if resume_state.get("continuation_claimed") is True:
+                    raise ValueError("工具 continuation 已被认领，不能重复执行")
+
+                settings = self.chat_settings_loader(session_id)
+                agent = self.agent_factory(settings)
+                if not await agent.validate_pending_continuation(interrupt):
+                    raise ValueError("工具 continuation 授权已失效")
+
+                resume_state["continuation_claimed"] = True
+                interrupt["resume_state"] = resume_state
+                state.set_interrupt(interrupt, list(state.pending_actions))
+                await state_manager.save(state, checkpoint_type="intermediate")
+            finally:
+                await state_manager.close()
+                if agent is not None:
+                    await self._close(session_id, agent)
 
     async def get_pending_interrupt(self, session_id: str) -> dict:
         """读取可跨前端重启恢复的中断信息。"""

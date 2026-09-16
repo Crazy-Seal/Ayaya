@@ -45,6 +45,8 @@ import {
   clearChatSettingsCache,
   runMcpMutationWithCacheInvalidation,
   fetchAvailableTools,
+  fetchToolPermissions,
+  saveToolPermissions,
   fetchAvailablePlugins,
 } from "./chat-settings.js";
 import { getMainWindow, getSettingsWindow, getTrustedRendererPolicy, openSettingsWindow, openImagePreviewWindow } from "./window-manager.js";
@@ -69,6 +71,8 @@ import type {
   MCPServerConfig,
   ScreenActionPoint,
   ScreenshotResponsePayload,
+  ApprovalDecision,
+  ToolPolicy,
 } from "../shared-types.js";
 
 /**
@@ -328,6 +332,13 @@ export const registerIpcHandlers = (): void => {
     const tools = await fetchAvailableTools();
     return { tools };
   });
+  trustedIpc.handle("desktop-pet:get-tool-permissions", async (_event, sessionId: string) =>
+    await fetchToolPermissions(sessionId));
+  trustedIpc.handle(
+    "desktop-pet:update-tool-permissions",
+    async (_event, sessionId: string, permissions: Record<string, ToolPolicy>) =>
+      await saveToolPermissions(sessionId, permissions)
+  );
 
   // 获取可用插件
   trustedIpc.handle("desktop-pet:get-available-plugins", async () => {
@@ -655,6 +666,63 @@ export const registerIpcHandlers = (): void => {
       };
       return await streamBackendResponse(event, "/mcp/respond", body, payload.streamRequestId);
     }
+  );
+
+  trustedIpc.handle(
+    "desktop-pet:tool-authorization-respond",
+    async (event, payload: {
+      sessionId: string;
+      requestId: string;
+      streamRequestId?: string;
+      decision: ApprovalDecision;
+    }) => {
+      const body = {
+        ...buildBackendInterruptIdentity(payload),
+        ...payload.decision,
+      };
+      return await streamBackendResponse(
+        event,
+        "/tool-authorization/respond",
+        body,
+        payload.streamRequestId,
+      );
+    }
+  );
+
+  trustedIpc.handle(
+    "desktop-pet:tool-continuation-claim",
+    async (_event, payload: { sessionId: string; requestId: string }) => {
+      const res = await backendFetch("/tool-continuation/claim", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session_id: payload.sessionId,
+          request_id: payload.requestId,
+        }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `工具 continuation 执行前复核失败: ${res.status}`);
+      }
+    }
+  );
+
+  trustedIpc.handle(
+    "desktop-pet:tool-continuation-respond",
+    async (event, payload: {
+      sessionId: string;
+      requestId: string;
+      streamRequestId?: string;
+      response: Record<string, unknown>;
+    }) => await streamBackendResponse(
+      event,
+      "/tool-continuation/respond",
+      {
+        ...buildBackendInterruptIdentity(payload),
+        response: payload.response,
+      },
+      payload.streamRequestId,
+    )
   );
 
   // 执行屏幕控制动作

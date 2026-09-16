@@ -208,10 +208,18 @@
             <div class="tools-panel">
               <div class="tools-table-wrap ui-surface">
                 <table class="tools-table ui-table">
+                  <colgroup>
+                    <col class="tools-col-source" />
+                    <col class="tools-col-name" />
+                    <col class="tools-col-policy" />
+                    <col class="tools-col-description" />
+                  </colgroup>
                   <thead>
                     <tr>
-                      <th class="col-check">启用</th>
+                      <th>来源</th>
                       <th>工具名称</th>
+                      <th>权限</th>
+                      <th>说明</th>
                     </tr>
                   </thead>
                   <tbody id="tools-table-body"></tbody>
@@ -226,7 +234,7 @@
               <div class="mcp-toolbar">
                 <div>
                   <h2>MCP 服务</h2>
-                  <p>全局管理连接，并为当前模型分配工具权限。</p>
+                  <p>全局管理连接和当前模型是否启用服务；逐工具权限请在“工具调用”中设置。</p>
                 </div>
                 <button id="mcp-add-btn" type="button" class="mcp-primary-btn ui-button ui-button--primary ui-button--medium">添加服务</button>
               </div>

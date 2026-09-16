@@ -54,8 +54,8 @@ def test_vlm_tool_initial_interrupt_requests_capture() -> None:
     result = asyncio.run(run())
 
     assert result.interrupt is not None
-    assert result.interrupt.type == "control_screen_capture_request"
-    assert result.interrupt.data == {}
+    assert result.interrupt.type == "continuation_request"
+    assert result.interrupt.data == {"kind": "capture_screen", "payload": {}}
     assert result.resume_state["phase"] == "awaiting_capture"
     assert result.resume_state["action"]["operation"] == "double"
 
@@ -89,12 +89,36 @@ def test_vlm_tool_capture_resume_locates_and_requests_execution(monkeypatch) -> 
 
     result = asyncio.run(run())
 
+    assert result.interrupt is None
+    assert result.prepared_action["target"] == "search box"
+    assert result.prepared_action["operation"] == "click"
+    assert result.prepared_action["coordinates"]["x"] == 960
+    assert result.prepared_action["coordinates"]["y"] == 324
+    assert result.resume_state["phase"] == "awaiting_authorization"
+
+
+def test_vlm_tool_emits_execution_continuation_only_after_authorization() -> None:
+    async def run():
+        return await control_screen_with_vlm().execute(
+            {"target": "search box", "operation": "click"},
+            _context(
+                resume_data={"kind": "authorization_granted"},
+                resume_state={
+                    "phase": "awaiting_authorization",
+                    "coordinates": {
+                        "bbox": [400, 200, 600, 400],
+                        "x_ratio": 0.5,
+                        "y_ratio": 0.3,
+                    },
+                },
+            ),
+        )
+
+    result = asyncio.run(run())
+
     assert result.interrupt is not None
-    assert result.interrupt.type == "control_screen_execute_request"
-    assert result.interrupt.data["target"] == "search box"
-    assert result.interrupt.data["operation"] == "click"
-    assert result.interrupt.data["coordinates"]["x"] == 960
-    assert result.interrupt.data["coordinates"]["y"] == 324
+    assert result.interrupt.type == "continuation_request"
+    assert result.interrupt.data["kind"] == "perform_screen_action"
     assert result.resume_state["phase"] == "awaiting_execution"
 
 

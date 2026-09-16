@@ -13,6 +13,7 @@ from app.routes.control_screen import ControlScreenResponseRequest
 from app.routes.control_screen import router as control_screen_router
 from app.routes.screenshot import ScreenshotResponseRequest
 from app.routes.screenshot import router as screenshot_router
+from app.schemas.tool import ToolAuthorizationResponse, ToolContinuationResponse
 from app.dependencies import get_agent_service
 from app.services.agent_service import AgentService
 
@@ -31,17 +32,31 @@ class _StateManager:
     async def close(self) -> None:
         pass
 
+    async def save(self, state: AgentState, *, checkpoint_type: str) -> int:
+        self.state = state
+        _StateManager.state = state
+        return 1
+
 
 class _Agent:
     """记录恢复参数的最小 Agent 替身。"""
 
     def __init__(self) -> None:
         self.resume_calls: list[dict] = []
+        self.run_calls: list[str] = []
         self.closed = False
+        self.continuation_valid = True
 
     async def resume(self, data: dict) -> AsyncIterator[AgentEvent]:
         self.resume_calls.append(data)
         yield AgentEvent(EventType.TEXT_CHUNK, "继续")
+
+    async def run(self, message: str) -> AsyncIterator[AgentEvent]:
+        self.run_calls.append(message)
+        yield AgentEvent(EventType.TEXT_CHUNK, "已按引导继续")
+
+    async def validate_pending_continuation(self, _interrupt: dict) -> bool:
+        return self.continuation_valid
 
     async def close(self) -> None:
         self.closed = True
@@ -50,11 +65,14 @@ class _Agent:
 def _state(interrupt_type: str | None, request_id: str = "request-current") -> AgentState:
     state = AgentState.create_new("session-a")
     if interrupt_type is not None:
-        state.set_interrupt({
+        interrupt = {
             "type": interrupt_type,
             "request_id": request_id,
             "message": "请确认",
-        })
+        }
+        if interrupt_type == "continuation_request":
+            interrupt["resume_state"] = {"continuation_claimed": True}
+        state.set_interrupt(interrupt)
     return state
 
 
@@ -181,6 +199,112 @@ async def test_resume_endpoint_rejects_missing_interrupt_before_agent_creation(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("interrupt_type", "resume"),
+    [
+        (
+            "continuation_request",
+            lambda service: service.resume_after_tool_authorization(
+                "session-a",
+                request_id="request-current",
+                decision={"kind": "approve"},
+            ),
+        ),
+        (
+            "authorization_request",
+            lambda service: service.resume_after_tool_continuation(
+                "session-a",
+                request_id="request-current",
+                response={"executed": True},
+            ),
+        ),
+    ],
+)
+async def test_generic_resume_interfaces_do_not_consume_each_others_interrupts(
+    monkeypatch,
+    interrupt_type: str,
+    resume: Callable[[AgentService], AsyncIterator[AgentEvent]],
+) -> None:
+    service, _agent, constructed = _service(monkeypatch, _state(interrupt_type))
+
+    with pytest.raises(ValueError, match="类型与响应接口不匹配"):
+        await _drain(resume(service))
+
+    assert constructed == []
+
+
+@pytest.mark.asyncio
+async def test_generic_authorization_and_continuation_resume_exact_payloads(monkeypatch) -> None:
+    authorization_service, authorization_agent, _ = _service(
+        monkeypatch,
+        _state("authorization_request"),
+    )
+    await _drain(authorization_service.resume_after_tool_authorization(
+        "session-a",
+        request_id="request-current",
+        decision={"kind": "reject"},
+    ))
+    assert authorization_agent.resume_calls == [{"kind": "reject"}]
+
+    continuation_service, continuation_agent, _ = _service(
+        monkeypatch,
+        _state("continuation_request"),
+    )
+    await _drain(continuation_service.resume_after_tool_continuation(
+        "session-a",
+        request_id="request-current",
+        response={"executed": True},
+    ))
+    assert continuation_agent.resume_calls == [{"executed": True}]
+
+
+@pytest.mark.asyncio
+async def test_continuation_claim_rechecks_before_frontend_effect_and_is_required(monkeypatch) -> None:
+    state = _state("continuation_request")
+    state.interrupt_data["resume_state"] = {}
+    service, agent, constructed = _service(monkeypatch, state)
+
+    with pytest.raises(ValueError, match="尚未通过执行前复核"):
+        await _drain(service.resume_after_tool_continuation(
+            "session-a",
+            request_id="request-current",
+            response={"executed": True},
+        ))
+
+    await service.claim_tool_continuation(
+        "session-a",
+        request_id="request-current",
+    )
+    assert _StateManager.state.interrupt_data["resume_state"]["continuation_claimed"] is True
+    assert agent.closed is True
+    assert constructed == ["agent"]
+
+    with pytest.raises(ValueError, match="已被认领"):
+        await service.claim_tool_continuation(
+            "session-a",
+            request_id="request-current",
+        )
+    assert constructed == ["agent"]
+
+
+@pytest.mark.asyncio
+async def test_steer_starts_new_user_turn_without_resuming_old_tool(monkeypatch) -> None:
+    service, agent, constructed = _service(monkeypatch, _state("authorization_request"))
+
+    events = await _drain(service.resume_after_tool_authorization(
+        "session-a",
+        request_id="request-current",
+        decision={"kind": "steer", "message": "改为只读取摘要"},
+    ))
+
+    assert [event.data for event in events] == ["已按引导继续"]
+    assert agent.run_calls == ["改为只读取摘要"]
+    assert agent.resume_calls == []
+    assert agent.closed is True
+    assert constructed == ["agent"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("interrupt_type", "resume", "expected_data"),
     [
         (
@@ -266,6 +390,22 @@ def test_old_resume_routes_require_non_empty_request_id() -> None:
         "height": 20,
     })
     assert capture_payload.approved is None
+
+
+def test_generic_response_models_require_valid_decisions_and_request_ids() -> None:
+    with pytest.raises(ValidationError):
+        ToolAuthorizationResponse.model_validate({
+            "session_id": "session-a",
+            "request_id": "request-current",
+            "kind": "steer",
+            "message": "  ",
+        })
+    with pytest.raises(ValidationError):
+        ToolContinuationResponse.model_validate({
+            "session_id": "session-a",
+            "request_id": "",
+            "response": {},
+        })
 
 
 def test_control_screen_response_requires_execution_result_when_approved() -> None:

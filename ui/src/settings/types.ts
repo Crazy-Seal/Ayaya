@@ -16,6 +16,8 @@ import type {
   MCPModelSettings,
   MCPServerView,
   MCPToolInfo,
+  ToolPolicyView,
+  ToolPolicy,
 } from "../../shared-types.js";
 
 export type MotionConfig = SharedMotionConfig;
@@ -41,6 +43,7 @@ export type ChatSettingsState = ChatSettingsData;
  */
 export type ToolItem = SharedToolItem;
 export type PluginItem = SharedPluginItem;
+export type { ToolPolicyView, ToolPolicy };
 
 /**
  * 前端设置
@@ -72,7 +75,7 @@ export interface EditingState {
     motionConfigs: MotionConfig[];
   };
   tools?: {
-    tools_list: string[];
+    tool_permissions: Record<string, ToolPolicy>;
   };
   contextStrategy?: {
     context_strategy: ChatSettingsState["context_strategy"];
@@ -96,6 +99,7 @@ export interface PageRenderData {
     modelConfig?: ModelConfig;
     availableMotions?: string[];
     availableTools?: ToolItem[];
+    toolPolicies?: ToolPolicyView[];
     availablePlugins?: PluginItem[];
     expressionLabels?: string[];
     mcpServers?: MCPServerView[];

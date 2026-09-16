@@ -83,6 +83,7 @@ class ToolContext:
     set_checkpoint: Callable[[dict], None]              # 设置 checkpoint
     resume_data: dict | None = None                     # 中断恢复时用户回传的数据
     resume_state: dict | None = None                    # 中断前工具暂存的中间态（恢复执行时读取）
+    authorization_grant: dict | None = None             # 当前调用绑定的单次授权快照
 
 
 @dataclass
@@ -95,6 +96,7 @@ class ToolResult:
     image_url: str | None = None                         # 工具产出的图片（注入为用户消息，让模型看见）
     image_urls: list[str] = field(default_factory=list)  # 工具产出的多张图片
     image_message_name: str | None = None                # 用于上下文策略区分图片来源
+    prepared_action: dict | None = None                  # after_prepare 工具解析出的最终动作
 
     @classmethod
     def success(cls, content: str, state_updates: dict | None = None,
@@ -137,6 +139,37 @@ class ToolResult:
             resume_state=resume_state or {},
         )
 
+    @classmethod
+    def continuation(
+        cls,
+        kind: str,
+        message: str,
+        *,
+        payload: dict | None = None,
+        resume_state: dict | None = None,
+    ) -> "ToolResult":
+        """请求 Adapter 自动补充数据或执行已获授权的动作。"""
+        return cls.needs_input(
+            type="continuation_request",
+            message=message,
+            data={"kind": kind, "payload": payload or {}},
+            resume_state=resume_state,
+        )
+
+    @classmethod
+    def prepared(
+        cls,
+        prepared_action: dict,
+        *,
+        resume_state: dict | None = None,
+    ) -> "ToolResult":
+        """返回 after_prepare 工具已经解析完成、尚待授权的动作。"""
+        return cls(
+            content="",
+            prepared_action=prepared_action,
+            resume_state=resume_state or {},
+        )
+
 
 # ==================== 工具基类 ====================
 
@@ -149,6 +182,7 @@ class BaseTool(ABC):
     is_resumable: bool = False   # 是否为可恢复工具（execute 内靠 context.resume_data 分支）
     compressible: bool = False   # 旧结果是否允许从活跃模型上下文回收，不代表允许重放工具
     persist_oversized_result: bool = True  # 超长结果是否允许保存为 tool-result artifact
+    authorization_timing: str = "before_execute"
 
     @abstractmethod
     async def execute(

@@ -5,6 +5,7 @@ import pytest
 from app.agent.agent import Agent, AgentConfig
 from app.agent.context import ContextStrategyConfig
 from app.agent.tools.base import BaseTool, ToolContext, ToolResult
+from app.agent.tools.authorization.manager import ToolAuthorization
 from app.mcp.identity import server_identity_fingerprint
 from app.mcp.types import MCPToolDescriptor
 from app.schemas.chat_settings import ChatSettings
@@ -16,7 +17,6 @@ from app.schemas.mcp import (
     StdioMCPServerConfig,
 )
 from app.services.mcp_connection_manager import MCPConnectionError
-from app.services.mcp_policy_resolver import MCPPolicyResolver
 
 
 def _chat_settings(**overrides) -> ChatSettings:
@@ -32,53 +32,6 @@ def _chat_settings(**overrides) -> ChatSettings:
     }
     values.update(overrides)
     return ChatSettings(**values)
-
-
-def test_policy_resolver_reads_latest_policy_and_defaults_new_tools_to_ask() -> None:
-    server = StdioMCPServerConfig(id="filesystem", name="Filesystem", command="python")
-    settings = _chat_settings(
-        mcp=MCPModelSettings(
-            servers={
-                "filesystem": MCPServerPolicy(
-                    enabled=True,
-                    identity_fingerprint=server_identity_fingerprint(server),
-                    tools={
-                        "read_file": MCPToolPolicy.ALLOW,
-                        "delete_file": MCPToolPolicy.DENY,
-                    },
-                )
-            }
-        )
-    )
-    resolver = MCPPolicyResolver(lambda _session_id: settings)
-
-    assert resolver.get_policy("session-a", "filesystem", "read_file") == MCPToolPolicy.ALLOW
-    assert resolver.get_policy("session-a", "filesystem", "delete_file") == MCPToolPolicy.DENY
-    assert resolver.get_policy("session-a", "filesystem", "new_tool") == MCPToolPolicy.ASK
-    assert resolver.get_bound_identity("session-a", "filesystem") == server_identity_fingerprint(server)
-
-
-@pytest.mark.parametrize("mode", ["missing", "disabled", "error"])
-def test_policy_resolver_fails_closed(mode: str) -> None:
-    if mode == "error":
-        def loader(_session_id: str) -> ChatSettings:
-            raise RuntimeError("配置读取失败")
-    else:
-        settings = _chat_settings(
-            mcp=MCPModelSettings(
-                servers={
-                    "filesystem": MCPServerPolicy(enabled=mode != "disabled")
-                }
-                if mode != "missing"
-                else {}
-            )
-        )
-        loader = lambda _session_id: settings
-
-    resolver = MCPPolicyResolver(loader)
-
-    assert resolver.get_policy("session-a", "filesystem", "read_file") == MCPToolPolicy.DENY
-    assert resolver.get_bound_identity("session-a", "filesystem") is None
 
 
 class _ExistingTool(BaseTool):
@@ -110,6 +63,9 @@ class _Manager:
             raise MCPConnectionError(f"MCP Server '{server_id}' 不存在")
         return self.configs[server_id]
 
+    def get_server_identity(self, server_id: str) -> str:
+        return server_identity_fingerprint(self.configs[server_id])
+
     async def connect(self, server_id: str) -> list[MCPToolDescriptor]:
         self.connected.append(server_id)
         if server_id == "broken":
@@ -140,7 +96,6 @@ async def test_agent_assembles_tools_and_isolates_server_failures(tmp_path: Path
             }
         )
     )
-    resolver = MCPPolicyResolver(lambda _session_id: settings)
     agent = Agent(
         AgentConfig(
             session_id=settings.session_id,
@@ -151,7 +106,7 @@ async def test_agent_assembles_tools_and_isolates_server_failures(tmp_path: Path
         ),
         db_path=str(tmp_path / "state.sqlite3"),
         mcp_connection_manager=manager,
-        mcp_policy_resolver=resolver,
+        tool_authorization=ToolAuthorization(lambda _session_id: settings),
     )
     agent.tool_manager.register(_ExistingTool())
 
@@ -160,8 +115,13 @@ async def test_agent_assembles_tools_and_isolates_server_failures(tmp_path: Path
     assert manager.connected == ["filesystem", "broken"]
     assert agent.tool_manager.get("mcp__filesystem__read_file").description == "existing"
     assert agent.tool_manager.has("mcp__filesystem__write_file")
-    assert not agent.tool_manager.has("mcp__filesystem__delete_file")
-    assert agent.tool_manager.get("mcp__filesystem__write_file").is_resumable is True
+    assert agent.tool_manager.has("mcp__filesystem__delete_file")
+    exposed_names = {
+        tool["function"]["name"] for tool in agent.tool_manager.get_openai_tools()
+    }
+    assert "mcp__filesystem__write_file" in exposed_names
+    assert "mcp__filesystem__delete_file" not in exposed_names
+    assert agent.tool_manager.get("mcp__filesystem__write_file").is_resumable is False
     await agent.close()
 
 

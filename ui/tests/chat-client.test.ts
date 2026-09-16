@@ -3,7 +3,7 @@ import { test } from "node:test";
 
 import { ChatClient, type ChatClientOptions } from "../src/chat/chat-client.js";
 import type {
-  ChatInterruptPayload, ChatResult, ScreenshotResponsePayload, ControlScreenResponsePayload,
+  ApprovalDecision, ChatInterruptPayload, ChatResult, ScreenshotResponsePayload, ControlScreenResponsePayload,
 } from "../shared-types.js";
 
 const interrupt = (id: string): ChatInterruptPayload => ({
@@ -29,7 +29,7 @@ function setup(steps: Step[]) {
   let completions = 0;
   let historyError = false;
   let onApproval: () => void | Promise<void> = () => {};
-  let approved = true;
+  let approvalDecision: boolean | ApprovalDecision = true;
   const input = { value: "开始", style: { height: "40px" }, focus() {} };
   const sendBtn = { disabled: false };
   const request = async (requestId: string, sessionId: string): Promise<ChatResult> => {
@@ -48,6 +48,7 @@ function setup(steps: Step[]) {
     onChatChunk(callback) { chunks.add(callback); return () => { chunks.delete(callback); }; },
     onToolCall(callback) { tools.add(callback); return () => { tools.delete(callback); }; },
     getFrontendSettings: async () => ({ hide_on_screenshot: false }),
+    claimToolContinuation: async () => {},
     mcpToolRespond: async (payload) => {
       approvals.push(payload.approved);
       return request(payload.streamRequestId!, payload.sessionId);
@@ -56,7 +57,7 @@ function setup(steps: Step[]) {
   const client = new ChatClient({
     sessionId: "session-a", bridge, input, sendBtn,
     bubble: { setText(text) { bubbles.push(text); } },
-    confirmDialog: { isOpen: () => false, async open() { await onApproval(); return approved; } },
+    confirmDialog: { isOpen: () => false, async open() { await onApproval(); return approvalDecision; } },
     toolCallToast: { show() {}, showError() {} },
     playMotion(tag) { motions.push(tag); },
     onChatComplete() { completions++; },
@@ -78,10 +79,86 @@ function setup(steps: Step[]) {
     get pendingTools() { return pendingTools; },
     get completions() { return completions; },
     set historyError(value: boolean) { historyError = value; },
-    set approved(value: boolean) { approved = value; },
+    set approved(value: boolean) { approvalDecision = value; },
+    set approvalDecision(value: ApprovalDecision) { approvalDecision = value; },
     set onApproval(callback: () => void | Promise<void>) { onApproval = callback; },
   };
 }
+
+test("统一审批把引导决定直接交给后端", async () => {
+  const h = setup([]);
+  h.approvalDecision = { kind: "steer", message: "先检查配置" };
+  const decisions: ApprovalDecision[] = [];
+  h.bridge.toolAuthorizationRespond = async (payload) => {
+    decisions.push(payload.decision);
+    return { response: "已调整", model: "" };
+  };
+
+  await h.client.restorePendingInterrupt({ value: {
+    type: "authorization_request",
+    request_id: "auth-1",
+    message: "调用工具？",
+    data: {
+      tool_call_id: "call-1",
+      tool_identity: "local:run_ps",
+      tool_name: "run_ps",
+      source: "local",
+      arguments: { command: "pwd" },
+      contract_fingerprint: "contract-v1",
+    },
+  } });
+
+  assert.deepEqual(decisions, [{ kind: "steer", message: "先检查配置" }]);
+  assert.deepEqual(h.completed, ["已调整"]);
+});
+
+test("continuation 自动截屏且不打开审批框", async () => {
+  const h = setup([]);
+  let approvalCount = 0;
+  h.onApproval = () => { approvalCount++; };
+  h.bridge.captureScreen = async () => ({
+    dataUrl: "data:image/png;base64,test",
+    width: 800,
+    height: 600,
+  });
+  const responses: Record<string, unknown>[] = [];
+  h.bridge.toolContinuationRespond = async (payload) => {
+    responses.push(payload.response);
+    return { response: "截图完成", model: "" };
+  };
+
+  await h.client.restorePendingInterrupt({ value: {
+    type: "continuation_request",
+    request_id: "continuation-1",
+    message: "截屏",
+    data: { kind: "capture_screen", payload: {} },
+  } });
+
+  assert.equal(approvalCount, 0);
+  assert.equal(responses[0]?.screenshot_data, "data:image/png;base64,test");
+});
+
+test("continuation 必须先通过后端复核才执行前端动作", async () => {
+  const h = setup([]);
+  let captureCount = 0;
+  h.bridge.claimToolContinuation = async () => {
+    throw new Error("授权已失效");
+  };
+  h.bridge.captureScreen = async () => {
+    captureCount++;
+    return { dataUrl: "data:image/png;base64,test", width: 1, height: 1 };
+  };
+
+  await h.client.restorePendingInterrupt({ value: {
+    type: "continuation_request",
+    request_id: "continuation-stale",
+    message: "截屏",
+    data: { kind: "capture_screen", payload: {} },
+  } });
+
+  assert.equal(captureCount, 0);
+  assert.match(h.errors[0] ?? "", /授权已失效/);
+});
 
 test("恢复聊天在每次中断前完成当前文本段", async () => {
   const h = setup([{ text: "第一段", next: "second" }, { text: "第二段" }]);

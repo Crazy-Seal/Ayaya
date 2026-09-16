@@ -5,9 +5,12 @@
 """
 
 import logging
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from app.agent.tools.base import BaseTool
+
+if TYPE_CHECKING:
+    from app.agent.tools.authorization.manager import ToolAuthorization
 
 logger = logging.getLogger(__name__)
 
@@ -15,8 +18,15 @@ logger = logging.getLogger(__name__)
 class ToolManager:
     """工具管理器 - 支持热插拔"""
 
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        session_id: str | None = None,
+        authorization: "ToolAuthorization | None" = None,
+    ):
         self._tools: dict[str, BaseTool] = {}
+        self._session_id = session_id
+        self._authorization = authorization
 
     def register(self, tool: BaseTool) -> None:
         """注册工具"""
@@ -56,7 +66,13 @@ class ToolManager:
 
     def get_openai_tools(self) -> list[dict]:
         """获取 OpenAI 格式的工具列表"""
-        return [tool.to_openai_tool() for tool in self._tools.values()]
+        tools = self._tools.values()
+        if self._authorization is not None and self._session_id is not None:
+            tools = (
+                tool for tool in tools
+                if self._authorization.is_exposed(self._session_id, tool)
+            )
+        return [tool.to_openai_tool() for tool in tools]
 
     def clear(self) -> None:
         """清空所有工具"""

@@ -54,6 +54,10 @@ const desktopPetApi: DesktopPetApi = {
     ipcRenderer.invoke("desktop-pet:get-pending-interrupt", sessionId),
   updateChatSettings: (payload) =>
     ipcRenderer.invoke("desktop-pet:update-chat-settings", payload),
+  getToolPermissions: (sessionId) =>
+    ipcRenderer.invoke("desktop-pet:get-tool-permissions", sessionId),
+  updateToolPermissions: (sessionId, permissions) =>
+    ipcRenderer.invoke("desktop-pet:update-tool-permissions", sessionId, permissions),
   getAvailableTools: () => ipcRenderer.invoke("desktop-pet:get-available-tools"),
   getAvailablePlugins: () => ipcRenderer.invoke("desktop-pet:get-available-plugins"),
   getMcpServers: () => ipcRenderer.invoke("desktop-pet:get-mcp-servers"),
@@ -85,6 +89,12 @@ const desktopPetApi: DesktopPetApi = {
   controlScreenRespond: (payload) =>
     ipcRenderer.invoke("desktop-pet:control-screen-respond", payload),
   mcpToolRespond: (payload) => ipcRenderer.invoke("desktop-pet:mcp-tool-respond", payload),
+  toolAuthorizationRespond: (payload) =>
+    ipcRenderer.invoke("desktop-pet:tool-authorization-respond", payload),
+  toolContinuationRespond: (payload) =>
+    ipcRenderer.invoke("desktop-pet:tool-continuation-respond", payload),
+  claimToolContinuation: (payload) =>
+    ipcRenderer.invoke("desktop-pet:tool-continuation-claim", payload),
   captureScreen: () => ipcRenderer.invoke("desktop-pet:capture-screen"),
   resolveScreenActionPoint: (coordinates) =>
     ipcRenderer.invoke("desktop-pet:resolve-screen-action-point", coordinates),

@@ -12,6 +12,7 @@ from pydantic import BaseModel, ValidationError
 from app.agent.context import ContextStrategyConfig
 from app.agent.agent import Agent, AgentConfig
 from app.agent.tools.base import BaseTool, ToolContext, ToolResult
+from app.agent.tools.authorization.manager import ToolAuthorization
 from app.agent.tools.result_normalizer import ToolResultNormalizer
 from app.agent.core.event_router import AgentEvent, EventType
 from app.agent.state import AgentState
@@ -177,16 +178,17 @@ def test_chat_settings_round_trips_per_model_mcp_policies() -> None:
         }
     )
 
-    policy = settings.mcp.servers["filesystem"]
-    assert policy == MCPServerPolicy(
-        enabled=True,
-        tools={
-            "read_file": MCPToolPolicy.ALLOW,
-            "write_file": MCPToolPolicy.ASK,
-            "delete_file": MCPToolPolicy.DENY,
-        },
-    )
-    assert ChatSettings.model_validate(settings.model_dump()).mcp == settings.mcp
+    assert settings.tool_permissions == {
+        "mcp:filesystem:read_file": MCPToolPolicy.ALLOW,
+        "mcp:filesystem:write_file": MCPToolPolicy.ASK,
+        "mcp:filesystem:delete_file": MCPToolPolicy.DENY,
+    }
+
+    persisted = settings.model_dump()
+    assert "tools" not in persisted["mcp"]["servers"]["filesystem"]
+    restored = ChatSettings.model_validate(persisted)
+    assert restored.mcp.model_dump() == settings.mcp.model_dump()
+    assert restored.tool_permissions == settings.tool_permissions
 
 
 def test_mcp_tool_alias_is_namespaced_stable_and_model_safe() -> None:
@@ -582,9 +584,15 @@ class _MutablePolicyResolver:
     def get_bound_identity(self, _session_id: str, _server_id: str) -> str | None:
         return self.identity
 
+    def is_exposed(self, _session_id: str, _tool: BaseTool) -> bool:
+        return self.policy != MCPToolPolicy.DENY
+
+    def get_bound_mcp_identity(self, _session_id: str, _server_id: str) -> str | None:
+        return self.identity
+
 
 @pytest.mark.asyncio
-async def test_ask_adapter_requires_single_approval_and_converts_results() -> None:
+async def test_adapter_executes_authorized_call_and_converts_results() -> None:
     session = _FakeSession()
 
     @asynccontextmanager
@@ -606,7 +614,7 @@ async def test_ask_adapter_requires_single_approval_and_converts_results() -> No
     await manager.connect("filesystem")
     descriptor = manager.get_tools("filesystem")[1]
     resolver = _MutablePolicyResolver(
-        MCPToolPolicy.ASK,
+        MCPToolPolicy.ALLOW,
         server_identity_fingerprint(config.servers[0]),
     )
     adapter = MCPToolAdapter(
@@ -614,33 +622,22 @@ async def test_ask_adapter_requires_single_approval_and_converts_results() -> No
         server_id="filesystem",
         server_name="Filesystem",
         descriptor=descriptor,
-        policy=MCPToolPolicy.ASK,
         connection_manager=manager,
-        policy_resolver=resolver,
+        authorization=resolver,
     )
 
-    pending = await adapter.execute({"path": "README.md"}, _tool_context())
-    assert pending.interrupt is not None
-    assert pending.interrupt.type == "mcp_tool_approval_request"
-    assert session.calls == []
+    result = await adapter.execute({"path": "README.md"}, _tool_context())
 
-    denied = await adapter.execute({"path": "README.md"}, _tool_context({"approved": False}))
-    assert "拒绝" in denied.content
-    assert session.calls == []
-
-    approved = await adapter.execute(
-        {"path": "README.md"},
-        _tool_context({"approved": True}, pending.resume_state),
-    )
-    assert "完成" in approved.content
-    assert '"ok":true' in approved.content
-    assert approved.image_urls == ["data:image/png;base64,iVBORw0KGgo="]
+    assert result.interrupt is None
+    assert "完成" in result.content
+    assert '"ok":true' in result.content
+    assert result.image_urls == ["data:image/png;base64,iVBORw0KGgo="]
     assert session.calls == [("write_file", {"path": "README.md"})]
     await manager.close()
 
 
 @pytest.mark.asyncio
-async def test_rejected_resume_is_absolute_even_if_policy_changed_to_allow() -> None:
+async def test_adapter_does_not_own_user_approval_interrupts() -> None:
     session = _FakeSession()
     resolver = _MutablePolicyResolver(MCPToolPolicy.ASK, None)
 
@@ -660,25 +657,18 @@ async def test_rejected_resume_is_absolute_even_if_policy_changed_to_allow() -> 
         server_id="filesystem",
         server_name="Filesystem",
         descriptor=descriptor,
-        policy=MCPToolPolicy.ASK,
         connection_manager=manager,
-        policy_resolver=resolver,
+        authorization=resolver,
     )
-    pending = await adapter.execute({}, _tool_context())
-    resolver.policy = MCPToolPolicy.ALLOW
+    result = await adapter.execute({}, _tool_context())
 
-    denied = await adapter.execute(
-        {},
-        _tool_context({"approved": False}, pending.resume_state),
-    )
-
-    assert "拒绝" in denied.content
-    assert session.calls == []
+    assert result.interrupt is None
+    assert session.calls == [("read_file", {})]
     await manager.close()
 
 
 @pytest.mark.asyncio
-async def test_approved_resume_rejects_changed_server_or_tool_contract() -> None:
+async def test_adapter_rejects_changed_tool_contract_at_final_guard() -> None:
     session = _FakeSession()
 
     @asynccontextmanager
@@ -692,7 +682,7 @@ async def test_approved_resume_rejects_changed_server_or_tool_contract() -> None
     await manager.connect("filesystem")
     descriptor = manager.get_tools("filesystem")[0]
     resolver = _MutablePolicyResolver(
-        MCPToolPolicy.ASK,
+        MCPToolPolicy.ALLOW,
         server_identity_fingerprint(config.servers[0]),
     )
     adapter = MCPToolAdapter(
@@ -700,30 +690,46 @@ async def test_approved_resume_rejects_changed_server_or_tool_contract() -> None
         server_id="filesystem",
         server_name="Filesystem",
         descriptor=descriptor,
-        policy=MCPToolPolicy.ASK,
         connection_manager=manager,
-        policy_resolver=resolver,
+        authorization=resolver,
     )
-    pending = await adapter.execute({}, _tool_context())
+    manager.get_tool_contract_fingerprint = lambda *_args: "changed-contract"
+    result = await adapter.execute({}, _tool_context())
 
-    stale_server = dict(pending.resume_state)
-    stale_server["server_identity_fingerprint"] = "old-server"
-    server_result = await adapter.execute(
-        {}, _tool_context({"approved": True}, stale_server)
-    )
-    stale_tool = dict(pending.resume_state)
-    stale_tool["tool_contract_fingerprint"] = "old-tool"
-    tool_result = await adapter.execute(
-        {}, _tool_context({"approved": True}, stale_tool)
-    )
-    arguments_result = await adapter.execute(
-        {"path": "changed"},
-        _tool_context({"approved": True}, pending.resume_state),
-    )
+    assert "MCP_APPROVAL_STALE" in result.content
+    assert session.calls == []
+    await manager.close()
 
-    assert "MCP_APPROVAL_STALE" in server_result.content
-    assert "MCP_APPROVAL_STALE" in tool_result.content
-    assert "MCP_APPROVAL_STALE" in arguments_result.content
+
+@pytest.mark.asyncio
+async def test_adapter_rejects_server_identity_changed_after_construction() -> None:
+    session = _FakeSession()
+
+    @asynccontextmanager
+    async def session_factory(_config):
+        yield session
+
+    config = MCPServersConfig(servers=[StdioMCPServerConfig(
+        id="filesystem", name="Filesystem", enabled=True, command="python"
+    )])
+    manager = MCPConnectionManager(lambda: config, session_factory=session_factory)
+    await manager.connect("filesystem")
+    original_identity = server_identity_fingerprint(config.servers[0])
+    resolver = _MutablePolicyResolver(MCPToolPolicy.ALLOW, original_identity)
+    adapter = MCPToolAdapter(
+        session_id="session-a",
+        server_id="filesystem",
+        server_name="Filesystem",
+        descriptor=manager.get_tools("filesystem")[0],
+        connection_manager=manager,
+        authorization=resolver,
+    )
+    manager.get_server_identity = lambda _server_id: "changed-identity"
+    resolver.identity = "changed-identity"
+
+    result = await adapter.execute({}, _tool_context())
+
+    assert "MCP_IDENTITY_UNBOUND" in result.content
     assert session.calls == []
     await manager.close()
 
@@ -783,15 +789,14 @@ async def test_adapter_rechecks_current_policy_before_execution() -> None:
         server_id="filesystem",
         server_name="Filesystem",
         descriptor=manager.get_tools("filesystem")[0],
-        policy=MCPToolPolicy.ALLOW,
         connection_manager=manager,
-        policy_resolver=resolver,
+        authorization=resolver,
     )
 
     resolver.policy = MCPToolPolicy.DENY
     result = await adapter.execute({}, _tool_context())
 
-    assert "不允许使用" in result.content
+    assert "未获准" in result.content
     assert session.calls == []
     await manager.close()
 
@@ -822,9 +827,8 @@ async def test_adapter_rechecks_policy_inside_connection_lease() -> None:
         server_id="filesystem",
         server_name="Filesystem",
         descriptor=manager.get_tools("filesystem")[0],
-        policy=MCPToolPolicy.ALLOW,
         connection_manager=manager,
-        policy_resolver=resolver,
+        authorization=resolver,
     )
 
     result = await adapter.execute({}, _tool_context())
@@ -854,9 +858,8 @@ async def test_adapter_rejects_changed_policy_binding_identity() -> None:
         server_id="filesystem",
         server_name="Filesystem",
         descriptor=manager.get_tools("filesystem")[0],
-        policy=MCPToolPolicy.ALLOW,
         connection_manager=manager,
-        policy_resolver=resolver,
+        authorization=resolver,
     )
 
     result = await adapter.execute({}, _tool_context())
@@ -1177,13 +1180,24 @@ async def test_agent_builds_adapters_without_owning_connections(tmp_path: Path) 
             assert server_id == "filesystem"
             return self.config
 
+        def get_server_identity(self, server_id: str) -> str:
+            assert server_id == "filesystem"
+            return server_identity_fingerprint(self.config)
+
         async def connect(self, server_id: str):
             self.calls.append(server_id)
             return [MCPToolDescriptor("read_file", "读取", {"type": "object"})]
 
     manager = _Manager()
     model_settings = MCPModelSettings(
-        servers={"filesystem": MCPServerPolicy(enabled=True, tools={"read_file": "allow"})}
+        servers={"filesystem": MCPServerPolicy(
+            enabled=True,
+            identity_fingerprint=server_identity_fingerprint(manager.config),
+        )}
+    )
+    settings = _chat_settings(
+        mcp=model_settings,
+        tool_permissions={"mcp:filesystem:read_file": "allow"},
     )
     agent = Agent(
         AgentConfig(
@@ -1195,10 +1209,7 @@ async def test_agent_builds_adapters_without_owning_connections(tmp_path: Path) 
         ),
         db_path=str(tmp_path / "state.sqlite3"),
         mcp_connection_manager=manager,
-        mcp_policy_resolver=_MutablePolicyResolver(
-            MCPToolPolicy.ALLOW,
-            server_identity_fingerprint(manager.config),
-        ),
+        tool_authorization=ToolAuthorization(lambda _session_id: settings),
     )
 
     await agent.initialize()
@@ -1305,11 +1316,16 @@ async def test_identity_change_rebinds_all_current_tools_to_ask(tmp_path: Path) 
 
     await service.update_server("filesystem", new_server)
 
-    policy = ChatSettingsDao(chat_file).get_chat_settings("session-a").mcp.servers["filesystem"]
+    saved = ChatSettingsDao(chat_file).get_chat_settings("session-a")
+    policy = saved.mcp.servers["filesystem"]
     assert policy.enabled is True
-    assert policy.tools == {
-        "read_file": MCPToolPolicy.ASK,
-        "new_tool": MCPToolPolicy.ASK,
+    assert {
+        key: value
+        for key, value in saved.tool_permissions.items()
+        if key.startswith("mcp:filesystem:")
+    } == {
+        "mcp:filesystem:read_file": MCPToolPolicy.ASK,
+        "mcp:filesystem:new_tool": MCPToolPolicy.ASK,
     }
     assert policy.identity_fingerprint == server_identity_fingerprint(new_server)
 
@@ -1355,7 +1371,8 @@ async def test_chat_settings_save_filters_deleted_servers_and_downgrades_unbound
 
     saved = ChatSettingsDao(chat_file).get_chat_settings("session-a")
     assert set(saved.mcp.servers) == {"filesystem"}
-    assert saved.mcp.servers["filesystem"].tools == {"read_file": MCPToolPolicy.ASK}
+    assert saved.tool_permissions["mcp:filesystem:read_file"] == MCPToolPolicy.ASK
+    assert "mcp:deleted:danger" not in saved.tool_permissions
     assert (
         saved.mcp.servers["filesystem"].identity_fingerprint
         == server_identity_fingerprint(server)
@@ -1371,9 +1388,13 @@ async def test_chat_settings_save_filters_deleted_servers_and_downgrades_unbound
     }})
     await service.update_chat_settings(bound_update)
     rebound = ChatSettingsDao(chat_file).get_chat_settings("session-a")
-    assert rebound.mcp.servers["filesystem"].tools == {
-        "read_file": MCPToolPolicy.ALLOW,
-        "new_tool": MCPToolPolicy.ASK,
+    assert {
+        key: value
+        for key, value in rebound.tool_permissions.items()
+        if key.startswith("mcp:filesystem:")
+    } == {
+        "mcp:filesystem:read_file": MCPToolPolicy.ALLOW,
+        "mcp:filesystem:new_tool": MCPToolPolicy.ASK,
     }
 
     MCPSettingsDao(mcp_file).save(MCPServersConfig())

@@ -140,8 +140,6 @@ async def control_screen(
         phase = (context.resume_state or {}).get("phase")
         if phase != "awaiting_execution":
             return ToolResult(content="错误: 屏幕操作恢复状态无效。")
-        if not context.resume_data.get("approved"):
-            return ToolResult.success("屏幕操作请求被用户拒绝。")
         if not context.resume_data.get("executed", False):
             error_message = context.resume_data.get("error") or "前端未完成屏幕操作。"
             return ToolResult.success(f"屏幕操作失败: {error_message}")
@@ -155,12 +153,9 @@ async def control_screen(
             image_message_name=SCREENSHOT_MESSAGE_NAME,
         )
 
-    return ToolResult.needs_input(
-        type="control_screen_execute_request",
-        message=(
-            f"Agent 请求对“{resolved_target}”执行 {resolved_operation} 操作。"
-            "请确认是否允许。"
-        ),
-        data=action_state,
+    return ToolResult.continuation(
+        "perform_screen_action",
+        f"正在对“{resolved_target}”执行 {resolved_operation} 操作。",
+        payload=action_state,
         resume_state={"phase": "awaiting_execution"},
     )

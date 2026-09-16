@@ -1,8 +1,7 @@
-import type { MCPServerConfig, MCPToolPolicy } from "../../shared-types.js";
+import type { MCPServerConfig } from "../../shared-types.js";
 
 type ServerPolicy = {
   enabled: boolean;
-  tools: Record<string, MCPToolPolicy>;
   identity_fingerprint?: string | null;
 };
 
@@ -51,18 +50,15 @@ export const fingerprintMcpConfig = (config: MCPServerConfig): string =>
  * 构造启用状态的模型级 MCP Server 权限。
  *
  * @param current - 当前已保存的 Server 权限。
- * @param toolNames - Server 当前暴露的工具名称。
- * @returns 保留已有策略并将新工具默认设为 ask 的权限对象。
+ * @param _toolNames - 兼容旧调用签名；逐工具权限已迁移到统一权限页。
+ * @returns 保留身份绑定的 Server 启用状态。
  */
 export const buildEnabledServerPolicy = (
   current: ServerPolicy | undefined,
-  toolNames: string[]
+  _toolNames: string[] = []
 ): ServerPolicy => {
   return {
     enabled: true,
-    tools: Object.fromEntries(
-      toolNames.map((name) => [name, current?.tools[name] ?? "ask"])
-    ),
     ...(current?.identity_fingerprint
       ? { identity_fingerprint: current.identity_fingerprint }
       : {}),

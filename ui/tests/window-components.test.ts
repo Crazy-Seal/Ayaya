@@ -142,10 +142,15 @@ test("设置页动态生成的控件也使用共享组件类", () => {
     /motion-setting-select ui-control ui-control--small ui-select/,
   );
   assert.match(pluginsPage, /ui-checkbox/);
-  assert.match(toolsPage, /ui-checkbox/);
+  assert.match(toolsPage, /tool-policy-select ui-control ui-control--small ui-select/);
+  assert.match(toolsPage, /\["ask", "ASK"\]/);
+  assert.match(toolsPage, /\["allow", "ALLOW"\]/);
+  assert.match(toolsPage, /\["deny", "DENY"\]/);
+  assert.match(toolsPage, /document\.createElement\("details"\)/);
+  assert.match(toolsPage, /tool\.available \? "查看说明" : "不可用 · 查看原因"/);
   assert.match(mcpPage, /variant: "secondary" \| "danger" = "secondary"/);
   assert.match(mcpPage, /ui-button ui-button--\$\{variant\} ui-button--small/);
-  assert.match(mcpPage, /ui-control ui-control--small ui-select/);
+  assert.match(mcpPage, /toggle.className = "ui-checkbox"/);
 });
 
 test("MCP 编辑器展开时使用自然高度且固定控件不会被压缩", () => {
@@ -283,6 +288,15 @@ test("动态表情设置下拉框提供包含动作名称的可访问名称", ()
   assert.match(
     motionPage,
     /select\.ariaLabel\s*=\s*`\$\{motionName\}\s*的动作设置`;/,
+  );
+});
+
+test("工具审批引导输入框提供可访问名称", () => {
+  const html = readUiFile("index.html");
+
+  assert.match(
+    elementById(html, "tool-steer-input"),
+    /aria-label="引导 Agent 下一步操作"/,
   );
 });
 

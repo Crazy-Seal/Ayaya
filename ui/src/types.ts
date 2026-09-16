@@ -5,6 +5,9 @@ export type {
   ApiResponse,
   ChatChunkData,
   ChatInterruptPayload,
+  ApprovalDecision,
+  AuthorizationRequestData,
+  ContinuationRequestData,
   ControlScreenActionData,
   ChatHistoryItem,
   ChatResult,
@@ -25,4 +28,6 @@ export type {
   ScreenshotInterruptPayload,
   ToolCallEventData,
   ToolItem,
+  ToolPolicy,
+  ToolPolicyView,
 } from "../shared-types.js";

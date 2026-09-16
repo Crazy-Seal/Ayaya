@@ -382,7 +382,26 @@
 }
 
 .tools-table {
+  width: 100%;
+  min-width: 680px;
+  table-layout: fixed;
   font-size: 13px;
+}
+
+.tools-col-source {
+  width: 72px;
+}
+
+.tools-col-name {
+  width: 220px;
+}
+
+.tools-col-policy {
+  width: 128px;
+}
+
+.tools-table td {
+  vertical-align: top;
 }
 
 .tools-table thead th {
@@ -398,9 +417,34 @@
   border-bottom: none;
 }
 
-.col-check {
-  width: 70px;
-  text-align: center;
+.tool-permission-group th {
+  padding-top: var(--spacing-md);
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  text-align: left;
+}
+
+.tool-policy-select {
+  width: 108px;
+  min-width: 108px;
+  white-space: nowrap;
+}
+
+.tool-description summary {
+  width: fit-content;
+  cursor: pointer;
+  color: var(--color-text-secondary);
+  user-select: none;
+}
+
+.tool-description[open] summary {
+  margin-bottom: var(--spacing-xs);
+}
+
+.tool-description-text {
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  color: var(--color-text-primary);
 }
 
 .tools-confirm-btn {
