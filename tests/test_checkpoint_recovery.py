@@ -9,6 +9,7 @@ from app.agent.context import ContextStrategyConfig, ModelInputCoordinator
 from app.agent.core.event_router import EventType
 from app.agent.core.pipeline import ExecutionPipeline
 from app.agent.plugins.base import BasePlugin, HookContext, PluginHook
+from app.agent.plugins.memory import MemoryPlugin
 from app.agent.state.manager import CheckpointType, StateManager
 from app.agent.state.messages import (
     MCP_TOOL_IMAGE_MESSAGE_NAME,
@@ -20,6 +21,7 @@ from app.agent.state import AgentState
 from app.agent.tools.base import BaseTool, ToolContext, ToolResult
 from app.schemas.chat import AgentInput
 from app.services.agent_service import AgentService
+import app.agent.plugins.memory as memory_plugin_module
 
 
 class ScriptedLLM:
@@ -460,6 +462,88 @@ def test_intermediate_checkpoint_failure_skips_after_user_input_hook(
         "before_user_input_commit",
         "save_intermediate_failed",
     ]
+
+
+def test_failed_user_input_commit_keeps_pending_long_term_memory_batch(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    scheduled: list[str] = []
+
+    class MemoryManager:
+        async def get_protocol_history_cutoff(self):
+            return 2
+
+        async def get_context(self, **kwargs):
+            return ""
+
+    def capture(coro, *, logger, task_name):
+        scheduled.append(task_name)
+        coro.close()
+
+    monkeypatch.setattr(memory_plugin_module, "create_background_task", capture)
+
+    async def register_memory(agent: Agent) -> None:
+        plugin = MemoryPlugin(enable_diary=False)
+        monkeypatch.setattr(plugin, "_mm", lambda state: MemoryManager())
+        await agent.plugin_manager.register(plugin)
+
+    async def scenario() -> tuple[int, int, list[str]]:
+        db_path = tmp_path / "checkpoints.sqlite3"
+        seed = StateManager("checkpoint-test", db_path=str(db_path))
+        try:
+            state = AgentState.create_new("checkpoint-test")
+            state.add_user_message("已完成的输入")
+            state.add_assistant_message("已完成的回复")
+            state.long_term_memory_turn_counter = 10
+            await seed.save(state, checkpoint_type="completed")
+        finally:
+            await seed.close()
+
+        failed_agent = await make_agent(
+            db_path,
+            [[StreamChunk(content="不应执行")]],
+            StepTool(),
+        )
+        await register_memory(failed_agent)
+
+        async def failing_save(state, *, checkpoint_type):
+            assert checkpoint_type == "intermediate"
+            raise RuntimeError("模拟 intermediate 保存失败")
+
+        failed_agent.state_manager.save = failing_save
+        try:
+            with pytest.raises(RuntimeError, match="intermediate 保存失败"):
+                await drain(failed_agent.run("第一次重试"))
+        finally:
+            await failed_agent.close()
+
+        persisted = StateManager("checkpoint-test", db_path=str(db_path))
+        try:
+            counter_after_failure = (
+                await persisted.load()
+            ).long_term_memory_turn_counter
+        finally:
+            await persisted.close()
+
+        retry_agent = await make_agent(
+            db_path,
+            [[StreamChunk(content="完成")]],
+            StepTool(),
+        )
+        await register_memory(retry_agent)
+        try:
+            events = await drain(retry_agent.run("第二次重试"))
+            assert events[-1].type == EventType.DONE
+            counter_after_retry = (
+                await retry_agent.state_manager.load()
+            ).long_term_memory_turn_counter
+        finally:
+            await retry_agent.close()
+
+        return counter_after_failure, counter_after_retry, scheduled
+
+    assert asyncio.run(scenario()) == (10, 1, ["memory.persist_long_term"])
 
 
 def test_completed_checkpoint_failure_skips_after_commit_hook(tmp_path: Path) -> None:

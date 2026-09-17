@@ -268,8 +268,12 @@ def test_diary_prompt_marks_missing_reference_context_as_unavailable() -> None:
     assert "None" not in prompt
 
 
-def test_long_term_memory_is_scheduled_after_completed_response(monkeypatch) -> None:
+def test_long_term_memory_is_scheduled_after_next_user_input_commit(monkeypatch) -> None:
     scheduled: list[str] = []
+
+    class MemoryManager:
+        async def get_protocol_history_cutoff(self):
+            return 42
 
     def capture(coro, *, logger, task_name):
         scheduled.append(task_name)
@@ -279,21 +283,204 @@ def test_long_term_memory_is_scheduled_after_completed_response(monkeypatch) -> 
 
     async def scenario():
         plugin = MemoryPlugin(enable_diary=False)
+        monkeypatch.setattr(plugin, "_mm", lambda state: MemoryManager())
+        state = AgentState.create_new("session")
+        state.long_term_memory_turn_counter = 10
+
+        response_context = {}
+        await plugin.execute(HookContext.create(
+            PluginHook.BEFORE_RESPONSE_COMMIT, state, data=response_context
+        ))
+        await plugin.execute(HookContext.create(
+            PluginHook.AFTER_RESPONSE_COMMIT, state, data=response_context
+        ))
+        assert state.long_term_memory_turn_counter == 10
+        assert scheduled == []
+
+        input_context = {}
+        await plugin.execute(HookContext.create(
+            PluginHook.BEFORE_USER_INPUT_COMMIT, state, data=input_context
+        ))
+        assert state.long_term_memory_turn_counter == 0
+        assert scheduled == []
+        assert input_context["memory"] == {
+            "manager": input_context["memory"]["manager"],
+            "session_id": "session",
+            "protocol_history_cutoff": 42,
+            "check_diary": False,
+            "extract_long_term_memory": True,
+            "long_term_memory_turns": 10,
+        }
+
+        await plugin.execute(HookContext.create(
+            PluginHook.AFTER_USER_INPUT_COMMIT, state, data=input_context
+        ))
+        return state, scheduled
+
+    state, tasks = asyncio.run(scenario())
+    assert state.long_term_memory_turn_counter == 0
+    assert tasks == ["memory.persist_long_term"]
+
+
+def test_diary_and_long_term_memory_are_scheduled_independently(monkeypatch) -> None:
+    scheduled: list[str] = []
+
+    class MemoryManager:
+        async def get_protocol_history_cutoff(self):
+            return 84
+
+        async def check_diary(self, *, max_history_id):
+            raise AssertionError("background coroutine should not run in this test")
+
+    def capture(coro, *, logger, task_name):
+        scheduled.append(task_name)
+        coro.close()
+
+    monkeypatch.setattr(memory_plugin_module, "create_background_task", capture)
+
+    async def scenario():
+        plugin = MemoryPlugin()
+        monkeypatch.setattr(plugin, "_mm", lambda state: MemoryManager())
+        state = AgentState.create_new("session")
+        state.long_term_memory_turn_counter = 12
+        commit_context = {}
+
+        await plugin.execute(HookContext.create(
+            PluginHook.BEFORE_USER_INPUT_COMMIT, state, data=commit_context
+        ))
+        await plugin.execute(HookContext.create(
+            PluginHook.AFTER_USER_INPUT_COMMIT, state, data=commit_context
+        ))
+        return state, commit_context
+
+    state, commit_context = asyncio.run(scenario())
+    assert state.long_term_memory_turn_counter == 0
+    assert commit_context["memory"]["long_term_memory_turns"] == 12
+    assert scheduled == ["memory.check_diary", "memory.persist_long_term"]
+
+
+def test_long_term_memory_uses_frozen_protocol_cutoff(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    class Store:
+        async def get_latest_message_id(self, session_id):
+            raise AssertionError("must use the cutoff frozen before the new user input")
+
+        async def get_recent_completed_turns(self, session_id, **kwargs):
+            calls.append({"session_id": session_id, **kwargs})
+            current = []
+            for index in range(12):
+                current.extend([
+                    {"role": "user", "content": f"human-{index}"},
+                    {"role": "assistant", "content": f"assistant-{index}"},
+                ])
+            return [], current
+
+    class MemoryManager:
+        chat_history_store = Store()
+
+        async def add(self, messages, history, **kwargs):
+            calls.append({
+                "message_count": len(messages),
+                "history_count": len(history),
+                **kwargs,
+            })
+
+    monkeypatch.setattr(
+        memory_plugin_module,
+        "get_memory_manager",
+        lambda session_id: MemoryManager(),
+    )
+
+    async def scenario():
+        plugin = MemoryPlugin()
+        await plugin._persist_from_protocol(
+            "session",
+            max_history_id=42,
+            batch_turns=12,
+        )
+
+    asyncio.run(scenario())
+    assert calls[0] == {
+        "session_id": "session",
+        "current_turns": 12,
+        "history_turns": 5,
+        "max_history_id": 42,
+    }
+    assert calls[1] == {
+        "message_count": 24,
+        "history_count": 0,
+        "enable_episodic": True,
+        "enable_semantic": True,
+    }
+
+
+def test_disabled_long_term_memory_resets_reached_interval_on_next_input() -> None:
+    async def scenario():
+        plugin = MemoryPlugin(
+            enable_diary=False,
+            enable_episodic=False,
+            enable_semantic=False,
+        )
         state = AgentState.create_new("session")
         state.long_term_memory_turn_counter = 10
         commit_context = {}
         await plugin.execute(HookContext.create(
-            PluginHook.BEFORE_RESPONSE_COMMIT, state, data=commit_context
+            PluginHook.BEFORE_USER_INPUT_COMMIT, state, data=commit_context
         ))
-        assert scheduled == []
-        await plugin.execute(HookContext.create(
-            PluginHook.AFTER_RESPONSE_COMMIT, state, data=commit_context
-        ))
-        return state
+        return state, commit_context
 
-    state = asyncio.run(scenario())
+    state, commit_context = asyncio.run(scenario())
     assert state.long_term_memory_turn_counter == 0
-    assert scheduled == ["memory.persist_long_term"]
+    assert commit_context == {}
+
+
+def test_disabled_long_term_memory_resets_counter_when_diary_preparation_fails(
+    monkeypatch,
+) -> None:
+    async def scenario():
+        plugin = MemoryPlugin(
+            enable_diary=True,
+            enable_episodic=False,
+            enable_semantic=False,
+        )
+
+        def fail(_state):
+            raise RuntimeError("diary manager unavailable")
+
+        monkeypatch.setattr(plugin, "_mm", fail)
+        state = AgentState.create_new("session")
+        state.long_term_memory_turn_counter = 10
+        commit_context = {}
+        await plugin.execute(HookContext.create(
+            PluginHook.BEFORE_USER_INPUT_COMMIT, state, data=commit_context
+        ))
+        return state, commit_context
+
+    state, commit_context = asyncio.run(scenario())
+    assert state.long_term_memory_turn_counter == 0
+    assert commit_context == {}
+
+
+def test_memory_preparation_failure_keeps_pending_turn_counter(monkeypatch) -> None:
+    async def scenario():
+        plugin = MemoryPlugin(enable_diary=False)
+
+        def fail(_state):
+            raise RuntimeError("memory manager unavailable")
+
+        monkeypatch.setattr(plugin, "_mm", fail)
+        state = AgentState.create_new("session")
+        state.long_term_memory_turn_counter = 10
+        commit_context = {}
+        await plugin.execute(HookContext.create(
+            PluginHook.BEFORE_USER_INPUT_COMMIT, state, data=commit_context
+        ))
+        return state, commit_context
+
+    state, commit_context = asyncio.run(scenario())
+    assert state.long_term_memory_turn_counter == 10
+    assert commit_context == {}
 
 
 def test_memory_plugin_does_not_own_completed_turn_counting() -> None:

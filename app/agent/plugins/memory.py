@@ -55,8 +55,6 @@ class MemoryPlugin(BasePlugin):
             PluginHook.BEFORE_USER_INPUT_COMMIT,
             PluginHook.AFTER_USER_INPUT_COMMIT,
             PluginHook.ON_INVOKE,
-            PluginHook.BEFORE_RESPONSE_COMMIT,
-            PluginHook.AFTER_RESPONSE_COMMIT,
         ]
 
     def _mm(self, state):
@@ -82,10 +80,6 @@ class MemoryPlugin(BasePlugin):
             runtime_context = (context.data or {}).get("runtime_context") if isinstance(context.data, dict) else None
             if runtime_context is not None:
                 await self._inject_context(state, runtime_context)
-        elif context.hook == PluginHook.BEFORE_RESPONSE_COMMIT:
-            await self._prepare_response_commit(state, context.data)
-        elif context.hook == PluginHook.AFTER_RESPONSE_COMMIT:
-            self._schedule_long_term_memory(state, context.data)
 
     async def _inject_context(self, state, runtime_context) -> None:
         query = get_last_human_text(state.messages)
@@ -103,69 +97,87 @@ class MemoryPlugin(BasePlugin):
             f"{MEMORY_PREAMBLE}\n\n{ctx}" if ctx and ctx.strip() else ""
         )
 
-    async def _prepare_response_commit(self, state, commit_context: dict) -> None:
-        """在 completed 提交前准备长期记忆抽取。"""
-        pending_count = state.long_term_memory_turn_counter
-        if pending_count >= self.config.long_term_memory_every_human_messages:
-            if self.config.enable_episodic or self.config.enable_semantic:
-                commit_context["extract_long_term_memory"] = True
-            state.reset_long_term_memory_turn_counter()
-
     async def _prepare_user_input_commit(self, state, commit_context: dict) -> None:
-        """在当前输入加入前冻结日记查询高水位。"""
-        if not self.config.enable_diary:
+        """在当前输入加入前冻结上一批派生记忆任务。"""
+        pending_count = state.long_term_memory_turn_counter
+        reached_interval = (
+            pending_count >= self.config.long_term_memory_every_human_messages
+        )
+        should_extract = reached_interval and (
+            self.config.enable_episodic or self.config.enable_semantic
+        )
+
+        if reached_interval and not should_extract:
+            state.reset_long_term_memory_turn_counter()
+        if not self.config.enable_diary and not should_extract:
             return
 
         try:
             memory_manager = self._mm(state)
-            memory_job: dict[str, Any] = {"manager": memory_manager}
-            memory_job["protocol_history_cutoff"] = (
-                await memory_manager.get_protocol_history_cutoff()
-            )
+            memory_job: dict[str, Any] = {
+                "manager": memory_manager,
+                "session_id": state.session_id,
+                "protocol_history_cutoff": (
+                    await memory_manager.get_protocol_history_cutoff()
+                ),
+                "check_diary": self.config.enable_diary,
+                "extract_long_term_memory": should_extract,
+                "long_term_memory_turns": pending_count,
+            }
             commit_context["memory"] = memory_job
         except Exception as e:
             logger.warning("[MemoryPlugin] 准备上一批记忆任务失败: %s", e)
             return
 
+        if should_extract:
+            state.reset_long_term_memory_turn_counter()
+
     def _schedule_committed_memory(self, commit_context: dict) -> None:
-        """当前用户输入提交成功后异步检查上一有效聊天日。"""
+        """当前用户输入提交成功后启动上一批派生记忆任务。"""
         memory_job = commit_context.get("memory")
         if not memory_job:
             return
 
         memory_manager = memory_job["manager"]
-        create_background_task(
-            memory_manager.check_diary(
-                max_history_id=memory_job["protocol_history_cutoff"],
-            ),
-            logger=logger,
-            task_name="memory.check_diary",
-        )
+        if memory_job["check_diary"]:
+            create_background_task(
+                memory_manager.check_diary(
+                    max_history_id=memory_job["protocol_history_cutoff"],
+                ),
+                logger=logger,
+                task_name="memory.check_diary",
+            )
+        if memory_job["extract_long_term_memory"]:
+            create_background_task(
+                self._persist_from_protocol(
+                    memory_job["session_id"],
+                    max_history_id=memory_job["protocol_history_cutoff"],
+                    batch_turns=memory_job["long_term_memory_turns"],
+                ),
+                logger=logger,
+                task_name="memory.persist_long_term",
+            )
 
-    def _schedule_long_term_memory(self, state, commit_context: dict) -> None:
-        if not commit_context.get("extract_long_term_memory"):
-            return
-        create_background_task(
-            self._persist_from_protocol(state.session_id),
-            logger=logger,
-            task_name="memory.persist_long_term",
-        )
-
-    async def _persist_from_protocol(self, session_id: str) -> None:
+    async def _persist_from_protocol(
+        self,
+        session_id: str,
+        *,
+        max_history_id: int,
+        batch_turns: int,
+    ) -> None:
         mm = get_memory_manager(session_id)
         store = mm.chat_history_store
         if store is None:
             logger.warning("[MemoryPlugin] 协议日志查询器未启用，跳过长期记忆")
             return
-        cutoff = await store.get_latest_message_id(session_id)
         history_dicts, recent_dicts = await store.get_recent_completed_turns(
             session_id,
-            current_turns=self.config.long_term_memory_every_human_messages,
+            current_turns=batch_turns,
             history_turns=MEMORY_HISTORY_HUMAN_MESSAGES,
-            max_history_id=cutoff,
+            max_history_id=max_history_id,
         )
         recent_humans = sum(1 for message in recent_dicts if is_real_human_message(message))
-        if recent_humans < self.config.long_term_memory_every_human_messages:
+        if recent_humans < batch_turns:
             logger.warning("[MemoryPlugin] 完整协议轮次不足，跳过本次长期记忆提取")
             return
         recent = messages_from_openai_format(recent_dicts)
