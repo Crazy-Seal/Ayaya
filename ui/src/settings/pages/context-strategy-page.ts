@@ -10,9 +10,13 @@ type ContextStrategyKey = keyof ChatSettingsState["context_strategy"];
 
 export const CONTEXT_STRATEGY_FIELDS: ContextStrategyKey[] = [
   "compression_trigger_tokens_k",
+  "max_screenshots_in_context",
+  "screenshot_ttl_human_messages",
 ];
 
-export const getContextStrategyMinimum = (_key: ContextStrategyKey): number => 10;
+export const getContextStrategyMinimum = (key: ContextStrategyKey): number => (
+  key === "compression_trigger_tokens_k" ? 10 : 0
+);
 
 export class ContextStrategyPage implements ISettingsPage {
   private inputs: Record<ContextStrategyKey, HTMLInputElement>;
@@ -42,6 +46,8 @@ export class ContextStrategyPage implements ISettingsPage {
       contextStrategy: {
         context_strategy: {
           compression_trigger_tokens_k: Number(this.inputs.compression_trigger_tokens_k.value),
+          max_screenshots_in_context: Number(this.inputs.max_screenshots_in_context.value),
+          screenshot_ttl_human_messages: Number(this.inputs.screenshot_ttl_human_messages.value),
         },
       },
     };

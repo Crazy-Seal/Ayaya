@@ -180,8 +180,14 @@ def test_context_strategy_is_required_and_validated() -> None:
     with pytest.raises(ValidationError):
         ContextStrategyConfig(compression_trigger_tokens_k=9)
 
+    with pytest.raises(ValidationError):
+        ContextStrategyConfig(max_screenshots_in_context=-1)
 
-def test_context_strategy_defaults_to_100k_compression_trigger(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError):
+        ContextStrategyConfig(screenshot_ttl_human_messages=-1)
+
+
+def test_context_strategy_defaults_to_100k_and_two_screenshots(tmp_path: Path) -> None:
     config_file = tmp_path / "chat_settings.yaml"
     config_file.write_text("chat_models: []\n", encoding="utf-8")
     dao = ChatSettingsDao(config_file=config_file)
@@ -200,4 +206,36 @@ def test_context_strategy_defaults_to_100k_compression_trigger(tmp_path: Path) -
     reloaded = ChatSettingsDao(config_file=config_file).get_chat_settings("test-session")
 
     assert reloaded.context_strategy.compression_trigger_tokens_k == 100
+    assert reloaded.context_strategy.max_screenshots_in_context == 2
+    assert reloaded.context_strategy.screenshot_ttl_human_messages == 2
     assert "compression_trigger_tokens_k: 100" in config_file.read_text(encoding="utf-8")
+
+
+def test_legacy_context_strategy_without_screenshot_fields_uses_defaults(
+    tmp_path: Path,
+) -> None:
+    config_file = tmp_path / "chat_settings.yaml"
+    config_file.write_text(
+        """chat_models:
+- session_id: legacy-session
+  model_name: test-model
+  openai_api_key: test-key
+  openai_base_url: http://127.0.0.1:1/v1
+  temperature: 0.1
+  system_prompt: test
+  tool_permissions: {}
+  tool_permissions_schema_version: 1
+  context_strategy:
+    compression_trigger_tokens_k: 100
+  mcp:
+    servers: {}
+""",
+        encoding="utf-8",
+    )
+
+    reloaded = ChatSettingsDao(config_file=config_file).get_chat_settings(
+        "legacy-session"
+    )
+
+    assert reloaded.context_strategy.max_screenshots_in_context == 2
+    assert reloaded.context_strategy.screenshot_ttl_human_messages == 2

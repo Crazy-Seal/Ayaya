@@ -351,6 +351,7 @@ class ModelInputCoordinator:
             diary_coverage,
             chat_settings=chat_settings,
         )
+        self.screenshot_policy = ContextCompressionPolicy()
         self.accounting_key = accounting_key
 
     def _view(
@@ -390,11 +391,16 @@ class ModelInputCoordinator:
         tools: list[dict],
         turn_context: RuntimeContext,
     ) -> PreparedModelInput:
+        changed = bool(self.screenshot_policy.compress_screenshots(
+            state.messages,
+            ttl_human_messages=self.budget.config.screenshot_ttl_human_messages,
+            max_screenshots=self.budget.config.max_screenshots_in_context,
+        ))
         messages, assessment = self._view(state, system_prompt, tools, turn_context)
         if not self.budget.should_compact(assessment.estimated_prompt_tokens):
-            return PreparedModelInput(messages, assessment)
+            return PreparedModelInput(messages, assessment, state_changed=changed)
 
-        changed = bool(self.compaction.compress_tool_results(state))
+        changed = bool(self.compaction.compress_tool_results(state)) or changed
         messages, assessment = self._view(state, system_prompt, tools, turn_context)
         if not self.budget.should_compact(assessment.estimated_prompt_tokens):
             return PreparedModelInput(messages, assessment, state_changed=changed)

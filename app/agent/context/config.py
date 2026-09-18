@@ -9,6 +9,8 @@ class ContextStrategyConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     compression_trigger_tokens_k: int = Field(default=100, ge=10)
+    max_screenshots_in_context: int = Field(default=2, ge=0)
+    screenshot_ttl_human_messages: int = Field(default=2, ge=0)
 
     @property
     def compression_trigger_tokens(self) -> int:

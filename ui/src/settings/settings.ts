@@ -125,6 +125,8 @@ class SettingsApp {
     this.contextStrategyPage = new ContextStrategyPage(
       {
         compression_trigger_tokens_k: this.getElement("#context-compression-trigger-tokens-k"),
+        max_screenshots_in_context: this.getElement("#context-max-screenshots"),
+        screenshot_ttl_human_messages: this.getElement("#context-screenshot-ttl"),
       },
       this.getElement("#context-strategy-confirm-btn")
     );

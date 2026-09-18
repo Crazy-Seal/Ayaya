@@ -9,6 +9,7 @@ from app.agent.context._budget import (
 )
 from app.agent.context._compaction import (
     COMPRESSED_TOOL_RESULT,
+    COMPRESSED_SCREENSHOT_PLACEHOLDER,
     ContextCompressionPolicy,
 )
 from app.agent.context._projection import append_transient_context
@@ -94,6 +95,185 @@ def _tool_image(
     if associated_message_id is not None:
         message["_associated_message_id"] = associated_message_id
     return message
+
+
+def _human(index: int) -> dict:
+    return {
+        "role": "user",
+        "content": f"human-{index}",
+        "_message_id": f"human-{index}",
+        "_created_at": f"2026-08-29T00:00:{index:02d}+00:00",
+    }
+
+
+def test_screenshot_policy_expires_after_two_real_human_messages() -> None:
+    screenshot_message = _tool_image("tool-0")
+    screenshot_message["image_filenames"] = ["screenshot/shot.png"]
+    messages = [
+        screenshot_message,
+        {"role": "system", "content": "系统提示"},
+        {"role": "tool", "content": "工具结果", "tool_call_id": "call-0"},
+        _tool_image("tool-mcp", name=MCP_TOOL_IMAGE_MESSAGE_NAME),
+        _human(1),
+        _tool_image("tool-1"),
+        _human(2),
+    ]
+
+    changed = ContextCompressionPolicy().compress_screenshots(
+        messages,
+        ttl_human_messages=2,
+        max_screenshots=10,
+    )
+
+    assert changed == 1
+    assert messages[0] == {
+        **screenshot_message,
+        "name": SCREENSHOT_COMPRESSED_NAME,
+        "content": COMPRESSED_SCREENSHOT_PLACEHOLDER,
+    }
+    assert messages[5]["name"] == SCREENSHOT_MESSAGE_NAME
+
+
+def test_screenshot_policy_ignores_system_tool_and_injected_user_messages() -> None:
+    messages = [
+        _tool_image("tool-0"),
+        {"role": "system", "content": "系统提示"},
+        {"role": "tool", "content": "工具结果", "tool_call_id": "call-0"},
+        _tool_image("tool-mcp", name=MCP_TOOL_IMAGE_MESSAGE_NAME),
+        _tool_image("tool-1"),
+        _human(1),
+    ]
+
+    changed = ContextCompressionPolicy().compress_screenshots(
+        messages,
+        ttl_human_messages=2,
+        max_screenshots=10,
+    )
+
+    assert changed == 0
+    assert [message.get("name") for message in messages] == [
+        SCREENSHOT_MESSAGE_NAME,
+        None,
+        None,
+        MCP_TOOL_IMAGE_MESSAGE_NAME,
+        SCREENSHOT_MESSAGE_NAME,
+        None,
+    ]
+
+
+def test_screenshot_policy_keeps_only_two_latest_in_long_task() -> None:
+    messages = [_tool_image(f"tool-{index}") for index in range(3)]
+
+    changed = ContextCompressionPolicy().compress_screenshots(
+        messages,
+        ttl_human_messages=2,
+        max_screenshots=2,
+    )
+
+    assert changed == 1
+    assert [message["name"] for message in messages] == [
+        SCREENSHOT_COMPRESSED_NAME,
+        SCREENSHOT_MESSAGE_NAME,
+        SCREENSHOT_MESSAGE_NAME,
+    ]
+
+
+@pytest.mark.parametrize(
+    ("ttl_human_messages", "max_screenshots"),
+    [(0, 2), (2, 0)],
+)
+def test_screenshot_policy_zero_compresses_immediately_and_is_idempotent(
+    ttl_human_messages: int,
+    max_screenshots: int,
+) -> None:
+    messages = [_tool_image("tool-0")]
+
+    first_changed = ContextCompressionPolicy().compress_screenshots(
+        messages,
+        ttl_human_messages=ttl_human_messages,
+        max_screenshots=max_screenshots,
+    )
+    second_changed = ContextCompressionPolicy().compress_screenshots(
+        messages,
+        ttl_human_messages=ttl_human_messages,
+        max_screenshots=max_screenshots,
+    )
+
+    assert first_changed == 1
+    assert second_changed == 0
+    assert messages[0]["name"] == SCREENSHOT_COMPRESSED_NAME
+    assert messages[0]["content"] == COMPRESSED_SCREENSHOT_PLACEHOLDER
+
+
+def test_screenshot_policy_removes_large_payload_from_production_shape() -> None:
+    image_payload = "data:image/png;base64," + "A" * 100_000
+    messages = []
+    for index in range(16):
+        message = _tool_image(f"tool-{index}")
+        message["content"][0]["image_url"]["url"] = image_payload
+        messages.append(message)
+    before_size = len(json.dumps(messages, ensure_ascii=False))
+
+    changed = ContextCompressionPolicy().compress_screenshots(
+        messages,
+        ttl_human_messages=2,
+        max_screenshots=2,
+    )
+    after_json = json.dumps(messages, ensure_ascii=False)
+
+    assert changed == 14
+    assert sum(
+        message.get("name") == SCREENSHOT_MESSAGE_NAME for message in messages
+    ) == 2
+    assert "data:image/png;base64" in after_json
+    assert after_json.count("data:image/png;base64") == 2
+    assert len(after_json) < before_size * 0.2
+
+
+def test_screenshot_compaction_runs_below_token_threshold_and_marks_state_changed() -> None:
+    async def scenario():
+        screenshots = [_tool_image(f"tool-{index}") for index in range(3)]
+        state = AgentState(
+            session_id="session-screenshot-limit",
+            messages=[*screenshots, _human(1)],
+        )
+        coordinator = ModelInputCoordinator(
+            ContextStrategyConfig(
+                compression_trigger_tokens_k=100,
+                screenshot_ttl_human_messages=2,
+                max_screenshots_in_context=2,
+            ),
+            SimpleNamespace(),
+        )
+
+        prepared = await coordinator.prepare(
+            state=state,
+            system_prompt="fixed",
+            tools=[],
+            turn_context=RuntimeContext(
+                latest_human_message_id="human-1",
+                captured_at=datetime(2026, 8, 29, tzinfo=timezone.utc),
+            ),
+        )
+        return state, prepared
+
+    state, prepared = asyncio.run(scenario())
+
+    assert prepared.state_changed is True
+    assert prepared.estimated_tokens < 100_000
+    assert [message.get("name") for message in state.messages[:3]] == [
+        SCREENSHOT_COMPRESSED_NAME,
+        SCREENSHOT_MESSAGE_NAME,
+        SCREENSHOT_MESSAGE_NAME,
+    ]
+    compressed = state.messages[0]
+    assert compressed["content"] == COMPRESSED_SCREENSHOT_PLACEHOLDER
+    assert "base64" not in json.dumps(compressed)
+    assert prepared.messages[0]["role"] == "system"
+    assert any(
+        message.get("name") == SCREENSHOT_COMPRESSED_NAME
+        for message in prepared.messages
+    )
 
 
 def test_screen_tools_allow_old_results_to_be_compacted() -> None:

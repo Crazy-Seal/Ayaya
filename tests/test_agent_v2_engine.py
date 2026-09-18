@@ -8,6 +8,7 @@
 
 import asyncio
 import types
+from copy import deepcopy
 
 import pytest
 
@@ -18,6 +19,7 @@ from app.agent.core.pipeline import ExecutionPipeline
 from app.agent.core.plugin_manager import PluginManager
 from app.agent.core.tool_manager import ToolManager
 from app.agent.state.messages import (
+    SCREENSHOT_COMPRESSED_NAME,
     SCREENSHOT_MESSAGE_NAME,
     AssistantMessageWithTools,
     MessageRole,
@@ -389,6 +391,53 @@ def test_resumable_screenshot_roundtrip():
 
 
 # ==================== 核心上下文策略 ====================
+
+def test_pipeline_checkpoints_screenshot_compaction_before_llm_call():
+    async def run():
+        llm = _FakeLLM(scripts=[[StreamChunk(content="完成")]])
+        agent = _PipelineHarness(llm, tools=[])
+        state = AgentState.create_new("t")
+        for index in range(3):
+            state.messages.append({
+                "role": "user",
+                "name": SCREENSHOT_MESSAGE_NAME,
+                "content": [{
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/png;base64,shot-{index}"},
+                }],
+                "_message_id": f"shot-{index}",
+                "_created_at": f"2026-08-29T00:00:0{index}+00:00",
+            })
+        state.add_user_message("继续")
+        snapshots: list[dict] = []
+
+        async def checkpoint(current, *, checkpoint_type):
+            assert checkpoint_type == "intermediate"
+            snapshots.append(deepcopy(current.to_checkpoint()))
+            return len(snapshots)
+
+        events = await _drain(agent.pipeline.execute(state, checkpoint=checkpoint))
+        return llm, snapshots, events
+
+    llm, snapshots, events = asyncio.run(run())
+
+    assert events[-1].data == "完成"
+    assert len(snapshots) == 1
+    checkpoint_messages = snapshots[0]["messages"]
+    assert checkpoint_messages[0]["name"] == SCREENSHOT_COMPRESSED_NAME
+    assert "base64" not in str(checkpoint_messages[0]["content"])
+    assert [
+        message.get("name")
+        for message in llm.messages[0]
+        if message.get("name") in {
+            SCREENSHOT_MESSAGE_NAME,
+            SCREENSHOT_COMPRESSED_NAME,
+        }
+    ] == [
+        SCREENSHOT_COMPRESSED_NAME,
+        SCREENSHOT_MESSAGE_NAME,
+        SCREENSHOT_MESSAGE_NAME,
+    ]
 
 def test_context_strategy_builds_without_temporary_state():
     async def run():

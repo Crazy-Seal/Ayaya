@@ -4,6 +4,8 @@ from collections.abc import Iterable
 
 from app.agent.state.message_names import (
     CONTEXT_SUMMARY_MESSAGE_NAME,
+    SCREENSHOT_COMPRESSED_NAME,
+    SCREENSHOT_MESSAGE_NAME,
     TOOL_IMAGE_MESSAGE_NAMES,
 )
 from app.agent.state.messages import is_real_human_message
@@ -12,6 +14,7 @@ from app.agent.utils.domain.weighted_text import weighted_char_count
 
 
 COMPRESSED_TOOL_RESULT = "[工具结果已被压缩]"
+COMPRESSED_SCREENSHOT_PLACEHOLDER = "[系统消息]已被压缩的旧截图"
 MIN_TOOL_RESULT_COMPRESSION_WEIGHT = 50
 CONTEXT_SUMMARY_PREFIX = "[系统提示：前情摘要]"
 CONTEXT_SUMMARY_NAME = CONTEXT_SUMMARY_MESSAGE_NAME
@@ -19,6 +22,45 @@ CONTEXT_SUMMARY_NAME = CONTEXT_SUMMARY_MESSAGE_NAME
 
 class ContextCompressionPolicy:
     """只负责选择和改写，不发起 LLM 请求。"""
+
+    @staticmethod
+    def compress_screenshots(
+        messages: list[dict],
+        *,
+        ttl_human_messages: int,
+        max_screenshots: int,
+    ) -> int:
+        """按真实用户消息 TTL 和数量上限压缩系统截图。"""
+        targets: set[int] = set()
+        human_count_after = 0
+        for index in range(len(messages) - 1, -1, -1):
+            message = messages[index]
+            if (
+                message.get("role") == "user"
+                and message.get("name") == SCREENSHOT_MESSAGE_NAME
+                and human_count_after >= ttl_human_messages
+            ):
+                targets.add(index)
+            if is_real_human_message(message):
+                human_count_after += 1
+
+        remaining = [
+            index
+            for index, message in enumerate(messages)
+            if index not in targets
+            and message.get("role") == "user"
+            and message.get("name") == SCREENSHOT_MESSAGE_NAME
+        ]
+        excess = max(len(remaining) - max_screenshots, 0)
+        targets.update(remaining[:excess])
+
+        for index in targets:
+            messages[index] = {
+                **messages[index],
+                "name": SCREENSHOT_COMPRESSED_NAME,
+                "content": COMPRESSED_SCREENSHOT_PLACEHOLDER,
+            }
+        return len(targets)
 
     @staticmethod
     def compress_old_tool_results(
@@ -156,6 +198,7 @@ class ContextCompressionPolicy:
 
 
 __all__ = [
+    "COMPRESSED_SCREENSHOT_PLACEHOLDER",
     "COMPRESSED_TOOL_RESULT",
     "CONTEXT_SUMMARY_NAME",
     "CONTEXT_SUMMARY_PREFIX",

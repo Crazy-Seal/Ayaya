@@ -30,6 +30,8 @@ const DEFAULT_AGENT_PLUGINS: NonNullable<ChatSettingsData["agent_plugins"]> = {
 
 const DEFAULT_CONTEXT_STRATEGY: ChatSettingsData["context_strategy"] = {
   compression_trigger_tokens_k: 100,
+  max_screenshots_in_context: 2,
+  screenshot_ttl_human_messages: 2,
 };
 
 export const getDefaultAgentPluginsForTest = (): NonNullable<ChatSettingsData["agent_plugins"]> =>

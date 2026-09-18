@@ -9,7 +9,11 @@ from app.agent.state import AgentState
 
 
 def test_retired_context_window_api_is_removed() -> None:
-    assert set(ContextStrategyConfig.model_fields) == {"compression_trigger_tokens_k"}
+    assert set(ContextStrategyConfig.model_fields) == {
+        "compression_trigger_tokens_k",
+        "max_screenshots_in_context",
+        "screenshot_ttl_human_messages",
+    }
     assert not hasattr(ModelInputCoordinator, "compact_checkpoint")
 
     with pytest.raises(ValidationError):

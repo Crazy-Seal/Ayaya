@@ -4,6 +4,7 @@ import { afterEach, test } from "node:test";
 import {
   clearChatSettingsCache,
   createEmptyChatSettings,
+  fetchChatSettingsBySessionId,
   getDefaultAgentPluginsForTest,
   getChatSettingsCache,
   runMcpMutationWithCacheInvalidation,
@@ -28,6 +29,8 @@ const savedSettings: ChatSettingsData = {
   mcp: { servers: {} },
   context_strategy: {
     compression_trigger_tokens_k: 100,
+    max_screenshots_in_context: 2,
+    screenshot_ttl_human_messages: 2,
   },
 };
 
@@ -74,7 +77,7 @@ test("前端默认 memory 插件为固有启用", () => {
   assert.equal(defaults.memory.enabled, true);
 });
 
-test("新建模型默认使用 100K token 压缩触发阈值", async () => {
+test("新建模型默认使用 100K token 阈值与 2/2 截图策略", async () => {
   const requestBodies: ChatSettingsData[] = [];
   globalThis.fetch = async (_input, init) => {
     const requestBody = JSON.parse(String(init?.body)) as ChatSettingsData;
@@ -88,6 +91,28 @@ test("新建模型默认使用 100K token 压缩触发阈值", async () => {
   await createEmptyChatSettings("new-session");
 
   assert.equal(requestBodies[0]?.context_strategy.compression_trigger_tokens_k, 100);
+  assert.equal(requestBodies[0]?.context_strategy.max_screenshots_in_context, 2);
+  assert.equal(requestBodies[0]?.context_strategy.screenshot_ttl_human_messages, 2);
+});
+
+test("读取旧配置时补齐 2/2 截图策略", async () => {
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify({
+      code: 200,
+      msg: "success",
+      data: {
+        ...savedSettings,
+        context_strategy: { compression_trigger_tokens_k: 100 },
+      },
+    }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+
+  const settings = await fetchChatSettingsBySessionId("legacy-session");
+
+  assert.equal(settings.context_strategy.max_screenshots_in_context, 2);
+  assert.equal(settings.context_strategy.screenshot_ttl_human_messages, 2);
 });
 
 test("更新 ChatSettings 时不再发送旧记忆插件字段", async () => {

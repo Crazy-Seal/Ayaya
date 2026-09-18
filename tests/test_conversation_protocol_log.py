@@ -5,8 +5,13 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
+from app.agent.context._compaction import ContextCompressionPolicy
 from app.agent.state.manager import StateManager
 from app.agent.state import AgentState
+from app.agent.state.message_names import (
+    SCREENSHOT_COMPRESSED_NAME,
+    SCREENSHOT_MESSAGE_NAME,
+)
 from app.crud.chat_history_dao import ChatHistoryDao
 
 
@@ -161,6 +166,83 @@ def test_tool_image_protocol_row_references_its_tool_message(tmp_path: Path) -> 
 
     tool_message_id, associated_message_id = asyncio.run(scenario())
     assert associated_message_id == tool_message_id
+
+
+def test_compressed_checkpoint_preserves_externalized_screenshot_history(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> tuple[dict, dict, AgentState]:
+        db_path = tmp_path / "agent.sqlite3"
+        manager = StateManager("session", db_path=str(db_path))
+        try:
+            state = AgentState.create_new("session")
+            state.add_tool_message("截屏成功", "screenshot", "call-shot")
+            state.deferred_tool_images.append({
+                "tool_call_id": "call-shot",
+                "tool_name": "screenshot",
+                "image_message_name": SCREENSHOT_MESSAGE_NAME,
+                "image_urls": [
+                    "data:image/png;base64,"
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
+                    "AAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+                ],
+            })
+            state.flush_deferred_tool_images()
+            screenshot_id = state.messages[-1]["_message_id"]
+            await manager.save(state, checkpoint_type="completed")
+
+            db = await manager._get_db()
+            before_row = (await db.execute_fetchall(
+                """
+                SELECT message_json, attachments_json
+                FROM conversation_messages
+                WHERE message_id = ?
+                """,
+                (screenshot_id,),
+            ))[0]
+
+            changed = ContextCompressionPolicy().compress_screenshots(
+                state.messages,
+                ttl_human_messages=0,
+                max_screenshots=2,
+            )
+            assert changed == 1
+            await manager.save(state, checkpoint_type="intermediate")
+
+            after_row = (await db.execute_fetchall(
+                """
+                SELECT message_json, attachments_json
+                FROM conversation_messages
+                WHERE message_id = ?
+                """,
+                (screenshot_id,),
+            ))[0]
+            restored = await manager.load()
+            return (
+                {
+                    "message": json.loads(before_row[0]),
+                    "attachments": json.loads(before_row[1]),
+                },
+                {
+                    "message": json.loads(after_row[0]),
+                    "attachments": json.loads(after_row[1]),
+                },
+                restored,
+            )
+        finally:
+            await manager.close()
+
+    before, after, restored = asyncio.run(scenario())
+
+    assert before == after
+    assert before["message"]["name"] == SCREENSHOT_MESSAGE_NAME
+    assert before["attachments"][0].startswith("screenshot/")
+    restored_screenshot = next(
+        message
+        for message in restored.messages
+        if message.get("name") == SCREENSHOT_COMPRESSED_NAME
+    )
+    assert "base64" not in json.dumps(restored_screenshot)
 
 
 def test_tool_image_without_tool_call_id_is_not_misassociated() -> None:

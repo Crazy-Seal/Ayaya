@@ -133,6 +133,8 @@ export type MCPTestResult = {
 
 export type ContextStrategyConfig = {
   compression_trigger_tokens_k: number;
+  max_screenshots_in_context: number;
+  screenshot_ttl_human_messages: number;
 };
 
 export type AgentPluginSettings = {
