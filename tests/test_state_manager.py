@@ -6,7 +6,7 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
-from app.agent.state.manager import StateManager
+from app.agent.state.manager import LATEST_CHECKPOINT_SQL, StateManager
 from app.agent.memory.store.chat_history_store import ChatHistoryStore
 from app.crud.chat_history_dao import ChatHistoryDao
 from app.agent.state import AgentState, TokenBaseline
@@ -24,6 +24,27 @@ async def checkpoint_rows(manager: StateManager) -> list[tuple[int, str, str]]:
         (manager.session_id,),
     ) as cursor:
         return await cursor.fetchall()
+
+
+def test_latest_checkpoint_query_does_not_require_temp_sort(tmp_path: Path) -> None:
+    async def scenario() -> list[str]:
+        manager = StateManager(
+            "test-session",
+            db_path=str(tmp_path / "checkpoints.sqlite3"),
+        )
+        try:
+            db = await manager._get_db()
+            rows = await db.execute_fetchall(
+                f"EXPLAIN QUERY PLAN {LATEST_CHECKPOINT_SQL}",
+                ("test-session",),
+            )
+            return [str(row[3]) for row in rows]
+        finally:
+            await manager.close()
+
+    plan = asyncio.run(scenario())
+
+    assert not any("TEMP B-TREE" in detail for detail in plan)
 
 
 def test_intermediate_checkpoint_replaces_previous_one_atomically(tmp_path: Path) -> None:

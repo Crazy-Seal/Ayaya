@@ -90,7 +90,10 @@ class AgentService:
             chat_settings = self.chat_settings_loader(session_id)
             agent = self.agent_factory(chat_settings)
             try:
-                async for event in agent.resume(resume_data):
+                async for event in agent.resume(
+                    resume_data,
+                    initial_state=state,
+                ):
                     if event.type == EventType.ERROR:
                         raise RuntimeError(event.data)
                     if event.type == EventType.DONE:
@@ -249,7 +252,10 @@ class AgentService:
                 settings = self.chat_settings_loader(session_id)
                 agent = self.agent_factory(settings)
                 try:
-                    async for event in agent.run(message):
+                    async for event in agent.run(
+                        message,
+                        initial_state=state,
+                    ):
                         if event.type == EventType.ERROR:
                             raise RuntimeError(event.data)
                         if event.type != EventType.DONE:

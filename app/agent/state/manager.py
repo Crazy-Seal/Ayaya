@@ -26,6 +26,13 @@ logger = logging.getLogger(__name__)
 
 CheckpointType = Literal["intermediate", "completed"]
 
+LATEST_CHECKPOINT_SQL = """
+SELECT id, state_json, checkpoint_type FROM checkpoints
+WHERE id = (
+    SELECT MAX(id) FROM checkpoints WHERE session_id = ?
+)
+"""
+
 
 class StateManager:
     """状态管理器 - checkpoint 和状态持久化。"""
@@ -230,12 +237,7 @@ class StateManager:
         db = await self._get_db()
 
         async with db.execute(
-            """
-            SELECT id, state_json, checkpoint_type FROM checkpoints
-            WHERE session_id = ?
-            ORDER BY id DESC
-            LIMIT 1
-            """,
+            LATEST_CHECKPOINT_SQL,
             (self.session_id,),
         ) as cursor:
             row = await cursor.fetchone()

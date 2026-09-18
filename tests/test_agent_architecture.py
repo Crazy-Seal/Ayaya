@@ -12,7 +12,7 @@ from app.agent.context import (
     ModelInputCoordinator,
     build_token_accounting_key,
 )
-from app.agent.core.event_router import EventRouter, EventType
+from app.agent.core.event_router import AgentEvent, EventRouter, EventType
 from app.agent.core.pipeline import ExecutionPipeline
 from app.agent.core.plugin_manager import PluginManager
 from app.agent.core.tool_manager import ToolManager
@@ -246,6 +246,76 @@ def test_runtime_registrations_remain_visible_to_constructed_pipeline(tmp_path) 
     assert tool.executed is True
     assert plugin.calls == [PluginHook.BEFORE_LLM, PluginHook.BEFORE_LLM]
     assert events[-1].type == EventType.DONE
+
+
+def test_agent_run_uses_preloaded_state_without_loading_again(tmp_path) -> None:
+    async def scenario() -> tuple[list, AgentState]:
+        agent = Agent(
+            _config(),
+            db_path=str(tmp_path / "architecture.sqlite3"),
+            llm_client=_ScriptedLLM(),
+        )
+        state = AgentState.create_new("architecture-test")
+
+        async def reject_duplicate_load() -> AgentState:
+            raise AssertionError("预加载状态不应再次从 checkpoint 读取")
+
+        agent.state_manager.load = reject_duplicate_load  # type: ignore[method-assign]
+        try:
+            events = [
+                event
+                async for event in agent.run("开始", initial_state=state)
+            ]
+            return events, state
+        finally:
+            await agent.close()
+
+    events, state = asyncio.run(scenario())
+
+    assert events[-1].type == EventType.DONE
+    assert state.messages[0]["content"] == "开始"
+
+
+def test_agent_resume_uses_preloaded_state_without_loading_again(tmp_path) -> None:
+    async def scenario() -> tuple[list, AgentState]:
+        agent = Agent(
+            _config(),
+            db_path=str(tmp_path / "architecture.sqlite3"),
+            llm_client=_ScriptedLLM(),
+        )
+        state = AgentState.create_new("architecture-test")
+        state.set_interrupt({"type": "test", "request_id": "request-1"})
+
+        async def reject_duplicate_load() -> AgentState:
+            raise AssertionError("预加载状态不应再次从 checkpoint 读取")
+
+        async def resume_without_tools(
+            resumed_state: AgentState,
+            _resume_data: dict,
+            checkpoint=None,
+            runtime_context=None,
+        ):
+            resumed_state.clear_interrupt()
+            yield AgentEvent(EventType.TEXT_CHUNK, "继续")
+
+        agent.state_manager.load = reject_duplicate_load  # type: ignore[method-assign]
+        agent.pipeline.resume_tools = resume_without_tools  # type: ignore[method-assign]
+        try:
+            events = [
+                event
+                async for event in agent.resume(
+                    {"approved": True},
+                    initial_state=state,
+                )
+            ]
+            return events, state
+        finally:
+            await agent.close()
+
+    events, state = asyncio.run(scenario())
+
+    assert [event.type for event in events] == [EventType.TEXT_CHUNK, EventType.DONE]
+    assert state.interrupt_data is None
 
 
 def test_agent_runtime_import_graph_is_acyclic() -> None:

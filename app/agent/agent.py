@@ -282,13 +282,16 @@ class Agent:
     async def run(
         self,
         message: str,
-        images: list[str] | None = None
+        images: list[str] | None = None,
+        *,
+        initial_state: AgentState | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """运行 Agent
 
         Args:
             message: 用户消息
             images: 图片列表（data URL 格式）
+            initial_state: 已由当前会话锁内校验的预加载状态；省略时从 checkpoint 加载
 
         Yields:
             AgentEvent: 事件流
@@ -297,7 +300,13 @@ class Agent:
         runtime_context = RuntimeContext.capture()
 
         # 1. 加载或创建状态
-        state = await self.state_manager.load()
+        state = (
+            initial_state
+            if initial_state is not None
+            else await self.state_manager.load()
+        )
+        if state.session_id != self.config.session_id:
+            raise ValueError("预加载状态与当前 Agent 会话不匹配")
 
         if state.is_interrupted():
             interrupt_data = state.interrupt_data or {}
@@ -409,12 +418,15 @@ class Agent:
 
     async def resume(
         self,
-        resume_data: dict
+        resume_data: dict,
+        *,
+        initial_state: AgentState | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """从中断恢复
 
         Args:
             resume_data: 恢复数据（用户确认结果）
+            initial_state: 已由当前会话锁内校验的预加载状态；省略时从 checkpoint 加载
 
         Yields:
             AgentEvent: 事件流
@@ -423,7 +435,13 @@ class Agent:
         runtime_context = RuntimeContext.capture()
 
         # 1. 加载状态
-        state = await self.state_manager.load()
+        state = (
+            initial_state
+            if initial_state is not None
+            else await self.state_manager.load()
+        )
+        if state.session_id != self.config.session_id:
+            raise ValueError("预加载状态与当前 Agent 会话不匹配")
 
         # 2. 检查是否有中断状态
         if not state.is_interrupted():

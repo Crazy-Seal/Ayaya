@@ -22,11 +22,13 @@ class _StateManager:
     """返回测试预设中断状态的最小 StateManager 替身。"""
 
     state: AgentState
+    load_calls = 0
 
     def __init__(self, _session_id: str) -> None:
         pass
 
     async def load(self) -> AgentState:
+        type(self).load_calls += 1
         return self.state
 
     async def close(self) -> None:
@@ -42,17 +44,27 @@ class _Agent:
     """记录恢复参数的最小 Agent 替身。"""
 
     def __init__(self) -> None:
-        self.resume_calls: list[dict] = []
-        self.run_calls: list[str] = []
+        self.resume_calls: list[tuple[dict, AgentState | None]] = []
+        self.run_calls: list[tuple[str, AgentState | None]] = []
         self.closed = False
         self.continuation_valid = True
 
-    async def resume(self, data: dict) -> AsyncIterator[AgentEvent]:
-        self.resume_calls.append(data)
+    async def resume(
+        self,
+        data: dict,
+        *,
+        initial_state: AgentState | None = None,
+    ) -> AsyncIterator[AgentEvent]:
+        self.resume_calls.append((data, initial_state))
         yield AgentEvent(EventType.TEXT_CHUNK, "继续")
 
-    async def run(self, message: str) -> AsyncIterator[AgentEvent]:
-        self.run_calls.append(message)
+    async def run(
+        self,
+        message: str,
+        *,
+        initial_state: AgentState | None = None,
+    ) -> AsyncIterator[AgentEvent]:
+        self.run_calls.append((message, initial_state))
         yield AgentEvent(EventType.TEXT_CHUNK, "已按引导继续")
 
     async def validate_pending_continuation(self, _interrupt: dict) -> bool:
@@ -80,6 +92,7 @@ def _service(monkeypatch, state: AgentState) -> tuple[AgentService, _Agent, list
     from app.services import agent_service as agent_service_module
 
     _StateManager.state = state
+    _StateManager.load_calls = 0
     monkeypatch.setattr(agent_service_module, "StateManager", _StateManager)
     agent = _Agent()
     constructed: list[str] = []
@@ -243,7 +256,7 @@ async def test_generic_authorization_and_continuation_resume_exact_payloads(monk
         request_id="request-current",
         decision={"kind": "reject"},
     ))
-    assert authorization_agent.resume_calls == [{"kind": "reject"}]
+    assert authorization_agent.resume_calls == [({"kind": "reject"}, _StateManager.state)]
 
     continuation_service, continuation_agent, _ = _service(
         monkeypatch,
@@ -254,7 +267,7 @@ async def test_generic_authorization_and_continuation_resume_exact_payloads(monk
         request_id="request-current",
         response={"executed": True},
     ))
-    assert continuation_agent.resume_calls == [{"executed": True}]
+    assert continuation_agent.resume_calls == [({"executed": True}, _StateManager.state)]
 
 
 @pytest.mark.asyncio
@@ -297,8 +310,9 @@ async def test_steer_starts_new_user_turn_without_resuming_old_tool(monkeypatch)
     ))
 
     assert [event.data for event in events] == ["已按引导继续"]
-    assert agent.run_calls == ["改为只读取摘要"]
+    assert agent.run_calls == [("改为只读取摘要", _StateManager.state)]
     assert agent.resume_calls == []
+    assert _StateManager.load_calls == 1
     assert agent.closed is True
     assert constructed == ["agent"]
 
@@ -359,7 +373,8 @@ async def test_matching_interrupt_resumes_once(
     events = await _drain(resume(service))
 
     assert [event.data for event in events] == ["继续"]
-    assert agent.resume_calls == [expected_data]
+    assert agent.resume_calls == [(expected_data, _StateManager.state)]
+    assert _StateManager.load_calls == 1
     assert agent.closed is True
     assert constructed == ["agent"]
 

@@ -1513,10 +1513,12 @@ async def test_mcp_approval_resume_passes_single_decision_to_agent(monkeypatch) 
     class _Agent:
         def __init__(self):
             self.resume_data = None
+            self.initial_state = None
             self.closed = False
 
-        async def resume(self, data):
+        async def resume(self, data, *, initial_state=None):
             self.resume_data = data
+            self.initial_state = initial_state
             yield AgentEvent(EventType.TEXT_CHUNK, "继续")
 
         async def close(self):
@@ -1539,4 +1541,5 @@ async def test_mcp_approval_resume_passes_single_decision_to_agent(monkeypatch) 
 
     assert [event.data for event in events] == ["继续"]
     assert agent.resume_data == {"approved": False}
+    assert agent.initial_state is state
     assert agent.closed is True
