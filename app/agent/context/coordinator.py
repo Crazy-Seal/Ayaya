@@ -4,17 +4,14 @@ from __future__ import annotations
 
 import json
 import logging
-from copy import deepcopy
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Annotated, AsyncGenerator, TYPE_CHECKING
-from uuid import uuid4
+from typing import Annotated, AsyncGenerator, Sequence, TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
 from app.agent.context._budget import ContextBudgetService, TokenAssessment
 from app.agent.context._compaction import (
-    CONTEXT_SUMMARY_NAME,
     CONTEXT_SUMMARY_PREFIX,
     ContextCompressionPolicy,
 )
@@ -23,7 +20,12 @@ from app.agent.context.config import ContextStrategyConfig
 from app.agent.context.ports import DiaryCoverage, SummaryClient
 from app.agent.context.runtime import RuntimeContext
 from app.agent.state.model import AgentState
-from app.agent.state.time import normalize_utc, utc_now
+from app.agent.state.messages import (
+    BaseMessage,
+    ContextSummaryMessage,
+    SystemMessage,
+)
+from app.agent.state.time import utc_now
 
 if TYPE_CHECKING:
     from app.schemas.chat_settings import ChatSettings
@@ -209,22 +211,25 @@ class ContextCompactionCoordinator:
 {SUMMARY_SYSTEM_PROMPT}"""
 
     def compress_tool_results(self, state: AgentState) -> int:
-        return self.policy.compress_old_tool_results(
+        candidate, changed = self.policy.compress_old_tool_results(
             state.messages,
             protected_tool_call_ids=(
-                item.get("id") for item in state.pending_tool_calls if item.get("id")
+                item.id for item in state.pending_tool_calls if item.id
             ),
         )
+        if changed:
+            state.commit_compaction(candidate)
+        return changed
 
     async def drop_diary_covered_summaries(self, state: AgentState) -> int:
         if self.diary_coverage is None:
             return 0
-        kept: list[dict] = []
+        kept: list[BaseMessage] = []
         removed = 0
         for message in state.messages:
             effective_date = (
-                message.get("_covered_effective_date")
-                if message.get("name") == CONTEXT_SUMMARY_NAME else None
+                message.covered_effective_date
+                if isinstance(message, ContextSummaryMessage) else None
             )
             if not effective_date:
                 kept.append(message)
@@ -237,28 +242,19 @@ class ContextCompactionCoordinator:
             else:
                 kept.append(message)
         if removed:
-            state.messages = kept
+            state.commit_compaction(kept)
         return removed
 
     @staticmethod
-    def _coverage_marker(selected_messages: list[dict]) -> tuple[str, str]:
+    def _coverage_marker(selected_messages: Sequence[BaseMessage]) -> tuple[str, str]:
         """返回最后一条被覆盖内容的消息游标和日记有效日期。"""
         last = selected_messages[-1]
-        if last.get("name") == CONTEXT_SUMMARY_NAME:
-            message_id = (
-                last.get("_covered_through_message_id") or last.get("_message_id")
-            )
-            effective_date = last.get("_covered_effective_date")
-            if message_id and effective_date:
-                return str(message_id), str(effective_date)
+        if isinstance(last, ContextSummaryMessage):
+            return last.covered_through_message_id, last.covered_effective_date
 
-        message_id = last.get("_message_id")
-        created_at = last.get("_created_at")
-        if not message_id or not created_at:
-            raise ValueError("无法确定上下文摘要覆盖边界：消息缺少 ID 或创建时间")
-        local = normalize_utc(created_at).astimezone()
+        local = last.created_at.astimezone()
         effective_date = (local - timedelta(hours=4)).date().isoformat()
-        return str(message_id), effective_date
+        return last.message_id, effective_date
 
     def _build_summary_extraction_prompt(self) -> str:
         return f"""# 上下文摘要提取规则
@@ -283,7 +279,11 @@ class ContextCompactionCoordinator:
 - 不得混淆 active_tasks 和 summary 的职责。如无任务性质的内容，则 active_tasks 为空数组。
 - 只返回符合指定 JSON Schema 的对象，不要添加解释、Markdown 或代码块。"""
 
-    async def summarize_candidate(self, frozen: list[dict], ratio: float) -> list[dict]:
+    async def summarize_candidate(
+        self,
+        frozen: Sequence[BaseMessage],
+        ratio: float,
+    ) -> tuple[BaseMessage, ...]:
         selected = self.policy.select_prefix(
             frozen, self.budget, ratio=ratio
         )
@@ -291,11 +291,11 @@ class ContextCompactionCoordinator:
             raise ContextOverflowError("没有可安全压缩的已完成历史轮次")
         selected_set = set(selected)
         selected_messages = [frozen[index] for index in selected]
-        validate_openai_protocol(selected_messages)
+        validate_openai_protocol([message.to_openai_format() for message in selected_messages])
         source = build_model_window(selected_messages)
         response = await self.summary_client.ainvoke_structured(
             [
-                {"role": "system", "content": self._build_summary_system_prompt()},
+                SystemMessage(text=self._build_summary_system_prompt()).to_openai_format(),
                 *source,
                 {"role": "user", "content": self._build_summary_extraction_prompt()},
             ],
@@ -312,24 +312,22 @@ class ContextCompactionCoordinator:
         created_at = utc_now()
         covered_message_id, effective_date = self._coverage_marker(selected_messages)
         source_tokens = sum(
-            self.budget.estimate_message(message) for message in selected_messages
+            self.budget.estimate_message(message.to_openai_format())
+            for message in selected_messages
         )
-        summary_message = {
-            "role": "user",
-            "name": CONTEXT_SUMMARY_NAME,
-            "content": f"{CONTEXT_SUMMARY_PREFIX}\n{summary}",
-            "_message_id": uuid4().hex,
-            "_created_at": created_at.isoformat(),
-            "_summary_schema_version": CONTEXT_SUMMARY_SCHEMA_VERSION,
-            "_covered_through_message_id": covered_message_id,
-            "_covered_effective_date": effective_date,
-            "_compression_ratio": round(summary_tokens / max(source_tokens, 1), 4),
-        }
+        summary_message = ContextSummaryMessage(
+            content=f"{CONTEXT_SUMMARY_PREFIX}\n{summary}",
+            created_at=created_at,
+            summary_schema_version=CONTEXT_SUMMARY_SCHEMA_VERSION,
+            covered_through_message_id=covered_message_id,
+            covered_effective_date=effective_date,
+            compression_ratio=round(summary_tokens / max(source_tokens, 1), 4),
+        )
         first = min(selected)
         candidate = [message for index, message in enumerate(frozen) if index not in selected_set]
         candidate.insert(first, summary_message)
-        validate_openai_protocol(candidate)
-        return candidate
+        validate_openai_protocol([message.to_openai_format() for message in candidate])
+        return tuple(candidate)
 
 
 class ModelInputCoordinator:
@@ -363,7 +361,10 @@ class ModelInputCoordinator:
     ) -> tuple[list[dict], TokenAssessment]:
         transient = append_transient_context(state.messages, turn_context)
         history = build_model_window(transient)
-        messages = ([{"role": "system", "content": system_prompt}] if system_prompt else []) + history
+        messages = (
+            [SystemMessage(text=system_prompt).to_openai_format()]
+            if system_prompt else []
+        ) + history
         assessment = self.budget.assess(
             system_prompt=system_prompt,
             tools=tools,
@@ -391,11 +392,14 @@ class ModelInputCoordinator:
         tools: list[dict],
         turn_context: RuntimeContext,
     ) -> PreparedModelInput:
-        changed = bool(self.screenshot_policy.compress_screenshots(
+        screenshot_candidate, screenshot_count = self.screenshot_policy.compress_screenshots(
             state.messages,
             ttl_human_messages=self.budget.config.screenshot_ttl_human_messages,
             max_screenshots=self.budget.config.max_screenshots_in_context,
-        ))
+        )
+        changed = bool(screenshot_count)
+        if changed:
+            state.commit_compaction(screenshot_candidate)
         messages, assessment = self._view(state, system_prompt, tools, turn_context)
         if not self.budget.should_compact(assessment.estimated_prompt_tokens):
             return PreparedModelInput(messages, assessment, state_changed=changed)
@@ -412,19 +416,18 @@ class ModelInputCoordinator:
             if not self.budget.should_compact(assessment.estimated_prompt_tokens):
                 return PreparedModelInput(messages, assessment, state_changed=True)
 
-        frozen = [dict(message) for message in state.messages]
+        frozen = state.messages
         for ratio in (0.60, 0.75):
             candidate = await self.compaction.summarize_candidate(frozen, ratio)
             candidate_state = AgentState.from_checkpoint(state.to_checkpoint())
-            candidate_state.messages = candidate
+            candidate_state.commit_compaction(candidate)
             candidate_messages, candidate_assessment = self._view(
                 candidate_state, system_prompt, tools, turn_context
             )
             if not self.budget.should_compact(
                 candidate_assessment.estimated_prompt_tokens
             ):
-                state.messages = candidate
-                state.updated_at = utc_now()
+                state.commit_compaction(candidate)
                 return PreparedModelInput(
                     candidate_messages,
                     candidate_assessment,
@@ -468,15 +471,14 @@ class ModelInputCoordinator:
         """按需提供两次强制压缩输入；冻结源仅在本次恢复期间存活。"""
         self.compaction.compress_tool_results(state)
         await self.compaction.drop_diary_covered_summaries(state)
-        frozen = deepcopy(state.messages)
+        frozen = state.messages
         for ratio in (0.60, 0.75):
-            candidate = await self.compaction.summarize_candidate(deepcopy(frozen), ratio)
+            candidate = await self.compaction.summarize_candidate(frozen, ratio)
             candidate_state = AgentState.from_checkpoint(state.to_checkpoint())
-            candidate_state.messages = candidate
+            candidate_state.commit_compaction(candidate)
             messages, assessment = self._view(
                 candidate_state, system_prompt, tools, turn_context
             )
             # 模型已拒绝输入，不再使用日常预算阈值跳过摘要或阻止重试。
-            state.messages = candidate
-            state.updated_at = utc_now()
+            state.commit_compaction(candidate)
             yield PreparedModelInput(messages, assessment, state_changed=True)

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import pytest
+from dataclasses import replace
 from pydantic import ValidationError
 from app.agent.context import ContextStrategyConfig, RuntimeContext
 from app.agent.context._budget import (
@@ -14,10 +15,19 @@ from app.agent.context._compaction import (
 )
 from app.agent.context._projection import append_transient_context
 from app.agent.state.messages import (
+    AssistantMessage,
+    AvailableMedia,
+    CompactedMedia,
     CONTEXT_SUMMARY_MESSAGE_NAME,
+    ContextSummaryMessage,
+    HumanMessage,
     MCP_TOOL_IMAGE_MESSAGE_NAME,
+    SystemMessage,
     SCREENSHOT_COMPRESSED_NAME,
     SCREENSHOT_MESSAGE_NAME,
+    ToolCall,
+    ToolMediaMessage,
+    ToolMessage,
 )
 from app.agent.context.coordinator import (
     CONTEXT_SUMMARY_SCHEMA,
@@ -45,18 +55,13 @@ def _summary_settings(*, address: str = "用户") -> SimpleNamespace:
     )
 
 
-def _tool_call(message_id: str, tool_call_id: str) -> dict:
-    return {
-        "role": "assistant",
-        "content": "",
-        "tool_calls": [{
-            "id": tool_call_id,
-            "type": "function",
-            "function": {"name": "read_file", "arguments": "{}"},
-        }],
-        "_message_id": message_id,
-        "_created_at": "2026-08-29T00:00:00+00:00",
-    }
+def _tool_call(message_id: str, tool_call_id: str) -> AssistantMessage:
+    return AssistantMessage(
+        message_id=message_id,
+        created_at=datetime(2026, 8, 29, tzinfo=timezone.utc),
+        text="",
+        tool_calls=(ToolCall(id=tool_call_id, name="read_file", args={}),),
+    )
 
 
 def _tool_result(
@@ -64,16 +69,15 @@ def _tool_result(
     *,
     compressible: bool = True,
     content: str | None = None,
-) -> dict:
-    return {
-        "role": "tool",
-        "name": "read_file",
-        "tool_call_id": f"call-{index}",
-        "content": content if content is not None else f"result-{index}",
-        "_compressible": compressible,
-        "_message_id": f"tool-{index}",
-        "_created_at": "2026-08-29T00:00:01+00:00",
-    }
+) -> ToolMessage:
+    return ToolMessage(
+        message_id=f"tool-{index}",
+        created_at=datetime(2026, 8, 29, 0, 0, 1, tzinfo=timezone.utc),
+        tool_name="read_file",
+        tool_call_id=f"call-{index}",
+        content=content if content is not None else f"result-{index}",
+        compressible=compressible,
+    )
 
 
 def _tool_image(
@@ -81,100 +85,108 @@ def _tool_image(
     *,
     name: str = SCREENSHOT_MESSAGE_NAME,
     image_count: int = 1,
-) -> dict:
-    message = {
-        "role": "user",
-        "name": name,
-        "content": [
-            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
-            for _ in range(image_count)
-        ],
-        "_message_id": f"image-{associated_message_id}-{name}",
-        "_created_at": "2026-08-29T00:00:02+00:00",
-    }
-    if associated_message_id is not None:
-        message["_associated_message_id"] = associated_message_id
-    return message
+) -> ToolMediaMessage:
+    media_kind = {
+        SCREENSHOT_MESSAGE_NAME: "screenshot",
+        MCP_TOOL_IMAGE_MESSAGE_NAME: "mcp",
+    }.get(name, "tool")
+    return ToolMediaMessage(
+        message_id=f"image-{associated_message_id}-{name}",
+        created_at=datetime(2026, 8, 29, 0, 0, 2, tzinfo=timezone.utc),
+        tool_name="screenshot" if media_kind == "screenshot" else "read_file",
+        media_kind=media_kind,
+        text="[系统消息]工具返回图片",
+        payload=AvailableMedia(
+            urls=tuple("data:image/png;base64,AAAA" for _ in range(image_count)),
+        ),
+        associated_message_id=associated_message_id,
+    )
 
 
-def _human(index: int) -> dict:
-    return {
-        "role": "user",
-        "content": f"human-{index}",
-        "_message_id": f"human-{index}",
-        "_created_at": f"2026-08-29T00:00:{index:02d}+00:00",
-    }
+def _human(index: int) -> HumanMessage:
+    return HumanMessage(
+        message_id=f"human-{index}",
+        created_at=datetime(2026, 8, 29, 0, 0, index, tzinfo=timezone.utc),
+        text=f"human-{index}",
+    )
+
+
+def _state(session_id: str, messages) -> AgentState:
+    state = AgentState.create_new(session_id)
+    checkpoint = state.to_checkpoint()
+    checkpoint["messages"] = [message.to_storage_format() for message in messages]
+    return AgentState.from_checkpoint(checkpoint)
 
 
 def test_screenshot_policy_expires_after_two_real_human_messages() -> None:
-    screenshot_message = _tool_image("tool-0")
-    screenshot_message["image_filenames"] = ["screenshot/shot.png"]
+    screenshot_message = replace(
+        _tool_image("tool-0"),
+        payload=AvailableMedia(
+            urls=("data:image/png;base64,AAAA",),
+            storage_refs=("screenshot/shot.png",),
+        ),
+    )
     messages = [
         screenshot_message,
-        {"role": "system", "content": "系统提示"},
-        {"role": "tool", "content": "工具结果", "tool_call_id": "call-0"},
+        SystemMessage(text="系统提示"),
+        ToolMessage(content="工具结果", tool_name="read_file", tool_call_id="call-0"),
         _tool_image("tool-mcp", name=MCP_TOOL_IMAGE_MESSAGE_NAME),
         _human(1),
         _tool_image("tool-1"),
         _human(2),
     ]
 
-    changed = ContextCompressionPolicy().compress_screenshots(
+    candidate, changed = ContextCompressionPolicy().compress_screenshots(
         messages,
         ttl_human_messages=2,
         max_screenshots=10,
     )
 
     assert changed == 1
-    assert messages[0] == {
-        **screenshot_message,
-        "name": SCREENSHOT_COMPRESSED_NAME,
-        "content": COMPRESSED_SCREENSHOT_PLACEHOLDER,
-    }
-    assert messages[5]["name"] == SCREENSHOT_MESSAGE_NAME
+    assert isinstance(candidate[0].payload, CompactedMedia)
+    assert candidate[0].payload.storage_refs == ("screenshot/shot.png",)
+    assert isinstance(candidate[5].payload, AvailableMedia)
 
 
 def test_screenshot_policy_ignores_system_tool_and_injected_user_messages() -> None:
     messages = [
         _tool_image("tool-0"),
-        {"role": "system", "content": "系统提示"},
-        {"role": "tool", "content": "工具结果", "tool_call_id": "call-0"},
+        SystemMessage(text="系统提示"),
+        ToolMessage(content="工具结果", tool_name="read_file", tool_call_id="call-0"),
         _tool_image("tool-mcp", name=MCP_TOOL_IMAGE_MESSAGE_NAME),
         _tool_image("tool-1"),
         _human(1),
     ]
 
-    changed = ContextCompressionPolicy().compress_screenshots(
+    candidate, changed = ContextCompressionPolicy().compress_screenshots(
         messages,
         ttl_human_messages=2,
         max_screenshots=10,
     )
 
     assert changed == 0
-    assert [message.get("name") for message in messages] == [
-        SCREENSHOT_MESSAGE_NAME,
-        None,
-        None,
-        MCP_TOOL_IMAGE_MESSAGE_NAME,
-        SCREENSHOT_MESSAGE_NAME,
-        None,
-    ]
+    assert candidate == tuple(messages)
+    assert all(
+        isinstance(message.payload, AvailableMedia)
+        for message in candidate
+        if isinstance(message, ToolMediaMessage)
+    )
 
 
 def test_screenshot_policy_keeps_only_two_latest_in_long_task() -> None:
     messages = [_tool_image(f"tool-{index}") for index in range(3)]
 
-    changed = ContextCompressionPolicy().compress_screenshots(
+    candidate, changed = ContextCompressionPolicy().compress_screenshots(
         messages,
         ttl_human_messages=2,
         max_screenshots=2,
     )
 
     assert changed == 1
-    assert [message["name"] for message in messages] == [
-        SCREENSHOT_COMPRESSED_NAME,
-        SCREENSHOT_MESSAGE_NAME,
-        SCREENSHOT_MESSAGE_NAME,
+    assert [type(message.payload) for message in candidate] == [
+        CompactedMedia,
+        AvailableMedia,
+        AvailableMedia,
     ]
 
 
@@ -188,42 +200,43 @@ def test_screenshot_policy_zero_compresses_immediately_and_is_idempotent(
 ) -> None:
     messages = [_tool_image("tool-0")]
 
-    first_changed = ContextCompressionPolicy().compress_screenshots(
+    first, first_changed = ContextCompressionPolicy().compress_screenshots(
         messages,
         ttl_human_messages=ttl_human_messages,
         max_screenshots=max_screenshots,
     )
-    second_changed = ContextCompressionPolicy().compress_screenshots(
-        messages,
+    second, second_changed = ContextCompressionPolicy().compress_screenshots(
+        first,
         ttl_human_messages=ttl_human_messages,
         max_screenshots=max_screenshots,
     )
 
     assert first_changed == 1
     assert second_changed == 0
-    assert messages[0]["name"] == SCREENSHOT_COMPRESSED_NAME
-    assert messages[0]["content"] == COMPRESSED_SCREENSHOT_PLACEHOLDER
+    assert isinstance(first[0].payload, CompactedMedia)
+    assert second == first
 
 
 def test_screenshot_policy_removes_large_payload_from_production_shape() -> None:
     image_payload = "data:image/png;base64," + "A" * 100_000
     messages = []
     for index in range(16):
-        message = _tool_image(f"tool-{index}")
-        message["content"][0]["image_url"]["url"] = image_payload
-        messages.append(message)
-    before_size = len(json.dumps(messages, ensure_ascii=False))
+        messages.append(replace(
+            _tool_image(f"tool-{index}"),
+            payload=AvailableMedia(urls=(image_payload,)),
+        ))
+    before_size = len(json.dumps([message.to_storage_format() for message in messages], ensure_ascii=False))
 
-    changed = ContextCompressionPolicy().compress_screenshots(
+    candidate, changed = ContextCompressionPolicy().compress_screenshots(
         messages,
         ttl_human_messages=2,
         max_screenshots=2,
     )
-    after_json = json.dumps(messages, ensure_ascii=False)
+    after_json = json.dumps([message.to_storage_format() for message in candidate], ensure_ascii=False)
 
     assert changed == 14
     assert sum(
-        message.get("name") == SCREENSHOT_MESSAGE_NAME for message in messages
+        isinstance(message.payload, AvailableMedia) for message in candidate
     ) == 2
     assert "data:image/png;base64" in after_json
     assert after_json.count("data:image/png;base64") == 2
@@ -233,10 +246,7 @@ def test_screenshot_policy_removes_large_payload_from_production_shape() -> None
 def test_screenshot_compaction_runs_below_token_threshold_and_marks_state_changed() -> None:
     async def scenario():
         screenshots = [_tool_image(f"tool-{index}") for index in range(3)]
-        state = AgentState(
-            session_id="session-screenshot-limit",
-            messages=[*screenshots, _human(1)],
-        )
+        state = _state("session-screenshot-limit", [*screenshots, _human(1)])
         coordinator = ModelInputCoordinator(
             ContextStrategyConfig(
                 compression_trigger_tokens_k=100,
@@ -261,14 +271,13 @@ def test_screenshot_compaction_runs_below_token_threshold_and_marks_state_change
 
     assert prepared.state_changed is True
     assert prepared.estimated_tokens < 100_000
-    assert [message.get("name") for message in state.messages[:3]] == [
-        SCREENSHOT_COMPRESSED_NAME,
-        SCREENSHOT_MESSAGE_NAME,
-        SCREENSHOT_MESSAGE_NAME,
+    assert [type(message.payload) for message in state.messages[:3]] == [
+        CompactedMedia, AvailableMedia, AvailableMedia,
     ]
     compressed = state.messages[0]
-    assert compressed["content"] == COMPRESSED_SCREENSHOT_PLACEHOLDER
-    assert "base64" not in json.dumps(compressed)
+    assert isinstance(compressed, ToolMediaMessage)
+    assert isinstance(compressed.payload, CompactedMedia)
+    assert "base64" not in json.dumps(compressed.to_storage_format())
     assert prepared.messages[0]["role"] == "system"
     assert any(
         message.get("name") == SCREENSHOT_COMPRESSED_NAME
@@ -292,17 +301,17 @@ def test_first_layer_keeps_latest_five_compressible_tool_results() -> None:
         ])
     messages.extend([_tool_call("ai-write", "call-write"), _tool_result(8, compressible=False)])
 
-    changed = ContextCompressionPolicy().compress_old_tool_results(messages)
+    candidate, changed = ContextCompressionPolicy().compress_old_tool_results(messages)
 
     assert changed == 2
-    assert messages[1]["content"] == COMPRESSED_TOOL_RESULT
-    assert messages[3]["content"] == COMPRESSED_TOOL_RESULT
+    assert candidate[1].content == COMPRESSED_TOOL_RESULT
+    assert candidate[3].content == COMPRESSED_TOOL_RESULT
     assert [
-        message["content"]
-        for message in messages
-        if message.get("role") == "tool" and message.get("_compressible") is True
+        message.content
+        for message in candidate
+        if isinstance(message, ToolMessage) and message.compressible
     ][-5:] == contents[2:]
-    assert messages[-1]["content"] == "result-8"
+    assert candidate[-1].content == "result-8"
 
 
 def test_first_layer_never_compresses_pending_tool_batch() -> None:
@@ -314,7 +323,7 @@ def test_first_layer_never_compresses_pending_tool_batch() -> None:
             _tool_image(f"tool-{index}"),
         ])
 
-    changed = ContextCompressionPolicy().compress_old_tool_results(
+    candidate, changed = ContextCompressionPolicy().compress_old_tool_results(
         messages,
         keep_latest=0,
         protected_tool_call_ids={"call-0", "call-1"},
@@ -322,14 +331,14 @@ def test_first_layer_never_compresses_pending_tool_batch() -> None:
 
     assert changed == 10
     protected_tools = [
-        message for message in messages
-        if message.get("tool_call_id") in {"call-0", "call-1"}
+        message for message in candidate
+        if isinstance(message, ToolMessage) and message.tool_call_id in {"call-0", "call-1"}
     ]
-    assert [message["content"] for message in protected_tools] == ["中" * 50, "中" * 50]
+    assert [message.content for message in protected_tools] == ["中" * 50, "中" * 50]
     assert {
-        message.get("_associated_message_id")
-        for message in messages
-        if message.get("name") == SCREENSHOT_MESSAGE_NAME
+        message.associated_message_id
+        for message in candidate
+        if isinstance(message, ToolMediaMessage)
     } == {"tool-0", "tool-1"}
 
 
@@ -348,10 +357,10 @@ def test_first_layer_uses_weighted_fifty_character_text_threshold(
 ) -> None:
     messages = [_tool_result(0, content=content)]
 
-    changed = ContextCompressionPolicy().compress_old_tool_results(messages, keep_latest=0)
+    candidate, changed = ContextCompressionPolicy().compress_old_tool_results(messages, keep_latest=0)
 
     assert changed == int(should_compress)
-    assert messages[0]["content"] == (
+    assert candidate[0].content == (
         COMPRESSED_TOOL_RESULT if should_compress else content
     )
 
@@ -364,28 +373,30 @@ def test_first_layer_removes_old_tool_image_but_keeps_short_text() -> None:
             _tool_image(f"tool-{index}"),
         ])
 
-    changed = ContextCompressionPolicy().compress_old_tool_results(messages)
+    candidate, changed = ContextCompressionPolicy().compress_old_tool_results(messages)
 
     assert changed == 1
-    assert next(message for message in messages if message.get("_message_id") == "tool-0")["content"] == "截屏成功"
+    assert next(message for message in candidate if message.message_id == "tool-0").content == "截屏成功"
     assert {
-        message.get("_associated_message_id")
-        for message in messages
-        if message.get("name") == SCREENSHOT_MESSAGE_NAME
+        message.associated_message_id
+        for message in candidate
+        if isinstance(message, ToolMediaMessage)
     } == {f"tool-{index}" for index in range(1, 6)}
 
 
 def test_first_layer_removes_only_strongly_associated_tool_images() -> None:
     target = _tool_result(0, content="中" * 50)
     associated_screenshot = _tool_image("tool-0")
-    associated_compressed_screenshot = _tool_image(
-        "tool-0",
-        name=SCREENSHOT_COMPRESSED_NAME,
+    associated_compressed_screenshot = replace(
+        _tool_image("tool-0"), payload=CompactedMedia(),
     )
     associated_mcp_image = _tool_image("tool-0", name=MCP_TOOL_IMAGE_MESSAGE_NAME)
-    real_user_image = _tool_image("tool-0")
-    real_user_image.pop("name")
-    context_summary = _tool_image("tool-0", name=CONTEXT_SUMMARY_MESSAGE_NAME)
+    real_user_image = HumanMessage(text="user image", image_urls=("data:image/png;base64,AAAA",))
+    context_summary = ContextSummaryMessage(
+        content="summary", summary_schema_version=1,
+        covered_through_message_id="tool-0", covered_effective_date="2026-08-29",
+        compression_ratio=0.5,
+    )
     unassociated_image = _tool_image(None)
     wrong_association = _tool_image("tool-other")
     noncompressible = _tool_result(1, compressible=False, content="中" * 50)
@@ -402,21 +413,18 @@ def test_first_layer_removes_only_strongly_associated_tool_images() -> None:
         noncompressible,
         noncompressible_image,
     ]
-    messages_identity = id(messages)
-
-    changed = ContextCompressionPolicy().compress_old_tool_results(messages, keep_latest=0)
+    candidate, changed = ContextCompressionPolicy().compress_old_tool_results(messages, keep_latest=0)
 
     assert changed == 4
-    assert id(messages) == messages_identity
-    assert target["content"] == COMPRESSED_TOOL_RESULT
-    assert associated_screenshot not in messages
-    assert associated_compressed_screenshot not in messages
-    assert associated_mcp_image not in messages
-    assert real_user_image in messages
-    assert context_summary in messages
-    assert unassociated_image in messages
-    assert wrong_association in messages
-    assert noncompressible_image in messages
+    assert next(message for message in candidate if message.message_id == target.message_id).content == COMPRESSED_TOOL_RESULT
+    assert associated_screenshot not in candidate
+    assert associated_compressed_screenshot not in candidate
+    assert associated_mcp_image not in candidate
+    assert real_user_image in candidate
+    assert context_summary in candidate
+    assert unassociated_image in candidate
+    assert wrong_association in candidate
+    assert noncompressible_image in candidate
 
 
 def test_first_layer_cleans_images_from_already_compressed_result_idempotently() -> None:
@@ -425,23 +433,24 @@ def test_first_layer_cleans_images_from_already_compressed_result_idempotently()
         _tool_image("tool-0"),
     ]
 
-    first_changed = ContextCompressionPolicy().compress_old_tool_results(
+    first, first_changed = ContextCompressionPolicy().compress_old_tool_results(
         messages,
         keep_latest=0,
     )
-    second_changed = ContextCompressionPolicy().compress_old_tool_results(
-        messages,
+    second, second_changed = ContextCompressionPolicy().compress_old_tool_results(
+        first,
         keep_latest=0,
     )
 
     assert first_changed == 1
     assert second_changed == 0
-    assert messages == [_tool_result(0, content=COMPRESSED_TOOL_RESULT)]
+    assert first == (_tool_result(0, content=COMPRESSED_TOOL_RESULT),)
+    assert second == first
 
 
 def test_image_only_compaction_marks_prepared_state_as_changed() -> None:
     async def scenario():
-        messages: list[dict] = []
+        messages = []
         for index in range(6):
             messages.extend([
                 _tool_call(f"ai-{index}", f"call-{index}"),
@@ -449,13 +458,12 @@ def test_image_only_compaction_marks_prepared_state_as_changed() -> None:
             ])
             if index == 0:
                 messages.append(_tool_image("tool-0", image_count=6))
-        messages.append({
-            "role": "user",
-            "content": "继续",
-            "_message_id": "human-latest",
-            "_created_at": "2026-08-29T00:00:03+00:00",
-        })
-        state = AgentState(session_id="session-image-only", messages=messages)
+        messages.append(HumanMessage(
+            message_id="human-latest",
+            created_at=datetime(2026, 8, 29, 0, 0, 3, tzinfo=timezone.utc),
+            text="继续",
+        ))
+        state = _state("session-image-only", messages)
         config = ContextStrategyConfig(compression_trigger_tokens_k=10)
         coordinator = ModelInputCoordinator(config, SimpleNamespace())
 
@@ -475,7 +483,8 @@ def test_image_only_compaction_marks_prepared_state_as_changed() -> None:
     assert prepared.state_changed is True
     assert prepared.estimated_tokens < 10_000
     assert not any(
-        message.get("_associated_message_id") == "tool-0"
+        isinstance(message, ToolMediaMessage)
+        and message.associated_message_id == "tool-0"
         for message in state.messages
     )
 
@@ -493,23 +502,21 @@ def test_diary_coverage_port_removes_only_covered_context_summaries() -> None:
             Coverage(),
         )
         state = AgentState.create_new("session")
-        state.messages = [
-            {
-                "role": "user",
-                "name": "context_summary",
-                "content": "旧摘要",
-                "_covered_effective_date": "2026-08-28",
-            },
-            {
-                "role": "user",
-                "name": "context_summary",
-                "content": "未覆盖摘要",
-                "_covered_effective_date": "2026-08-29",
-            },
-            {"role": "user", "content": "当前消息"},
-        ]
+        state.commit_compaction((
+            ContextSummaryMessage(
+                content="旧摘要", summary_schema_version=1,
+                covered_through_message_id="old", covered_effective_date="2026-08-28",
+                compression_ratio=0.5,
+            ),
+            ContextSummaryMessage(
+                content="未覆盖摘要", summary_schema_version=1,
+                covered_through_message_id="new", covered_effective_date="2026-08-29",
+                compression_ratio=0.5,
+            ),
+        ))
+        state.add_user_message("当前消息")
         removed = await coordinator.drop_diary_covered_summaries(state)
-        return removed, [message.get("content") for message in state.messages]
+        return removed, [message.text for message in state.messages]
 
     assert asyncio.run(scenario()) == (1, ["未覆盖摘要", "当前消息"])
 
@@ -678,11 +685,11 @@ def test_compression_trigger_is_configured_directly_in_k_tokens() -> None:
 
 def test_protocol_blocks_never_split_tool_call_from_results() -> None:
     messages = [
-        {"role": "user", "content": "one"},
+        HumanMessage(text="one"),
         _tool_call("ai-1", "call-1"),
         _tool_result(1),
-        {"role": "assistant", "content": "done"},
-        {"role": "user", "content": "latest"},
+        AssistantMessage(text="done"),
+        HumanMessage(text="latest"),
     ]
 
     blocks = ContextCompressionPolicy.protocol_blocks(messages)
@@ -691,12 +698,11 @@ def test_protocol_blocks_never_split_tool_call_from_results() -> None:
 
 
 def test_transient_context_is_appended_to_copy_of_latest_human_message() -> None:
-    original = [{
-        "role": "user",
-        "content": [{"type": "text", "text": "问题"}],
-        "_message_id": "human-1",
-        "_created_at": "2026-08-29T00:00:00+00:00",
-    }]
+    original = (HumanMessage(
+        text="问题",
+        message_id="human-1",
+        created_at=datetime(2026, 8, 29, tzinfo=timezone.utc),
+    ),)
     turn = RuntimeContext(
         latest_human_message_id="human-1",
         captured_at=datetime(2026, 8, 29, tzinfo=timezone.utc),
@@ -705,10 +711,10 @@ def test_transient_context_is_appended_to_copy_of_latest_human_message() -> None
 
     projected = append_transient_context(original, turn)
 
-    assert original[0]["content"] == [{"type": "text", "text": "问题"}]
-    assert projected[0]["content"][-1]["type"] == "text"
-    assert "[系统提示]" in projected[0]["content"][-1]["text"]
-    assert "用户喜欢简洁回答" in projected[0]["content"][-1]["text"]
+    assert original[0].text == "问题"
+    assert isinstance(projected[0], HumanMessage)
+    assert "[系统提示]" in projected[0].text
+    assert "用户喜欢简洁回答" in projected[0].text
 
 
 class _SummaryClient:
@@ -829,39 +835,38 @@ class _RatioCompaction:
     async def drop_diary_covered_summaries(_state: AgentState) -> int:
         return 0
 
-    async def summarize_candidate(self, frozen: list[dict], ratio: float) -> list[dict]:
+    async def summarize_candidate(self, frozen, ratio: float):
         self.ratios.append(ratio)
-        return [
-            {
-                "role": "user",
-                "name": "context_summary",
-                "content": f"candidate-{int(ratio * 100)}",
-                "_message_id": f"summary-{ratio}",
-                "_created_at": "2026-08-29T00:00:00+00:00",
-            },
-            dict(frozen[-1]),
-        ]
+        return (
+            ContextSummaryMessage(
+                content=f"candidate-{int(ratio * 100)}",
+                message_id=f"summary-{ratio}",
+                created_at=datetime(2026, 8, 29, tzinfo=timezone.utc),
+                summary_schema_version=1,
+                covered_through_message_id=frozen[-2].message_id,
+                covered_effective_date="2026-08-29",
+                compression_ratio=ratio,
+            ),
+            frozen[-1],
+        )
 
 
 def test_model_input_coordinator_replaces_old_turns_with_state_only_summary() -> None:
     async def scenario():
-        state = AgentState(session_id="session-summary")
-        created_at = "2026-08-29T00:00:00+00:00"
+        messages = []
+        created_at = datetime(2026, 8, 29, tzinfo=timezone.utc)
         for index in range(12):
-            state.messages.extend([
-                {
-                    "role": "user",
-                    "content": f"第{index}轮问题：" + "中" * 600,
-                    "_message_id": f"human-{index}",
-                    "_created_at": created_at,
-                },
-                {
-                    "role": "assistant",
-                    "content": f"第{index}轮回答：" + "答" * 600,
-                    "_message_id": f"assistant-{index}",
-                    "_created_at": created_at,
-                },
+            messages.extend([
+                HumanMessage(
+                    text=f"第{index}轮问题：" + "中" * 600,
+                    message_id=f"human-{index}", created_at=created_at,
+                ),
+                AssistantMessage(
+                    text=f"第{index}轮回答：" + "答" * 600,
+                    message_id=f"assistant-{index}", created_at=created_at,
+                ),
             ])
+        state = _state("session-summary", messages)
         summary_client = _SummaryClient()
         config = ContextStrategyConfig(compression_trigger_tokens_k=10)
         coordinator = ModelInputCoordinator(
@@ -891,7 +896,7 @@ def test_model_input_coordinator_replaces_old_turns_with_state_only_summary() ->
 
     state, summary_client, config, prepared = asyncio.run(scenario())
 
-    summaries = [message for message in state.messages if message.get("name") == "context_summary"]
+    summaries = [message for message in state.messages if isinstance(message, ContextSummaryMessage)]
     assert prepared.state_changed is True
     assert len(summary_client.calls) == 1
     summary_call = summary_client.calls[0]
@@ -908,16 +913,15 @@ def test_model_input_coordinator_replaces_old_turns_with_state_only_summary() ->
     assert "第11轮问题" not in str(summary_call["messages"])
     assert "仅存在于本轮输入的召回记忆" not in str(summary_call["messages"])
     assert len(summaries) == 1
-    assert summaries[0]["content"].startswith("[系统提示：前情摘要]")
-    _, serialized_summary = summaries[0]["content"].split("\n", 1)
+    assert summaries[0].content.startswith("[系统提示：前情摘要]")
+    _, serialized_summary = summaries[0].content.split("\n", 1)
     assert json.loads(serialized_summary) == summary_client.result
-    assert summaries[0]["_summary_schema_version"] == 1
-    assert summaries[0]["_covered_through_message_id"].startswith("assistant-")
-    assert summaries[0]["_covered_effective_date"] == "2026-08-29"
-    assert "_covered_through_at" not in summaries[0]
-    assert any(message.get("_message_id") == "human-11" for message in state.messages)
-    assert all("仅存在于本轮输入的召回记忆" not in str(message.get("content")) for message in state.messages)
-    assert all(extraction_prompt not in str(message.get("content")) for message in state.messages)
+    assert summaries[0].summary_schema_version == 1
+    assert summaries[0].covered_through_message_id.startswith("assistant-")
+    assert summaries[0].covered_effective_date == "2026-08-29"
+    assert any(message.message_id == "human-11" for message in state.messages)
+    assert all("仅存在于本轮输入的召回记忆" not in message.text for message in state.messages)
+    assert all(extraction_prompt not in message.text for message in state.messages)
     assert any("仅存在于本轮输入的召回记忆" in str(message.get("content")) for message in prepared.messages)
     assert prepared.estimated_tokens < config.compression_trigger_tokens
 
@@ -936,20 +940,10 @@ def test_context_summary_persona_is_built_directly_from_optional_chat_settings()
                 characteristic=None,
             ),
         )
-        frozen = [
-            {
-                "role": "user",
-                "content": "旧消息",
-                "_message_id": "human-old",
-                "_created_at": "2026-08-28T00:00:00+00:00",
-            },
-            {
-                "role": "user",
-                "content": "最新消息",
-                "_message_id": "human-latest",
-                "_created_at": "2026-08-29T00:00:00+00:00",
-            },
-        ]
+        frozen = (
+            HumanMessage(text="旧消息", message_id="human-old", created_at=datetime(2026, 8, 28, tzinfo=timezone.utc)),
+            HumanMessage(text="最新消息", message_id="human-latest", created_at=datetime(2026, 8, 29, tzinfo=timezone.utc)),
+        )
         await coordinator.summarize_candidate(frozen, 1.0)
         return client.calls[0]["messages"]
 
@@ -962,38 +956,20 @@ def test_context_summary_persona_is_built_directly_from_optional_chat_settings()
 
 
 def test_repeated_compaction_advances_coverage_from_old_summary_to_latest_raw_message() -> None:
-    async def scenario() -> tuple[list[dict], _SummaryClient]:
+    async def scenario():
         old_payload = {"active_tasks": [], "summary": "旧摘要"}
-        frozen = [
-            {
-                "role": "user",
-                "name": "context_summary",
-                "content": "[系统提示：前情摘要]\n" + json.dumps(old_payload, ensure_ascii=False),
-                "_message_id": "summary-old",
-                "_summary_schema_version": 1,
-                "_covered_through_message_id": "assistant-original",
-                "_covered_effective_date": "2026-08-28",
-                "_created_at": "2026-08-29T00:00:00+00:00",
-            },
-            {
-                "role": "user",
-                "content": "继续处理",
-                "_message_id": "human-work",
-                "_created_at": "2026-08-29T05:00:00+00:00",
-            },
-            {
-                "role": "assistant",
-                "content": "取得新进展",
-                "_message_id": "assistant-work",
-                "_created_at": "2026-08-29T05:10:00+00:00",
-            },
-            {
-                "role": "user",
-                "content": "最新消息",
-                "_message_id": "human-latest",
-                "_created_at": "2026-08-29T06:00:00+00:00",
-            },
-        ]
+        frozen = (
+            ContextSummaryMessage(
+                content="[系统提示：前情摘要]\n" + json.dumps(old_payload, ensure_ascii=False),
+                message_id="summary-old", summary_schema_version=1,
+                covered_through_message_id="assistant-original",
+                covered_effective_date="2026-08-28", compression_ratio=0.5,
+                created_at=datetime(2026, 8, 29, tzinfo=timezone.utc),
+            ),
+            HumanMessage(text="继续处理", message_id="human-work", created_at=datetime(2026, 8, 29, 5, tzinfo=timezone.utc)),
+            AssistantMessage(text="取得新进展", message_id="assistant-work", created_at=datetime(2026, 8, 29, 5, 10, tzinfo=timezone.utc)),
+            HumanMessage(text="最新消息", message_id="human-latest", created_at=datetime(2026, 8, 29, 6, tzinfo=timezone.utc)),
+        )
         client = _SummaryClient()
         coordinator = ContextCompactionCoordinator(
             ContextBudgetService(ContextStrategyConfig()),
@@ -1003,33 +979,25 @@ def test_repeated_compaction_advances_coverage_from_old_summary_to_latest_raw_me
         return await coordinator.summarize_candidate(frozen, 1.0), client
 
     candidate, client = asyncio.run(scenario())
-    summary = next(message for message in candidate if message.get("name") == "context_summary")
+    summary = next(message for message in candidate if isinstance(message, ContextSummaryMessage))
 
-    assert summary["_covered_through_message_id"] == "assistant-work"
-    assert summary["_covered_effective_date"] == "2026-08-29"
+    assert summary.covered_through_message_id == "assistant-work"
+    assert summary.covered_effective_date == "2026-08-29"
     assert "最新消息" not in str(client.calls[0]["messages"])
-    assert len([message for message in candidate if message.get("name") == "context_summary"]) == 1
+    assert len([message for message in candidate if isinstance(message, ContextSummaryMessage)]) == 1
 
 
-def test_legacy_summary_uses_its_own_message_id_as_coverage_fallback() -> None:
-    async def scenario() -> list[dict]:
-        frozen = [
-            {
-                "role": "user",
-                "name": "context_summary",
-                "content": "旧的自由文本摘要",
-                "_message_id": "legacy-summary",
-                "_covered_effective_date": "2026-08-28",
-                "_covered_through_at": "2026-08-28T18:00:00+00:00",
-                "_created_at": "2026-08-29T00:00:00+00:00",
-            },
-            {
-                "role": "user",
-                "content": "最新消息",
-                "_message_id": "human-latest",
-                "_created_at": "2026-08-29T06:00:00+00:00",
-            },
-        ]
+def test_summary_coverage_reuses_existing_summary_cursor() -> None:
+    async def scenario():
+        frozen = (
+            ContextSummaryMessage(
+                content="旧的摘要", message_id="summary",
+                summary_schema_version=1, covered_through_message_id="legacy-summary",
+                covered_effective_date="2026-08-28", compression_ratio=0.5,
+                created_at=datetime(2026, 8, 29, tzinfo=timezone.utc),
+            ),
+            HumanMessage(text="最新消息", message_id="human-latest", created_at=datetime(2026, 8, 29, 6, tzinfo=timezone.utc)),
+        )
         coordinator = ContextCompactionCoordinator(
             ContextBudgetService(ContextStrategyConfig()),
             _SummaryClient(),
@@ -1038,11 +1006,10 @@ def test_legacy_summary_uses_its_own_message_id_as_coverage_fallback() -> None:
         return await coordinator.summarize_candidate(frozen, 1.0)
 
     candidate = asyncio.run(scenario())
-    summary = next(message for message in candidate if message.get("name") == "context_summary")
+    summary = next(message for message in candidate if isinstance(message, ContextSummaryMessage))
 
-    assert summary["_covered_through_message_id"] == "legacy-summary"
-    assert summary["_covered_effective_date"] == "2026-08-28"
-    assert "_covered_through_at" not in summary
+    assert summary.covered_through_message_id == "legacy-summary"
+    assert summary.covered_effective_date == "2026-08-28"
 
 
 def test_context_summary_accepts_valid_structure_regardless_of_estimated_size() -> None:
@@ -1058,20 +1025,10 @@ def test_context_summary_accepts_valid_structure_regardless_of_estimated_size() 
         "active_tasks": [oversized_task] * 8,
         "summary": "概" * 2_000,
     })
-    frozen = [
-        {
-            "role": "user",
-            "content": "旧消息",
-            "_message_id": "human-old",
-            "_created_at": "2026-08-28T00:00:00+00:00",
-        },
-        {
-            "role": "user",
-            "content": "最新消息",
-            "_message_id": "human-latest",
-            "_created_at": "2026-08-29T00:00:00+00:00",
-        },
-    ]
+    frozen = (
+        HumanMessage(text="旧消息", message_id="human-old", created_at=datetime(2026, 8, 28, tzinfo=timezone.utc)),
+        HumanMessage(text="最新消息", message_id="human-latest", created_at=datetime(2026, 8, 29, tzinfo=timezone.utc)),
+    )
     coordinator = ContextCompactionCoordinator(
         ContextBudgetService(ContextStrategyConfig()),
         client,
@@ -1081,28 +1038,19 @@ def test_context_summary_accepts_valid_structure_regardless_of_estimated_size() 
     candidate = asyncio.run(coordinator.summarize_candidate(frozen, 1.0))
 
     assert len(candidate) == 2
-    assert candidate[0]["name"] == CONTEXT_SUMMARY_MESSAGE_NAME
-    assert "中" * 800 in candidate[0]["content"]
+    assert isinstance(candidate[0], ContextSummaryMessage)
+    assert "中" * 800 in candidate[0].content
 
 
 def test_invalid_structured_summary_does_not_replace_state_messages() -> None:
     async def scenario() -> tuple[AgentState, dict]:
-        state = AgentState(session_id="session-invalid-summary")
+        messages = []
         for index in range(12):
-            state.messages.extend([
-                {
-                    "role": "user",
-                    "content": f"第{index}轮问题：" + "中" * 600,
-                    "_message_id": f"human-{index}",
-                    "_created_at": "2026-08-29T00:00:00+00:00",
-                },
-                {
-                    "role": "assistant",
-                    "content": f"第{index}轮回答：" + "答" * 600,
-                    "_message_id": f"assistant-{index}",
-                    "_created_at": "2026-08-29T00:01:00+00:00",
-                },
+            messages.extend([
+                HumanMessage(text=f"第{index}轮问题：" + "中" * 600, message_id=f"human-{index}", created_at=datetime(2026, 8, 29, tzinfo=timezone.utc)),
+                AssistantMessage(text=f"第{index}轮回答：" + "答" * 600, message_id=f"assistant-{index}", created_at=datetime(2026, 8, 29, 0, 1, tzinfo=timezone.utc)),
             ])
+        state = _state("session-invalid-summary", messages)
         original = state.to_checkpoint()
         client = _SummaryClient({
             "active_tasks": [],
@@ -1133,20 +1081,10 @@ def test_invalid_structured_summary_does_not_replace_state_messages() -> None:
 
 def test_model_input_expands_from_frozen_source_to_75_percent() -> None:
     async def scenario(*, accept_75: bool):
-        state = AgentState(session_id="session-expand", messages=[
-            {
-                "role": "user",
-                "content": "old",
-                "_message_id": "human-old",
-                "_created_at": "2026-08-28T00:00:00+00:00",
-            },
-            {
-                "role": "user",
-                "content": "latest",
-                "_message_id": "human-latest",
-                "_created_at": "2026-08-29T00:00:00+00:00",
-            },
-        ])
+        state = _state("session-expand", (
+            HumanMessage(text="old", message_id="human-old", created_at=datetime(2026, 8, 28, tzinfo=timezone.utc)),
+            HumanMessage(text="latest", message_id="human-latest", created_at=datetime(2026, 8, 29, tzinfo=timezone.utc)),
+        ))
         config = ContextStrategyConfig(compression_trigger_tokens_k=10)
         coordinator = ModelInputCoordinator(config, _SummaryClient())
         coordinator.budget = _RatioBudget(config, accept_75=accept_75)
@@ -1167,26 +1105,16 @@ def test_model_input_expands_from_frozen_source_to_75_percent() -> None:
     state, prepared, compaction = asyncio.run(scenario(accept_75=True))
 
     assert compaction.ratios == [0.60, 0.75]
-    assert state.messages[0]["content"] == "candidate-75"
+    assert state.messages[0].text == "candidate-75"
     assert prepared.estimated_tokens == 10
 
 
 def test_model_input_stops_before_main_model_when_75_percent_is_still_over_budget() -> None:
     async def scenario():
-        state = AgentState(session_id="session-overflow", messages=[
-            {
-                "role": "user",
-                "content": "old",
-                "_message_id": "human-old",
-                "_created_at": "2026-08-28T00:00:00+00:00",
-            },
-            {
-                "role": "user",
-                "content": "latest",
-                "_message_id": "human-latest",
-                "_created_at": "2026-08-29T00:00:00+00:00",
-            },
-        ])
+        state = _state("session-overflow", (
+            HumanMessage(text="old", message_id="human-old", created_at=datetime(2026, 8, 28, tzinfo=timezone.utc)),
+            HumanMessage(text="latest", message_id="human-latest", created_at=datetime(2026, 8, 29, tzinfo=timezone.utc)),
+        ))
         original = state.to_checkpoint()
         config = ContextStrategyConfig(compression_trigger_tokens_k=10)
         coordinator = ModelInputCoordinator(config, _SummaryClient())

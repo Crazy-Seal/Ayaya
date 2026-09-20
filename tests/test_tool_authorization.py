@@ -24,7 +24,7 @@ from app.agent.core.plugin_manager import PluginManager
 from app.agent.plugins.base import PluginHook
 from app.agent.models.llm_client import StreamChunk
 from app.agent.state import AgentState
-from app.agent.state.messages import ToolCall
+from app.agent.state.messages import ToolCall, ToolMessage
 from app.agent.tools.base import BaseTool, ToolContext
 from app.crud.chat_settings_dao import ChatSettingsDao
 from app.crud.mcp_settings_dao import MCPSettingsDao
@@ -488,8 +488,8 @@ def test_pipeline_rechecks_deny_for_a_stale_model_tool_call() -> None:
         await _events(pipeline.execute(state))
 
         assert tool.calls == 0
-        tool_messages = [message for message in state.messages if message["role"] == "tool"]
-        assert "不允许" in tool_messages[0]["content"]
+        tool_messages = [message for message in state.messages if isinstance(message, ToolMessage)]
+        assert "不允许" in tool_messages[0].content
 
     asyncio.run(scenario())
 
@@ -523,8 +523,8 @@ def test_after_prepare_tool_cannot_request_protected_effect_before_authorization
 
         assert tool.calls == 1
         assert all(event.type != EventType.INTERRUPT for event in events)
-        tool_messages = [message for message in state.messages if message["role"] == "tool"]
-        assert "只能请求只读准备数据" in tool_messages[0]["content"]
+        tool_messages = [message for message in state.messages if isinstance(message, ToolMessage)]
+        assert "只能请求只读准备数据" in tool_messages[0].content
 
     asyncio.run(scenario())
 

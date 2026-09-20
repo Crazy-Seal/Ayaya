@@ -1,119 +1,126 @@
 import asyncio
 from types import SimpleNamespace
 
+from app.agent.state import AgentState
 from app.agent.state.messages import (
+    AvailableMedia,
+    CompactedMedia,
+    HumanMessage,
     MCP_TOOL_IMAGE_MESSAGE_NAME,
-    SCREENSHOT_COMPRESSED_NAME,
     SCREENSHOT_MESSAGE_NAME,
-    TOOL_IMAGE_MESSAGE_NAME,
+    AssistantMessage,
+    ToolCall,
+    ToolMediaMessage,
+    ToolMessage,
     is_real_human_message,
     is_screenshot_message,
     is_user_message,
 )
-from app.agent.state import AgentState
 from app.agent.tools.control_screen import control_screen
 from app.agent.tools.control_screen_with_vlm import control_screen_with_vlm
 from app.agent.tools.screenshot import screenshot
 
 
 def test_message_identity_predicates() -> None:
-    human = {"role": "user", "content": "你好"}
-    screenshot = {
-        "role": "user",
-        "content": [],
-        "name": SCREENSHOT_MESSAGE_NAME,
-    }
-    compressed = {
-        "role": "user",
-        "content": "已压缩",
-        "name": SCREENSHOT_COMPRESSED_NAME,
-    }
-    assistant = {"role": "assistant", "content": "你好"}
-    tool = {"role": "tool", "content": "完成"}
+    human = HumanMessage(text="你好")
+    screenshot_message = ToolMediaMessage(
+        tool_name="screenshot",
+        media_kind="screenshot",
+        text="[系统消息]截图",
+        payload=AvailableMedia(urls=("data:image/png;base64,MQ==",)),
+    )
+    compressed = ToolMediaMessage(
+        tool_name="screenshot",
+        media_kind="screenshot",
+        text="[系统消息]截图",
+        payload=CompactedMedia(),
+    )
+    assistant = AssistantMessage(text="你好")
+    tool = ToolMessage(content="完成", tool_name="read_file", tool_call_id="call")
 
     assert is_user_message(human)
     assert is_real_human_message(human)
     assert not is_screenshot_message(human)
-
-    assert is_user_message(screenshot)
-    assert is_screenshot_message(screenshot)
-    assert not is_real_human_message(screenshot)
-
-    assert is_user_message(compressed)
-    assert is_screenshot_message(compressed)
-    assert not is_real_human_message(compressed)
-
+    for message in (screenshot_message, compressed):
+        assert is_user_message(message)
+        assert is_screenshot_message(message)
+        assert not is_real_human_message(message)
     assert not is_user_message(assistant)
     assert not is_real_human_message(assistant)
     assert not is_user_message(tool)
 
 
-def test_mcp_tool_image_is_system_injected_not_real_human() -> None:
-    message = {
-        "role": "user",
-        "name": MCP_TOOL_IMAGE_MESSAGE_NAME,
-        "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,MQ=="}}],
-    }
-
-    assert not is_real_human_message(message)
-
-
-def test_generic_tool_image_is_system_injected_not_real_human() -> None:
-    message = {
-        "role": "user",
-        "name": TOOL_IMAGE_MESSAGE_NAME,
-        "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,MQ=="}}],
-    }
-
-    assert not is_real_human_message(message)
+def test_non_human_media_is_system_injected() -> None:
+    for media_kind in ("mcp", "tool"):
+        message = ToolMediaMessage(
+            tool_name="image_tool",
+            media_kind=media_kind,
+            text="[系统消息]工具返回图片",
+            payload=AvailableMedia(urls=("data:image/png;base64,MQ==",)),
+        )
+        assert is_user_message(message)
+        assert not is_real_human_message(message)
 
 
 def test_tool_images_are_flushed_after_all_tool_messages() -> None:
     """同一批工具的图片不得插入尚未补齐的 tool 槽位之间。"""
     state = AgentState.create_new("batch-images")
-    state.add_tool_message("image", "image_tool", "a")
-    state.deferred_tool_images.append({
-        "tool_call_id": "a",
-        "tool_name": "image_tool",
-        "image_message_name": MCP_TOOL_IMAGE_MESSAGE_NAME,
-        "image_urls": ["data:image/png;base64,QQ=="],
-    })
-    state.add_tool_message("text", "text_tool", "b")
+    image_call = ToolCall(id="a", name="image_tool", args={})
+    text_call = ToolCall(id="b", name="text_tool", args={})
+    state.record_assistant_step("", (image_call, text_call))
+    state.record_tool_result(
+        image_call,
+        "image",
+        image_urls=("data:image/png;base64,QQ==",),
+        image_message_name=MCP_TOOL_IMAGE_MESSAGE_NAME,
+    )
+    assert state.deferred_tool_media_count == 1
+    assert not any(isinstance(item, ToolMediaMessage) for item in state.messages)
 
-    assert [item["role"] for item in state.messages] == ["tool", "tool"]
-    assert len(state.deferred_tool_images) == 1
-    state.flush_deferred_tool_images()
-    assert [item["role"] for item in state.messages] == ["tool", "tool", "user"]
-    assert state.deferred_tool_images == []
+    state.record_tool_result(text_call, "text")
+
+    assert [type(item) for item in state.messages[-3:]] == [
+        ToolMessage,
+        ToolMessage,
+        ToolMediaMessage,
+    ]
+    assert state.deferred_tool_media_count == 0
 
 
-def test_deferred_tool_images_survive_checkpoint() -> None:
+def test_deferred_tool_media_survives_checkpoint() -> None:
     """审批中断时延迟图片必须随 checkpoint 持久化。"""
     state = AgentState.create_new("checkpoint-images")
-    state.deferred_tool_images.append({
-        "tool_call_id": "a",
-        "tool_name": "image_tool",
-        "image_message_name": MCP_TOOL_IMAGE_MESSAGE_NAME,
-        "image_urls": ["data:image/png;base64,QQ=="],
-    })
+    first = ToolCall(id="a", name="image_tool", args={})
+    second = ToolCall(id="b", name="text_tool", args={})
+    state.record_assistant_step("", (first, second))
+    state.record_tool_result(
+        first,
+        "image",
+        image_urls=("data:image/png;base64,QQ==",),
+        image_message_name=MCP_TOOL_IMAGE_MESSAGE_NAME,
+    )
 
     restored = AgentState.from_checkpoint(state.to_checkpoint())
 
-    assert restored.deferred_tool_images == state.deferred_tool_images
+    assert restored.deferred_tool_media_count == 1
+    assert restored.to_checkpoint()["_deferred_tool_media"] == (
+        state.to_checkpoint()["_deferred_tool_media"]
+    )
 
 
-def test_deferred_tool_image_defaults_to_generic_type() -> None:
+def test_tool_media_defaults_to_generic_type() -> None:
     state = AgentState.create_new("generic-tool-image")
-    state.add_tool_message("image", "image_tool", "call-image")
-    state.deferred_tool_images.append({
-        "tool_call_id": "call-image",
-        "tool_name": "image_tool",
-        "image_urls": ["data:image/png;base64,QQ=="],
-    })
+    call = ToolCall(id="call-image", name="image_tool", args={})
+    state.record_assistant_step("", (call,))
+    state.record_tool_result(
+        call,
+        "image",
+        image_urls=("data:image/png;base64,QQ==",),
+    )
 
-    state.flush_deferred_tool_images()
-
-    assert state.messages[-1]["name"] == TOOL_IMAGE_MESSAGE_NAME
+    message = state.messages[-1]
+    assert isinstance(message, ToolMediaMessage)
+    assert message.media_kind == "tool"
 
 
 def test_screen_tools_explicitly_classify_returned_images_as_screenshots() -> None:

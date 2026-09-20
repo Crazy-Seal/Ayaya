@@ -12,9 +12,13 @@ from app.agent.plugins.base import BasePlugin, HookContext, PluginHook
 from app.agent.plugins.memory import MemoryPlugin
 from app.agent.state.manager import CheckpointType, StateManager
 from app.agent.state.messages import (
+    AssistantMessage,
+    HumanMessage,
     MCP_TOOL_IMAGE_MESSAGE_NAME,
     TOOL_IMAGE_MESSAGE_NAME,
+    ToolMediaMessage,
     ToolCall,
+    ToolMessage,
 )
 from app.agent.models.llm_client import StreamChunk
 from app.agent.state import AgentState
@@ -187,11 +191,11 @@ def test_all_interrupt_paths_save_hook_updates_before_emitting(
                         assert saved.interrupt_data["resume_state"]["phase"] == (
                             2 if path == "same_tool" and expected_count == 2 else 1
                         )
-                        assert [item["id"] for item in saved.pending_actions] == (
+                        assert [item.id for item in saved.pending_actions] == (
                             ["second"] if expected_call == "first" else []
                         )
                         assert not saved.pending_tool_calls
-                        assert saved.long_term_memory_turn_counter == 0
+                        assert saved.long_term_memory_turn_counter == 1
             finally:
                 await stream.aclose()
             assert events[-1].type == EventType.INTERRUPT
@@ -354,7 +358,7 @@ class UserInputCommitOrderPlugin(BasePlugin):
     async def execute(self, context: HookContext) -> None:
         if context.hook == PluginHook.BEFORE_USER_INPUT_COMMIT:
             assert not any(
-                message.get("content") == "本轮新输入"
+                isinstance(message, HumanMessage) and message.text == "本轮新输入"
                 for message in context.agent_state.messages
             )
             self.order.append("before_user_input_commit")
@@ -362,7 +366,7 @@ class UserInputCommitOrderPlugin(BasePlugin):
         elif context.hook == PluginHook.AFTER_USER_INPUT_COMMIT:
             assert context.data == {"prepared_previous_turn": True}
             assert any(
-                message.get("content") == "本轮新输入"
+                isinstance(message, HumanMessage) and message.text == "本轮新输入"
                 for message in context.agent_state.messages
             )
             self.order.append("after_user_input_commit")
@@ -580,7 +584,7 @@ def test_completed_checkpoint_failure_skips_after_commit_hook(tmp_path: Path) ->
 
     order, persisted_counter = asyncio.run(scenario())
     assert order == ["before_commit", "save_completed_failed"]
-    assert persisted_counter == 0
+    assert persisted_counter == 1
 
 
 def test_completed_tool_results_survive_later_llm_failure(tmp_path: Path) -> None:
@@ -602,10 +606,10 @@ def test_completed_tool_results_survive_later_llm_failure(tmp_path: Path) -> Non
             assert events[-1].type == EventType.ERROR
 
             state = await agent.state_manager.load()
-            tool_messages = [item for item in state.messages if item.get("role") == "tool"]
-            assert [item["content"] for item in tool_messages] == ["完成 A", "完成 B", "完成 C"]
-            assert state.pending_tool_calls == []
-            assert state.long_term_memory_turn_counter == 0
+            tool_messages = [item for item in state.messages if isinstance(item, ToolMessage)]
+            assert [item.content for item in tool_messages] == ["完成 A", "完成 B", "完成 C"]
+            assert state.pending_tool_calls == ()
+            assert state.long_term_memory_turn_counter == 1
             assert await checkpoint_types(agent.state_manager) == ["intermediate"]
         finally:
             await agent.close()
@@ -613,7 +617,7 @@ def test_completed_tool_results_survive_later_llm_failure(tmp_path: Path) -> Non
     asyncio.run(scenario())
 
 
-def test_new_message_after_llm_failure_counts_only_completed_human_turn(tmp_path: Path) -> None:
+def test_new_message_after_llm_failure_counts_each_committed_human_input(tmp_path: Path) -> None:
     async def scenario() -> None:
         db_path = tmp_path / "checkpoints.sqlite3"
         first_agent = await make_agent(
@@ -628,7 +632,7 @@ def test_new_message_after_llm_failure_counts_only_completed_human_turn(tmp_path
             events = await drain(first_agent.run("first human message"))
             assert events[-1].type == EventType.ERROR
             failed_state = await first_agent.state_manager.load()
-            assert failed_state.long_term_memory_turn_counter == 0
+            assert failed_state.long_term_memory_turn_counter == 1
         finally:
             await first_agent.close()
 
@@ -641,7 +645,7 @@ def test_new_message_after_llm_failure_counts_only_completed_human_turn(tmp_path
             events = await drain(second_agent.run("please continue"))
             assert events[-1].type == EventType.DONE
             completed_state = await second_agent.state_manager.load()
-            assert completed_state.long_term_memory_turn_counter == 1
+            assert completed_state.long_term_memory_turn_counter == 2
         finally:
             await second_agent.close()
 
@@ -661,8 +665,8 @@ def test_initial_empty_response_keeps_user_intermediate_checkpoint(tmp_path: Pat
             assert "finish_reason=stop" in events[-1].data
             assert await checkpoint_types(agent.state_manager) == ["intermediate"]
             state = await agent.state_manager.load()
-            assert state.messages[-1]["role"] == "user"
-            assert "在吗" in state.messages[-1]["content"]
+            assert isinstance(state.messages[-1], HumanMessage)
+            assert "在吗" in state.messages[-1].text
         finally:
             await agent.close()
 
@@ -686,9 +690,9 @@ def test_empty_response_after_tool_keeps_intermediate_checkpoint(tmp_path: Path)
             assert "finish_reason=stop" in events[-1].data
 
             state = await agent.state_manager.load()
-            tool_messages = [item for item in state.messages if item.get("role") == "tool"]
-            assert [item["content"] for item in tool_messages] == ["完成 A"]
-            assert state.pending_tool_calls == []
+            tool_messages = [item for item in state.messages if isinstance(item, ToolMessage)]
+            assert [item.content for item in tool_messages] == ["完成 A"]
+            assert state.pending_tool_calls == ()
             assert await checkpoint_types(agent.state_manager) == ["intermediate"]
         finally:
             await agent.close()
@@ -706,9 +710,9 @@ def test_tool_error_result_is_checkpointed(tmp_path: Path) -> None:
         try:
             await drain(agent.run("执行失败工具"))
             state = await agent.state_manager.load()
-            tool_messages = [item for item in state.messages if item.get("role") == "tool"]
-            assert tool_messages[-1]["content"] == "错误: 测试工具失败"
-            assert state.pending_tool_calls == []
+            tool_messages = [item for item in state.messages if isinstance(item, ToolMessage)]
+            assert tool_messages[-1].content == "错误: 测试工具失败"
+            assert state.pending_tool_calls == ()
         finally:
             await agent.close()
 
@@ -744,15 +748,15 @@ def test_partial_tool_batch_is_marked_interrupted_without_retry(tmp_path: Path) 
             await drain(second_agent.run("新的用户消息"))
             state = await second_agent.state_manager.load()
             by_id = {
-                item.get("tool_call_id"): item.get("content")
+                item.tool_call_id: item.content
                 for item in state.messages
-                if item.get("role") == "tool"
+                if isinstance(item, ToolMessage)
             }
             assert by_id["call-a"] == "完成 A"
             assert by_id["call-b"] == INTERRUPTED_TOOL_RESULT
             assert by_id["call-c"] == INTERRUPTED_TOOL_RESULT
             assert recovery_tool.executed == []
-            assert state.pending_tool_calls == []
+            assert state.pending_tool_calls == ()
             assert await checkpoint_types(second_agent.state_manager) == [
                 "completed",
                 "completed",
@@ -815,8 +819,8 @@ def test_checkpoint_failure_keeps_tool_marked_pending() -> None:
             await drain(pipeline.execute(state, checkpoint=checkpoint))
 
         persisted = AgentState.from_checkpoint(snapshots[0])
-        assert [item["id"] for item in persisted.pending_tool_calls] == ["call-a"]
-        assert not any(item.get("role") == "tool" for item in persisted.messages)
+        assert [item.id for item in persisted.pending_tool_calls] == ["call-a"]
+        assert not any(isinstance(item, ToolMessage) for item in persisted.messages)
 
     asyncio.run(scenario())
 
@@ -846,7 +850,7 @@ def test_last_tool_checkpoint_flushes_all_batch_images(tmp_path: Path) -> None:
             snapshot = AgentState.from_checkpoint(deepcopy(current.to_checkpoint()))
             snapshots.append(snapshot)
             if not snapshot.pending_tool_calls and any(
-                item.get("role") == "tool" for item in snapshot.messages
+                isinstance(item, ToolMessage) for item in snapshot.messages
             ):
                 raise asyncio.CancelledError()
             return len(snapshots)
@@ -860,33 +864,23 @@ def test_last_tool_checkpoint_flushes_all_batch_images(tmp_path: Path) -> None:
 
     snapshots = asyncio.run(scenario())
     first_result = snapshots[-2]
-    assert [item["id"] for item in first_result.pending_tool_calls] == ["call-b"]
-    assert len(first_result.deferred_tool_images) == 1
-    assert [item["role"] for item in first_result.messages[-2:]] == ["assistant", "tool"]
-    assert first_result.deferred_tool_images[0]["associated_message_id"] == (
-        first_result.messages[-1]["_message_id"]
-    )
+    assert [item.id for item in first_result.pending_tool_calls] == ["call-b"]
+    assert first_result.deferred_tool_media_count == 1
+    assert isinstance(first_result.messages[-1], ToolMessage)
 
     completed_batch = snapshots[-1]
-    assert completed_batch.pending_tool_calls == []
-    assert completed_batch.deferred_tool_images == []
-    assert [item["role"] for item in completed_batch.messages[-5:]] == [
-        "assistant",
-        "tool",
-        "tool",
-        "user",
-        "user",
-    ]
+    assert completed_batch.pending_tool_calls == ()
+    assert completed_batch.deferred_tool_media_count == 0
     tool_messages = [
-        item for item in completed_batch.messages if item.get("role") == "tool"
+        item for item in completed_batch.messages if isinstance(item, ToolMessage)
     ]
     image_messages = [
         item
         for item in completed_batch.messages
-        if item.get("name") == TOOL_IMAGE_MESSAGE_NAME
+        if isinstance(item, ToolMediaMessage)
     ]
-    assert [item.get("_associated_message_id") for item in image_messages] == [
-        item["_message_id"] for item in tool_messages
+    assert [item.associated_message_id for item in image_messages] == [
+        item.message_id for item in tool_messages
     ]
 
 
@@ -900,13 +894,15 @@ def test_resumed_last_tool_checkpoint_flushes_deferred_images(tmp_path: Path) ->
             ImageStepTool(),
         )
         state = AgentState.create_new("checkpoint-test")
-        state.add_tool_message("完成 A", "image_step", "call-a")
-        state.deferred_tool_images.append({
-            "tool_call_id": "call-a",
-            "tool_name": "image_step",
-            "image_message_name": "mcp_tool_image",
-            "image_urls": ["data:image/png;base64,iVBORw0KGgpwYXlsb2Fk"],
-        })
+        call_a = ToolCall(id="call-a", name="image_step", args={"label": "A"})
+        call_b = ToolCall(id="call-b", name="image_step", args={"label": "B"})
+        state.record_assistant_step("", (call_a, call_b))
+        state.record_tool_result(
+            call_a,
+            "完成 A",
+            image_urls=("data:image/png;base64,iVBORw0KGgpwYXlsb2Fk",),
+            image_message_name=MCP_TOOL_IMAGE_MESSAGE_NAME,
+        )
         state.set_interrupt({
             "type": "mcp_tool_approval_request",
             "request_id": "request-b",
@@ -941,27 +937,18 @@ def test_resumed_last_tool_checkpoint_flushes_deferred_images(tmp_path: Path) ->
         return snapshots[-1]
 
     completed_batch = asyncio.run(scenario())
-    assert completed_batch.pending_tool_calls == []
-    assert completed_batch.deferred_tool_images == []
-    assert [item["role"] for item in completed_batch.messages] == [
-        "tool",
-        "tool",
-        "user",
-        "user",
-    ]
+    assert completed_batch.pending_tool_calls == ()
+    assert completed_batch.deferred_tool_media_count == 0
     tool_messages = [
-        item for item in completed_batch.messages if item.get("role") == "tool"
+        item for item in completed_batch.messages if isinstance(item, ToolMessage)
     ]
     image_messages = [
         item
         for item in completed_batch.messages
-        if item.get("name") in {
-            MCP_TOOL_IMAGE_MESSAGE_NAME,
-            TOOL_IMAGE_MESSAGE_NAME,
-        }
+        if isinstance(item, ToolMediaMessage)
     ]
-    assert [item.get("_associated_message_id") for item in image_messages] == [
-        item["_message_id"] for item in tool_messages
+    assert [item.associated_message_id for item in image_messages] == [
+        item.message_id for item in tool_messages
     ]
 
 
@@ -1006,7 +993,7 @@ def test_interrupt_recovers_across_fresh_agents_and_repeated_response_fails(
             first_interrupt = await manager.load()
             assert first_interrupt.is_interrupted()
             first_request_id = first_interrupt.interrupt_data["request_id"]
-            assert first_interrupt.long_term_memory_turn_counter == 0
+            assert first_interrupt.long_term_memory_turn_counter == 1
             assert await checkpoint_types(manager) == ["intermediate"]
         finally:
             await manager.close()
@@ -1087,13 +1074,13 @@ def test_chat_resolves_unresolved_interrupt_before_new_message(tmp_path: Path) -
             after = await second_agent.state_manager.load()
             assert after.interrupt_data is None
             assert any(
-                message.get("role") == "tool"
-                and "已拒绝" in message.get("content", "")
+                isinstance(message, ToolMessage)
+                and "已拒绝" in message.content
                 for message in after.messages
             )
             assert any(
-                message.get("role") == "user"
-                and "新消息" in message.get("content", "")
+                isinstance(message, HumanMessage)
+                and "新消息" in message.text
                 for message in after.messages
             )
         finally:
@@ -1132,21 +1119,80 @@ def test_new_message_cancels_interrupted_tool_batch_before_starting_turn(
 
             state = await second_agent.state_manager.load()
             tool_results = {
-                message.get("tool_call_id"): message.get("content")
+                message.tool_call_id: message.content
                 for message in state.messages
-                if message.get("role") == "tool"
+                if isinstance(message, ToolMessage)
             }
             assert "已拒绝" in tool_results["shot-1"]
             assert "已取消" in tool_results["step-2"]
             assert state.interrupt_data is None
-            assert state.pending_actions == []
-            assert state.messages[-2]["role"] == "user"
-            assert "改做别的事情" in state.messages[-2]["content"]
+            assert state.pending_actions == ()
+            assert isinstance(state.messages[-2], HumanMessage)
+            assert "改做别的事情" in state.messages[-2].text
             assert resumed_calls == []
         finally:
             await second_agent.close()
 
     asyncio.run(scenario())
+
+
+def test_cancelling_interrupted_batch_flushes_prior_images_after_all_tool_slots(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> tuple[AgentState, list[bool]]:
+        db_path = tmp_path / "checkpoints.sqlite3"
+        resumed_calls: list[bool] = []
+        first_agent = await make_agent(
+            db_path,
+            [[
+                tool_call("image-1", name="image_step", label="A"),
+                tool_call("shot-2", name="screenshot"),
+                tool_call("step-3", label="C"),
+            ]],
+            ImageStepTool(),
+        )
+        first_agent.tool_manager.register(ResumableScreenshotTool(resumed_calls))
+        first_agent.tool_manager.register(StepTool())
+        try:
+            events = await drain(first_agent.run("先取图再请求截屏"))
+            assert events[-1].type == EventType.INTERRUPT
+        finally:
+            await first_agent.close()
+
+        second_agent = await make_agent(
+            db_path,
+            [[StreamChunk(content="已切换任务")]],
+            ResumableScreenshotTool(resumed_calls),
+        )
+        try:
+            events = await drain(second_agent.run("改做别的事情"))
+            assert events[-1].type == EventType.DONE
+            return await second_agent.state_manager.load(), resumed_calls
+        finally:
+            await second_agent.close()
+
+    state, resumed_calls = asyncio.run(scenario())
+    batch_start = next(
+        index for index, message in enumerate(state.messages)
+        if isinstance(message, AssistantMessage)
+        and [call.id for call in message.tool_calls] == ["image-1", "shot-2", "step-3"]
+    )
+    batch_tail = state.messages[batch_start + 1:]
+    tool_positions = {
+        message.tool_call_id: index
+        for index, message in enumerate(batch_tail)
+        if isinstance(message, ToolMessage)
+        and message.tool_call_id in {"image-1", "shot-2", "step-3"}
+    }
+    media_position = next(
+        index for index, message in enumerate(batch_tail)
+        if isinstance(message, ToolMediaMessage)
+        and message.associated_message_id
+    )
+
+    assert set(tool_positions) == {"image-1", "shot-2", "step-3"}
+    assert media_position > max(tool_positions.values())
+    assert resumed_calls == []
 
 
 def test_successful_turn_replaces_intermediate_with_completed(tmp_path: Path) -> None:

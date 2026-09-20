@@ -7,6 +7,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Callable, TYPE_CHECKING
 
+from app.agent.state.messages import to_json_value
 from app.agent.tools.base import InterruptEvent, ToolResult
 from app.schemas.tool_permissions import ToolPolicy
 
@@ -29,7 +30,7 @@ if TYPE_CHECKING:
 
 def _fingerprint(value: Any) -> str:
     encoded = json.dumps(
-        value,
+        to_json_value(value),
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),

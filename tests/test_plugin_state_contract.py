@@ -10,6 +10,7 @@ from app.agent.core.event_router import EventType
 from app.agent.core.plugin_manager import PluginManager
 from app.agent.models.llm_client import StreamChunk
 from app.agent.state import AgentState
+from app.agent.state.messages import AssistantMessage, HumanMessage
 
 
 def test_hook_context_keeps_bindings_fixed_but_allows_in_place_changes() -> None:
@@ -22,7 +23,7 @@ def test_hook_context_keeps_bindings_fixed_but_allows_in_place_changes() -> None
     context.metadata["visited"] = True
 
     assert context.agent_state is state
-    assert state.messages[-1]["content"] == "原地修改"
+    assert state.messages[-1].text == "原地修改"
     assert data == {"prepared": True}
     assert context.metadata == {"visited": True}
     for field, replacement in (
@@ -114,10 +115,9 @@ def test_agent_commits_response_and_in_place_changes_after_rejected_replacement(
             assert [event.data for event in events if event.type == EventType.TEXT_CHUNK] == [
                 "已保存的回复"
             ]
-            assert [(message["role"], message["content"]) for message in saved.messages] == [
-                ("user", "开始"),
-                ("assistant", "已保存的回复"),
-            ]
+            assert isinstance(saved.messages[0], HumanMessage)
+            assert isinstance(saved.messages[1], AssistantMessage)
+            assert [message.text for message in saved.messages] == ["开始", "已保存的回复"]
             assert saved.extra["updated"] is True
             assert saved.long_term_memory_turn_counter == 1
             assert all(state is plugin.seen_states[0] for state in plugin.seen_states)

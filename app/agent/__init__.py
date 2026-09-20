@@ -11,18 +11,25 @@ Ayaya Agent
 - MCP 协议集成
 """
 
-from app.agent.agent import Agent
 from app.agent.state import AgentState
-from app.agent.state.messages import Message, ContentPart, ToolCall
+from app.agent.state.messages import BaseMessage, HumanMessage, ToolCall
 from app.agent.tools.base import ToolContext, ToolResult, InterruptEvent
 
 __all__ = [
     "Agent",
     "AgentState",
-    "Message",
-    "ContentPart",
+    "BaseMessage",
+    "HumanMessage",
     "ToolCall",
     "ToolContext",
     "ToolResult",
     "InterruptEvent",
 ]
+
+
+def __getattr__(name: str):
+    if name == "Agent":
+        from app.agent.agent import Agent
+
+        return Agent
+    raise AttributeError(name)

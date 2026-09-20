@@ -21,10 +21,8 @@ from app.agent.plugins.base import PluginHook
 from app.agent.state.manager import CheckpointType
 from app.agent.state.messages import (
     TOOL_IMAGE_MESSAGE_NAME,
+    HumanMessage,
     ToolCall,
-    MessageRole,
-    AssistantMessageWithTools,
-    is_real_human_message,
 )
 from app.agent.state import AgentState
 from app.agent.tools.base import BaseTool, InterruptEvent, ToolContext, ToolResult
@@ -99,11 +97,11 @@ class ExecutionPipeline:
         """执行主循环（一轮对话的起点）"""
         runtime_context = runtime_context or RuntimeContext.capture()
         latest_human = next(
-            (message for message in reversed(state.messages) if is_real_human_message(message)),
+            (message for message in reversed(state.messages) if isinstance(message, HumanMessage)),
             None,
         )
         if latest_human:
-            runtime_context.latest_human_message_id = str(latest_human.get("_message_id") or "")
+            runtime_context.latest_human_message_id = latest_human.message_id
         # ON_INVOKE 钩子 - 每轮仅在此触发一次
         await self._plugin_manager.run_hooks(
             PluginHook.ON_INVOKE, state, data={"runtime_context": runtime_context}
@@ -136,7 +134,7 @@ class ExecutionPipeline:
                 name=tool_name,
                 args=interrupt_data.get("tool_args", {}),
             ))
-        resumed_calls.extend(ToolCall.from_dict(item) for item in pending_actions)
+        resumed_calls.extend(pending_actions)
         state.set_pending_tool_calls(resumed_calls)
 
         # 1. 重入被中断的工具（用持久化的路由信息重建 ToolCall）
@@ -165,8 +163,7 @@ class ExecutionPipeline:
             )
 
         # 2. 执行中断时尚未轮到的剩余工具
-        for i, tc_dict in enumerate(pending_actions):
-            tool_call = ToolCall.from_dict(tc_dict)
+        for i, tool_call in enumerate(pending_actions):
             yield AgentEvent(EventType.TOOL_CALL, tool_call.name)
 
             result = await self._execute_tool(state, tool_call)
@@ -256,7 +253,6 @@ class ExecutionPipeline:
                 self._add_assistant_message(state, accumulated_content, tool_calls)
 
             if tool_calls:
-                state.set_pending_tool_calls(tool_calls)
                 await self._checkpoint(state, checkpoint)
 
             # 5. 无工具调用 → 本轮结束
@@ -271,7 +267,7 @@ class ExecutionPipeline:
 
                 # 中断：持久化路由信息 + 剩余工具，仅发最小字段给前端
                 if result.interrupt:
-                    remaining = [tc.to_dict() for tc in tool_calls[i + 1:]]
+                    remaining = tool_calls[i + 1:]
                     yield await self._commit_interrupt(
                         state, tool_call, result.interrupt,
                         result.resume_state, remaining, checkpoint,
@@ -611,41 +607,21 @@ class ExecutionPipeline:
             result: 工具执行结果。
             checkpoint: intermediate checkpoint 持久化回调。
         """
-        self._append_tool_result(state, tool_call, result)
-        state.remove_pending_tool_call(tool_call.id)
-        if not state.pending_tool_calls:
-            state.flush_deferred_tool_images()
-        await self._checkpoint(state, checkpoint)
-
-    def _append_tool_result(
-        self,
-        state: AgentState,
-        tool_call: ToolCall,
-        result: ToolResult,
-    ) -> None:
-        """追加工具结果槽位，并把图片暂存到当前批次的延迟队列。"""
-        if result.state_updates:
-            state.update_extra(result.state_updates)
-
-        state.add_tool_message(
-            content=result.content,
-            tool_name=tool_call.name,
-            tool_call_id=tool_call.id,
-            compressible=bool(getattr(self._tool_manager.get(tool_call.name), "compressible", False)),
-        )
-        tool_message_id = state.messages[-1]["_message_id"]
-
         image_urls = list(result.image_urls)
         if result.image_url and result.image_url not in image_urls:
             image_urls.insert(0, result.image_url)
-        if image_urls:
-            state.deferred_tool_images.append({
-                "tool_call_id": tool_call.id,
-                "tool_name": tool_call.name,
-                "associated_message_id": tool_message_id,
-                "image_message_name": result.image_message_name or TOOL_IMAGE_MESSAGE_NAME,
-                "image_urls": image_urls,
-            })
+        state.record_tool_result(
+            tool_call,
+            result.content,
+            compressible=bool(
+                getattr(self._tool_manager.get(tool_call.name), "compressible", False)
+            ),
+            image_urls=image_urls,
+            image_message_name=result.image_message_name or TOOL_IMAGE_MESSAGE_NAME,
+        )
+        if result.state_updates:
+            state.update_extra(result.state_updates)
+        await self._checkpoint(state, checkpoint)
 
     async def _commit_interrupt(
         self,
@@ -653,7 +629,7 @@ class ExecutionPipeline:
         tool_call: ToolCall,
         interrupt: InterruptEvent,
         resume_state: dict,
-        pending_actions: list[dict],
+        pending_actions: list[ToolCall],
         checkpoint: CheckpointCallback | None,
     ) -> AgentEvent:
         """统一中断迁移：写入路由、执行钩子、保存，再构造客户端事件。
@@ -686,12 +662,6 @@ class ExecutionPipeline:
     ) -> None:
         """添加助手消息到状态"""
         if tool_calls:
-            msg = AssistantMessageWithTools(
-                role=MessageRole.ASSISTANT,   # 必须用枚举，否则 to_openai_format 取 .value 崩溃
-                content=content,
-                tool_calls=tool_calls,
-            )
-            state.add_message(msg)
-            state.updated_at = msg.timestamp
+            state.record_assistant_step(content, tool_calls)
         else:
             state.add_assistant_message(content)

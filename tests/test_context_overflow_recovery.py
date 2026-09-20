@@ -11,7 +11,7 @@ from app.agent.core.pipeline import ExecutionPipeline
 from app.agent.core.plugin_manager import PluginManager
 from app.agent.core.tool_manager import ToolManager
 from app.agent.models.llm_client import StreamChunk
-from app.agent.state.messages import ToolCall
+from app.agent.state.messages import ContextSummaryMessage, ToolCall, ToolMessage
 from app.agent.state import AgentState
 
 
@@ -39,13 +39,9 @@ def history():
     state = AgentState.create_new("overflow-test")
     for index in range(12):
         state.add_user_message(f"历史问题{index}：" + "文" * 100)
-        state.messages.append({
-            "role": "assistant", "content": "", "tool_calls": [{
-                "id": f"call-{index}", "type": "function",
-                "function": {"name": "observe", "arguments": "{}"},
-            }],
-        })
-        state.add_tool_message("旧观察" * 100, "observe", f"call-{index}", compressible=True)
+        call = ToolCall(id=f"call-{index}", name="observe", args={})
+        state.record_assistant_step("", (call,))
+        state.record_tool_result(call, "旧观察" * 100, compressible=True)
         state.add_assistant_message("历史回答" + "文" * 100)
     state.add_user_message("继续")
     return state
@@ -89,7 +85,7 @@ def test_rejected_input_forces_both_compaction_steps_below_budget():
     assert len(model.summaries) == 1
     assert any(message.get("content") == COMPRESSED_TOOL_RESULT for message in model.summaries[0])
     assert model.order == ["model", "summary", "checkpoint", "model"]
-    assert any(message.get("name") == "context_summary" for message in checkpoints[0])
+    assert any(isinstance(message, ContextSummaryMessage) for message in checkpoints[0])
     assert not any(event.type == EventType.ERROR for event in events)
 
 
@@ -106,7 +102,7 @@ def test_second_recovery_uses_frozen_history_and_stops_after_two_candidates(fail
     assert sources[1][:len(sources[0])] == sources[0]
     assert not any(message.get("name") == "context_summary" for message in sources[1])
     assert len(checkpoints) == 2
-    assert "历史摘要2" in checkpoints[-1][0]["content"]
+    assert "历史摘要2" in checkpoints[-1][0].text
     assert any(event.type == EventType.ERROR for event in events) == (failures == 3)
 
 

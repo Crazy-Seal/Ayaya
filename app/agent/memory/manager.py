@@ -12,8 +12,14 @@ from app.agent.memory.memories.semantic_mem0 import Mem0SemanticMemory
 from app.agent.memory.memories.semantic_mem0 import MEM0_CUSTOM_INSTRUCTIONS
 from app.agent.memory.memories.diary import DiaryMemory
 from app.agent.memory.store.chat_history_store import ChatHistoryStore
-from app.agent.state.messages import Message, MessageRole, SYSTEM_INJECTED_USER_MESSAGE_NAMES
-from app.agent.utils.domain.text import extract_text
+from app.agent.state.messages import (
+    AssistantMessage,
+    BaseMessage,
+    HumanMessage,
+    RuntimeInputMessage,
+    ToolMediaMessage,
+    ToolMessage,
+)
 from app.agent.state.time import render_timed_text
 from app.agent.utils.domain.weighted_text import truncate_weighted_text
 from app.agent.utils.domain.token_estimation import RoughTokenEstimator
@@ -94,8 +100,8 @@ class MemoryManager:
 
     async def add(
         self,
-        messages: list[Message],
-        history: list[Message] | None = None,
+        messages: list[BaseMessage],
+        history: list[BaseMessage] | None = None,
         *,
         enable_episodic: bool = True,
         enable_semantic: bool = True,
@@ -357,20 +363,25 @@ class MemoryManager:
     # ==================== 工具方法 ====================
 
     @staticmethod
-    def _compress_memory_tool_results(messages: list[Message]) -> list[Message]:
-        from copy import deepcopy
-        copied = deepcopy(messages)
-        for message in copied:
-            if message.role == MessageRole.TOOL and isinstance(message.content, str):
-                message.content = truncate_weighted_text(
-                    message.content,
-                    max_weight=1_000,
-                    head_weight=800,
-                    tail_weight=200,
+    def _compress_memory_tool_results(messages: list[BaseMessage]) -> list[BaseMessage]:
+        from dataclasses import replace
+
+        copied: list[BaseMessage] = []
+        for message in messages:
+            if isinstance(message, ToolMessage):
+                message = replace(
+                    message,
+                    content=truncate_weighted_text(
+                        message.content,
+                        max_weight=1_000,
+                        head_weight=800,
+                        tail_weight=200,
+                    ),
                 )
+            copied.append(message)
         return copied
 
-    def _format_messages(self, messages: list[Message], *, mark_as_history: bool = False) -> str:
+    def _format_messages(self, messages: list[BaseMessage], *, mark_as_history: bool = False) -> str:
         """格式化消息列表为文本
 
         只保留用户和 AI 的普通对话，过滤掉：
@@ -385,35 +396,37 @@ class MemoryManager:
         ai_name = self.chat_settings.name or "AI"
         lines = []
         for msg in messages:
-            if msg.role == MessageRole.USER and msg.name in SYSTEM_INJECTED_USER_MESSAGE_NAMES:
+            if isinstance(msg, ToolMediaMessage):
                 continue
-            if msg.role == MessageRole.USER:
+            if isinstance(msg, HumanMessage):
                 role = user_name
-                # 提取文本内容
-                content = extract_text(msg.content)
-            elif msg.role == MessageRole.ASSISTANT:
+                content = msg.text
+            elif isinstance(msg, RuntimeInputMessage):
+                lines.append(
+                    f"运行时输入: {render_timed_text(msg.to_openai_format()['content'], msg.created_at)}"
+                )
+                continue
+            elif isinstance(msg, AssistantMessage):
                 role = ai_name
-                # 检查是否有工具调用
-                if hasattr(msg, 'tool_calls') and msg.tool_calls:
-                    import json
+                if msg.tool_calls:
                     if mark_as_history:
                         lines.extend(f"AI：调用了工具 {tc.name}" for tc in msg.tool_calls)
                     else:
                         lines.extend(
                             f"AI：调用工具 {tc.name}，参数："
-                            f"{json.dumps(tc.args, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}"
+                            f"{tc.to_dict()['function']['arguments']}"
                             for tc in msg.tool_calls
                         )
                     continue
                 else:
-                    content = extract_text(msg.content)
-            elif msg.role == MessageRole.TOOL:
+                    content = msg.text
+            elif isinstance(msg, ToolMessage):
                 if not mark_as_history:
-                    lines.append(f"工具结果：{extract_text(msg.content)}")
+                    lines.append(f"工具结果：{msg.content}")
                 continue
             else:
                 continue
-            lines.append(f"{role}: {render_timed_text(content, msg.timestamp)}")
+            lines.append(f"{role}: {render_timed_text(content, msg.created_at)}")
         return "\n".join(lines)
 
 

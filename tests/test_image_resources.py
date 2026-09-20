@@ -9,6 +9,7 @@ from app.agent.agent import Agent, AgentConfig
 from app.agent.context import ContextStrategyConfig
 from app.agent.models import vlm
 from app.agent.state import AgentState
+from app.agent.state.messages import HumanMessage, ToolCall
 from app.agent.utils.domain import images as image_utils
 from app.agent.utils.domain.text import normalize_messages_for_model
 
@@ -29,6 +30,12 @@ def _make_agent(db_path: Path) -> Agent:
         db_path=str(db_path),
         llm_client=_UnusedLLM(),
     )
+
+
+def _append_tool_image(state: AgentState, image: str) -> None:
+    call = ToolCall(id="call-draw", name="draw", args={})
+    state.record_assistant_step("", (call,))
+    state.record_tool_result(call, "done", image_urls=(image,))
 
 
 def test_vlm_default_config(monkeypatch) -> None:
@@ -197,8 +204,8 @@ def test_user_image_is_saved_before_first_protocol_commit(
     payload = json.loads(row[0])
 
     assert calls == [[image]]
-    assert message["image_filenames"] == ["stored.png"]
-    assert "image_description" not in message
+    assert isinstance(message, HumanMessage)
+    assert message.image_filenames == ("stored.png",)
     assert "image_filenames" not in payload
     assert payload["content"][1]["image_url"]["url"] == "stored.png"
     assert "image_description" not in payload
@@ -229,8 +236,9 @@ def test_text_input_does_not_save_images(monkeypatch, tmp_path: Path) -> None:
             await agent.state_manager.close()
 
     state = asyncio.run(scenario())
-    assert state.messages[-1]["content"] == "只有文字"
-    assert "image_filenames" not in state.messages[-1]
+    assert isinstance(state.messages[-1], HumanMessage)
+    assert state.messages[-1].text == "只有文字"
+    assert state.messages[-1].image_filenames == ()
 
 
 def test_image_save_failure_does_not_block_user_commit(
@@ -273,7 +281,8 @@ def test_image_save_failure_does_not_block_user_commit(
     assert called is True
     assert payload["content"][0]["text"] == "继续聊天"
     assert payload["content"][1]["image_url"]["url"] == "data:image/png;base64,AA=="
-    assert "image_filenames" not in state.messages[-1]
+    assert isinstance(state.messages[-1], HumanMessage)
+    assert state.messages[-1].image_filenames == ()
     assert row[1] is None
 
 
@@ -288,13 +297,7 @@ def test_tool_image_is_externalized_for_protocol_but_kept_in_checkpoint(
         manager = agent_module.StateManager("tool-image", db_path=str(tmp_path / "agent.sqlite3"))
         try:
             state = AgentState.create_new("tool-image")
-            state.add_tool_message("done", "draw", "call-draw")
-            state.deferred_tool_images.append({
-                "tool_call_id": "call-draw",
-                "tool_name": "draw",
-                "image_urls": [image],
-            })
-            state.flush_deferred_tool_images()
+            _append_tool_image(state, image)
             await manager.save(state, checkpoint_type="completed")
             db = await manager._get_db()
             protocol_raw, attachments_raw = (await db.execute_fetchall(
@@ -336,13 +339,7 @@ def test_tool_image_protocol_row_upgrades_after_transient_save_failure(
         )
         try:
             state = AgentState.create_new("retry-tool-image")
-            state.add_tool_message("done", "draw", "call-draw")
-            state.deferred_tool_images.append({
-                "tool_call_id": "call-draw",
-                "tool_name": "draw",
-                "image_urls": ["data:image/png;base64,AA=="],
-            })
-            state.flush_deferred_tool_images()
+            _append_tool_image(state, "data:image/png;base64,AA==")
             await manager.save(state, checkpoint_type="completed")
             db = await manager._get_db()
             first_raw, first_attachments = (await db.execute_fetchall(
@@ -386,13 +383,7 @@ def test_tool_image_save_exception_preserves_base64_and_checkpoint(
         )
         try:
             state = AgentState.create_new("failed-tool-image")
-            state.add_tool_message("done", "draw", "call-draw")
-            state.deferred_tool_images.append({
-                "tool_call_id": "call-draw",
-                "tool_name": "draw",
-                "image_urls": ["data:image/png;base64,AA=="],
-            })
-            state.flush_deferred_tool_images()
+            _append_tool_image(state, "data:image/png;base64,AA==")
             await manager.save(state, checkpoint_type="completed")
             db = await manager._get_db()
             protocol_raw, attachments = (await db.execute_fetchall(

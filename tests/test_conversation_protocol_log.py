@@ -4,15 +4,24 @@ from pathlib import Path
 
 import aiosqlite
 import pytest
+from fastapi import HTTPException
 
 from app.agent.context._compaction import ContextCompressionPolicy
 from app.agent.state.manager import StateManager
 from app.agent.state import AgentState
+from app.agent.state.messages import (
+    AvailableMedia,
+    CompactedMedia,
+    MessageContractError,
+    ToolCall,
+    ToolMediaMessage,
+)
 from app.agent.state.message_names import (
     SCREENSHOT_COMPRESSED_NAME,
     SCREENSHOT_MESSAGE_NAME,
 )
 from app.crud.chat_history_dao import ChatHistoryDao
+from app.routes.chat_history import list_chat_history, list_chat_history_last_n
 
 
 def test_checkpoint_and_protocol_log_are_saved_atomically(tmp_path: Path) -> None:
@@ -22,15 +31,9 @@ def test_checkpoint_and_protocol_log_are_saved_atomically(tmp_path: Path) -> Non
         try:
             state = AgentState.create_new("session")
             state.add_user_message("你好")
-            state.messages.append({
-                "role": "assistant",
-                "content": "我来读取",
-                "tool_calls": [{
-                    "id": "call-1",
-                    "type": "function",
-                    "function": {"name": "read_file", "arguments": '{"path":"a.py"}'},
-                }],
-            })
+            state.record_assistant_step("我来读取", (
+                ToolCall(id="call-1", name="read_file", args={"path": "a.py"}),
+            ))
             state.add_tool_message("结果", "read_file", "call-1", compressible=True)
             state.add_assistant_message("完成")
             await manager.save(state, checkpoint_type="completed")
@@ -68,14 +71,9 @@ def test_history_dao_projects_visible_rows_before_pagination(tmp_path: Path) -> 
         try:
             state = AgentState.create_new("session")
             state.add_user_message("问题")
-            state.messages.append({
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [{
-                    "id": "call-1", "type": "function",
-                    "function": {"name": "read_file", "arguments": "{}"},
-                }],
-            })
+            state.record_assistant_step("", (
+                ToolCall(id="call-1", name="read_file", args={}),
+            ))
             state.add_tool_message("隐藏结果", "read_file", "call-1", compressible=True)
             state.add_assistant_message("回答")
             await manager.save(state, checkpoint_type="completed")
@@ -102,14 +100,9 @@ def test_history_dao_keeps_projection_order_across_small_query_chunks(tmp_path: 
         try:
             state = AgentState.create_new("session")
             state.add_user_message("question")
-            state.messages.append({
-                "role": "assistant",
-                "content": "working",
-                "tool_calls": [{
-                    "id": "call-1", "type": "function",
-                    "function": {"name": "read_file", "arguments": "{}"},
-                }],
-            })
+            state.record_assistant_step("working", (
+                ToolCall(id="call-1", name="read_file", args={}),
+            ))
             state.add_tool_message("hidden", "read_file", "call-1", compressible=True)
             state.add_assistant_message("answer")
             await manager.save(state, checkpoint_type="completed")
@@ -140,15 +133,15 @@ def test_tool_image_protocol_row_references_its_tool_message(tmp_path: Path) -> 
         manager = StateManager("session", db_path=str(db_path))
         try:
             state = AgentState.create_new("session")
-            state.add_tool_message("截屏成功", "screenshot", "call-shot")
-            tool_message_id = state.messages[-1]["_message_id"]
-            state.deferred_tool_images.append({
-                "tool_call_id": "call-shot",
-                "tool_name": "screenshot",
-                "image_message_name": "system_screenshot",
-                "image_urls": ["data:image/png;base64,AAA"],
-            })
-            state.flush_deferred_tool_images()
+            call = ToolCall(id="call-shot", name="screenshot", args={})
+            state.record_assistant_step("", (call,))
+            tool_message = state.record_tool_result(
+                call,
+                "截屏成功",
+                image_urls=("data:image/png;base64,AAA",),
+                image_message_name=SCREENSHOT_MESSAGE_NAME,
+            )
+            tool_message_id = tool_message.message_id
             await manager.save(state, checkpoint_type="completed")
 
             db = await manager._get_db()
@@ -176,19 +169,19 @@ def test_compressed_checkpoint_preserves_externalized_screenshot_history(
         manager = StateManager("session", db_path=str(db_path))
         try:
             state = AgentState.create_new("session")
-            state.add_tool_message("截屏成功", "screenshot", "call-shot")
-            state.deferred_tool_images.append({
-                "tool_call_id": "call-shot",
-                "tool_name": "screenshot",
-                "image_message_name": SCREENSHOT_MESSAGE_NAME,
-                "image_urls": [
+            call = ToolCall(id="call-shot", name="screenshot", args={})
+            state.record_assistant_step("", (call,))
+            state.record_tool_result(
+                call,
+                "截屏成功",
+                image_urls=(
                     "data:image/png;base64,"
                     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
-                    "AAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
-                ],
-            })
-            state.flush_deferred_tool_images()
-            screenshot_id = state.messages[-1]["_message_id"]
+                    "AAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+                ),
+                image_message_name=SCREENSHOT_MESSAGE_NAME,
+            )
+            screenshot_id = state.messages[-1].message_id
             await manager.save(state, checkpoint_type="completed")
 
             db = await manager._get_db()
@@ -201,12 +194,13 @@ def test_compressed_checkpoint_preserves_externalized_screenshot_history(
                 (screenshot_id,),
             ))[0]
 
-            changed = ContextCompressionPolicy().compress_screenshots(
+            candidate, changed = ContextCompressionPolicy().compress_screenshots(
                 state.messages,
                 ttl_human_messages=0,
                 max_screenshots=2,
             )
             assert changed == 1
+            state.commit_compaction(candidate)
             await manager.save(state, checkpoint_type="intermediate")
 
             after_row = (await db.execute_fetchall(
@@ -240,23 +234,25 @@ def test_compressed_checkpoint_preserves_externalized_screenshot_history(
     restored_screenshot = next(
         message
         for message in restored.messages
-        if message.get("name") == SCREENSHOT_COMPRESSED_NAME
+        if isinstance(message, ToolMediaMessage)
+        and isinstance(message.payload, CompactedMedia)
     )
-    assert "base64" not in json.dumps(restored_screenshot)
+    assert "base64" not in json.dumps(restored_screenshot.to_storage_format())
 
 
 def test_tool_image_without_tool_call_id_is_not_misassociated() -> None:
     state = AgentState.create_new("session")
-    state.add_tool_message("旧工具结果", "legacy_tool")
-    state.deferred_tool_images.append({
-        "tool_name": "unknown",
-        "image_message_name": "mcp_tool_image",
-        "image_urls": ["data:image/png;base64,AAA"],
-    })
+    message = ToolMediaMessage(
+        tool_name="unknown",
+        media_kind="mcp",
+        text="[系统消息]工具返回图片",
+        payload=AvailableMedia(urls=("data:image/png;base64,AAA",)),
+    )
+    checkpoint = state.to_checkpoint()
+    checkpoint["messages"] = [message.to_storage_format()]
+    state = AgentState.from_checkpoint(checkpoint)
 
-    state.flush_deferred_tool_images()
-
-    assert "_associated_message_id" not in state.messages[-1]
+    assert state.messages[-1].associated_message_id is None
 
 
 def test_history_dao_does_not_fall_back_to_retired_chat_history_table(
@@ -282,3 +278,86 @@ def test_history_dao_does_not_fall_back_to_retired_chat_history_table(
         return await ChatHistoryDao(db_path=db_path).list_chat_history_async("session")
 
     assert asyncio.run(scenario()) == []
+
+
+def test_history_dao_raises_for_missing_message_type_but_keeps_legacy_notice(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> tuple[MessageContractError, list[dict]]:
+        db_path = tmp_path / "agent.sqlite3"
+        manager = StateManager("session", db_path=str(db_path))
+        try:
+            db = await manager._get_db()
+            await db.execute(
+                """
+                INSERT INTO conversation_messages (
+                    session_id, message_id, created_at, role, message_json,
+                    record_kind, fidelity, message_type
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+                """,
+                (
+                    "broken",
+                    "missing-type",
+                    "2026-09-20T00:00:00+00:00",
+                    "user",
+                    json.dumps({"role": "user", "content": "坏记录"}),
+                    "protocol",
+                    "exact",
+                ),
+            )
+            await db.execute(
+                """
+                INSERT INTO conversation_messages (
+                    session_id, message_id, created_at, role, message_json,
+                    record_kind, fidelity, message_type
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+                """,
+                (
+                    "legacy",
+                    "legacy-notice",
+                    "2026-09-20T00:00:00+00:00",
+                    "assistant",
+                    json.dumps({"role": "assistant", "content": "旧工具提示"}),
+                    "legacy_tool_notice",
+                    "projected",
+                ),
+            )
+            await db.commit()
+        finally:
+            await manager.close()
+
+        dao = ChatHistoryDao(db_path=db_path)
+        try:
+            await dao.list_chat_history_async("broken")
+        except MessageContractError as exc:
+            error = exc
+        else:
+            raise AssertionError("缺失 message_type 必须显式失败")
+        return error, await dao.list_chat_history_async("legacy")
+
+    error, legacy = asyncio.run(scenario())
+    assert "数据库与当前消息契约不兼容" in str(error)
+    assert [(item["role"], item["content"]) for item in legacy] == [
+        ("AI_Tool_Calling", "旧工具提示")
+    ]
+
+
+@pytest.mark.parametrize("route", [list_chat_history, list_chat_history_last_n])
+def test_chat_history_routes_map_contract_errors_to_explicit_500(route) -> None:
+    class BrokenHistoryService:
+        async def get_chat_history_data(self, **_kwargs):
+            raise MessageContractError("数据库与当前消息契约不兼容")
+
+        async def get_chat_history_last_n(self, **_kwargs):
+            raise MessageContractError("数据库与当前消息契约不兼容")
+
+    async def invoke() -> None:
+        if route is list_chat_history:
+            await route("session", 0, 200, BrokenHistoryService())
+        else:
+            await route("session", 100, BrokenHistoryService())
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(invoke())
+    assert exc_info.value.status_code == 500
+    assert "消息契约不兼容" in str(exc_info.value.detail)

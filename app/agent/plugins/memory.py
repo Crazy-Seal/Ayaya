@@ -8,8 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.agent.plugins.base import BasePlugin, HookContext, PluginHook
 from app.agent.memory.manager import get_memory_manager
 from app.agent.state.messages import (
-    is_real_human_message,
-    messages_from_openai_format,
+    HumanMessage,
 )
 from app.agent.utils.infra.background_tasks import create_background_task
 from app.agent.utils.domain.text import get_last_human_text
@@ -170,18 +169,16 @@ class MemoryPlugin(BasePlugin):
         if store is None:
             logger.warning("[MemoryPlugin] 协议日志查询器未启用，跳过长期记忆")
             return
-        history_dicts, recent_dicts = await store.get_recent_completed_turns(
+        history, recent = await store.get_recent_completed_turns(
             session_id,
             current_turns=batch_turns,
             history_turns=MEMORY_HISTORY_HUMAN_MESSAGES,
             max_history_id=max_history_id,
         )
-        recent_humans = sum(1 for message in recent_dicts if is_real_human_message(message))
+        recent_humans = sum(1 for message in recent if isinstance(message, HumanMessage))
         if recent_humans < batch_turns:
             logger.warning("[MemoryPlugin] 完整协议轮次不足，跳过本次长期记忆提取")
             return
-        recent = messages_from_openai_format(recent_dicts)
-        history = messages_from_openai_format(history_dicts)
         await mm.add(
             recent,
             history,

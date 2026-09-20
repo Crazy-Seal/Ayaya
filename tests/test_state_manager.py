@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 from datetime import timedelta
 from pathlib import Path
 
@@ -10,6 +11,14 @@ from app.agent.state.manager import LATEST_CHECKPOINT_SQL, StateManager
 from app.agent.memory.store.chat_history_store import ChatHistoryStore
 from app.crud.chat_history_dao import ChatHistoryDao
 from app.agent.state import AgentState, TokenBaseline
+from app.agent.state.messages import (
+    AvailableMedia,
+    HumanMessage,
+    MCP_TOOL_IMAGE_MESSAGE_NAME,
+    PROTOCOL_MESSAGE_TYPES,
+    ToolCall,
+    ToolMediaMessage,
+)
 import app.agent.state.manager as state_manager_module
 from app.runtime import get_agent_state_db, get_chat_history_db, get_checkpoint_db
 
@@ -106,7 +115,7 @@ def test_completed_checkpoint_removes_intermediate_and_keeps_latest_thirty(
             assert len(rows) == StateManager.MAX_COMPLETED_CHECKPOINTS_PER_SESSION
             assert {row[1] for row in rows} == {"completed"}
             first_retained = AgentState.from_checkpoint(json.loads(rows[0][2]))
-            assert first_retained.messages[-1]["content"] == "完成态 5"
+            assert first_retained.messages[-1].text == "完成态 5"
 
             intermediate = AgentState.create_new("test-session")
             intermediate.add_assistant_message("最新中间态")
@@ -114,7 +123,7 @@ def test_completed_checkpoint_removes_intermediate_and_keeps_latest_thirty(
             rows = await checkpoint_rows(manager)
             assert len(rows) == StateManager.MAX_COMPLETED_CHECKPOINTS_PER_SESSION + 1
             assert [row[1] for row in rows].count("intermediate") == 1
-            assert (await manager.load()).messages[-1]["content"] == "最新中间态"
+            assert (await manager.load()).messages[-1].text == "最新中间态"
         finally:
             await manager.close()
 
@@ -208,14 +217,14 @@ def test_mcp_tool_image_is_not_persisted_as_human_history(tmp_path: Path) -> Non
         try:
             state = AgentState.create_new("test-session")
             state.add_user_message("真实问题")
-            state.messages.append({
-                "role": "user",
-                "name": "mcp_tool_image",
-                "content": [
-                    {"type": "text", "text": "[系统消息]工具返回图片"},
-                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,MQ=="}},
-                ],
-            })
+            call = ToolCall(id="call-mcp", name="mcp_tool", args={})
+            state.record_assistant_step("", (call,))
+            state.record_tool_result(
+                call,
+                "完成",
+                image_urls=("data:image/png;base64,MQ==",),
+                image_message_name=MCP_TOOL_IMAGE_MESSAGE_NAME,
+            )
             state.add_assistant_message("完成")
             await manager.save(state, checkpoint_type="completed")
 
@@ -223,7 +232,12 @@ def test_mcp_tool_image_is_not_persisted_as_human_history(tmp_path: Path) -> Non
             rows = await ChatHistoryDao(db_path=tmp_path / "agent.sqlite3").list_chat_history_async(
                 "test-session"
             )
-            assert [row["role"] for row in rows] == ["Human", "AI", "AI"]
+            assert [row["role"] for row in rows] == [
+                "Human",
+                "AI_Tool_Calling",
+                "AI",
+                "AI",
+            ]
         finally:
             await manager.close()
 
@@ -279,6 +293,35 @@ def test_fresh_state_database_does_not_create_retired_chat_history_table(
     assert "chat_history" not in tables
 
 
+def test_fresh_database_message_type_check_uses_shared_protocol_types(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> str:
+        manager = StateManager(
+            "test-session",
+            db_path=str(tmp_path / "agent.sqlite3"),
+        )
+        try:
+            db = await manager._get_db()
+            rows = await db.execute_fetchall(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type='table' AND name='conversation_messages'"
+            )
+            return str(rows[0][0])
+        finally:
+            await manager.close()
+
+    table_sql = asyncio.run(scenario())
+    match = re.search(
+        r"message_type\s+TEXT\s+CHECK\s*\(message_type\s+IN\s*\((.*?)\)\)",
+        table_sql,
+        re.DOTALL,
+    )
+    assert match is not None
+    allowed_types = tuple(re.findall(r"'([^']+)'", match.group(1)))
+    assert allowed_types == PROTOCOL_MESSAGE_TYPES
+
+
 def test_chat_history_store_has_no_independent_write_api() -> None:
     assert not hasattr(ChatHistoryStore, "save_chat_message")
 
@@ -297,7 +340,7 @@ def test_chat_history_store_honors_previous_input_high_watermark(tmp_path: Path)
 
             state.add_user_message("当前可修改输入")
             await manager.save(state, checkpoint_type="intermediate")
-            effective_date = store._utc_to_local_date(state.messages[0]["_created_at"])
+            effective_date = store._utc_to_local_date(state.messages[0].created_at)
             messages = await store.get_messages_by_date(
                 "test-session",
                 effective_date,
@@ -305,9 +348,9 @@ def test_chat_history_store_honors_previous_input_high_watermark(tmp_path: Path)
             )
             human_count = sum(
                 1 for message in messages
-                if message.get("role") == "user"
+                if isinstance(message, HumanMessage)
             )
-            return human_count, [message["content"] for message in messages]
+            return human_count, [message.text for message in messages]
         finally:
             await manager.close()
 

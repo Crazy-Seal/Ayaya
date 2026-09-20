@@ -10,7 +10,12 @@ from zoneinfo import ZoneInfo
 
 import aiosqlite
 
-from app.agent.state.messages import is_real_human_message
+from app.agent.state.messages import (
+    AssistantMessage,
+    BaseMessage,
+    HumanMessage,
+    message_from_protocol_format,
+)
 from app.runtime import get_chat_history_db
 
 
@@ -97,9 +102,10 @@ class ChatHistoryStore:
                 return []
             return await conn.execute_fetchall(
                 f"""
-                SELECT id, message_id, created_at, role, message_json, record_kind
+                SELECT id, message_id, created_at, role, message_json, record_kind,
+                       message_type, domain_json, associated_message_id
                 FROM {self.TABLE_NAME}
-                WHERE {' AND '.join(clauses)}
+                WHERE {' AND '.join(clauses)} AND record_kind <> 'legacy_tool_notice'
                 ORDER BY id ASC
                 """,
                 params,
@@ -113,15 +119,26 @@ class ChatHistoryStore:
         return bool(row)
 
     @staticmethod
-    def _decode(row: tuple) -> dict[str, Any]:
-        row_id, message_id, created_at, role, raw, record_kind = row
-        message = json.loads(raw)
-        message["_history_id"] = row_id
-        message["_message_id"] = message_id
-        message["_created_at"] = created_at
-        message["_record_kind"] = record_kind
-        message["role"] = role
-        return message
+    def _decode(row: tuple) -> BaseMessage:
+        (
+            _row_id,
+            message_id,
+            created_at,
+            _role,
+            raw,
+            _record_kind,
+            message_type,
+            raw_domain,
+            associated_message_id,
+        ) = row
+        return message_from_protocol_format(
+            message_type=message_type,
+            message_json=json.loads(raw),
+            message_id=str(message_id),
+            created_at=created_at,
+            domain_json=json.loads(raw_domain) if raw_domain else {},
+            associated_message_id=associated_message_id,
+        )
 
     async def get_latest_message_id(self, session_id: str) -> int:
         async with aiosqlite.connect(str(self.db_path)) as conn:
@@ -153,7 +170,7 @@ class ChatHistoryStore:
                 f"""
                 SELECT created_at
                 FROM {self.TABLE_NAME}
-                WHERE {' AND '.join(clauses)}
+                WHERE {' AND '.join(clauses)} AND record_kind <> 'legacy_tool_notice'
                 ORDER BY id DESC
                 """,
                 params,
@@ -169,7 +186,7 @@ class ChatHistoryStore:
         session_id: str,
         effective_date: date,
         max_history_id: int | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[BaseMessage]:
         start, end = self._local_date_to_utc_range(effective_date)
         return [
             self._decode(row)
@@ -185,7 +202,7 @@ class ChatHistoryStore:
         limit: int = 10,
         *,
         max_history_id: int | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[BaseMessage]:
         if limit <= 0:
             return []
         start, _ = self._local_date_to_utc_range(before_date)
@@ -201,9 +218,10 @@ class ChatHistoryStore:
                 return []
             rows = await conn.execute_fetchall(
                 f"""
-                SELECT id, message_id, created_at, role, message_json, record_kind
+                SELECT id, message_id, created_at, role, message_json, record_kind,
+                       message_type, domain_json, associated_message_id
                 FROM {self.TABLE_NAME}
-                WHERE {' AND '.join(clauses)}
+                WHERE {' AND '.join(clauses)} AND record_kind <> 'legacy_tool_notice'
                 ORDER BY id DESC
                 LIMIT ?
                 """,
@@ -212,11 +230,11 @@ class ChatHistoryStore:
         return [self._decode(row) for row in reversed(rows)]
 
     @staticmethod
-    def _completed_turns(records: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
-        turns: list[list[dict[str, Any]]] = []
-        active: list[dict[str, Any]] = []
+    def _completed_turns(records: list[BaseMessage]) -> list[list[BaseMessage]]:
+        turns: list[list[BaseMessage]] = []
+        active: list[BaseMessage] = []
         for message in records:
-            if is_real_human_message(message):
+            if isinstance(message, HumanMessage):
                 if active:
                     turns.append(active)
                 active = [message]
@@ -227,8 +245,8 @@ class ChatHistoryStore:
         return [
             turn for turn in turns
             if any(
-                message.get("role") == "assistant"
-                and not message.get("tool_calls")
+                isinstance(message, AssistantMessage)
+                and not message.tool_calls
                 for message in turn[1:]
             )
         ]
@@ -240,7 +258,7 @@ class ChatHistoryStore:
         current_turns: int = 10,
         history_turns: int = 5,
         max_history_id: int | None = None,
-    ) -> tuple[list[dict], list[dict]]:
+    ) -> tuple[list[BaseMessage], list[BaseMessage]]:
         """返回前情和当前批次；只接受具有最终普通 assistant 的完整轮次。"""
         current_turns = max(current_turns, 0)
         history_turns = max(history_turns, 0)
@@ -248,8 +266,8 @@ class ChatHistoryStore:
         if required == 0:
             return [], []
 
-        records: list[dict[str, Any]] = []
-        complete: list[list[dict[str, Any]]] = []
+        records: list[BaseMessage] = []
+        complete: list[list[BaseMessage]] = []
         before_id: int | None = None
         async with aiosqlite.connect(str(self.db_path)) as conn:
             await conn.execute("PRAGMA busy_timeout=5000")
@@ -267,9 +285,10 @@ class ChatHistoryStore:
                 params.append(self.READ_CHUNK_SIZE)
                 rows = await conn.execute_fetchall(
                     f"""
-                    SELECT id, message_id, created_at, role, message_json, record_kind
+                    SELECT id, message_id, created_at, role, message_json, record_kind,
+                           message_type, domain_json, associated_message_id
                     FROM {self.TABLE_NAME}
-                    WHERE {' AND '.join(clauses)}
+                    WHERE {' AND '.join(clauses)} AND record_kind <> 'legacy_tool_notice'
                     ORDER BY id DESC
                     LIMIT ?
                     """,

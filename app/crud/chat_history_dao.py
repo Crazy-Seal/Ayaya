@@ -4,6 +4,13 @@ import logging
 import aiosqlite
 from datetime import datetime, timezone
 
+from app.agent.state.messages import (
+    AssistantMessage,
+    HumanMessage,
+    MessageContractError,
+    ToolMediaMessage,
+    message_from_protocol_format,
+)
 from app.runtime import get_chat_history_db
 
 logger = logging.getLogger(__name__)
@@ -55,12 +62,28 @@ class ChatHistoryDao:
 
     @staticmethod
     def _project_protocol_row(row: tuple) -> list[dict]:
-        row_id, message_id, role, raw_json, created_at, record_kind, attachments_json = row
+        (
+            row_id,
+            message_id,
+            role,
+            raw_json,
+            created_at,
+            record_kind,
+            attachments_json,
+            message_type,
+            raw_domain,
+            associated_message_id,
+        ) = row
         try:
             message = json.loads(raw_json)
-        except (TypeError, json.JSONDecodeError):
-            logger.warning("[ChatHistory] 无法解析协议消息 id=%s", row_id)
-            return []
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise MessageContractError(
+                f"协议消息 id={row_id} 的 message_json 无效"
+            ) from exc
+        if not isinstance(message, dict):
+            raise MessageContractError(
+                f"协议消息 id={row_id} 的 message_json 必须是对象"
+            )
         content_value = message.get("content", "")
         if isinstance(content_value, list):
             content = "\n".join(
@@ -71,30 +94,50 @@ class ChatHistoryDao:
         else:
             content = str(content_value or "")
         timestamp = ChatHistoryDao._to_local_time_text(created_at)
-        images = json.loads(attachments_json) if attachments_json else None
+        try:
+            images = json.loads(attachments_json) if attachments_json else None
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise MessageContractError(
+                f"协议消息 id={row_id} 的 attachments_json 无效"
+            ) from exc
         base = {"id": message_id or str(row_id), "timestamp": timestamp, "images": images}
         if record_kind == "legacy_tool_notice":
             return [{**base, "role": "AI_Tool_Calling", "content": content}]
-        if record_kind == "tool_image":
+        if not message_type:
+            raise MessageContractError(
+                f"协议消息 id={row_id} 缺少 message_type；数据库与当前消息契约不兼容"
+            )
+        try:
+            domain_message = message_from_protocol_format(
+                message_type=str(message_type),
+                message_json=message,
+                message_id=str(message_id),
+                created_at=created_at,
+                domain_json=json.loads(raw_domain) if raw_domain else {},
+                associated_message_id=associated_message_id,
+            )
+        except MessageContractError:
+            raise
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise MessageContractError(
+                f"协议消息 id={row_id} 不符合当前消息契约"
+            ) from exc
+        if isinstance(domain_message, ToolMediaMessage):
             image_urls = [
                 part.get("image_url", {}).get("url")
                 for part in content_value if isinstance(content_value, list)
                 if isinstance(part, dict) and part.get("type") == "image_url"
             ]
             return [{**base, "role": "AI", "content": content, "images": images or image_urls}]
-        if role == "user":
-            return [{**base, "role": "Human", "content": content}]
-        if role == "tool":
+        if isinstance(domain_message, HumanMessage):
+            return [{**base, "role": "Human", "content": domain_message.text}]
+        if not isinstance(domain_message, AssistantMessage):
             return []
         projected: list[dict] = []
-        if content:
-            projected.append({**base, "role": "AI", "content": content})
-        tool_calls = message.get("tool_calls") or []
-        if tool_calls:
-            names = [
-                str((tool_call.get("function") or {}).get("name") or "未知工具")
-                for tool_call in tool_calls
-            ]
+        if domain_message.text:
+            projected.append({**base, "role": "AI", "content": domain_message.text})
+        if domain_message.tool_calls:
+            names = [call.name for call in domain_message.tool_calls]
             projected.append({
                 **base,
                 "id": f"{base['id']}:tools",
@@ -133,7 +176,8 @@ class ChatHistoryDao:
         return await conn.execute_fetchall(
             f"""
             SELECT id, message_id, role, message_json, created_at,
-                   record_kind, attachments_json
+                   record_kind, attachments_json, message_type, domain_json,
+                   associated_message_id
             FROM conversation_messages
             WHERE {' AND '.join(clauses)}
             ORDER BY id {direction}
@@ -174,6 +218,9 @@ class ChatHistoryDao:
                     if len(rows) < self.READ_CHUNK_SIZE:
                         break
             return result
+        except MessageContractError:
+            logger.exception("[ChatHistory][session=%s] 消息契约不兼容", session_id)
+            raise
         except Exception:
             logger.exception("[ChatHistory][session=%s] 查询聊天记录失败", session_id)
             return []
@@ -214,6 +261,9 @@ class ChatHistoryDao:
                 for item in group
             ]
             return ordered[-n:]
+        except MessageContractError:
+            logger.exception("[ChatHistory][session=%s] 消息契约不兼容", session_id)
+            raise
         except Exception:
             logger.exception("[ChatHistory][session=%s] 查询最后聊天记录失败", session_id)
             return []

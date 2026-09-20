@@ -1,26 +1,30 @@
-"""Agent checkpoint 与 append-only OpenAI 协议日志的原子持久化。"""
+"""原子 checkpoint 与追加式协议日志持久化。"""
+
+from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
+from dataclasses import replace
 import json
 import logging
 import os
-from typing import Literal
-from uuid import uuid4
+from typing import Any, Literal
 
 import aiosqlite
 
-from app.agent.state.model import AgentState
-from app.agent.state.message_names import (
-    MCP_TOOL_IMAGE_MESSAGE_NAME,
-    SCREENSHOT_COMPRESSED_NAME,
-    SCREENSHOT_MESSAGE_NAME,
-    TOOL_IMAGE_MESSAGE_NAME,
-    TOOL_IMAGE_MESSAGE_NAMES,
+from app.agent.state.messages import (
+    AvailableMedia,
+    BaseMessage,
+    HumanMessage,
+    PROTOCOL_MESSAGE_TYPES,
+    ToolMediaMessage,
+    ToolMessage,
 )
-from app.agent.state.time import normalize_utc, utc_now
+from app.agent.state.model import AgentState
+from app.agent.state.time import utc_now
 from app.agent.utils.domain.images import ImageCategory, save_multiple_images
 from app.runtime import get_checkpoint_db
+
 
 logger = logging.getLogger(__name__)
 
@@ -33,25 +37,18 @@ WHERE id = (
 )
 """
 
-
 class StateManager:
-    """状态管理器 - checkpoint 和状态持久化。"""
+    """在一个 SQLite 事务中持久化可恢复状态和协议历史。"""
 
-    # 每个 session 最多保留的完成态数量；中间态另外最多保留一条。
     MAX_COMPLETED_CHECKPOINTS_PER_SESSION = 30
 
-    def __init__(
-        self,
-        session_id: str,
-        db_path: str | None = None,
-    ):
+    def __init__(self, session_id: str, db_path: str | None = None):
         self.session_id = session_id
         self.db_path = str(db_path or get_checkpoint_db())
         self._db: aiosqlite.Connection | None = None
         self.last_loaded_checkpoint_type: CheckpointType | None = None
 
     async def _get_db(self) -> aiosqlite.Connection:
-        """获取数据库连接。"""
         if self._db is None:
             os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
             self._db = await aiosqlite.connect(self.db_path)
@@ -59,7 +56,6 @@ class StateManager:
         return self._db
 
     async def _init_tables(self) -> None:
-        """初始化 checkpoint 与协议日志。"""
         db = await self._get_db()
         await db.execute("""
             CREATE TABLE IF NOT EXISTS checkpoints (
@@ -71,12 +67,14 @@ class StateManager:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-
         await db.execute("""
             CREATE INDEX IF NOT EXISTS idx_checkpoints_session_type_id
             ON checkpoints(session_id, checkpoint_type, id DESC)
         """)
-        await db.execute("""
+        allowed_types = ", ".join(
+            f"'{value}'" for value in PROTOCOL_MESSAGE_TYPES
+        )
+        await db.execute(f"""
             CREATE TABLE IF NOT EXISTS conversation_messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id TEXT NOT NULL,
@@ -91,9 +89,21 @@ class StateManager:
                 associated_message_id TEXT,
                 attachments_json TEXT,
                 legacy_source_id TEXT,
+                message_type TEXT CHECK (message_type IN ({allowed_types})),
+                domain_json TEXT,
                 UNIQUE (session_id, message_id)
             )
         """)
+        columns = {
+            str(row[1])
+            for row in await db.execute_fetchall("PRAGMA table_info(conversation_messages)")
+        }
+        missing = {"message_type", "domain_json"} - columns
+        if missing:
+            raise RuntimeError(
+                "conversation_messages 尚未完成消息契约迁移，缺少列: "
+                + ", ".join(sorted(missing))
+            )
         await db.execute("""
             CREATE INDEX IF NOT EXISTS idx_conversation_messages_session_id
             ON conversation_messages(session_id, id)
@@ -105,150 +115,135 @@ class StateManager:
         await db.commit()
 
     @staticmethod
-    def _ensure_message_metadata(state: AgentState) -> None:
-        for message in state.messages:
-            message.setdefault("_message_id", uuid4().hex)
-            created_at = message.get("_created_at") or state.updated_at
-            message["_created_at"] = normalize_utc(created_at).isoformat()
-
-    @staticmethod
-    def _tool_image_category(name: object) -> ImageCategory | None:
-        if name == MCP_TOOL_IMAGE_MESSAGE_NAME:
-            return "mcp"
-        if name in {SCREENSHOT_MESSAGE_NAME, SCREENSHOT_COMPRESSED_NAME}:
-            return "screenshot"
-        if name == TOOL_IMAGE_MESSAGE_NAME:
-            return "tool"
-        return None
+    def _media_category(message: ToolMediaMessage) -> ImageCategory:
+        return {
+            "screenshot": "screenshot",
+            "mcp": "mcp",
+            "tool": "tool",
+        }[message.media_kind]
 
     @classmethod
-    def _externalize_tool_images(cls, state: AgentState) -> None:
-        """为工具图片补充本地文件引用；State 中仍保留原始 Base64。"""
+    def _externalize_images(cls, state: AgentState) -> None:
+        """通过不可变消息替换附加本地文件引用。"""
         for message in state.messages:
-            if message.get("role") != "user":
+            if not isinstance(message, ToolMediaMessage):
                 continue
-            category = cls._tool_image_category(message.get("name"))
-            if category is None:
+            if not isinstance(message.payload, AvailableMedia):
                 continue
-            content = message.get("content")
-            if not isinstance(content, list):
-                continue
-            image_parts = [
-                part
-                for part in content
-                if isinstance(part, dict) and part.get("type") == "image_url"
-            ]
-            if not image_parts:
-                continue
-            image_urls: list[str] = []
-            for part in image_parts:
-                image_url = part.get("image_url")
-                url = image_url.get("url") if isinstance(image_url, dict) else None
-                if not isinstance(url, str) or not url:
-                    image_urls = []
-                    break
-                image_urls.append(url)
-            if len(image_urls) != len(image_parts):
-                continue
-            existing = message.get("image_filenames")
-            if (
-                isinstance(existing, list)
-                and len(existing) == len(image_urls)
-                and all(isinstance(path, str) and path for path in existing)
-            ):
+            if len(message.payload.storage_refs) == len(message.payload.urls):
                 continue
             try:
-                filenames = save_multiple_images(image_urls, category=category)
+                filenames = save_multiple_images(
+                    list(message.payload.urls),
+                    category=cls._media_category(message),
+                )
             except Exception as exc:
                 logger.warning(
                     "[StateManager] 工具图片外置失败，协议日志保留 Base64: %s",
                     exc,
                 )
                 continue
-            if len(filenames) == len(image_urls):
-                message["image_filenames"] = filenames
+            if len(filenames) == len(message.payload.urls):
+                state.replace_message(replace(
+                    message,
+                    payload=AvailableMedia(
+                        urls=message.payload.urls,
+                        storage_refs=tuple(filenames),
+                    ),
+                ))
 
     @staticmethod
-    def _protocol_payload(message: dict) -> tuple[dict, list[str] | None]:
-        payload = {
-            key: deepcopy(value)
-            for key, value in message.items()
-            if key not in {
+    def _domain_payload(message: BaseMessage) -> dict[str, Any]:
+        stored = message.to_storage_format()
+        result: dict[str, Any] = {}
+        for key, value in stored.items():
+            if key.startswith("_") and key not in {
+                "_message_type",
                 "_message_id",
                 "_created_at",
-                "image_description",
-                "image_filenames",
+            }:
+                result[key.removeprefix("_")] = value
+        if isinstance(message, ToolMediaMessage):
+            result = {
+                "tool_name": message.tool_name,
+                "media_kind": message.media_kind,
+                "payload_kind": message.payload.kind,
             }
-        }
+        return result
+
+    @staticmethod
+    def _protocol_payload(
+        message: BaseMessage,
+    ) -> tuple[dict[str, Any], list[str] | None]:
+        payload = deepcopy(message.to_openai_format())
+        attachments: list[str] | None = None
+        if isinstance(message, HumanMessage) and message.image_filenames:
+            attachments = list(message.image_filenames)
+        elif (
+            isinstance(message, ToolMediaMessage)
+            and isinstance(message.payload, AvailableMedia)
+            and message.payload.storage_refs
+        ):
+            attachments = list(message.payload.storage_refs)
         content = payload.get("content")
         image_parts = [
             part
             for part in content
             if isinstance(part, dict) and part.get("type") == "image_url"
         ] if isinstance(content, list) else []
-        raw_attachments = message.get("image_filenames")
-        attachments = (
-            list(raw_attachments)
-            if isinstance(raw_attachments, list)
-            and len(raw_attachments) == len(image_parts)
-            and image_parts
-            and all(isinstance(path, str) and path for path in raw_attachments)
-            else None
-        )
-        if attachments:
+        if attachments and len(attachments) == len(image_parts):
             for part, relative_path in zip(image_parts, attachments, strict=True):
                 image_url = part.get("image_url")
                 if isinstance(image_url, dict):
                     image_url["url"] = relative_path
+        else:
+            attachments = None
         return payload, attachments
 
     @classmethod
-    def _protocol_rows(cls, state: AgentState) -> list[tuple]:
-        rows: list[tuple] = []
+    def _protocol_rows(cls, state: AgentState) -> list[tuple[Any, ...]]:
+        rows: list[tuple[Any, ...]] = []
         for message in state.messages:
-            role = message.get("role")
-            name = message.get("name")
-            if role == "system" or name == "context_summary":
+            if not message.enters_protocol_log:
                 continue
-            if role not in {"user", "assistant", "tool"}:
-                continue
-            record_kind = (
-                "tool_image"
-                if role == "user" and name in TOOL_IMAGE_MESSAGE_NAMES
-                else "protocol"
-            )
             payload, attachments = cls._protocol_payload(message)
+            role = payload.get("role")
+            if role not in {"user", "assistant", "tool"}:
+                raise ValueError(f"协议日志不支持 role={role!r}")
             rows.append((
                 state.session_id,
-                message["_message_id"],
-                message["_created_at"],
+                message.message_id,
+                message.created_at.isoformat(),
                 role,
-                json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str),
-                record_kind,
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                "tool_image" if isinstance(message, ToolMediaMessage) else "protocol",
                 "exact",
-                message.get("_associated_message_id"),
+                (
+                    message.associated_message_id
+                    if isinstance(message, ToolMediaMessage)
+                    else None
+                ),
                 json.dumps(attachments, ensure_ascii=False) if attachments else None,
                 None,
+                message.message_type,
+                json.dumps(
+                    cls._domain_payload(message),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
             ))
         return rows
 
     async def load(self) -> AgentState:
-        """从最新 checkpoint 恢复状态；没有记录时创建新状态。"""
         db = await self._get_db()
-
-        async with db.execute(
-            LATEST_CHECKPOINT_SQL,
-            (self.session_id,),
-        ) as cursor:
+        async with db.execute(LATEST_CHECKPOINT_SQL, (self.session_id,)) as cursor:
             row = await cursor.fetchone()
-
         if row:
             checkpoint_id, state_json, checkpoint_type = row
             self.last_loaded_checkpoint_type = checkpoint_type
             state = AgentState.from_checkpoint(json.loads(state_json))
             logger.info("从 checkpoint %s 恢复状态: %s", checkpoint_id, self.session_id)
             return state
-
         logger.info("创建新状态: %s", self.session_id)
         self.last_loaded_checkpoint_type = None
         return AgentState.create_new(self.session_id)
@@ -259,13 +254,10 @@ class StateManager:
         *,
         checkpoint_type: CheckpointType,
     ) -> int:
-        """原子保存指定类型的 checkpoint，并执行对应的分层裁剪。"""
         db = await self._get_db()
-        self._ensure_message_metadata(state)
-        await asyncio.to_thread(self._externalize_tool_images, state)
-        state_json = json.dumps(state.to_checkpoint(), ensure_ascii=False, default=str)
+        await asyncio.to_thread(self._externalize_images, state)
+        state_json = json.dumps(state.to_checkpoint(), ensure_ascii=False)
         protocol_rows = self._protocol_rows(state)
-
         try:
             await db.execute("BEGIN IMMEDIATE")
             cursor = await db.execute(
@@ -274,46 +266,33 @@ class StateManager:
                     session_id, state_json, checkpoint_type, created_at
                 ) VALUES (?, ?, ?, ?)
                 """,
-                (
-                    self.session_id,
-                    state_json,
-                    checkpoint_type,
-                    utc_now().isoformat(),
-                ),
+                (self.session_id, state_json, checkpoint_type, utc_now().isoformat()),
             )
             checkpoint_id = cursor.lastrowid
             if checkpoint_id is None:
                 raise RuntimeError("数据库未返回 checkpoint ID")
-
             if checkpoint_type == "intermediate":
                 await db.execute(
                     """
                     DELETE FROM checkpoints
-                    WHERE session_id = ?
-                      AND checkpoint_type = 'intermediate'
-                      AND id <> ?
+                    WHERE session_id = ? AND checkpoint_type = 'intermediate' AND id <> ?
                     """,
                     (self.session_id, checkpoint_id),
                 )
             else:
-                # 完成态已包含本轮完整状态，对应中间态不再有恢复价值。
                 await db.execute(
-                    """
-                    DELETE FROM checkpoints
-                    WHERE session_id = ? AND checkpoint_type = 'intermediate'
-                    """,
+                    "DELETE FROM checkpoints WHERE session_id = ? AND checkpoint_type = 'intermediate'",
                     (self.session_id,),
                 )
                 await self._prune_completed(db)
-
             if protocol_rows:
                 await db.executemany(
                     """
                     INSERT INTO conversation_messages (
                         session_id, message_id, created_at, role, message_json,
                         record_kind, fidelity, associated_message_id,
-                        attachments_json, legacy_source_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        attachments_json, legacy_source_id, message_type, domain_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(session_id, message_id) DO UPDATE SET
                         message_json = CASE
                             WHEN conversation_messages.attachments_json IS NULL
@@ -328,22 +307,19 @@ class StateManager:
                     """,
                     protocol_rows,
                 )
-
             await db.commit()
         except BaseException:
             await db.rollback()
             raise
-
         logger.info(
             "保存%s checkpoint %s: %s",
             "中间态" if checkpoint_type == "intermediate" else "完成态",
             checkpoint_id,
             self.session_id,
         )
-        return checkpoint_id
+        return int(checkpoint_id)
 
     async def _prune_completed(self, db: aiosqlite.Connection) -> None:
-        """仅裁剪完成态，保留当前 session 最新的 30 条。"""
         await db.execute(
             """
             DELETE FROM checkpoints
@@ -352,9 +328,8 @@ class StateManager:
               AND id NOT IN (
                 SELECT id FROM checkpoints
                 WHERE session_id = ? AND checkpoint_type = 'completed'
-                ORDER BY id DESC
-                LIMIT ?
-            )
+                ORDER BY id DESC LIMIT ?
+              )
             """,
             (
                 self.session_id,
@@ -364,27 +339,19 @@ class StateManager:
         )
 
     async def clear_session(self) -> int:
-        """清空指定 session 的所有 checkpoint，并返回删除数量。"""
         db = await self._get_db()
-
         async with db.execute(
             "SELECT COUNT(*) FROM checkpoints WHERE session_id = ?",
             (self.session_id,),
         ) as cursor:
             row = await cursor.fetchone()
             deleted_count = row[0] if row else 0
-
-        await db.execute(
-            "DELETE FROM checkpoints WHERE session_id = ?",
-            (self.session_id,),
-        )
+        await db.execute("DELETE FROM checkpoints WHERE session_id = ?", (self.session_id,))
         await db.commit()
-
         logger.info("清空 session %s: 删除了 %s 个 checkpoint", self.session_id, deleted_count)
-        return deleted_count
+        return int(deleted_count)
 
     async def close(self) -> None:
-        """关闭数据库连接。"""
         if self._db:
             await self._db.close()
             self._db = None

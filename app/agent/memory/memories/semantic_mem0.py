@@ -15,7 +15,14 @@ from app.agent.memory.memories.mem0_llm_compat import (
     MEM0_FACT_EXTRACTION_MARKER,
     Mem0FactExtractionLLMAdapter,
 )
-from app.agent.state.messages import Message, MessageRole, SYSTEM_INJECTED_USER_MESSAGE_NAMES
+from app.agent.state.messages import (
+    AssistantMessage,
+    BaseMessage,
+    HumanMessage,
+    RuntimeInputMessage,
+    ToolMediaMessage,
+    ToolMessage,
+)
 from app.agent.state.time import render_timed_text
 from app.schemas.chat_settings import ChatSettings
 
@@ -147,8 +154,8 @@ class Mem0SemanticMemory:
 
     async def add(
         self,
-        messages: list[Message],
-        history: list[Message] | None = None,
+        messages: list[BaseMessage],
+        history: list[BaseMessage] | None = None,
     ) -> list[str]:
         """添加语义记忆
 
@@ -273,7 +280,7 @@ class Mem0SemanticMemory:
 
     def _convert_messages(
         self,
-        messages: list[Message],
+        messages: list[BaseMessage],
         mark_as_history: bool = False,
     ) -> list[dict]:
         """转换消息为 Mem0 格式
@@ -288,54 +295,40 @@ class Mem0SemanticMemory:
         mem0_messages = []
 
         for msg in messages:
-            if msg.role == MessageRole.USER and msg.name in SYSTEM_INJECTED_USER_MESSAGE_NAMES:
+            if isinstance(msg, ToolMediaMessage):
                 continue
-            # 确定角色
-            if msg.role == MessageRole.USER:
+            if isinstance(msg, HumanMessage):
                 role = "user"
-            elif msg.role == MessageRole.ASSISTANT:
+                text = msg.text
+            elif isinstance(msg, AssistantMessage):
                 role = "assistant"
-            elif msg.role == MessageRole.TOOL:
+                text = msg.text
+            elif isinstance(msg, RuntimeInputMessage):
+                role = "assistant"
+                text = f"运行时输入：{msg.to_openai_format()['content']}"
+            elif isinstance(msg, ToolMessage):
                 if mark_as_history:
                     continue
                 role = "assistant"
+                text = msg.content
             else:
                 continue
 
-            # 提取内容
-            content = msg.content
-            if isinstance(content, str):
-                text = content
-            elif isinstance(content, list):
-                # 处理多模态消息，提取文本部分
-                text_parts = []
-                for part in content:
-                    if hasattr(part, 'text') and part.text:
-                        text_parts.append(part.text)
-                    elif isinstance(part, dict) and part.get("type") == "text":
-                        text_val = part.get("text")
-                        if text_val:
-                            text_parts.append(text_val)
-                text = " ".join(text_parts)
-            else:
-                text = str(content)
-
-            if text.strip() or getattr(msg, "tool_calls", None):
-                tool_calls = list(getattr(msg, "tool_calls", None) or [])
+            if text.strip() or isinstance(msg, AssistantMessage) and msg.tool_calls:
+                tool_calls = list(msg.tool_calls) if isinstance(msg, AssistantMessage) else []
                 if tool_calls:
                     if mark_as_history:
                         text = "\n".join(f"AI：调用了工具 {call.name}" for call in tool_calls)
                     else:
-                        import json
                         text = "\n".join(
                             f"AI：调用工具 {call.name}，参数："
-                            f"{json.dumps(call.args, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}"
+                            f"{call.to_dict()['function']['arguments']}"
                             for call in tool_calls
                         )
-                elif msg.role == MessageRole.TOOL:
+                elif isinstance(msg, ToolMessage):
                     text = f"工具结果：{text.strip()}"
                 else:
-                    text = render_timed_text(text.strip(), msg.timestamp)
+                    text = render_timed_text(text.strip(), msg.created_at)
                 if mark_as_history:
                     text = f"[前情提要] {text}"
                 mem0_messages.append({"role": role, "content": text})

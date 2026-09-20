@@ -24,7 +24,7 @@ from app.agent.models.llm_client import LLMClient, LLMConfig
 from app.agent.plugins.base import BasePlugin, PluginHook
 from app.agent.state import AgentState
 from app.agent.state.manager import StateManager
-from app.agent.state.messages import ContentPart, ToolCall
+from app.agent.state.messages import ToolCall, ToolMessage
 from app.agent.tools.base import BaseTool
 from app.agent.tools.authorization.manager import ToolAuthorization
 from app.agent.utils.domain.images import save_multiple_images
@@ -311,34 +311,35 @@ class Agent:
         if state.is_interrupted():
             interrupt_data = state.interrupt_data or {}
             cancelled_ids = {
-                message.get("tool_call_id")
+                message.tool_call_id
                 for message in state.messages
-                if message.get("role") == "tool"
+                if isinstance(message, ToolMessage)
             }
             interrupted_id = interrupt_data.get("tool_call_id", "")
             interrupted_name = interrupt_data.get("tool_name", "")
+            cancellations: list[tuple[ToolCall, str]] = []
             if interrupted_id and interrupted_id not in cancelled_ids:
-                state.add_tool_message(
-                    content=USER_REJECTED_INTERRUPTED_TOOL_RESULT,
-                    tool_name=interrupted_name,
-                    tool_call_id=interrupted_id,
-                )
+                cancellations.append((ToolCall(
+                    id=interrupted_id,
+                    name=interrupted_name,
+                    args=interrupt_data.get("tool_args") or {},
+                ), USER_REJECTED_INTERRUPTED_TOOL_RESULT))
                 cancelled_ids.add(interrupted_id)
 
             for pending in state.pending_actions:
-                pending_call = ToolCall.from_dict(pending)
-                if pending_call.id in cancelled_ids:
+                if pending.id in cancelled_ids:
                     continue
-                state.add_tool_message(
-                    content=USER_CANCELLED_PENDING_TOOL_RESULT,
-                    tool_name=pending_call.name,
-                    tool_call_id=pending_call.id,
-                )
-                cancelled_ids.add(pending_call.id)
+                cancellations.append((pending, USER_CANCELLED_PENDING_TOOL_RESULT))
+                cancelled_ids.add(pending.id)
+
+            # 中断 checkpoint 将路由信息放在 interrupt/pending_actions 中。
+            # 取消时先重建未闭合批次，避免首个取消结果过早冲刷延迟图片。
+            state.set_pending_tool_calls([call for call, _content in cancellations])
+            for call, content in cancellations:
+                state.record_tool_result(call, content)
 
             state.clear_interrupt()
             state.clear_pending_tool_calls()
-            state.flush_deferred_tool_images()
             await self.state_manager.save(state, checkpoint_type="completed")
 
         # 上次普通工具链若异常中止，为未完成调用补齐结果，避免自动重试副作用。
@@ -351,7 +352,6 @@ class Agent:
                     tool_call_id=tool_call.id,
                 )
             state.clear_pending_tool_calls()
-            state.flush_deferred_tool_images()
             await self.state_manager.save(state, checkpoint_type="completed")
 
         # 2. 在独立输入事务中提交用户消息和上一批派生任务。
@@ -400,13 +400,16 @@ class Agent:
             except Exception as exc:
                 logger.warning("[Agent] 用户图片保存失败: %s", exc)
                 image_filenames = []
-            content = [ContentPart.text_part(message)]
-            content.extend(ContentPart.image_part(image) for image in images)
-            state.add_user_message(content)
-            if image_filenames:
-                state.messages[-1]["image_filenames"] = image_filenames
+            state.add_user_message(
+                message,
+                image_urls=images,
+                image_filenames=image_filenames,
+            )
         else:
             state.add_user_message(message)
+        # 真人输入一旦进入 intermediate checkpoint 就属于已提交事实；后续模型、
+        # 工具或 completed checkpoint 失败都不能回退或重复推进该计数。
+        state.increment_long_term_memory_turn_counter()
         await self.state_manager.save(state, checkpoint_type="intermediate")
 
         await self.plugin_manager.run_hooks(
@@ -486,8 +489,6 @@ class Agent:
     async def _finalize_response(self, state: AgentState) -> None:
         """在成功执行后准备并持久化最终响应。"""
         commit_context: dict = {}
-        # 轮次计数属于 Agent 完成生命周期：只有走到最终响应提交才推进。
-        state.increment_long_term_memory_turn_counter()
         await self.plugin_manager.run_hooks(
             PluginHook.BEFORE_RESPONSE_COMMIT,
             state,

@@ -273,7 +273,7 @@ def test_agent_run_uses_preloaded_state_without_loading_again(tmp_path) -> None:
     events, state = asyncio.run(scenario())
 
     assert events[-1].type == EventType.DONE
-    assert state.messages[0]["content"] == "开始"
+    assert state.messages[0].text == "开始"
 
 
 def test_agent_resume_uses_preloaded_state_without_loading_again(tmp_path) -> None:

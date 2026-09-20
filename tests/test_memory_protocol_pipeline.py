@@ -11,7 +11,14 @@ from app.agent.memory.memories.episodic import EpisodicMemory
 from app.agent.memory.memories.semantic_mem0 import MEM0_CUSTOM_INSTRUCTIONS
 from app.agent.memory.store.chat_history_store import ChatHistoryStore
 from app.agent.memory.store.diary_sqlite_store import DiarySqliteStore
-from app.agent.state.messages import messages_from_openai_format
+from app.agent.state.messages import (
+    AssistantMessage,
+    AvailableMedia,
+    HumanMessage,
+    ToolCall,
+    ToolMediaMessage,
+    ToolMessage,
+)
 from app.agent.plugins.memory import MemoryPlugin
 from app.agent.state import AgentState
 import app.agent.plugins.memory as memory_plugin_module
@@ -31,14 +38,9 @@ def test_protocol_store_freezes_ten_complete_turns_and_five_history_turns(tmp_pa
             for index in range(15):
                 state.add_user_message(f"human-{index}")
                 if index == 14:
-                    state.messages.append({
-                        "role": "assistant", "content": "",
-                        "tool_calls": [{
-                            "id": "call-14", "type": "function",
-                            "function": {"name": "read_file", "arguments": '{"path":"a.py"}'},
-                        }],
-                    })
-                    state.add_tool_message("file-content", "read_file", "call-14", compressible=True)
+                    call = ToolCall(id="call-14", name="read_file", args={"path": "a.py"})
+                    state.record_assistant_step("", (call,))
+                    state.record_tool_result(call, "file-content", compressible=True)
                 state.add_assistant_message(f"assistant-{index}")
             await manager.save(state, checkpoint_type="completed")
             store = ChatHistoryStore(db_path=db_path)
@@ -48,9 +50,9 @@ def test_protocol_store_freezes_ten_complete_turns_and_five_history_turns(tmp_pa
             await manager.close()
 
     history, current = asyncio.run(scenario())
-    assert sum(1 for message in history if message.get("role") == "user") == 5
-    assert sum(1 for message in current if message.get("role") == "user") == 10
-    assert any(message.get("role") == "tool" for message in current)
+    assert sum(1 for message in history if isinstance(message, HumanMessage)) == 5
+    assert sum(1 for message in current if isinstance(message, HumanMessage)) == 10
+    assert any(isinstance(message, ToolMessage) for message in current)
 
 
 def test_completed_turn_query_does_not_accept_a_chunk_head_fragment(tmp_path: Path) -> None:
@@ -60,16 +62,9 @@ def test_completed_turn_query_does_not_accept_a_chunk_head_fragment(tmp_path: Pa
         try:
             state = AgentState.create_new("session")
             state.add_user_message("请读取文件")
-            state.messages.append({
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [{
-                    "id": "call-1",
-                    "type": "function",
-                    "function": {"name": "read_file", "arguments": "{}"},
-                }],
-            })
-            state.add_tool_message("file-content", "read_file", "call-1")
+            call = ToolCall(id="call-1", name="read_file", args={})
+            state.record_assistant_step("", (call,))
+            state.record_tool_result(call, "file-content")
             state.add_assistant_message("读取完成")
             await manager.save(state, checkpoint_type="completed")
 
@@ -85,25 +80,24 @@ def test_completed_turn_query_does_not_accept_a_chunk_head_fragment(tmp_path: Pa
 
     history, current = asyncio.run(scenario())
     assert history == []
-    assert [message["role"] for message in current] == [
-        "user",
-        "assistant",
-        "tool",
-        "assistant",
+    assert [type(message) for message in current] == [
+        HumanMessage,
+        AssistantMessage,
+        ToolMessage,
+        AssistantMessage,
     ]
 
 
 def test_long_term_memory_format_has_full_current_tools_and_light_history_tools() -> None:
     manager = MemoryManager.__new__(MemoryManager)
     manager.chat_settings = SimpleNamespace(address="用户", name="AI")
-    raw = [
-        {"role": "assistant", "content": "", "tool_calls": [{
-            "id": "c", "type": "function",
-            "function": {"name": "read_file", "arguments": '{"path":"a.py"}'},
-        }]},
-        {"role": "tool", "name": "read_file", "tool_call_id": "c", "content": "result"},
+    messages = [
+        AssistantMessage(
+            text="",
+            tool_calls=(ToolCall(id="c", name="read_file", args={"path": "a.py"}),),
+        ),
+        ToolMessage(content="result", tool_name="read_file", tool_call_id="c"),
     ]
-    messages = messages_from_openai_format(raw)
 
     current = manager._format_messages(messages)
     history = manager._format_messages(messages, mark_as_history=True)
@@ -115,37 +109,11 @@ def test_long_term_memory_format_has_full_current_tools_and_light_history_tools(
 
 def test_diary_format_skips_system_injected_tool_images() -> None:
     formatted = DiaryMemory._format_messages([
-        {"role": "user", "content": "请看一下屏幕"},
-        {
-            "role": "tool",
-            "name": "screenshot",
-            "tool_call_id": "call-shot",
-            "content": "截屏成功",
-        },
-        {
-            "role": "user",
-            "name": "system_screenshot",
-            "content": [
-                {"type": "text", "text": "[系统消息]工具 screenshot 返回图片: "},
-                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}},
-            ],
-        },
-        {
-            "role": "user",
-            "name": "mcp_tool_image",
-            "content": [
-                {"type": "text", "text": "[系统消息]工具 draw 返回图片: "},
-                {"type": "image_url", "image_url": {"url": "data:image/png;base64,BBB"}},
-            ],
-        },
-        {
-            "role": "user",
-            "name": "system_tool_image",
-            "content": [
-                {"type": "text", "text": "[系统消息]工具 draw 返回图片: "},
-                {"type": "image_url", "image_url": {"url": "data:image/png;base64,CCC"}},
-            ],
-        },
+        HumanMessage(text="请看一下屏幕"),
+        ToolMessage(content="截屏成功", tool_name="screenshot", tool_call_id="call-shot"),
+        ToolMediaMessage(tool_name="screenshot", media_kind="screenshot", text="截图", payload=AvailableMedia(urls=("data:image/png;base64,QUFB",))),
+        ToolMediaMessage(tool_name="draw", media_kind="mcp", text="图片", payload=AvailableMedia(urls=("data:image/png;base64,QkJC",))),
+        ToolMediaMessage(tool_name="draw", media_kind="tool", text="图片", payload=AvailableMedia(urls=("data:image/png;base64,Q0ND",))),
     ])
 
     assert "用户：请看一下屏幕" in formatted
@@ -162,7 +130,7 @@ def test_diary_generation_restores_previous_diaries_and_conversation_context() -
             return date(2026, 9, 1)
 
         async def get_messages_by_date(self, *_args, **_kwargs):
-            return [{"role": "user", "content": "今天继续昨天的设计"}]
+            return [HumanMessage(text="今天继续昨天的设计")]
 
         async def get_messages_before_date(
             self, session_id, before_date, limit=10, *, max_history_id=None
@@ -174,8 +142,8 @@ def test_diary_generation_restores_previous_diaries_and_conversation_context() -
                 "max_history_id": max_history_id,
             })
             return [
-                {"role": "user", "content": "昨天先确定两个字段"},
-                {"role": "assistant", "content": "已经确定 active_tasks 和 summary"},
+                HumanMessage(text="昨天先确定两个字段"),
+                AssistantMessage(text="已经确定 active_tasks 和 summary"),
             ]
 
     class DiaryStore:
@@ -256,7 +224,7 @@ def test_diary_prompt_marks_missing_reference_context_as_unavailable() -> None:
     )
 
     prompt = memory._build_diary_prompt(
-        [{"role": "user", "content": "今天第一次聊天"}],
+        [HumanMessage(text="今天第一次聊天")],
         date(2026, 9, 1),
         previous_diaries=[],
         previous_messages=[],
@@ -371,8 +339,8 @@ def test_long_term_memory_uses_frozen_protocol_cutoff(monkeypatch) -> None:
             current = []
             for index in range(12):
                 current.extend([
-                    {"role": "user", "content": f"human-{index}"},
-                    {"role": "assistant", "content": f"assistant-{index}"},
+                    HumanMessage(text=f"human-{index}"),
+                    AssistantMessage(text=f"assistant-{index}"),
                 ])
             return [], current
 

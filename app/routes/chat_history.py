@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app.agent.state import MessageContractError
 from app.dependencies import get_chat_history_service
 from app.schemas.chat import ChatHistoryItem
 from app.schemas.result import Result
@@ -15,7 +16,15 @@ async def list_chat_history(
     limit: int = Query(default=200, ge=1),
     chat_history_service: ChatHistoryService = Depends(get_chat_history_service),
 ) -> Result:
-    history = await chat_history_service.get_chat_history_data(session_id=session_id, start=start, limit=limit)
+    try:
+        history = await chat_history_service.get_chat_history_data(
+            session_id=session_id, start=start, limit=limit
+        )
+    except MessageContractError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"数据库与当前消息契约不兼容：{exc}",
+        ) from exc
     items = [ChatHistoryItem(**item).model_dump() for item in history]
     return Result(data=items, msg="success", code=200)
 
@@ -27,7 +36,15 @@ async def list_chat_history_last_n(
     chat_history_service: ChatHistoryService = Depends(get_chat_history_service),
 ) -> Result:
     """获取会话最后 N 条历史记录，按时间升序返回。"""
-    history = await chat_history_service.get_chat_history_last_n(session_id=session_id, n=n)
+    try:
+        history = await chat_history_service.get_chat_history_last_n(
+            session_id=session_id, n=n
+        )
+    except MessageContractError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"数据库与当前消息契约不兼容：{exc}",
+        ) from exc
     items = [ChatHistoryItem(**item).model_dump() for item in history]
     return Result(data=items, msg="success", code=200)
 

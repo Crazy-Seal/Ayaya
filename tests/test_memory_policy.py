@@ -6,7 +6,7 @@ from app.agent.memory import manager as memory_manager_module
 from app.agent.memory.config import MemoryConfig
 from app.agent.memory.manager import MemoryManager
 from app.agent.memory.memories import episodic as episodic_module
-from app.agent.state.messages import Message
+from app.agent.state.messages import HumanMessage
 from app.schemas.chat_settings import AgentPluginSettings, ChatSettings
 
 
@@ -222,7 +222,7 @@ def test_disabled_memory_subsystems_are_not_accessed(monkeypatch) -> None:
             _chat_settings(enable_diary=False, enable_episodic=False, enable_semantic=False),
         )
         add_result = await manager.add(
-            [Message.user_message("近期对话")],
+            [HumanMessage(text="近期对话")],
             enable_episodic=False,
             enable_semantic=False,
         )

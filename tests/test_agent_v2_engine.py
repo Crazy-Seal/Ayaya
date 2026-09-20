@@ -21,8 +21,9 @@ from app.agent.core.tool_manager import ToolManager
 from app.agent.state.messages import (
     SCREENSHOT_COMPRESSED_NAME,
     SCREENSHOT_MESSAGE_NAME,
-    AssistantMessageWithTools,
-    MessageRole,
+    AssistantMessage,
+    ToolMediaMessage,
+    ToolMessage,
     ToolCall,
 )
 from app.agent.state import AgentState
@@ -289,10 +290,9 @@ def test_astream_rejects_invalid_tool_arguments(raw_arguments):
 # ==================== 助手工具调用序列化 ====================
 
 def test_assistant_message_with_tools_serializes():
-    msg = AssistantMessageWithTools(
-        role=MessageRole.ASSISTANT,
-        content="",
-        tool_calls=[ToolCall(id="c1", name="screenshot", args={})],
+    msg = AssistantMessage(
+        text="",
+        tool_calls=(ToolCall(id="c1", name="screenshot", args={}),),
     )
     d = msg.to_openai_format()
     assert d["role"] == "assistant"
@@ -336,9 +336,9 @@ def test_tool_call_extra_content_roundtrips_into_followup_request():
     restored = AgentState.from_checkpoint(state.to_checkpoint())
     restored_call = next(
         message for message in restored.messages
-        if message.get("role") == "assistant" and message.get("tool_calls")
+        if isinstance(message, AssistantMessage) and message.tool_calls
     )
-    assert restored_call["tool_calls"][0]["extra_content"] == {
+    assert restored_call.tool_calls[0].to_dict()["extra_content"] == {
         "google": {"thought_signature": "signature-value"}
     }
 
@@ -377,14 +377,16 @@ def test_resumable_screenshot_roundtrip():
     state = asyncio.run(run())
     msgs = state.messages
     # 工具槽位只留文本
-    assert any(m.get("role") == "tool" and m.get("content") == "截屏成功" for m in msgs)
+    assert any(isinstance(m, ToolMessage) and m.content == "截屏成功" for m in msgs)
     # 截图作为 user 消息注入，带 system_screenshot 名
-    shot = [m for m in msgs if m.get("role") == "user" and m.get("name") == SCREENSHOT_MESSAGE_NAME]
+    shot = [
+        m for m in msgs
+        if isinstance(m, ToolMediaMessage) and m.media_kind == "screenshot"
+    ]
     assert shot, "应注入一条 system_screenshot 用户消息"
-    assert any(p.get("type") == "image_url" for p in shot[0]["content"])
+    assert "image_url" in str(shot[0].to_openai_format()["content"])
     # 模型最终基于截图作答
-    assistant_texts = [m["content"] for m in msgs
-                       if m.get("role") == "assistant" and isinstance(m.get("content"), str)]
+    assistant_texts = [m.text for m in msgs if isinstance(m, AssistantMessage)]
     assert "我看到一只猫" in assistant_texts
     # 中断状态已清除
     assert state.interrupt_data is None
@@ -398,16 +400,14 @@ def test_pipeline_checkpoints_screenshot_compaction_before_llm_call():
         agent = _PipelineHarness(llm, tools=[])
         state = AgentState.create_new("t")
         for index in range(3):
-            state.messages.append({
-                "role": "user",
-                "name": SCREENSHOT_MESSAGE_NAME,
-                "content": [{
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/png;base64,shot-{index}"},
-                }],
-                "_message_id": f"shot-{index}",
-                "_created_at": f"2026-08-29T00:00:0{index}+00:00",
-            })
+            call = ToolCall(id=f"shot-{index}", name="screenshot", args={})
+            state.record_assistant_step("", (call,))
+            state.record_tool_result(
+                call,
+                "完成",
+                image_urls=("data:image/png;base64,c2hvdA==",),
+                image_message_name=SCREENSHOT_MESSAGE_NAME,
+            )
         state.add_user_message("继续")
         snapshots: list[dict] = []
 
@@ -424,8 +424,12 @@ def test_pipeline_checkpoints_screenshot_compaction_before_llm_call():
     assert events[-1].data == "完成"
     assert len(snapshots) == 1
     checkpoint_messages = snapshots[0]["messages"]
-    assert checkpoint_messages[0]["name"] == SCREENSHOT_COMPRESSED_NAME
-    assert "base64" not in str(checkpoint_messages[0]["content"])
+    checkpoint_screenshots = [
+        message for message in checkpoint_messages
+        if message.get("_message_type") == "tool_media"
+    ]
+    assert checkpoint_screenshots[0]["name"] == SCREENSHOT_COMPRESSED_NAME
+    assert "base64" not in str(checkpoint_screenshots[0]["content"])
     assert [
         message.get("name")
         for message in llm.messages[0]
@@ -453,8 +457,10 @@ def test_context_strategy_builds_without_temporary_state():
     assert events[-1].data == "你好呀"
     assert state.extra == {}
     # state.messages 仍含完整对话
-    roles = [m.get("role") for m in state.messages]
-    assert roles == ["user", "assistant"]
+    assert [type(m).__name__ for m in state.messages] == [
+        "HumanMessage",
+        "AssistantMessage",
+    ]
 
 
 def test_pipeline_removes_streamed_assistant_time_prefix():
@@ -477,7 +483,7 @@ def test_pipeline_removes_streamed_assistant_time_prefix():
     )
 
     assert streamed == "真正回复"
-    assert state.messages[-1]["content"] == "真正回复"
+    assert state.messages[-1].text == "真正回复"
 
 
 def test_pipeline_keeps_expression_tag_before_removed_time_prefix():
@@ -500,7 +506,7 @@ def test_pipeline_keeps_expression_tag_before_removed_time_prefix():
     )
 
     assert streamed == "<开心>真正回复"
-    assert state.messages[-1]["content"] == "<开心>真正回复"
+    assert state.messages[-1].text == "<开心>真正回复"
 
 
 def test_pipeline_keeps_long_expression_tag_without_spending_prefix_buffer():
@@ -526,7 +532,7 @@ def test_pipeline_keeps_long_expression_tag_without_spending_prefix_buffer():
     )
 
     assert streamed == expression_tag + "真正回复"
-    assert state.messages[-1]["content"] == expression_tag + "真正回复"
+    assert state.messages[-1].text == expression_tag + "真正回复"
 
 
 def test_pipeline_handles_long_expression_tag_split_into_characters():
@@ -552,7 +558,7 @@ def test_pipeline_handles_long_expression_tag_split_into_characters():
     )
 
     assert streamed == expression_tag + "真正回复"
-    assert state.messages[-1]["content"] == expression_tag + "真正回复"
+    assert state.messages[-1].text == expression_tag + "真正回复"
 
 
 def test_pipeline_preserves_formatting_after_removed_time_prefix():
@@ -574,7 +580,7 @@ def test_pipeline_preserves_formatting_after_removed_time_prefix():
     )
 
     assert streamed == "\n    缩进正文"
-    assert state.messages[-1]["content"] == "\n    缩进正文"
+    assert state.messages[-1].text == "\n    缩进正文"
 
 
 def test_pipeline_handles_crlf_separator_split_across_chunks():
@@ -597,7 +603,7 @@ def test_pipeline_handles_crlf_separator_split_across_chunks():
     )
 
     assert streamed == "真正回复"
-    assert state.messages[-1]["content"] == "真正回复"
+    assert state.messages[-1].text == "真正回复"
 
 
 @pytest.mark.parametrize(
@@ -632,7 +638,7 @@ def test_pipeline_preserves_non_prefix_assistant_text(chunks, expected):
     )
 
     assert streamed == expected
-    assert state.messages[-1]["content"] == expected
+    assert state.messages[-1].text == expected
 
 
 def test_pipeline_flushes_unmatched_prefix_candidate_before_stream_error():
@@ -692,7 +698,7 @@ def test_pipeline_rejects_empty_final_response(content):
     assert events[-1].type == EventType.ERROR
     assert events[-1].data == "模型未返回有效文本（finish_reason=stop）"
     assert all(event.type != EventType.DONE for event in events)
-    assert [message["role"] for message in state.messages] == ["user"]
+    assert [type(message).__name__ for message in state.messages] == ["HumanMessage"]
 
 
 def test_pipeline_keeps_content_filter_error():

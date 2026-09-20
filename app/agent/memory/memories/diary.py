@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import logging
 from datetime import date
-from typing import Any
 
 from app.agent.memory.config import MemoryConfig
 from app.agent.memory.store.chat_history_store import ChatHistoryStore
 from app.agent.memory.store.diary_sqlite_store import DiarySqliteStore
-from app.agent.state.messages import is_system_injected_user_message
+from app.agent.state.messages import (
+    AssistantMessage,
+    BaseMessage,
+    HumanMessage,
+    RuntimeInputMessage,
+    ToolMediaMessage,
+    ToolMessage,
+)
 from app.agent.models.llm_client import LLMClient, LLMConfig
-from app.agent.utils.domain.text import extract_text
 from app.schemas.chat_settings import ChatSettings
 
 
@@ -82,7 +87,7 @@ class DiaryMemory:
     async def _generate_diary(
         self,
         target_date: date,
-        messages: list[dict[str, Any]],
+        messages: list[BaseMessage],
         *,
         max_history_id: int | None = None,
     ) -> None:
@@ -111,11 +116,11 @@ class DiaryMemory:
 
     def _build_diary_prompt(
         self,
-        messages: list[dict[str, Any]],
+        messages: list[BaseMessage],
         target_date: date,
         *,
         previous_diaries: list[tuple[date, str]],
-        previous_messages: list[dict[str, Any]],
+        previous_messages: list[BaseMessage],
     ) -> str:
         target = target_date.isoformat()
         name = (
@@ -174,25 +179,23 @@ class DiaryMemory:
         )
 
     @staticmethod
-    def _format_messages(messages: list[dict[str, Any]]) -> str:
-        import json
+    def _format_messages(messages: list[BaseMessage]) -> str:
         lines: list[str] = []
         for message in messages:
-            if is_system_injected_user_message(message):
+            if isinstance(message, ToolMediaMessage):
                 continue
-            role = message.get("role")
-            content = extract_text(message.get("content"))
-            if role == "user":
-                lines.append(f"用户：{content}")
-            elif role == "assistant":
-                if content:
-                    lines.append(f"AI：{content}")
-                for call in message.get("tool_calls") or []:
-                    function = call.get("function") or {}
+            if isinstance(message, HumanMessage):
+                lines.append(f"用户：{message.text}")
+            elif isinstance(message, RuntimeInputMessage):
+                lines.append(f"运行时输入：{message.to_openai_format()['content']}")
+            elif isinstance(message, AssistantMessage):
+                if message.text:
+                    lines.append(f"AI：{message.text}")
+                for call in message.tool_calls:
                     lines.append(
-                        f"AI：调用工具 {function.get('name', '未知工具')}，参数："
-                        f"{function.get('arguments', '{}')}"
+                        f"AI：调用工具 {call.name}，参数："
+                        f"{call.to_dict()['function']['arguments']}"
                     )
-            elif role == "tool":
-                lines.append(f"工具结果：{content}")
+            elif isinstance(message, ToolMessage):
+                lines.append(f"工具结果：{message.content}")
         return "\n".join(lines)
