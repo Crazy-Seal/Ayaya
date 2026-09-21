@@ -13,9 +13,9 @@ def _settings(policy: str) -> ChatSettings:
         openai_base_url="http://127.0.0.1:1/v1",
         temperature=0.1,
         system_prompt="prompt",
-        tools_list=[],
+        tool_permissions={"mcp:filesystem:read": policy},
         context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100),
-        mcp={"servers": {"filesystem": {"enabled": True, "tools": {"read": policy}}}},
+        mcp={"servers": {"filesystem": {"enabled": True}}},
     )
 
 

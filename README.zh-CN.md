@@ -12,7 +12,7 @@ Ayaya 是一个本地 AI 桌宠。它会以 Live2D 角色的形式待在桌面�
 - 通过桌面聊天面板和角色对话。
 - 流式显示模型回复。
 - 保存本地聊天历史和长期记忆。
-- 支持发送图片，并用视觉模型生成图片摘要。
+- 支持向具备视觉能力的聊天模型发送图片。
 - 可按需启用记忆检索、日记检索、联网搜索、读写本地文件、执行 PowerShell 命令和需要确认的截图。
 - 在设置窗口里调整模型、提示词、工具、记忆策略、Live2D 模型、位置缩放、视线跟随和动作标签。
 
@@ -23,7 +23,7 @@ Ayaya 是一个本地 AI 桌宠。它会以 Live2D 角色的形式待在桌面�
 - Conda 环境名为 `ayaya`。
 - Node.js 24.x。
 - 一个 OpenAI 兼容的聊天模型接口。
-- 如果要使用长期记忆、联网搜索或图片理解，需要额外配置对应服务密钥。
+- 如果要使用长期记忆、联网搜索或独立 VLM 屏幕控制，需要额外配置对应服务密钥。
 
 ## 快速开始
 
@@ -80,7 +80,7 @@ MEM0_EXTRACTION_API_KEY=YOUR_API_KEY
 # 联网搜索
 TAVILY_API_KEY=YOUR_API_KEY
 
-# 屏幕点击和图片理解
+# 非视觉聊天模型的可选 VLM 屏幕控制回退方案
 VLM_API_KEY=YOUR_API_KEY
 VLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 VLM_MODEL=qwen3-vl-plus

@@ -388,26 +388,9 @@ def test_state_and_context_are_deep_packages_with_a_narrow_pipeline_seam() -> No
         "core/response_filter.py",
         "utils/domain/weighted_text.py",
     }
-    retired_modules = {
-        "context.py",
-        "context_strategy.py",
-        "message.py",
-        "message_names.py",
-        "message_time.py",
-        "model_input.py",
-        "state.py",
-        "tool_result_normalizer.py",
-        "tool_schema_compat.py",
-        "core/state_manager.py",
-    }
-
     assert not {
         path for path in expected_modules if not (agent_root / path).is_file()
     }
-    assert not {
-        path for path in retired_modules if (agent_root / path).exists()
-    }
-
     parameters = inspect.signature(ExecutionPipeline.__init__).parameters
     assert "model_input" in parameters
     assert {

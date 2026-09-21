@@ -5,15 +5,14 @@ import { buildEnabledServerPolicy, fingerprintMcpConfig } from "../src/settings/
 import type { MCPServerConfig } from "../shared-types.js";
 
 test("首次启用服务器只写入服务开关", () => {
-  assert.deepEqual(buildEnabledServerPolicy(undefined, ["read_file", "write_file"]), {
+  assert.deepEqual(buildEnabledServerPolicy(undefined), {
     enabled: true,
   });
 });
 
 test("重新启用服务器保留身份绑定", () => {
   const policy = buildEnabledServerPolicy(
-    { enabled: true, identity_fingerprint: "a".repeat(64) },
-    ["read_file", "delete_file"]
+    { enabled: true, identity_fingerprint: "a".repeat(64) }
   );
   assert.deepEqual(policy, {
     enabled: true,
@@ -21,10 +20,9 @@ test("重新启用服务器保留身份绑定", () => {
   });
 });
 
-test("工具目录不会写回 MCP 服务策略", () => {
+test("启用服务时不附加额外工具策略", () => {
   const policy = buildEnabledServerPolicy(
-    { enabled: false },
-    ["read_file", "new_tool"]
+    { enabled: false }
   );
   assert.deepEqual(policy, { enabled: true });
 });

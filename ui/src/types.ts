@@ -25,7 +25,6 @@ export type {
   ScreenActionRequest,
   ScreenActionPoint,
   ScreenActionResult,
-  ScreenshotInterruptPayload,
   ToolCallEventData,
   ToolItem,
   ToolPolicy,

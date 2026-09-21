@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 
 import pytest
 from fastapi import FastAPI
@@ -9,12 +9,9 @@ from pydantic import ValidationError
 
 from app.agent.core.event_router import AgentEvent, EventType
 from app.agent.state import AgentState
-from app.routes.control_screen import ControlScreenResponseRequest
-from app.routes.control_screen import router as control_screen_router
-from app.routes.screenshot import ScreenshotResponseRequest
-from app.routes.screenshot import router as screenshot_router
-from app.schemas.tool import ToolAuthorizationResponse, ToolContinuationResponse
 from app.dependencies import get_agent_service
+from app.routes.tools import router as tools_router
+from app.schemas.tool import ToolAuthorizationResponse, ToolContinuationClaim, ToolContinuationResponse
 from app.services.agent_service import AgentService
 
 
@@ -35,13 +32,12 @@ class _StateManager:
         pass
 
     async def save(self, state: AgentState, *, checkpoint_type: str) -> int:
-        self.state = state
-        _StateManager.state = state
+        type(self).state = state
         return 1
 
 
 class _Agent:
-    """记录恢复参数的最小 Agent 替身。"""
+    """记录统一授权和 continuation 的恢复参数。"""
 
     def __init__(self) -> None:
         self.resume_calls: list[tuple[dict, AgentState | None]] = []
@@ -50,19 +46,13 @@ class _Agent:
         self.continuation_valid = True
 
     async def resume(
-        self,
-        data: dict,
-        *,
-        initial_state: AgentState | None = None,
+        self, data: dict, *, initial_state: AgentState | None = None,
     ) -> AsyncIterator[AgentEvent]:
         self.resume_calls.append((data, initial_state))
         yield AgentEvent(EventType.TEXT_CHUNK, "继续")
 
     async def run(
-        self,
-        message: str,
-        *,
-        initial_state: AgentState | None = None,
+        self, message: str, *, initial_state: AgentState | None = None,
     ) -> AsyncIterator[AgentEvent]:
         self.run_calls.append((message, initial_state))
         yield AgentEvent(EventType.TEXT_CHUNK, "已按引导继续")
@@ -77,11 +67,7 @@ class _Agent:
 def _state(interrupt_type: str | None, request_id: str = "request-current") -> AgentState:
     state = AgentState.create_new("session-a")
     if interrupt_type is not None:
-        interrupt = {
-            "type": interrupt_type,
-            "request_id": request_id,
-            "message": "请确认",
-        }
+        interrupt = {"type": interrupt_type, "request_id": request_id, "message": "请确认"}
         if interrupt_type == "continuation_request":
             interrupt["resume_state"] = {"continuation_claimed": True}
         state.set_interrupt(interrupt)
@@ -114,405 +100,162 @@ async def _drain(stream: AsyncIterator[AgentEvent]) -> list[AgentEvent]:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("interrupt_type", "resume"),
-    [
-        (
-            "mcp_tool_approval_request",
-            lambda service: service.resume_after_screenshot(
-                "session-a",
-                request_id="request-current",
-                approved=True,
-                screenshot_data="image",
-            ),
-        ),
-        (
-            "screenshot_request",
-            lambda service: service.resume_after_control_screen(
-                "session-a",
-                request_id="request-current",
-                approved=True,
-            ),
-        ),
-        (
-            "control_screen_execute_request",
-            lambda service: service.resume_after_mcp_tool(
-                "session-a",
-                request_id="request-current",
-                approved=True,
-            ),
-        ),
-    ],
-)
-async def test_resume_endpoint_rejects_other_interrupt_types(
-    monkeypatch,
-    interrupt_type: str,
-    resume: Callable[[AgentService], AsyncIterator[AgentEvent]],
-) -> None:
+@pytest.mark.parametrize("interrupt_type", ["authorization_request", "continuation_request"])
+async def test_resume_rejects_stale_id_before_agent_creation(monkeypatch, interrupt_type: str) -> None:
     service, _agent, constructed = _service(monkeypatch, _state(interrupt_type))
-
-    with pytest.raises(ValueError, match="类型与响应接口不匹配"):
-        await _drain(resume(service))
-
-    assert constructed == []
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("interrupt_type", "resume"),
-    [
-        (
-            "screenshot_request",
-            lambda service: service.resume_after_screenshot(
-                "session-a", request_id="request-stale", approved=False
-            ),
-        ),
-        (
-            "control_screen_capture_request",
-            lambda service: service.resume_after_control_screen(
-                "session-a", request_id="request-stale"
-            ),
-        ),
-        (
-            "mcp_tool_approval_request",
-            lambda service: service.resume_after_mcp_tool(
-                "session-a", request_id="request-stale", approved=False
-            ),
-        ),
-    ],
-)
-async def test_resume_endpoint_rejects_stale_request_id_before_agent_creation(
-    monkeypatch,
-    interrupt_type: str,
-    resume: Callable[[AgentService], AsyncIterator[AgentEvent]],
-) -> None:
-    service, _agent, constructed = _service(monkeypatch, _state(interrupt_type))
+    if interrupt_type == "authorization_request":
+        resume = service.resume_after_tool_authorization(
+            "session-a", request_id="stale", decision={"kind": "approve"},
+        )
+    else:
+        resume = service.resume_after_tool_continuation(
+            "session-a", request_id="stale", response={"executed": True},
+        )
 
     with pytest.raises(ValueError, match="确认请求已过期"):
-        await _drain(resume(service))
-
+        await _drain(resume)
     assert constructed == []
 
 
 @pytest.mark.asyncio
-async def test_resume_endpoint_rejects_missing_interrupt_before_agent_creation(
-    monkeypatch,
-) -> None:
+async def test_resume_rejects_missing_interrupt_before_agent_creation(monkeypatch) -> None:
     service, _agent, constructed = _service(monkeypatch, _state(None))
-
     with pytest.raises(ValueError, match="没有待处理的确认请求"):
-        await _drain(service.resume_after_screenshot(
-            "session-a",
-            request_id="request-current",
-            approved=False,
+        await _drain(service.resume_after_tool_authorization(
+            "session-a", request_id="request-current", decision={"kind": "reject"},
         ))
-
     assert constructed == []
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("interrupt_type", "resume"),
-    [
-        (
-            "continuation_request",
-            lambda service: service.resume_after_tool_authorization(
-                "session-a",
-                request_id="request-current",
-                decision={"kind": "approve"},
-            ),
-        ),
-        (
-            "authorization_request",
-            lambda service: service.resume_after_tool_continuation(
-                "session-a",
-                request_id="request-current",
-                response={"executed": True},
-            ),
-        ),
-    ],
-)
-async def test_generic_resume_interfaces_do_not_consume_each_others_interrupts(
-    monkeypatch,
-    interrupt_type: str,
-    resume: Callable[[AgentService], AsyncIterator[AgentEvent]],
+@pytest.mark.parametrize("interrupt_type", ["authorization_request", "continuation_request"])
+async def test_unified_resume_endpoints_reject_wrong_interrupt_type(
+    monkeypatch, interrupt_type: str,
 ) -> None:
     service, _agent, constructed = _service(monkeypatch, _state(interrupt_type))
-
+    if interrupt_type == "authorization_request":
+        resume = service.resume_after_tool_continuation(
+            "session-a", request_id="request-current", response={"executed": True},
+        )
+    else:
+        resume = service.resume_after_tool_authorization(
+            "session-a", request_id="request-current", decision={"kind": "approve"},
+        )
     with pytest.raises(ValueError, match="类型与响应接口不匹配"):
-        await _drain(resume(service))
-
+        await _drain(resume)
     assert constructed == []
 
 
 @pytest.mark.asyncio
-async def test_generic_authorization_and_continuation_resume_exact_payloads(monkeypatch) -> None:
-    authorization_service, authorization_agent, _ = _service(
-        monkeypatch,
-        _state("authorization_request"),
-    )
-    await _drain(authorization_service.resume_after_tool_authorization(
-        "session-a",
-        request_id="request-current",
-        decision={"kind": "reject"},
+@pytest.mark.parametrize("decision", ["approve", "reject"])
+async def test_authorization_resumes_with_exact_decision(monkeypatch, decision: str) -> None:
+    service, agent, constructed = _service(monkeypatch, _state("authorization_request"))
+    events = await _drain(service.resume_after_tool_authorization(
+        "session-a", request_id="request-current", decision={"kind": decision},
     ))
-    assert authorization_agent.resume_calls == [({"kind": "reject"}, _StateManager.state)]
-
-    continuation_service, continuation_agent, _ = _service(
-        monkeypatch,
-        _state("continuation_request"),
-    )
-    await _drain(continuation_service.resume_after_tool_continuation(
-        "session-a",
-        request_id="request-current",
-        response={"executed": True},
-    ))
-    assert continuation_agent.resume_calls == [({"executed": True}, _StateManager.state)]
+    assert [event.data for event in events] == ["继续"]
+    assert agent.resume_calls == [({"kind": decision}, _StateManager.state)]
+    assert agent.closed is True
+    assert constructed == ["agent"]
 
 
 @pytest.mark.asyncio
-async def test_continuation_claim_rechecks_before_frontend_effect_and_is_required(monkeypatch) -> None:
+async def test_continuation_claim_rechecks_once_before_effect_and_resumes(monkeypatch) -> None:
     state = _state("continuation_request")
     state.interrupt_data["resume_state"] = {}
     service, agent, constructed = _service(monkeypatch, state)
 
     with pytest.raises(ValueError, match="尚未通过执行前复核"):
         await _drain(service.resume_after_tool_continuation(
-            "session-a",
-            request_id="request-current",
-            response={"executed": True},
+            "session-a", request_id="request-current", response={"executed": True},
         ))
-
-    await service.claim_tool_continuation(
-        "session-a",
-        request_id="request-current",
-    )
+    await service.claim_tool_continuation("session-a", request_id="request-current")
     assert _StateManager.state.interrupt_data["resume_state"]["continuation_claimed"] is True
-    assert agent.closed is True
-    assert constructed == ["agent"]
-
     with pytest.raises(ValueError, match="已被认领"):
-        await service.claim_tool_continuation(
-            "session-a",
-            request_id="request-current",
-        )
-    assert constructed == ["agent"]
+        await service.claim_tool_continuation("session-a", request_id="request-current")
+
+    events = await _drain(service.resume_after_tool_continuation(
+        "session-a", request_id="request-current", response={"executed": True},
+    ))
+    assert [event.data for event in events] == ["继续"]
+    assert agent.resume_calls == [({"executed": True}, _StateManager.state)]
+    assert constructed == ["agent", "agent"]
+
+
+@pytest.mark.asyncio
+async def test_continuation_claim_rejects_revoked_grant(monkeypatch) -> None:
+    state = _state("continuation_request")
+    state.interrupt_data["resume_state"] = {}
+    service, agent, _ = _service(monkeypatch, state)
+    agent.continuation_valid = False
+    with pytest.raises(ValueError, match="授权已失效"):
+        await service.claim_tool_continuation("session-a", request_id="request-current")
+    assert state.interrupt_data["resume_state"] == {}
 
 
 @pytest.mark.asyncio
 async def test_steer_starts_new_user_turn_without_resuming_old_tool(monkeypatch) -> None:
     service, agent, constructed = _service(monkeypatch, _state("authorization_request"))
-
     events = await _drain(service.resume_after_tool_authorization(
-        "session-a",
-        request_id="request-current",
-        decision={"kind": "steer", "message": "改为只读取摘要"},
+        "session-a", request_id="request-current", decision={"kind": "steer", "message": "改为只读取摘要"},
     ))
-
     assert [event.data for event in events] == ["已按引导继续"]
     assert agent.run_calls == [("改为只读取摘要", _StateManager.state)]
     assert agent.resume_calls == []
-    assert _StateManager.load_calls == 1
-    assert agent.closed is True
     assert constructed == ["agent"]
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("interrupt_type", "resume", "expected_data"),
-    [
-        (
-            "screenshot_request",
-            lambda service: service.resume_after_screenshot(
-                "session-a",
-                request_id="request-current",
-                approved=False,
-            ),
-            {"approved": False},
-        ),
-        (
-            "control_screen_capture_request",
-            lambda service: service.resume_after_control_screen(
-                "session-a",
-                request_id="request-current",
-                screenshot_data="image",
-                width=10,
-                height=20,
-            ),
-            {"screenshot_data": "image", "width": 10, "height": 20},
-        ),
-        (
-            "control_screen_execute_request",
-            lambda service: service.resume_after_control_screen(
-                "session-a",
-                request_id="request-current",
-                approved=True,
-                executed=True,
-            ),
-            {"approved": True, "executed": True},
-        ),
-        (
-            "mcp_tool_approval_request",
-            lambda service: service.resume_after_mcp_tool(
-                "session-a",
-                request_id="request-current",
-                approved=True,
-            ),
-            {"approved": True},
-        ),
-    ],
-)
-async def test_matching_interrupt_resumes_once(
-    monkeypatch,
-    interrupt_type: str,
-    resume: Callable[[AgentService], AsyncIterator[AgentEvent]],
-    expected_data: dict,
-) -> None:
-    service, agent, constructed = _service(monkeypatch, _state(interrupt_type))
-
-    events = await _drain(resume(service))
-
-    assert [event.data for event in events] == ["继续"]
-    assert agent.resume_calls == [(expected_data, _StateManager.state)]
-    assert _StateManager.load_calls == 1
-    assert agent.closed is True
-    assert constructed == ["agent"]
-
-
-def test_old_resume_routes_require_non_empty_request_id() -> None:
-    with pytest.raises(ValidationError):
-        ScreenshotResponseRequest.model_validate({"session_id": "session-a", "approved": False})
-    with pytest.raises(ValidationError):
-        ScreenshotResponseRequest.model_validate({
-            "session_id": "session-a",
-            "request_id": "",
-            "approved": False,
-        })
-    with pytest.raises(ValidationError):
-        ControlScreenResponseRequest.model_validate({"session_id": "session-a"})
-    with pytest.raises(ValidationError):
-        ControlScreenResponseRequest.model_validate({
-            "session_id": "session-a",
-            "request_id": "",
-            "approved": False,
-        })
-
-    capture_payload = ControlScreenResponseRequest.model_validate({
-        "session_id": "session-a",
-        "request_id": "request-current",
-        "screenshot_data": "image",
-        "width": 10,
-        "height": 20,
-    })
-    assert capture_payload.approved is None
-
-
-def test_generic_response_models_require_valid_decisions_and_request_ids() -> None:
-    with pytest.raises(ValidationError):
-        ToolAuthorizationResponse.model_validate({
-            "session_id": "session-a",
-            "request_id": "request-current",
-            "kind": "steer",
-            "message": "  ",
-        })
-    with pytest.raises(ValidationError):
-        ToolContinuationResponse.model_validate({
-            "session_id": "session-a",
-            "request_id": "",
-            "response": {},
-        })
-
-
-def test_control_screen_response_requires_execution_result_when_approved() -> None:
-    with pytest.raises(ValidationError, match="executed"):
-        ControlScreenResponseRequest.model_validate({
-            "session_id": "session-a",
-            "request_id": "request-current",
-            "approved": True,
-        })
-
-
-def test_control_screen_response_requires_dimensions_with_screenshot() -> None:
-    with pytest.raises(ValidationError, match="width"):
-        ControlScreenResponseRequest.model_validate({
-            "session_id": "session-a",
-            "request_id": "request-current",
-            "approved": True,
-            "executed": True,
-            "screenshot_data": "image",
-        })
-
-
-@pytest.mark.parametrize("path", ["/screenshot/respond", "/control-screen/respond"])
-@pytest.mark.parametrize("request_id", [None, ""])
-def test_old_resume_http_routes_reject_missing_or_empty_request_id(
-    path: str,
-    request_id: str | None,
-) -> None:
-    app = FastAPI()
-    app.include_router(screenshot_router)
-    app.include_router(control_screen_router)
-    app.dependency_overrides[get_agent_service] = lambda: object()
-    payload = {"session_id": "session-a", "approved": False}
-    if request_id is not None:
-        payload["request_id"] = request_id
-
-    with TestClient(app) as client:
-        response = client.post(path, json=payload)
-
-    assert response.status_code == 422
+def test_unified_response_models_require_valid_decisions_and_request_ids() -> None:
+    for model, payload in [
+        (ToolAuthorizationResponse, {"session_id": "session-a", "request_id": "", "kind": "approve"}),
+        (ToolAuthorizationResponse, {"session_id": "session-a", "request_id": "id", "kind": "steer", "message": " "}),
+        (ToolContinuationResponse, {"session_id": "session-a", "request_id": "", "response": {}}),
+        (ToolContinuationClaim, {"session_id": "session-a", "request_id": ""}),
+    ]:
+        with pytest.raises(ValidationError):
+            model.model_validate(payload)
 
 
 class _RouteAgentService:
-    """记录旧恢复路由转发参数的 AgentService 替身。"""
-
     def __init__(self) -> None:
-        self.calls: list[tuple[str, str, str]] = []
+        self.calls: list[tuple[str, str, str, dict]] = []
 
-    async def resume_after_screenshot(
-        self,
-        session_id: str,
-        *,
-        request_id: str,
-        **_kwargs,
+    async def resume_after_tool_authorization(
+        self, session_id: str, *, request_id: str, decision: dict,
     ) -> AsyncIterator[AgentEvent]:
-        self.calls.append(("screenshot", session_id, request_id))
-        yield AgentEvent(EventType.TEXT_CHUNK, "ok")
+        self.calls.append(("authorization", session_id, request_id, decision))
+        yield AgentEvent(EventType.TEXT_CHUNK, "继续")
 
-    async def resume_after_control_screen(
-        self,
-        session_id: str,
-        *,
-        request_id: str,
-        **_kwargs,
+    async def resume_after_tool_continuation(
+        self, session_id: str, *, request_id: str, response: dict,
     ) -> AsyncIterator[AgentEvent]:
-        self.calls.append(("control", session_id, request_id))
-        yield AgentEvent(EventType.TEXT_CHUNK, "ok")
+        self.calls.append(("continuation", session_id, request_id, response))
+        yield AgentEvent(EventType.TEXT_CHUNK, "继续")
 
 
-@pytest.mark.parametrize(
-    ("path", "kind"),
-    [
-        ("/screenshot/respond", "screenshot"),
-        ("/control-screen/respond", "control"),
-    ],
-)
-def test_old_resume_http_routes_forward_interrupt_request_id(
-    path: str,
-    kind: str,
-) -> None:
+@pytest.mark.parametrize("path", ["/tool-authorization/respond", "/tool-continuation/respond"])
+def test_unified_http_routes_reject_missing_request_id(path: str) -> None:
     app = FastAPI()
-    app.include_router(screenshot_router)
-    app.include_router(control_screen_router)
+    app.include_router(tools_router)
+    app.dependency_overrides[get_agent_service] = lambda: _RouteAgentService()
+    with TestClient(app) as client:
+        response = client.post(path, json={"session_id": "session-a", "kind": "reject", "response": {}})
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("path,kind,payload", [
+    ("/tool-authorization/respond", "authorization", {"kind": "reject"}),
+    ("/tool-continuation/respond", "continuation", {"response": {"executed": False}}),
+])
+def test_unified_http_routes_forward_request_and_payload(path: str, kind: str, payload: dict) -> None:
+    app = FastAPI()
+    app.include_router(tools_router)
     service = _RouteAgentService()
     app.dependency_overrides[get_agent_service] = lambda: service
-
     with TestClient(app) as client:
         response = client.post(path, json={
-            "session_id": "session-a",
-            "request_id": "interrupt-123",
-            "approved": False,
+            "session_id": "session-a", "request_id": "interrupt-123", **payload,
         })
-
     assert response.status_code == 200
-    assert service.calls == [(kind, "session-a", "interrupt-123")]
+    forwarded = payload["response"] if kind == "continuation" else {"kind": "reject", "message": None}
+    assert service.calls == [(kind, "session-a", "interrupt-123", forwarded)]

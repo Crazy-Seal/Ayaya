@@ -55,7 +55,6 @@ export type ChatSettingsData = {
   openai_base_url: string;
   temperature: number;
   system_prompt: string;
-  tools_list?: string[];
   tool_permissions: Record<string, ToolPolicy>;
   tool_permissions_schema_version: number;
   mcp: MCPModelSettings;
@@ -70,7 +69,6 @@ export type ChatSettingsData = {
 };
 
 export type ToolPolicy = "allow" | "ask" | "deny";
-export type MCPToolPolicy = ToolPolicy;
 
 export type MCPModelSettings = {
   servers: Record<string, {
@@ -212,12 +210,6 @@ export type ChatChunkData = {
   aggregated: string;
 };
 
-export type ScreenshotInterruptData = {
-  type: "screenshot_request";
-  request_id: string;
-  message: string;
-};
-
 export type ControlScreenOperation = "click" | "double" | "right" | "scroll";
 export type ControlScreenScrollDirection = "none" | "down" | "up";
 
@@ -235,32 +227,6 @@ export type ControlScreenActionData = {
   wait_seconds: number;
   scroll_direction: ControlScreenScrollDirection;
   coordinates: ControlScreenCoordinates;
-};
-
-export type ControlScreenCaptureInterruptData = {
-  type: "control_screen_capture_request";
-  request_id: string;
-  message: string;
-};
-
-export type ControlScreenExecuteInterruptData = {
-  type: "control_screen_execute_request";
-  request_id: string;
-  message: string;
-  data: ControlScreenActionData;
-};
-
-export type MCPToolApprovalInterruptData = {
-  type: "mcp_tool_approval_request";
-  request_id: string;
-  message: string;
-  data: {
-    server_id: string;
-    server_name: string;
-    tool_name: string;
-    description: string;
-    arguments: Record<string, unknown>;
-  };
 };
 
 export type AuthorizationRequestData = {
@@ -294,10 +260,6 @@ export type ApprovalDecision =
   | { kind: "steer"; message: string };
 
 export type ChatInterruptData =
-  | ScreenshotInterruptData
-  | ControlScreenCaptureInterruptData
-  | ControlScreenExecuteInterruptData
-  | MCPToolApprovalInterruptData
   | AuthorizationRequestData
   | ContinuationRequestData;
 
@@ -308,30 +270,6 @@ export type ChatInterruptPayload = {
 export type PendingInterruptResult =
   | { pending: false }
   | { pending: true; interrupt: ChatInterruptPayload };
-
-export type ScreenshotInterruptPayload = ChatInterruptPayload;
-
-export type ScreenshotResponsePayload = {
-  sessionId: string;
-  requestId: string;
-  streamRequestId?: string;
-  approved: boolean;
-  screenshotData?: string;
-  width?: number;
-  height?: number;
-};
-
-export type ControlScreenResponsePayload = {
-  sessionId: string;
-  requestId: string;
-  streamRequestId?: string;
-  approved?: boolean;
-  screenshotData?: string;
-  width?: number;
-  height?: number;
-  executed?: boolean;
-  error?: string;
-};
 
 export type ChatResult =
   | { response: string; model: string; interrupted?: false }
@@ -459,14 +397,6 @@ export interface DesktopPetApi {
   onModelChanged?: (callback: (model: ModelInfo) => void) => () => void;
   onModelTransformChanged?: (callback: (data: ModelTransformData) => void) => () => void;
   onChatChunk: (callback: (data: ChatChunkData) => void) => () => void;
-  screenshotRespond?: (payload: ScreenshotResponsePayload) => Promise<ChatResult>;
-  controlScreenRespond?: (payload: ControlScreenResponsePayload) => Promise<ChatResult>;
-  mcpToolRespond?: (payload: {
-    sessionId: string;
-    requestId: string;
-    streamRequestId?: string;
-    approved: boolean;
-  }) => Promise<ChatResult>;
   toolAuthorizationRespond?: (payload: {
     sessionId: string;
     requestId: string;
@@ -484,7 +414,6 @@ export interface DesktopPetApi {
     requestId: string;
   }) => Promise<void>;
   captureScreen?: () => Promise<{ dataUrl: string; width: number; height: number }>;
-  resolveScreenActionPoint?: (coordinates: ControlScreenCoordinates) => Promise<ScreenActionPoint>;
   performScreenAction?: (payload: ScreenActionRequest) => Promise<ScreenActionResult>;
   onChatInterrupt?: (callback: (data: ChatInterruptPayload) => void) => () => void;
   onToolCall?: (callback: (data: ToolCallEventData) => void) => () => void;

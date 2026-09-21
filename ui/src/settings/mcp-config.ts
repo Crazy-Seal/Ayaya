@@ -50,12 +50,10 @@ export const fingerprintMcpConfig = (config: MCPServerConfig): string =>
  * 构造启用状态的模型级 MCP Server 权限。
  *
  * @param current - 当前已保存的 Server 权限。
- * @param _toolNames - 兼容旧调用签名；逐工具权限已迁移到统一权限页。
  * @returns 保留身份绑定的 Server 启用状态。
  */
 export const buildEnabledServerPolicy = (
-  current: ServerPolicy | undefined,
-  _toolNames: string[] = []
+  current: ServerPolicy | undefined
 ): ServerPolicy => {
   return {
     enabled: true,

@@ -46,7 +46,7 @@ test("真实传输在等待响应头及静默正文超过 5 分钟后仍可完�
   assert.equal((await pending).response, "开始");
 });
 
-for (const path of ["/chat", "/screenshot/respond", "/control-screen/respond", "/mcp/respond"]) {
+for (const path of ["/chat", "/tool-authorization/respond", "/tool-continuation/respond"]) {
   test(`${path}: 统一保留后端错误与传输失败原因`, async () => {
     configureBackendClient("test-token");
     globalThis.fetch = async () => new Response("模型请求超时", { status: 504 });
@@ -61,7 +61,7 @@ for (const path of ["/chat", "/screenshot/respond", "/control-screen/respond", "
 
 test("请求保留认证与业务字段，并转发工具事件和恢复终态", async () => {
   configureBackendClient("test-token");
-  const interrupt = { value: { type: "screenshot_request", request_id: "persisted-id" } };
+  const interrupt = { value: { type: "authorization_request", request_id: "persisted-id" } };
   let cancelled = false;
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -73,18 +73,18 @@ test("请求保留认证与业务字段，并转发工具事件和恢复终态",
     cancel() { cancelled = true; },
   });
   globalThis.fetch = async (url, init) => {
-    assert.ok(String(url).endsWith("/screenshot/respond"));
+    assert.ok(String(url).endsWith("/tool-authorization/respond"));
     assert.equal(init?.method, "POST");
     assert.equal(new Headers(init?.headers).get("Authorization"), "Bearer test-token");
     assert.deepEqual(JSON.parse(String(init?.body)), {
-      session_id: "session", request_id: "persisted-id", approved: false,
+      session_id: "session", request_id: "persisted-id", kind: "reject",
     });
     return new Response(stream);
   };
   const tools: string[] = [];
   const interrupts: unknown[] = [];
-  const result = await requestChatStream("/screenshot/respond", {
-    session_id: "session", request_id: "persisted-id", approved: false,
+  const result = await requestChatStream("/tool-authorization/respond", {
+    session_id: "session", request_id: "persisted-id", kind: "reject",
   }, { onToolCall: (name) => tools.push(name), onInterrupt: (data) => interrupts.push(data) });
   assert.deepEqual(tools, ["screenshot"]);
   assert.deepEqual(interrupts, [interrupt]);

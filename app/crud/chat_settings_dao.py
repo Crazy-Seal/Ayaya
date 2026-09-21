@@ -7,57 +7,20 @@ from app.runtime import get_chat_settings_file
 from app.schemas.tool_permissions import TOOL_PERMISSIONS_SCHEMA_VERSION
 
 
-_LEGACY_APPROVAL_TOOLS = frozenset({
-    "screenshot",
-    "control_screen",
-    "control_screen_with_vlm",
-})
-
-
 def _known_local_tool_names() -> list[str]:
     from app.agent.tools.registry import ToolRegistry
 
     return ToolRegistry.list_tools()
 
 
-def _migrate_model_tool_permissions(item: dict) -> bool:
-    """把单个模型的旧工具配置迁移到统一 stable-key 映射。"""
+def _reconcile_local_tool_permissions(item: dict) -> bool:
+    """新发现的本地工具默认 ASK，不改变已保存的权限。"""
     changed = False
-    version = item.get("tool_permissions_schema_version")
     permissions = dict(item.get("tool_permissions") or {})
-    legacy_tools = {
-        "apply_patch" if name in {"write_file", "edit_file", "delete_file"} else name
-        for name in (item.get("tools_list") or [])
-    }
-
-    if version != TOOL_PERMISSIONS_SCHEMA_VERSION:
-        for name in _known_local_tool_names():
-            key = f"local:{name}"
-            if key not in permissions:
-                if name not in legacy_tools:
-                    permissions[key] = "deny"
-                elif name in _LEGACY_APPROVAL_TOOLS:
-                    permissions[key] = "ask"
-                else:
-                    permissions[key] = "allow"
-        for server_id, server in (((item.get("mcp") or {}).get("servers")) or {}).items():
-            if not isinstance(server, dict):
-                continue
-            for name, policy in (server.get("tools") or {}).items():
-                permissions.setdefault(f"mcp:{server_id}:{name}", policy)
-        changed = True
-    else:
-        # 迁移完成后新发现的本地工具安全默认为 ASK。
-        for name in _known_local_tool_names():
-            key = f"local:{name}"
-            if key not in permissions:
-                permissions[key] = "ask"
-                changed = True
-
-    if item.pop("tools_list", None) is not None:
-        changed = True
-    for server in (((item.get("mcp") or {}).get("servers")) or {}).values():
-        if isinstance(server, dict) and server.pop("tools", None) is not None:
+    for name in _known_local_tool_names():
+        key = f"local:{name}"
+        if key not in permissions:
+            permissions[key] = "ask"
             changed = True
     if item.get("tool_permissions") != permissions:
         item["tool_permissions"] = permissions
@@ -81,7 +44,7 @@ class ChatSettingsDao:
             data = yaml.safe_load(file) or {"chat_models": []}
         migrated = False
         for item in data.get("chat_models", []):
-            migrated = _migrate_model_tool_permissions(item) or migrated
+            migrated = _reconcile_local_tool_permissions(item) or migrated
         if migrated:
             self._save_chat_settings_file(data)
         return data
@@ -109,7 +72,6 @@ class ChatSettingsDao:
             openai_base_url=item["openai_base_url"],
             temperature=item["temperature"],
             system_prompt=item["system_prompt"],
-            tools_list=item.get("tools_list") or [],
             tool_permissions=item.get("tool_permissions") or {},
             tool_permissions_schema_version=item.get(
                 "tool_permissions_schema_version", TOOL_PERMISSIONS_SCHEMA_VERSION

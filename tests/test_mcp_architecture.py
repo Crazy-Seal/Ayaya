@@ -13,10 +13,10 @@ from app.schemas.mcp import (
     MCPModelSettings,
     MCPServerPolicy,
     MCPServersConfig,
-    MCPToolPolicy,
     StdioMCPServerConfig,
 )
 from app.services.mcp_connection_manager import MCPConnectionError
+from app.schemas.tool_permissions import ToolPolicy
 
 
 def _chat_settings(**overrides) -> ChatSettings:
@@ -27,7 +27,6 @@ def _chat_settings(**overrides) -> ChatSettings:
         "openai_base_url": "http://127.0.0.1:1/v1",
         "temperature": 0.1,
         "system_prompt": "prompt",
-        "tools_list": [],
         "context_strategy": ContextStrategyConfig(compression_trigger_tokens_k=100),
     }
     values.update(overrides)
@@ -81,16 +80,14 @@ class _Manager:
 async def test_agent_assembles_tools_and_isolates_server_failures(tmp_path: Path) -> None:
     manager = _Manager()
     settings = _chat_settings(
+        tool_permissions={
+            "mcp:filesystem:read_file": ToolPolicy.ALLOW,
+            "mcp:filesystem:write_file": ToolPolicy.ASK,
+            "mcp:filesystem:delete_file": ToolPolicy.DENY,
+        },
         mcp=MCPModelSettings(
             servers={
-                "filesystem": MCPServerPolicy(
-                    enabled=True,
-                    tools={
-                        "read_file": MCPToolPolicy.ALLOW,
-                        "write_file": MCPToolPolicy.ASK,
-                        "delete_file": MCPToolPolicy.DENY,
-                    },
-                ),
+                "filesystem": MCPServerPolicy(enabled=True),
                 "broken": MCPServerPolicy(enabled=True),
                 "disabled": MCPServerPolicy(enabled=True),
             }

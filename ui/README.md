@@ -11,9 +11,9 @@
 
 模型管理说明：
 - 在设置窗口的“模型管理”中支持导入 Live2D 模型文件夹。
-- 导入后模型会被移动到 `ui/dist/live2d/{模型名}`。
+- 导入后模型会被复制到 `ui/user_data/live2d_models/{模型名}`。
 - 模型与 `session_id` 映射会持久化在 `ui/user_data/models.json`。
-- 删除模型时会同步删除 `ui/dist/live2d/{模型名}` 目录和持久化记录。
+- 删除模型时会同步删除 `ui/user_data/live2d_models/{模型名}` 目录和持久化记录。
 - 默认内置模型不可删除。
 
 ## 窗口视觉架构

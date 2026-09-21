@@ -31,11 +31,11 @@ from app.services.chat_settings_service import ChatSettingsService
 from app.services.settings_mutation import SettingsMutationCoordinator
 from app.services.agent_service import AgentService
 from app.schemas.chat_settings import ChatSettings
+from app.schemas.tool_permissions import ToolPolicy
 from app.schemas.mcp import (
     MCPModelSettings,
     MCPServerPolicy,
     MCPServersConfig,
-    MCPToolPolicy,
     StdioMCPServerConfig,
     StreamableHttpMCPServerConfig,
 )
@@ -49,7 +49,6 @@ def _chat_settings(**overrides) -> ChatSettings:
         "openai_base_url": "http://127.0.0.1:1/v1",
         "temperature": 0.1,
         "system_prompt": "prompt",
-        "tools_list": [],
         "context_strategy": ContextStrategyConfig(compression_trigger_tokens_k=100),
     }
     values.update(overrides)
@@ -146,7 +145,7 @@ def test_chat_settings_defaults_to_no_mcp_access() -> None:
     assert settings.mcp.servers == {}
 
 
-def test_legacy_chat_settings_yaml_without_mcp_remains_compatible(tmp_path: Path) -> None:
+def test_chat_settings_yaml_without_mcp_uses_default(tmp_path: Path) -> None:
     config_file = tmp_path / "chat_settings.yaml"
     settings = _chat_settings().model_dump(mode="json")
     settings.pop("mcp")
@@ -162,30 +161,29 @@ def test_legacy_chat_settings_yaml_without_mcp_remains_compatible(tmp_path: Path
     assert loaded.mcp.servers == {}
 
 
-def test_chat_settings_round_trips_per_model_mcp_policies() -> None:
+def test_chat_settings_round_trips_stable_key_mcp_policies() -> None:
     settings = _chat_settings(
+        tool_permissions={
+            "mcp:filesystem:read_file": ToolPolicy.ALLOW,
+            "mcp:filesystem:write_file": ToolPolicy.ASK,
+            "mcp:filesystem:delete_file": ToolPolicy.DENY,
+        },
         mcp={
             "servers": {
                 "filesystem": {
                     "enabled": True,
-                    "tools": {
-                        "read_file": "allow",
-                        "write_file": "ask",
-                        "delete_file": "deny",
-                    },
                 }
             }
         }
     )
 
     assert settings.tool_permissions == {
-        "mcp:filesystem:read_file": MCPToolPolicy.ALLOW,
-        "mcp:filesystem:write_file": MCPToolPolicy.ASK,
-        "mcp:filesystem:delete_file": MCPToolPolicy.DENY,
+        "mcp:filesystem:read_file": ToolPolicy.ALLOW,
+        "mcp:filesystem:write_file": ToolPolicy.ASK,
+        "mcp:filesystem:delete_file": ToolPolicy.DENY,
     }
 
     persisted = settings.model_dump()
-    assert "tools" not in persisted["mcp"]["servers"]["filesystem"]
     restored = ChatSettings.model_validate(persisted)
     assert restored.mcp.model_dump() == settings.mcp.model_dump()
     assert restored.tool_permissions == settings.tool_permissions
@@ -574,18 +572,18 @@ def _tool_context(
 class _MutablePolicyResolver:
     """为 Adapter 安全测试提供可变的实时权限与身份。"""
 
-    def __init__(self, policy: MCPToolPolicy, identity: str | None) -> None:
+    def __init__(self, policy: ToolPolicy, identity: str | None) -> None:
         self.policy = policy
         self.identity = identity
 
-    def get_policy(self, _session_id: str, _server_id: str, _tool_name: str) -> MCPToolPolicy:
+    def get_policy(self, _session_id: str, _server_id: str, _tool_name: str) -> ToolPolicy:
         return self.policy
 
     def get_bound_identity(self, _session_id: str, _server_id: str) -> str | None:
         return self.identity
 
     def is_exposed(self, _session_id: str, _tool: BaseTool) -> bool:
-        return self.policy != MCPToolPolicy.DENY
+        return self.policy != ToolPolicy.DENY
 
     def get_bound_mcp_identity(self, _session_id: str, _server_id: str) -> str | None:
         return self.identity
@@ -614,7 +612,7 @@ async def test_adapter_executes_authorized_call_and_converts_results() -> None:
     await manager.connect("filesystem")
     descriptor = manager.get_tools("filesystem")[1]
     resolver = _MutablePolicyResolver(
-        MCPToolPolicy.ALLOW,
+        ToolPolicy.ALLOW,
         server_identity_fingerprint(config.servers[0]),
     )
     adapter = MCPToolAdapter(
@@ -639,7 +637,7 @@ async def test_adapter_executes_authorized_call_and_converts_results() -> None:
 @pytest.mark.asyncio
 async def test_adapter_does_not_own_user_approval_interrupts() -> None:
     session = _FakeSession()
-    resolver = _MutablePolicyResolver(MCPToolPolicy.ASK, None)
+    resolver = _MutablePolicyResolver(ToolPolicy.ASK, None)
 
     @asynccontextmanager
     async def session_factory(_config):
@@ -682,7 +680,7 @@ async def test_adapter_rejects_changed_tool_contract_at_final_guard() -> None:
     await manager.connect("filesystem")
     descriptor = manager.get_tools("filesystem")[0]
     resolver = _MutablePolicyResolver(
-        MCPToolPolicy.ALLOW,
+        ToolPolicy.ALLOW,
         server_identity_fingerprint(config.servers[0]),
     )
     adapter = MCPToolAdapter(
@@ -715,7 +713,7 @@ async def test_adapter_rejects_server_identity_changed_after_construction() -> N
     manager = MCPConnectionManager(lambda: config, session_factory=session_factory)
     await manager.connect("filesystem")
     original_identity = server_identity_fingerprint(config.servers[0])
-    resolver = _MutablePolicyResolver(MCPToolPolicy.ALLOW, original_identity)
+    resolver = _MutablePolicyResolver(ToolPolicy.ALLOW, original_identity)
     adapter = MCPToolAdapter(
         session_id="session-a",
         server_id="filesystem",
@@ -772,7 +770,7 @@ def test_identity_fingerprints_only_cover_identity_and_tool_contract() -> None:
 @pytest.mark.asyncio
 async def test_adapter_rechecks_current_policy_before_execution() -> None:
     session = _FakeSession()
-    resolver = _MutablePolicyResolver(MCPToolPolicy.ALLOW, None)
+    resolver = _MutablePolicyResolver(ToolPolicy.ALLOW, None)
 
     @asynccontextmanager
     async def session_factory(_config):
@@ -793,7 +791,7 @@ async def test_adapter_rechecks_current_policy_before_execution() -> None:
         authorization=resolver,
     )
 
-    resolver.policy = MCPToolPolicy.DENY
+    resolver.policy = ToolPolicy.DENY
     result = await adapter.execute({}, _tool_context())
 
     assert "未获准" in result.content
@@ -804,7 +802,7 @@ async def test_adapter_rechecks_current_policy_before_execution() -> None:
 @pytest.mark.asyncio
 async def test_adapter_rechecks_policy_inside_connection_lease() -> None:
     session = _FakeSession()
-    resolver = _MutablePolicyResolver(MCPToolPolicy.ALLOW, None)
+    resolver = _MutablePolicyResolver(ToolPolicy.ALLOW, None)
 
     @asynccontextmanager
     async def session_factory(_config):
@@ -816,7 +814,7 @@ async def test_adapter_rechecks_policy_inside_connection_lease() -> None:
 
     class _PolicyChangingManager(MCPConnectionManager):
         async def call_tool(self, *args, **kwargs):
-            resolver.policy = MCPToolPolicy.DENY
+            resolver.policy = ToolPolicy.DENY
             return await super().call_tool(*args, **kwargs)
 
     manager = _PolicyChangingManager(lambda: config, session_factory=session_factory)
@@ -852,7 +850,7 @@ async def test_adapter_rejects_changed_policy_binding_identity() -> None:
     )])
     manager = MCPConnectionManager(lambda: config, session_factory=session_factory)
     await manager.connect("filesystem")
-    resolver = _MutablePolicyResolver(MCPToolPolicy.ALLOW, "旧身份")
+    resolver = _MutablePolicyResolver(ToolPolicy.ALLOW, "旧身份")
     adapter = MCPToolAdapter(
         session_id="session-a",
         server_id="filesystem",
@@ -1226,11 +1224,11 @@ async def test_mcp_service_crud_exposes_runtime_status_and_cascades_policies(tmp
     chat_dao = ChatSettingsDao(config_file=chat_file)
     chat_dao.add_chat_settings(
         _chat_settings(
+            tool_permissions={"mcp:github:search": "ask"},
             mcp={
                 "servers": {
                     "github": {
                         "enabled": True,
-                        "tools": {"search": "ask"},
                     }
                 }
             }
@@ -1290,11 +1288,12 @@ async def test_identity_change_rebinds_all_current_tools_to_ask(tmp_path: Path) 
     MCPSettingsDao(mcp_file).save(MCPServersConfig(servers=[old_server]))
     chat_file.write_text("chat_models: []\n", encoding="utf-8")
     chat_dao = ChatSettingsDao(chat_file)
-    chat_dao.add_chat_settings(_chat_settings(mcp={"servers": {
+    chat_dao.add_chat_settings(_chat_settings(
+        tool_permissions={"mcp:filesystem:read_file": "allow", "mcp:filesystem:old_tool": "allow"},
+        mcp={"servers": {
         "filesystem": {
             "enabled": True,
             "identity_fingerprint": server_identity_fingerprint(old_server),
-            "tools": {"read_file": "allow", "old_tool": "allow"},
         }
     }}))
 
@@ -1324,8 +1323,8 @@ async def test_identity_change_rebinds_all_current_tools_to_ask(tmp_path: Path) 
         for key, value in saved.tool_permissions.items()
         if key.startswith("mcp:filesystem:")
     } == {
-        "mcp:filesystem:read_file": MCPToolPolicy.ASK,
-        "mcp:filesystem:new_tool": MCPToolPolicy.ASK,
+        "mcp:filesystem:read_file": ToolPolicy.ASK,
+        "mcp:filesystem:new_tool": ToolPolicy.ASK,
     }
     assert policy.identity_fingerprint == server_identity_fingerprint(new_server)
 
@@ -1362,16 +1361,16 @@ async def test_chat_settings_save_filters_deleted_servers_and_downgrades_unbound
         MCPSettingsDao(mcp_file),
         manager,
     )
-    incoming = _chat_settings(mcp={"servers": {
-        "filesystem": {"enabled": True, "tools": {"read_file": "allow"}},
-        "deleted": {"enabled": True, "tools": {"danger": "allow"}},
-    }})
+    incoming = _chat_settings(
+        tool_permissions={"mcp:filesystem:read_file": "allow", "mcp:deleted:danger": "allow"},
+        mcp={"servers": {"filesystem": {"enabled": True}, "deleted": {"enabled": True}}},
+    )
 
     await service.update_chat_settings(incoming)
 
     saved = ChatSettingsDao(chat_file).get_chat_settings("session-a")
     assert set(saved.mcp.servers) == {"filesystem"}
-    assert saved.tool_permissions["mcp:filesystem:read_file"] == MCPToolPolicy.ASK
+    assert saved.tool_permissions["mcp:filesystem:read_file"] == ToolPolicy.ASK
     assert "mcp:deleted:danger" not in saved.tool_permissions
     assert (
         saved.mcp.servers["filesystem"].identity_fingerprint
@@ -1379,13 +1378,13 @@ async def test_chat_settings_save_filters_deleted_servers_and_downgrades_unbound
     )
 
     manager.tool_names = ["read_file", "new_tool"]
-    bound_update = _chat_settings(mcp={"servers": {
-        "filesystem": {
+    bound_update = _chat_settings(
+        tool_permissions={"mcp:filesystem:read_file": "allow", "mcp:filesystem:new_tool": "allow"},
+        mcp={"servers": {"filesystem": {
             "enabled": True,
             "identity_fingerprint": server_identity_fingerprint(server),
-            "tools": {"read_file": "allow", "new_tool": "allow"},
-        }
-    }})
+        }}},
+    )
     await service.update_chat_settings(bound_update)
     rebound = ChatSettingsDao(chat_file).get_chat_settings("session-a")
     assert {
@@ -1393,8 +1392,8 @@ async def test_chat_settings_save_filters_deleted_servers_and_downgrades_unbound
         for key, value in rebound.tool_permissions.items()
         if key.startswith("mcp:filesystem:")
     } == {
-        "mcp:filesystem:read_file": MCPToolPolicy.ALLOW,
-        "mcp:filesystem:new_tool": MCPToolPolicy.ASK,
+        "mcp:filesystem:read_file": ToolPolicy.ALLOW,
+        "mcp:filesystem:new_tool": ToolPolicy.ASK,
     }
 
     MCPSettingsDao(mcp_file).save(MCPServersConfig())
@@ -1416,10 +1415,9 @@ async def test_concurrent_server_delete_and_stale_chat_settings_put_cannot_resto
     MCPSettingsDao(mcp_file).save(MCPServersConfig(servers=[server]))
     chat_file.write_text("chat_models: []\n", encoding="utf-8")
     chat_dao = ChatSettingsDao(chat_file)
-    original = _chat_settings(mcp={"servers": {"filesystem": {
+    original = _chat_settings(tool_permissions={"mcp:filesystem:read_file": "allow"}, mcp={"servers": {"filesystem": {
         "enabled": True,
         "identity_fingerprint": server_identity_fingerprint(server),
-        "tools": {"read_file": "allow"},
     }}})
     chat_dao.add_chat_settings(original)
 
@@ -1451,13 +1449,13 @@ async def test_concurrent_server_delete_and_stale_chat_settings_put_cannot_resto
 
 
 @pytest.mark.asyncio
-async def test_mcp_approval_resume_rejects_stale_request_id(monkeypatch) -> None:
+async def test_mcp_authorization_resume_rejects_stale_request_id(monkeypatch) -> None:
     from app.services import agent_service as agent_service_module
 
     state = AgentState.create_new("session-a")
     state.set_interrupt(
         {
-            "type": "mcp_tool_approval_request",
+            "type": "authorization_request",
             "request_id": "request-current",
             "message": "允许调用？",
         }
@@ -1481,20 +1479,20 @@ async def test_mcp_approval_resume_rejects_stale_request_id(monkeypatch) -> None
     )
 
     with pytest.raises(ValueError, match="已过期"):
-        async for _ in service.resume_after_mcp_tool(
-            "session-a", request_id="request-stale", approved=True
+        async for _ in service.resume_after_tool_authorization(
+            "session-a", request_id="request-stale", decision={"kind": "approve"},
         ):
             pass
 
 
 @pytest.mark.asyncio
-async def test_mcp_approval_resume_passes_single_decision_to_agent(monkeypatch) -> None:
+async def test_mcp_authorization_resume_passes_single_decision_to_agent(monkeypatch) -> None:
     from app.services import agent_service as agent_service_module
 
     state = AgentState.create_new("session-a")
     state.set_interrupt(
         {
-            "type": "mcp_tool_approval_request",
+            "type": "authorization_request",
             "request_id": "request-current",
             "message": "允许调用？",
         }
@@ -1534,12 +1532,12 @@ async def test_mcp_approval_resume_passes_single_decision_to_agent(monkeypatch) 
 
     events = [
         event
-        async for event in service.resume_after_mcp_tool(
-            "session-a", request_id="request-current", approved=False
+        async for event in service.resume_after_tool_authorization(
+            "session-a", request_id="request-current", decision={"kind": "reject"},
         )
     ]
 
     assert [event.data for event in events] == ["继续"]
-    assert agent.resume_data == {"approved": False}
+    assert agent.resume_data == {"kind": "reject"}
     assert agent.initial_state is state
     assert agent.closed is True

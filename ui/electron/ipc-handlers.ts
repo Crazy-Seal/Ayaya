@@ -66,11 +66,7 @@ import {
   updateMcpServer,
 } from "./mcp-api.js";
 import type {
-  ControlScreenResponsePayload,
-  ControlScreenCoordinates,
   MCPServerConfig,
-  ScreenActionPoint,
-  ScreenshotResponsePayload,
   ApprovalDecision,
   ToolPolicy,
 } from "../shared-types.js";
@@ -616,58 +612,6 @@ export const registerIpcHandlers = (): void => {
     }
   );
 
-  // 截屏审批响应
-  trustedIpc.handle(
-    "desktop-pet:screenshot-respond",
-    async (event, payload: ScreenshotResponsePayload) => {
-      const { approved, screenshotData, width, height } = payload;
-      const body: Record<string, unknown> = {
-        ...buildBackendInterruptIdentity(payload),
-        approved,
-      };
-      if (approved && screenshotData) {
-        body.screenshot_data = screenshotData;
-        if (width !== undefined) body.width = width;
-        if (height !== undefined) body.height = height;
-      }
-      return await streamBackendResponse(event, "/screenshot/respond", body, payload.streamRequestId);
-    }
-  );
-
-  // 屏幕控制工具响应
-  trustedIpc.handle(
-    "desktop-pet:control-screen-respond",
-    async (event, payload: ControlScreenResponsePayload) => {
-      const { approved, screenshotData, width, height, executed, error } = payload;
-      const body: Record<string, unknown> = {
-        ...buildBackendInterruptIdentity(payload),
-        approved,
-      };
-      if (screenshotData) body.screenshot_data = screenshotData;
-      if (width !== undefined) body.width = width;
-      if (height !== undefined) body.height = height;
-      if (executed !== undefined) body.executed = executed;
-      if (error) body.error = error;
-      return await streamBackendResponse(event, "/control-screen/respond", body, payload.streamRequestId);
-    }
-  );
-
-  trustedIpc.handle(
-    "desktop-pet:mcp-tool-respond",
-    async (event, payload: {
-      sessionId: string;
-      requestId: string;
-      streamRequestId?: string;
-      approved: boolean;
-    }) => {
-      const body = {
-        ...buildBackendInterruptIdentity(payload),
-        approved: payload.approved,
-      };
-      return await streamBackendResponse(event, "/mcp/respond", body, payload.streamRequestId);
-    }
-  );
-
   trustedIpc.handle(
     "desktop-pet:tool-authorization-respond",
     async (event, payload: {
@@ -726,14 +670,6 @@ export const registerIpcHandlers = (): void => {
   );
 
   // 执行屏幕控制动作
-  trustedIpc.handle(
-    "desktop-pet:resolve-screen-action-point",
-    (_event, coordinates: ControlScreenCoordinates): ScreenActionPoint => {
-      const display = screen.getPrimaryDisplay();
-      return resolveScreenActionPoint(coordinates, display.bounds, display.scaleFactor);
-    }
-  );
-
   trustedIpc.handle(
     "desktop-pet:perform-screen-action",
     async (_event, payload: ScreenActionRequest): Promise<ScreenActionResult> => {

@@ -46,7 +46,6 @@ def build_agent(
         base_url=chat_settings.openai_base_url,
         temperature=chat_settings.temperature,
         system_prompt=chat_settings.system_prompt,
-        tools=list(chat_settings.tools_list or []),
         context_strategy=chat_settings.context_strategy,
         plugins=plugins,
         skills=list(chat_settings.skills or []),

@@ -19,7 +19,7 @@ class InterruptEvent:
     - to_state():  写入 AgentState.interrupt_data 的完整快照，
                    含恢复同一工具所需的全部路由信息（可持久化、跨请求）
     """
-    type: str                    # 中断类型，如 "screenshot_request"
+    type: str                    # 中断类型，如 "authorization_request"
     request_id: str              # 请求唯一标识
     message: str                 # 展示给用户的提示
     data: dict = field(default_factory=dict)  # 额外数据（发给前端的附加内容）
@@ -128,7 +128,7 @@ class ToolResult:
         """创建「需要用户输入」的中断结果（可恢复工具在首次执行、尚未拿到用户输入时使用）
 
         Args:
-            type: 中断类型，如 "screenshot_request"
+            type: 中断类型，如 "continuation_request"
             message: 展示给用户的提示
             resume_state: 恢复执行时需要的中间态（如 VLM 算出的坐标）
             data: 发给前端的附加数据

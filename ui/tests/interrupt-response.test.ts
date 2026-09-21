@@ -8,9 +8,13 @@ import { buildBackendInterruptIdentity } from "../electron/interrupt-response.js
 test("Renderer 分离持久化中断 ID 与流请求 ID", () => {
   const meta = buildInterruptResponseMeta(
     {
-      type: "screenshot_request",
+      type: "authorization_request",
       request_id: "interrupt-123",
       message: "允许截屏？",
+      data: {
+        tool_call_id: "call-1", tool_identity: "local:screenshot", tool_name: "screenshot",
+        source: "local", arguments: {}, contract_fingerprint: "test-contract",
+      },
     },
     "stream-456"
   );

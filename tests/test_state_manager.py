@@ -19,7 +19,6 @@ from app.agent.state.messages import (
     ToolCall,
     ToolMediaMessage,
 )
-import app.agent.state.manager as state_manager_module
 from app.runtime import get_agent_state_db, get_chat_history_db, get_checkpoint_db
 
 
@@ -244,34 +243,7 @@ def test_mcp_tool_image_is_not_persisted_as_human_history(tmp_path: Path) -> Non
     asyncio.run(scenario())
 
 
-def test_state_manager_does_not_access_retired_legacy_database(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    def fail_if_called():
-        raise AssertionError("不应再访问旧聊天记录数据库")
-
-    monkeypatch.setattr(
-        state_manager_module,
-        "get_legacy_chat_history_db",
-        fail_if_called,
-        raising=False,
-    )
-
-    async def scenario() -> None:
-        manager = StateManager(
-            "test-session",
-            db_path=str(tmp_path / "agent_checkpoints.sqlite3"),
-        )
-        try:
-            await manager._get_db()
-        finally:
-            await manager.close()
-
-    asyncio.run(scenario())
-
-
-def test_fresh_state_database_does_not_create_retired_chat_history_table(
+def test_fresh_state_database_creates_checkpoint_and_protocol_log_tables(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> set[str]:
@@ -289,8 +261,7 @@ def test_fresh_state_database_does_not_create_retired_chat_history_table(
             await manager.close()
 
     tables = asyncio.run(scenario())
-    assert "conversation_messages" in tables
-    assert "chat_history" not in tables
+    assert {"checkpoints", "conversation_messages"} <= tables
 
 
 def test_fresh_database_message_type_check_uses_shared_protocol_types(

@@ -29,7 +29,6 @@ def normalize_messages_for_model(messages: list[dict]) -> list[dict]:
             key: value
             for key, value in original_message.items()
             if not key.startswith("_")
-            and key not in {"image_description", "image_filenames"}
         }
         role = message.get("role")
 

@@ -5,11 +5,19 @@ chat_models:
   openai_base_url: https://www.dmxapi.cn/v1
   temperature: 0.9
   system_prompt: '提示词(前端会自动组装)'
-  tools_list:
-  - search_memory
-  - search_diary
-  - access_the_internet
-  - screenshot
+  tool_permissions:
+    local:access_the_internet: allow
+    local:apply_patch: deny
+    local:control_screen: deny
+    local:control_screen_with_vlm: deny
+    local:read_file: deny
+    local:read_image: deny
+    local:run_ps: deny
+    local:screenshot: ask
+    local:search_diary: allow
+    local:search_memory: allow
+    local:update_plan: deny
+  tool_permissions_schema_version: 1
   context_strategy:
     compression_trigger_tokens_k: 100
     max_screenshots_in_context: 2

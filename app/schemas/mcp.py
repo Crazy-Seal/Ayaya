@@ -9,37 +9,11 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 SERVER_ID_PATTERN = r"^[A-Za-z0-9_-]{1,32}$"
 
 
-from app.schemas.tool_permissions import ToolPolicy
-
-
-# 一个迁移周期内保留导入名；运行时只使用统一 ToolPolicy。
-MCPToolPolicy = ToolPolicy
-
-
 class MCPServerPolicy(BaseModel):
     """描述单个模型对一个 MCP Server 的使用权限。"""
 
     enabled: bool = False
-    tools: dict[str, ToolPolicy] = Field(default_factory=dict, exclude=True)
     identity_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-
-    @field_validator("tools")
-    @classmethod
-    def validate_tool_names(cls, value: dict[str, ToolPolicy]) -> dict[str, ToolPolicy]:
-        """校验工具权限映射中的名称均非空白。
-
-        Args:
-            value: 工具名称到授权策略的映射。
-
-        Returns:
-            校验通过的原映射。
-
-        Raises:
-            ValueError: 任一工具名称为空白。
-        """
-        if any(not name.strip() for name in value):
-            raise ValueError("MCP 工具名称不能为空")
-        return value
 
 
 class MCPModelSettings(BaseModel):

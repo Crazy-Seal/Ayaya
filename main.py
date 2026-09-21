@@ -18,8 +18,6 @@ from app.agent.state.manager import StateManager
 from app.routes.agent import router as agent_router
 from app.routes.chat_settings import router as chat_settings_router
 from app.routes.chat_history import router as memory_router
-from app.routes.control_screen import router as control_screen_router
-from app.routes.screenshot import router as screenshot_router
 from app.routes.tools import router as tools_router
 from app.routes.plugins import router as plugins_router
 from app.routes.mcp import router as mcp_router
@@ -58,8 +56,6 @@ install_local_api_security(app, load_api_token())
 app.include_router(agent_router)
 app.include_router(chat_settings_router)
 app.include_router(memory_router)
-app.include_router(control_screen_router)
-app.include_router(screenshot_router)
 app.include_router(tools_router)
 app.include_router(plugins_router)
 app.include_router(mcp_router)

@@ -23,7 +23,6 @@ const savedSettings: ChatSettingsData = {
   openai_base_url: "http://saved.example/v1",
   temperature: 0.7,
   system_prompt: "saved prompt",
-  tools_list: [],
   tool_permissions: {},
   tool_permissions_schema_version: 1,
   mcp: { servers: {} },

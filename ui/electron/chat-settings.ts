@@ -105,9 +105,6 @@ export const fetchChatSettingsBySessionId = async (
     openai_base_url: String(result.data.openai_base_url ?? ""),
     temperature: typeof result.data.temperature === "number" ? result.data.temperature : 0.7,
     system_prompt: String(result.data.system_prompt ?? ""),
-    tools_list: Array.isArray(result.data.tools_list)
-      ? result.data.tools_list.map((item) => String(item))
-      : [],
     tool_permissions: result.data.tool_permissions && typeof result.data.tool_permissions === "object"
       ? result.data.tool_permissions
       : {},
@@ -231,7 +228,6 @@ export const createEmptyChatSettings = async (sessionId: string): Promise<ChatSe
     openai_base_url: "",
     temperature: 0,
     system_prompt: "",
-    tools_list: [],
     tool_permissions: {},
     tool_permissions_schema_version: 1,
     mcp: { servers: {} },

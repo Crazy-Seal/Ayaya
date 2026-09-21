@@ -99,8 +99,8 @@ class ResumableScreenshotTool(BaseTool):
 
     async def execute(self, args: dict, context: ToolContext) -> ToolResult:
         if context.resume_data is None:
-            return ToolResult.needs_input("screenshot_request", "允许截屏？")
-        self.resumed_calls.append(bool(context.resume_data.get("approved")))
+            return ToolResult.needs_input("authorization_request", "允许截屏？")
+        self.resumed_calls.append(context.resume_data.get("kind") == "approve")
         return ToolResult.success("截屏恢复完成")
 
 
@@ -114,7 +114,7 @@ class PhasedInterruptTool(BaseTool):
         phase = (context.resume_state or {}).get("phase", 0)
         if phase < args["stages"]:
             return ToolResult.needs_input(
-                "screenshot_request", "允许继续？", resume_state={"phase": phase + 1},
+                "authorization_request", "允许继续？", resume_state={"phase": phase + 1},
             )
         return ToolResult.success("阶段完成")
 
@@ -904,7 +904,7 @@ def test_resumed_last_tool_checkpoint_flushes_deferred_images(tmp_path: Path) ->
             image_message_name=MCP_TOOL_IMAGE_MESSAGE_NAME,
         )
         state.set_interrupt({
-            "type": "mcp_tool_approval_request",
+            "type": "authorization_request",
             "request_id": "request-b",
             "tool_name": "image_step",
             "tool_call_id": "call-b",
@@ -929,7 +929,7 @@ def test_resumed_last_tool_checkpoint_flushes_deferred_images(tmp_path: Path) ->
             with pytest.raises(asyncio.CancelledError):
                 await drain(agent.pipeline.resume_tools(
                     state,
-                    {"approved": True},
+                    {"kind": "approve"},
                     checkpoint=checkpoint,
                 ))
         finally:
@@ -1001,11 +1001,10 @@ def test_interrupt_recovers_across_fresh_agents_and_repeated_response_fails(
         assert all_agents[0].llm_client.closed is True
 
         # 即使创建新的 Agent，请求也能从 checkpoint 恢复，并再次产生持久化中断。
-        second_events = await drain(service.resume_after_screenshot(
+        second_events = await drain(service.resume_after_tool_authorization(
             "checkpoint-test",
             request_id=first_request_id,
-            approved=True,
-            screenshot_data="image",
+            decision={"kind": "approve"},
         ))
         assert second_events[-1].type == EventType.INTERRUPT
         assert all_agents[1].llm_client.closed is True
@@ -1018,10 +1017,10 @@ def test_interrupt_recovers_across_fresh_agents_and_repeated_response_fails(
         finally:
             await manager.close()
 
-        third_events = await drain(service.resume_after_screenshot(
+        third_events = await drain(service.resume_after_tool_authorization(
             "checkpoint-test",
             request_id=second_request_id,
-            approved=False,
+            decision={"kind": "reject"},
         ))
         assert any(event.type == EventType.TEXT_CHUNK for event in third_events)
         assert resumed_calls == [True, False]
@@ -1036,10 +1035,10 @@ def test_interrupt_recovers_across_fresh_agents_and_repeated_response_fails(
 
         # 中断已消费，重复响应不得再次执行工具。
         with pytest.raises(ValueError, match="没有待处理的确认请求"):
-            await drain(service.resume_after_screenshot(
+            await drain(service.resume_after_tool_authorization(
                 "checkpoint-test",
                 request_id=second_request_id,
-                approved=False,
+                decision={"kind": "reject"},
             ))
         assert resumed_calls == [True, False]
         assert agents == [all_agents[3]]

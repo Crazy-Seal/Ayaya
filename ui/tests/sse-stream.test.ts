@@ -79,7 +79,7 @@ test("残留块中的 interrupt 返回中断终态", async () => {
   const observed = collect();
   const result = await consumeSseStream(
     streamFrom(
-      'event: interrupt\ndata: {"value":{"type":"screenshot_request","request_id":"r1","message":"允许？"}}',
+      'event: interrupt\ndata: {"value":{"type":"authorization_request","request_id":"r1","message":"允许？"}}',
     ),
     observed.handlers,
     "流式响应失败",

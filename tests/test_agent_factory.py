@@ -11,7 +11,6 @@ def _settings(agent_plugins=None, context_strategy=None):
         openai_base_url="http://127.0.0.1:1/v1",
         temperature=0.1,
         system_prompt="test",
-        tools_list=[],
         agent_plugins=agent_plugins,
         context_strategy=context_strategy or ContextStrategyConfig(compression_trigger_tokens_k=100),
         skills=[],

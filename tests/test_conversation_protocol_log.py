@@ -255,31 +255,6 @@ def test_tool_image_without_tool_call_id_is_not_misassociated() -> None:
     assert state.messages[-1].associated_message_id is None
 
 
-def test_history_dao_does_not_fall_back_to_retired_chat_history_table(
-    tmp_path: Path,
-) -> None:
-    async def scenario() -> list[dict]:
-        db_path = tmp_path / "agent.sqlite3"
-        async with aiosqlite.connect(db_path) as db:
-            await db.execute(
-                """
-                CREATE TABLE chat_history (
-                    id INTEGER PRIMARY KEY,
-                    thread_id TEXT,
-                    role TEXT,
-                    content TEXT
-                )
-                """
-            )
-            await db.execute(
-                "INSERT INTO chat_history VALUES (1, 'session', 'Human', '旧记录')"
-            )
-            await db.commit()
-        return await ChatHistoryDao(db_path=db_path).list_chat_history_async("session")
-
-    assert asyncio.run(scenario()) == []
-
-
 def test_history_dao_raises_for_missing_message_type_but_keeps_legacy_notice(
     tmp_path: Path,
 ) -> None:

@@ -5,21 +5,15 @@
 import { BubbleManager } from "./bubble.js";
 import { ChatHistoryManager } from "./chat-history-manager.js";
 import { ToolApprovalDialog } from "./tool-approval-dialog.js";
-import { formatMcpApprovalMessage } from "./mcp-approval.js";
 import { buildInterruptResponseMeta } from "./interrupt-response.js";
-import { formatControlScreenApprovalMessage } from "./control-screen-approval.js";
-import {
-  isControlScreenCaptureInterrupt,
-  isControlScreenExecuteInterrupt,
-} from "./control-screen-interrupt.js";
 import { ToolCallToastManager } from "./tool-call-toast.js";
 import type { ApprovalDecision, ChatInterruptPayload, ChatResult, ControlScreenActionData, DesktopPetApi } from "../types.js";
 
 type ChatBridge = Pick<DesktopPetApi,
   "chat" | "onChatChunk" | "onToolCall" | "onChatInterrupt" | "getFrontendSettings" |
-  "captureScreen" | "screenshotRespond" | "controlScreenRespond" | "mcpToolRespond" |
+  "captureScreen" |
   "toolAuthorizationRespond" | "toolContinuationRespond" | "claimToolContinuation" |
-  "resolveScreenActionPoint" | "performScreenAction"
+  "performScreenAction"
 >;
 type ChatHistory = Pick<ChatHistoryManager,
   "addMessage" | "showTypingIndicator" | "hideTypingIndicator" | "startStreaming" |
@@ -261,86 +255,7 @@ export class ChatClient {
       }));
     }
 
-    if (interruptValue.type === "screenshot_request") {
-      const approval = await this.screenshotConfirmDialog.open(
-        interruptValue.message || "Agent 请求截取屏幕，是否允许？"
-      );
-      const approved = typeof approval === "boolean" ? approval : approval.kind === "approve";
-      if (!approved) {
-        return await submit(() => this.bridge.screenshotRespond?.({
-          sessionId,
-          ...responseMeta,
-          approved: false,
-        }));
-      }
-      const screenshot = await this.captureScreenWithUserPreference();
-      return await submit(() => this.bridge.screenshotRespond?.({
-        sessionId,
-        ...responseMeta,
-        approved: true,
-        screenshotData: screenshot?.dataUrl,
-        width: screenshot?.width,
-        height: screenshot?.height,
-      }));
-    }
-
-    if (isControlScreenCaptureInterrupt(interruptValue)) {
-      const screenshot = await this.captureScreenWithUserPreference();
-      return await submit(() => this.bridge.controlScreenRespond?.({
-        sessionId,
-        ...responseMeta,
-        screenshotData: screenshot?.dataUrl,
-        width: screenshot?.width,
-        height: screenshot?.height,
-      }));
-    }
-
-    if (interruptValue.type === "mcp_tool_approval_request") {
-      const approval = await this.screenshotConfirmDialog.open(
-        formatMcpApprovalMessage(interruptValue),
-        "MCP 工具调用确认",
-        "允许本次调用",
-        "拒绝"
-      );
-      const approved = typeof approval === "boolean" ? approval : approval.kind === "approve";
-      return await submit(() => this.bridge.mcpToolRespond?.({
-        sessionId,
-        ...responseMeta,
-        approved,
-      }));
-    }
-
-    if (!isControlScreenExecuteInterrupt(interruptValue)) {
-      throw new Error("无法处理未知的聊天中断类型");
-    }
-
-    const action = interruptValue.data;
-    const screenPoint = await this.bridge.resolveScreenActionPoint?.(action.coordinates);
-    if (!screenPoint) {
-      throw new Error("无法解析屏幕操作的真实坐标");
-    }
-    const approval = await this.screenshotConfirmDialog.open(
-      formatControlScreenApprovalMessage(action, screenPoint)
-    );
-    const approved = typeof approval === "boolean" ? approval : approval.kind === "approve";
-    if (!approved) {
-      return await submit(() => this.bridge.controlScreenRespond?.({
-        sessionId,
-        ...responseMeta,
-        approved: false,
-      }));
-    }
-    const actionResult = await this.performControlScreenAction(action);
-    return await submit(() => this.bridge.controlScreenRespond?.({
-      sessionId,
-      ...responseMeta,
-      approved: true,
-      executed: actionResult.executed,
-      error: actionResult.error,
-      screenshotData: actionResult.screenshot?.dataUrl,
-      width: actionResult.screenshot?.width,
-      height: actionResult.screenshot?.height,
-    }));
+    throw new Error("无法处理未知的聊天中断类型");
   }
 
   async restorePendingInterrupt(initialInterrupt: ChatInterruptPayload): Promise<void> {

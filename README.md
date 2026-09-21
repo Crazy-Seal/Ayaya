@@ -12,7 +12,7 @@ The app is built for personal desktop use. It is not a hosted service, and it do
 - Lets you chat with the character in a desktop chat panel.
 - Streams replies as they are generated.
 - Saves local chat history and long-term memory.
-- Supports image messages and vision-model image summaries.
+- Supports image messages for vision-capable chat models.
 - Can search memories, search diaries, browse the web, read or edit local files, run PowerShell commands, and request a screenshot with your confirmation.
 - Lets you configure the model, prompt, tools, memory behavior, Live2D model, model position, cursor tracking, and motion labels from the settings window.
 
@@ -23,7 +23,7 @@ The app is built for personal desktop use. It is not a hosted service, and it do
 - Conda environment named `ayaya`.
 - Node.js 24.x.
 - An OpenAI-compatible chat model endpoint.
-- Optional service keys for memory embedding, web search, and vision features.
+- Optional service keys for memory embedding, web search, and VLM-based screen control.
 
 ## Quick Start
 
@@ -83,7 +83,7 @@ MEM0_EXTRACTION_API_KEY=YOUR_API_KEY
 # Web search
 TAVILY_API_KEY=YOUR_API_KEY
 
-# Image and screenshot understanding
+# Optional VLM fallback for screen control with a non-vision chat model
 VLM_API_KEY=YOUR_API_KEY
 VLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 VLM_MODEL=qwen3-vl-plus

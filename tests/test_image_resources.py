@@ -11,7 +11,6 @@ from app.agent.models import vlm
 from app.agent.state import AgentState
 from app.agent.state.messages import HumanMessage, ToolCall
 from app.agent.utils.domain import images as image_utils
-from app.agent.utils.domain.text import normalize_messages_for_model
 
 
 class _UnusedLLM:
@@ -143,27 +142,6 @@ def test_save_multiple_images_rolls_back_partial_group(monkeypatch, tmp_path: Pa
     assert not (tmp_path / "tool" / "first.png").exists()
 
 
-def test_legacy_image_description_is_filtered_from_model_input() -> None:
-    normalized = normalize_messages_for_model([
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "历史消息"},
-                {
-                    "type": "image_url",
-                    "image_url": {"url": "data:image/png;base64,AA=="},
-                },
-            ],
-            "image_description": "旧图片描述",
-            "image_filenames": ["legacy.png"],
-        }
-    ])
-
-    assert "image_description" not in normalized[0]
-    assert "image_filenames" not in normalized[0]
-    assert normalized[0]["content"][1]["type"] == "image_url"
-
-
 def test_user_image_is_saved_before_first_protocol_commit(
     monkeypatch,
     tmp_path: Path,
@@ -181,7 +159,6 @@ def test_user_image_is_saved_before_first_protocol_commit(
         save_images,
         raising=False,
     )
-    monkeypatch.delenv("VLM_API_KEY", raising=False)
 
     async def scenario() -> tuple[AgentState, tuple[str, str | None]]:
         agent = _make_agent(tmp_path / "agent.sqlite3")
@@ -208,9 +185,7 @@ def test_user_image_is_saved_before_first_protocol_commit(
     assert message.image_filenames == ("stored.png",)
     assert "image_filenames" not in payload
     assert payload["content"][1]["image_url"]["url"] == "stored.png"
-    assert "image_description" not in payload
     assert json.loads(row[1]) == ["stored.png"]
-    assert "image_task_key" not in state.extra
 
 
 def test_text_input_does_not_save_images(monkeypatch, tmp_path: Path) -> None:

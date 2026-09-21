@@ -18,7 +18,6 @@ def _chat_settings(*, enable_diary=True, enable_episodic=True, enable_semantic=T
         openai_base_url="http://127.0.0.1:1/v1",
         temperature=0.1,
         system_prompt="test",
-        tools_list=[],
         context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100),
         agent_plugins={
             "memory": AgentPluginSettings(

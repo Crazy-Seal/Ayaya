@@ -37,22 +37,26 @@ from app.services.settings_mutation import SettingsMutationCoordinator
 from app.services.tool_permission_service import ToolPermissionService
 
 
-def _legacy_model() -> dict:
+def _configured_model() -> dict:
     return {
-        "session_id": "legacy-session",
+        "session_id": "configured-session",
         "model_name": "test-model",
         "openai_api_key": "test-key",
         "openai_base_url": "http://127.0.0.1:1/v1",
         "temperature": 0.1,
         "system_prompt": "test",
-        "tools_list": ["read_file", "screenshot"],
+        "tool_permissions": {
+            "local:read_file": "allow",
+            "local:screenshot": "deny",
+            "mcp:filesystem:read": "allow",
+        },
+        "tool_permissions_schema_version": 1,
         "context_strategy": {"compression_trigger_tokens_k": 100},
         "mcp": {
             "servers": {
                 "filesystem": {
                     "enabled": True,
                     "identity_fingerprint": "a" * 64,
-                    "tools": {"read": "allow", "write": "deny"},
                 }
             }
         },
@@ -67,39 +71,48 @@ def test_tool_identity_uses_source_specific_stable_keys() -> None:
     )
 
 
-def test_legacy_permissions_are_migrated_and_persisted_in_one_structure(
-    tmp_path: Path,
+def test_new_local_tool_defaults_to_ask_without_overwriting_saved_permissions(
+    tmp_path: Path, monkeypatch,
 ) -> None:
+    from app.crud import chat_settings_dao as dao_module
+
+    monkeypatch.setattr(
+        dao_module,
+        "_known_local_tool_names",
+        lambda: ["read_file", "screenshot", "run_ps"],
+    )
     config_file = tmp_path / "chat_settings.yaml"
     config_file.write_text(
-        yaml.safe_dump({"chat_models": [_legacy_model()]}, sort_keys=False),
+        yaml.safe_dump({"chat_models": [_configured_model()]}, sort_keys=False),
         encoding="utf-8",
     )
-
-    settings = ChatSettingsDao(config_file=config_file).get_chat_settings("legacy-session")
+    settings = ChatSettingsDao(config_file=config_file).get_chat_settings("configured-session")
 
     assert settings.tool_permissions["local:read_file"] == ToolPolicy.ALLOW
-    assert settings.tool_permissions["local:screenshot"] == ToolPolicy.ASK
+    assert settings.tool_permissions["local:screenshot"] == ToolPolicy.DENY
+    assert settings.tool_permissions["local:run_ps"] == ToolPolicy.ASK
     assert settings.tool_permissions["mcp:filesystem:read"] == ToolPolicy.ALLOW
-    assert settings.tool_permissions["mcp:filesystem:write"] == ToolPolicy.DENY
 
     stored = yaml.safe_load(config_file.read_text(encoding="utf-8"))["chat_models"][0]
     assert stored["tool_permissions_schema_version"] == 1
-    assert "tools_list" not in stored
-    assert "tools" not in stored["mcp"]["servers"]["filesystem"]
-    assert stored["tool_permissions"]["local:screenshot"] == "ask"
+    assert stored["tool_permissions"]["local:run_ps"] == "ask"
+    before = config_file.read_bytes()
+    ChatSettingsDao(config_file=config_file).get_chat_settings("configured-session")
+    assert config_file.read_bytes() == before
 
 
-def test_known_but_disabled_legacy_local_tools_migrate_to_deny(tmp_path: Path) -> None:
-    config_file = tmp_path / "chat_settings.yaml"
-    config_file.write_text(
-        yaml.safe_dump({"chat_models": [_legacy_model()]}, sort_keys=False),
-        encoding="utf-8",
-    )
-
-    settings = ChatSettingsDao(config_file=config_file).get_chat_settings("legacy-session")
-
-    assert settings.tool_permissions["local:run_ps"] == ToolPolicy.DENY
+def test_sample_permissions_preserve_only_the_four_enabled_tools() -> None:
+    sample_path = Path(__file__).parents[1] / "config" / "chat_settings.sample.yaml"
+    model = yaml.safe_load(sample_path.read_text(encoding="utf-8"))["chat_models"][0]
+    permissions = model["tool_permissions"]
+    assert {name for name, policy in permissions.items() if policy == "allow"} == {
+        "local:search_memory", "local:search_diary", "local:access_the_internet",
+    }
+    assert {name for name, policy in permissions.items() if policy == "ask"} == {
+        "local:screenshot",
+    }
+    assert all(policy == "deny" for name, policy in permissions.items()
+               if name not in {"local:search_memory", "local:search_diary", "local:access_the_internet", "local:screenshot"})
 
 
 def test_permission_service_groups_local_and_mcp_tools_and_marks_unavailable(

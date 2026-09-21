@@ -6,7 +6,7 @@ import type {
   ModelInfo,
   ModelTransformData,
   MotionConfig,
-  ScreenshotInterruptPayload,
+  ChatInterruptPayload,
   ToolCallEventData,
 } from "../shared-types.js";
 
@@ -84,11 +84,6 @@ const desktopPetApi: DesktopPetApi = {
     subscribe<ModelTransformData>("desktop-pet:model-transform-changed", listener),
   onChatChunk: (listener) =>
     subscribe<ChatChunkData>("desktop-pet:chat-chunk", listener),
-  screenshotRespond: (payload) =>
-    ipcRenderer.invoke("desktop-pet:screenshot-respond", payload),
-  controlScreenRespond: (payload) =>
-    ipcRenderer.invoke("desktop-pet:control-screen-respond", payload),
-  mcpToolRespond: (payload) => ipcRenderer.invoke("desktop-pet:mcp-tool-respond", payload),
   toolAuthorizationRespond: (payload) =>
     ipcRenderer.invoke("desktop-pet:tool-authorization-respond", payload),
   toolContinuationRespond: (payload) =>
@@ -96,12 +91,10 @@ const desktopPetApi: DesktopPetApi = {
   claimToolContinuation: (payload) =>
     ipcRenderer.invoke("desktop-pet:tool-continuation-claim", payload),
   captureScreen: () => ipcRenderer.invoke("desktop-pet:capture-screen"),
-  resolveScreenActionPoint: (coordinates) =>
-    ipcRenderer.invoke("desktop-pet:resolve-screen-action-point", coordinates),
   performScreenAction: (payload) =>
     ipcRenderer.invoke("desktop-pet:perform-screen-action", payload),
   onChatInterrupt: (listener) =>
-    subscribe<ScreenshotInterruptPayload>("desktop-pet:chat-interrupt", listener),
+    subscribe<ChatInterruptPayload>("desktop-pet:chat-interrupt", listener),
   onToolCall: (listener) =>
     subscribe<ToolCallEventData>("desktop-pet:chat-tool-call", listener),
   getFrontendSettings: () => ipcRenderer.invoke("desktop-pet:get-frontend-settings"),

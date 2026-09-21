@@ -30,6 +30,5 @@ export const UI_ROOT = path.resolve(__dirname, "..", "..");
 export const WORKSPACE_ROOT = path.resolve(UI_ROOT, "..");
 export const USER_DATA_DIR = path.join(UI_ROOT, "user_data");
 export const IMPORTED_MODELS_DIR = path.join(USER_DATA_DIR, "live2d_models");
-export const LEGACY_IMPORTED_MODELS_DIR = path.join(UI_ROOT, "dist", "live2d");
 export const MODEL_CONFIG_PATH = path.join(USER_DATA_DIR, "models.json");
 export const FRONTEND_SETTINGS_PATH = path.join(USER_DATA_DIR, "frontend_settings.json");

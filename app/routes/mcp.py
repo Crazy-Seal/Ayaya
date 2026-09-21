@@ -1,25 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
 
-from app.dependencies import get_agent_service, get_mcp_service
+from app.dependencies import get_mcp_service
 from app.schemas.mcp import MCPServerConfig
 from app.schemas.result import Result
 from app.services.mcp_connection_manager import MCPConnectionError, MCPServerDisabledError
 from app.services.mcp_service import MCPService
-from app.services.agent_service import AgentService
-from app.utils.sse_formatter import SSEFormatter
 
 
 router = APIRouter(prefix="/mcp", tags=["mcp"])
-
-
-class MCPToolApprovalResponse(BaseModel):
-    """表示用户对一次 MCP 工具调用的审批响应。"""
-
-    session_id: str
-    request_id: str = Field(min_length=1)
-    approved: bool
 
 
 def _result(data) -> Result:
@@ -192,36 +180,3 @@ def list_server_tools(
         return _result(service.list_tools(server_id))
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@router.post("/respond")
-async def respond_to_mcp_tool(
-    payload: MCPToolApprovalResponse,
-    agent_service: AgentService = Depends(get_agent_service),
-) -> StreamingResponse:
-    """提交一次 MCP 工具审批并以 SSE 恢复聊天。
-
-    Args:
-        payload: 会话、审批请求 ID 和批准结果。
-        agent_service: 由依赖注入提供的 Agent 服务。
-
-    Returns:
-        恢复 Agent 执行后的 SSE 响应流。
-    """
-    async def event_stream():
-        """生成恢复 MCP 工具调用后的 SSE 事件。"""
-        formatter = SSEFormatter()
-        try:
-            async for event in agent_service.resume_after_mcp_tool(
-                payload.session_id,
-                request_id=payload.request_id,
-                approved=payload.approved,
-            ):
-                formatted = formatter.format(event)
-                if formatted:
-                    yield formatted
-            yield formatter.done()
-        except Exception as exc:
-            yield formatter.error(str(exc))
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream")

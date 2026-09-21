@@ -10,7 +10,6 @@ import { fileURLToPath } from "node:url";
 import {
   USER_DATA_DIR,
   IMPORTED_MODELS_DIR,
-  LEGACY_IMPORTED_MODELS_DIR,
   MODEL_CONFIG_PATH,
 } from "./config.js";
 import type { ModelRecord, ModelConfig, ImportPreview } from "./types.js";
@@ -188,18 +187,6 @@ export const loadModelConfig = (): ModelConfig => {
           changed = true;
         }
 
-        const modelRootAbs = resolveRootDirAbsolute(model.rootDir);
-        const normalizedLegacyBase = path.normalize(`${LEGACY_IMPORTED_MODELS_DIR}${path.sep}`);
-        const normalizedModelRoot = path.normalize(modelRootAbs);
-        if (
-          normalizedModelRoot.startsWith(normalizedLegacyBase) &&
-          fs.existsSync(modelRootAbs)
-        ) {
-          const targetRoot = resolveUniqueModelDir(path.basename(modelRootAbs));
-          copyDirectory(modelRootAbs, targetRoot);
-          model.rootDir = toPosixRelativeFrom(USER_DATA_DIR, targetRoot);
-          changed = true;
-        }
       }
 
       if (typeof model.offsetX !== "number") {

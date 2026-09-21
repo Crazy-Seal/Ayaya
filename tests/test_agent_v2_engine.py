@@ -53,9 +53,7 @@ class _FakeScreenshotTool(BaseTool):
 
     async def execute(self, args, context):
         if context.resume_data is None:
-            return ToolResult.needs_input("screenshot_request", "允许截屏？")
-        if not context.resume_data.get("approved"):
-            return ToolResult.success("用户拒绝截屏")
+            return ToolResult.continuation("capture_screen", "获取截屏")
         return ToolResult.success(
             "截屏成功",
             image_url=context.resume_data.get("screenshot_data"),
@@ -363,12 +361,14 @@ def test_resumable_screenshot_roundtrip():
         assert state.interrupt_data["tool_name"] == "screenshot"
         assert state.interrupt_data["tool_call_id"] == "c1"
         assert "resume_state" in state.interrupt_data
-        # 发给前端的只有最小字段
+        # 发给前端的只有路由字段和必要的 continuation 类型
         client_payload = events1[-1].data
-        assert set(client_payload.keys()) == {"type", "request_id", "message"}
+        assert set(client_payload.keys()) == {"type", "request_id", "message", "data"}
+        assert client_payload["type"] == "continuation_request"
+        assert client_payload["data"]["kind"] == "capture_screen"
 
         events2 = await _drain(agent.pipeline.resume_tools(
-            state, {"approved": True, "screenshot_data": "data:image/png;base64,iVBORw0KGgpwYXlsb2Fk"}
+            state, {"screenshot_data": "data:image/png;base64,iVBORw0KGgpwYXlsb2Fk"}
         ))
         assert events2[-1].type == EventType.TEXT_CHUNK
         assert events2[-1].data == "我看到一只猫"
@@ -726,17 +726,17 @@ def test_sse_formatter_v2_events_byte_compatible():
     assert f(AgentEvent(ET.TEXT_CHUNK, "你好")) == 'data: {"response": "你好"}\n\n'
     assert f(AgentEvent(ET.TOOL_CALL, "screenshot")) == \
         'event: tool_call\ndata: {"tool_name": "screenshot"}\n\n'
-    interrupt_val = {"type": "screenshot_request", "request_id": "r1", "message": "允许？"}
+    interrupt_val = {"type": "authorization_request", "request_id": "r1", "message": "允许？"}
     assert f(AgentEvent(ET.INTERRUPT, interrupt_val)) == \
-        'event: interrupt\ndata: {"value": {"type": "screenshot_request", "request_id": "r1", "message": "允许？"}}\n\n'
+        'event: interrupt\ndata: {"value": {"type": "authorization_request", "request_id": "r1", "message": "允许？"}}\n\n'
     interrupt_with_data = {
-        "type": "control_screen_execute_request",
+        "type": "continuation_request",
         "request_id": "r2",
         "message": "允许操作？",
         "data": {"x": 1},
     }
     assert f(AgentEvent(ET.INTERRUPT, interrupt_with_data)) == \
-        'event: interrupt\ndata: {"value": {"type": "control_screen_execute_request", "request_id": "r2", "message": "允许操作？", "data": {"x": 1}}}\n\n'
+        'event: interrupt\ndata: {"value": {"type": "continuation_request", "request_id": "r2", "message": "允许操作？", "data": {"x": 1}}}\n\n'
     # DONE 交给路由 done()，format 返回 None
     assert f(AgentEvent(ET.DONE, None)) is None
 
@@ -845,7 +845,7 @@ def test_pending_interrupt_reads_state_manager_without_initializing_agent(monkey
     state = AgentState.create_new("pending-session")
     state.set_interrupt(
         {
-            "type": "screenshot_request",
+            "type": "continuation_request",
             "request_id": "request-1",
             "message": "允许截屏？",
             "data": {"source": "checkpoint"},
@@ -887,7 +887,7 @@ def test_pending_interrupt_reads_state_manager_without_initializing_agent(monkey
         "pending": True,
         "interrupt": {
             "value": {
-                "type": "screenshot_request",
+                "type": "continuation_request",
                 "request_id": "request-1",
                 "message": "允许截屏？",
                 "data": {"source": "checkpoint"},

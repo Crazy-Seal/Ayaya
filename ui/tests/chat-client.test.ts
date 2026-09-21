@@ -2,14 +2,15 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { ChatClient, type ChatClientOptions } from "../src/chat/chat-client.js";
-import type {
-  ApprovalDecision, ChatInterruptPayload, ChatResult, ScreenshotResponsePayload, ControlScreenResponsePayload,
-} from "../shared-types.js";
+import type { ApprovalDecision, ChatInterruptPayload, ChatResult, ControlScreenActionData } from "../shared-types.js";
 
 const interrupt = (id: string): ChatInterruptPayload => ({
   value: {
-    type: "mcp_tool_approval_request", request_id: id, message: "工具审批",
-    data: { server_id: "test", server_name: "测试", tool_name: "read", description: "读取", arguments: {} },
+    type: "authorization_request", request_id: id, message: "工具审批",
+    data: {
+      tool_call_id: "call-1", tool_identity: "mcp:test:read", tool_name: "read",
+      source: "mcp", arguments: {}, contract_fingerprint: "test-contract",
+    },
   },
 });
 type Step = { text?: string; next?: string; error?: string; tool?: boolean; responseOnly?: string };
@@ -49,8 +50,8 @@ function setup(steps: Step[]) {
     onToolCall(callback) { tools.add(callback); return () => { tools.delete(callback); }; },
     getFrontendSettings: async () => ({ hide_on_screenshot: false }),
     claimToolContinuation: async () => {},
-    mcpToolRespond: async (payload) => {
-      approvals.push(payload.approved);
+    toolAuthorizationRespond: async (payload) => {
+      approvals.push(payload.decision.kind === "approve");
       return request(payload.streamRequestId!, payload.sessionId);
     },
   };
@@ -294,77 +295,87 @@ for (const entry of ["send", "restore"] as const) {
     await h.client.sendMessage();
   };
   for (const approved of [true, false]) {
-    test(`${entry}: 截图${approved ? "批准" : "拒绝"}正确传回恢复标识`, async () => {
+    test(`${entry}: 截图授权${approved ? "批准" : "拒绝"}后才允许 continuation 截屏`, async () => {
       const h = setup([]);
       h.approved = approved;
       let captures = 0;
-      const responses: ScreenshotResponsePayload[] = [];
+      const decisions: ApprovalDecision[] = [];
+      const responses: Record<string, unknown>[] = [];
       h.bridge.captureScreen = async () => {
         captures++;
         return { dataUrl: "data:image/png;base64,test", width: 800, height: 600 };
       };
-      h.bridge.screenshotRespond = async (payload) => {
-        responses.push(payload);
+      h.bridge.toolAuthorizationRespond = async (payload) => {
+        decisions.push(payload.decision);
+        if (approved) return {
+          interrupted: true, response: "", model: "",
+          interruptData: { value: {
+            type: "continuation_request", request_id: "capture-id", message: "截屏",
+            data: { kind: "capture_screen", payload: {} },
+          } },
+        };
+        return { response: "已拒绝", model: "" };
+      };
+      h.bridge.toolContinuationRespond = async (payload) => {
+        responses.push(payload.response);
         return { response: "完成", model: "" };
       };
-      await begin(h, { value: { type: "screenshot_request", request_id: "screenshot-id", message: "截图" } });
+      await begin(h, interrupt("screenshot-id"));
       assert.deepEqual(h.errors, []);
       assert.equal(captures, approved ? 1 : 0);
-      assert.equal(responses.length, 1);
-      assert.equal(responses[0].approved, approved);
-      assert.equal(responses[0].requestId, "screenshot-id");
-      assert.equal(responses[0].sessionId, "session-a");
-      assert.ok(responses[0].streamRequestId);
-      assert.equal(responses[0].screenshotData, approved ? "data:image/png;base64,test" : undefined);
-      assert.deepEqual(h.completed, ["完成"]);
+      assert.deepEqual(decisions, [{ kind: approved ? "approve" : "reject" }]);
+      assert.equal(responses.length, approved ? 1 : 0);
+      if (approved) assert.equal(responses[0].screenshot_data, "data:image/png;base64,test");
+      assert.deepEqual(h.completed, [approved ? "完成" : "已拒绝"]);
     });
   }
   for (const outcome of ["approved", "denied", "failed"] as const) {
-    test(`${entry}: 屏幕捕获后执行审批 ${outcome} 保持响应协议`, async () => {
+    test(`${entry}: 屏幕操作 ${outcome} 通过统一授权和 continuation`, async () => {
       const h = setup([]);
       h.approved = outcome !== "denied";
       let actions = 0;
       let captures = 0;
-      const responses: ControlScreenResponsePayload[] = [];
+      let claims = 0;
+      const decisions: ApprovalDecision[] = [];
+      const responses: Record<string, unknown>[] = [];
       h.bridge.captureScreen = async () => {
         captures++;
         return { dataUrl: "data:image/png;base64,test", width: 800, height: 600 };
       };
-      h.bridge.resolveScreenActionPoint = async () => ({ x: 400, y: 300 });
+      h.bridge.claimToolContinuation = async () => { claims++; };
       h.bridge.performScreenAction = async () => {
         actions++;
         return outcome === "failed" ? { executed: false, error: "执行失败" } : { executed: true };
       };
-      h.bridge.controlScreenRespond = async (payload) => {
-        responses.push(payload);
-        if (payload.requestId === "capture-id") return {
-          interrupted: true, response: "", model: "",
-          interruptData: { value: {
-            type: "control_screen_execute_request", request_id: "execute-id", message: "执行",
-            data: {
-              target: "按钮", operation: "click", text: "", press_enter: false,
-              wait_seconds: 0, scroll_direction: "none",
-              coordinates: { bbox: [400, 400, 600, 600], x_ratio: 0.5, y_ratio: 0.5 },
-            },
-          } },
-        };
+      const action: ControlScreenActionData = {
+        target: "按钮", operation: "click", text: "", press_enter: false,
+        wait_seconds: 0, scroll_direction: "none",
+        coordinates: { bbox: [400, 400, 600, 600], x_ratio: 0.5, y_ratio: 0.5 },
+      };
+      h.bridge.toolAuthorizationRespond = async (payload) => {
+        decisions.push(payload.decision);
+        if (outcome === "denied") return { response: "已拒绝", model: "" };
+        return { interrupted: true, response: "", model: "", interruptData: { value: {
+          type: "continuation_request", request_id: "execute-id", message: "执行",
+          data: { kind: "perform_screen_action", payload: action },
+        } } };
+      };
+      h.bridge.toolContinuationRespond = async (payload) => {
+        responses.push(payload.response);
         return { response: "处理完成", model: "" };
       };
-      await begin(h, { value: {
-        type: "control_screen_capture_request", request_id: "capture-id", message: "获取屏幕",
-      } });
+      await begin(h, interrupt("approval-id"));
       assert.deepEqual(h.errors, []);
-      assert.equal(responses.length, 2);
-      assert.equal(responses[0].screenshotData, "data:image/png;base64,test");
-      assert.equal(responses[0].approved, undefined);
-      assert.equal(responses[1].requestId, "execute-id");
-      assert.equal(responses[1].approved, outcome !== "denied");
-      assert.equal(responses[1].executed, outcome === "denied" ? undefined : outcome === "approved");
-      assert.equal(responses[1].error, outcome === "failed" ? "执行失败" : undefined);
-      assert.equal(actions, outcome === "denied" ? 0 : 1);
-      assert.equal(captures, outcome === "approved" ? 2 : 1);
-      assert.ok(responses.every((payload) => payload.sessionId === "session-a" && payload.streamRequestId));
-      assert.deepEqual(h.completed, ["处理完成"]);
+      assert.deepEqual(decisions, [{ kind: outcome === "denied" ? "reject" : "approve" }]);
+      assert.equal(claims, outcome === "denied" ? 0 : 1);
+      assert.equal(actions, claims);
+      assert.equal(captures, outcome === "approved" ? 1 : 0);
+      assert.equal(responses.length, claims);
+      if (claims) {
+        assert.equal(responses[0].executed, outcome === "approved");
+        assert.equal(responses[0].error, outcome === "failed" ? "执行失败" : undefined);
+      }
+      assert.deepEqual(h.completed, [outcome === "denied" ? "已拒绝" : "处理完成"]);
     });
   }
 }
