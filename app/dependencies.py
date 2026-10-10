@@ -1,13 +1,14 @@
-from typing import Callable
-
 from fastapi import Depends
 from functools import lru_cache
 
 from app.crud.chat_history_dao import ChatHistoryDao
 from app.crud.chat_settings_dao import ChatSettingsDao
 from app.crud.mcp_settings_dao import MCPSettingsDao
-from app.schemas.chat_settings import ChatSettings
-from app.services.agent_service import AgentService
+from app.services.agent_runtime_scheduler import AgentRuntimeScheduler
+from app.services.interaction_event_hub import InteractionEventHub
+from app.services.interaction_contract import InteractionEvent
+from app.schemas.runtime_types import InteractionEventKind
+from app.services.task_supervisor import TaskSupervisor
 from app.services.agent_factory import build_agent
 from app.services.mcp_connection_manager import MCPConnectionManager
 from app.services.mcp_service import MCPService
@@ -82,29 +83,56 @@ def get_tool_authorization() -> ToolAuthorization:
     )
 
 
-def get_chat_settings_loader(
-    chat_settings_dao: ChatSettingsDao = Depends(get_chat_settings_dao),
-) -> Callable[[str], ChatSettings]:
-    """提供配置加载函数，用于 AgentService 等需要延迟加载的场景"""
-    return chat_settings_dao.get_chat_settings
+@lru_cache(maxsize=1)
+def get_task_supervisor() -> TaskSupervisor:
+    """取得进程级任务管理器，所有 Agent 工具共享同一进程所有者。
+
+    Returns:
+        TaskSupervisor: 当前查询或执行结果。
+    """
+    return TaskSupervisor()
 
 
 @lru_cache(maxsize=1)
-def get_agent_service(
-    chat_history_dao: ChatHistoryDao = Depends(get_chat_history_dao),
-    chat_settings_loader: Callable[[str], ChatSettings] = Depends(get_chat_settings_loader),
-    mcp_connection_manager: MCPConnectionManager = Depends(get_mcp_connection_manager),
-    tool_authorization: ToolAuthorization = Depends(get_tool_authorization),
-) -> AgentService:
-    return AgentService(
-        chat_history_dao=chat_history_dao,
-        chat_settings_loader=chat_settings_loader,
-        agent_factory=lambda settings: build_agent(
-            settings,
-            mcp_connection_manager,
-            tool_authorization,
+def get_runtime_scheduler() -> AgentRuntimeScheduler:
+    """装配进程级 Scheduler，并连接任务状态发布和终态唤醒回调。
+
+    Returns:
+        AgentRuntimeScheduler: 当前查询或执行结果。
+    """
+    settings_dao = get_chat_settings_dao()
+    mcp_manager = get_mcp_connection_manager()
+    authorization = get_tool_authorization()
+    supervisor = get_task_supervisor()
+    # 1. 进程级缓存持有唯一调度器，Agent 工厂每次运行才读取会话配置。
+    scheduler = AgentRuntimeScheduler(
+        InteractionEventHub(),
+        agent_factory=lambda session_id: build_agent(
+            settings_dao.get_chat_settings(session_id),
+            mcp_manager,
+            authorization,
+            supervisor,
         ),
+        task_supervisor=supervisor,
     )
+    # 2. 任务终态只通知已激活会话，初始化和关闭期间保留事实，不自行启动 Agent。
+    supervisor.on_terminal = scheduler.notify_task_terminal
+
+    async def publish_task(record):
+        """将任务可见状态发布到桌面，不把持续输出广播到聊天事件流。
+
+        Args:
+            record (TaskRecord): 持久任务记录。
+        """
+        await scheduler.events.publish(InteractionEvent(
+            record.session_id, InteractionEventKind.TASK_STATUS,
+            {"task_id": record.task_id, "status": record.status,
+             "exit_code": record.exit_code},
+            task_id=record.task_id,
+        ))
+
+    supervisor.on_status = publish_task
+    return scheduler
 
 
 @lru_cache(maxsize=1)

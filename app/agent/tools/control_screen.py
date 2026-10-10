@@ -6,6 +6,9 @@
 
 from typing import Annotated, Literal
 
+from app.schemas.runtime_types import (
+    DesktopExecutionKind,
+)
 from app.agent.state.messages import SCREENSHOT_MESSAGE_NAME
 from app.agent.tools.base import ToolContext, ToolResult
 from app.agent.tools.decorator import tool
@@ -154,7 +157,7 @@ async def control_screen(
         )
 
     return ToolResult.continuation(
-        "perform_screen_action",
+        DesktopExecutionKind.PERFORM_SCREEN_ACTION,
         f"正在对“{resolved_target}”执行 {resolved_operation} 操作。",
         payload=action_state,
         resume_state={"phase": "awaiting_execution"},

@@ -152,10 +152,23 @@ export const createMainWindow = (): BrowserWindow => {
 };
 
 /**
- * 打开设置窗口
+ * 打开或聚焦设置窗口，任务快捷入口在新窗口和已有窗口都直达任务页。
+ *
+ * Args:
+ *     page ("tasks" | undefined): 指定任务页；省略时保持当前页或默认模型页。
  */
-export const openSettingsWindow = (): void => {
+export const openSettingsWindow = (page?: "tasks"): void => {
   if (settingsWindow && !settingsWindow.isDestroyed()) {
+    // 1. 已有窗口使用 IPC 导航，避免重新加载丢失其他设置页的状态。
+    if (page) {
+      const target = settingsWindow;
+      /** 在页面监听就绪后导航，避免首次加载期间连续点击丢失目标页。 */
+      const navigate = (): void => {
+        if (!target.isDestroyed()) target.webContents.send("desktop-pet:open-settings-page", page);
+      };
+      if (target.webContents.isLoadingMainFrame()) target.webContents.once("did-finish-load", navigate);
+      else navigate();
+    }
     settingsWindow.focus();
     return;
   }
@@ -186,9 +199,9 @@ export const openSettingsWindow = (): void => {
   protectApplicationWindow(win, "settings-window");
 
   if (rendererPolicy.mode === "development") {
-    win.loadURL(`${rendererPolicy.origin}/settings.html`);
+    win.loadURL(`${rendererPolicy.origin}/settings.html${page ? `?page=${page}` : ""}`);
   } else {
-    win.loadFile(productionSettingsPath);
+    win.loadFile(productionSettingsPath, { query: page ? { page } : {} });
   }
 
   win.once("ready-to-show", () => {

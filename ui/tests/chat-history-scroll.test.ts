@@ -150,3 +150,67 @@ test("上一轮尾句尚未显示完时启动新一轮会先完整输出旧回�
     globalThis.clearInterval = originalClearInterval;
   }
 });
+
+test("快照历史已经包含的真人消息不会被增量事件重复显示", /**
+ * 验证快照历史已经包含的真人消息不会被增量事件重复显示。
+ *
+ * Returns:
+ *     Promise<void>: 当前异步处理完成的等待结果。
+ */
+async () => {
+  // 1. 建立隔离 DOM、bridge 替身与事件监听，按场景安排输入和到达顺序。
+  const originalDocument = globalThis.document;
+  const originalWindow = globalThis.window;
+  const originalFrame = globalThis.requestAnimationFrame;
+  globalThis.document = {
+    /**
+     * 创建隔离的测试元素。
+     *
+     * Returns:
+     *     FakeElement: 当前查询、回调或视图操作的结果。
+     */
+    createElement: () => new FakeElement(),
+    /**
+     * 创建用于断言历史内容的测试文本节点。
+     *
+     * Args:
+     *     text (string): 用于构造测试文本节点的正文。
+     *
+     * Returns:
+     *     FakeElement & { textContent: string; }: 当前查询、回调或视图操作的结果。
+     */
+    createTextNode: (text: string) => Object.assign(new FakeElement(), { textContent: text }),
+  } as unknown as Document;
+  globalThis.requestAnimationFrame = /**
+   * 提供当前测试场景使用的 callback 替身结果。
+   *
+   * Args:
+   *     callback (FrameRequestCallback): 当前定义执行的回调。
+   *
+   * Returns:
+   *     number: 当前查询、回调或视图操作的结果。
+   */
+  (callback) => { callback(0); return 0; };
+  globalThis.window = { desktopPetApi: {
+    /**
+     * 返回带领域消息标识的测试历史。
+     *
+     * Returns:
+     *     Promise<{ id: string; role: string; content: string; timestamp: string; }[]>: 当前查询、回调或视图操作的结果。
+     */
+    async getChatHistoryLastN() {
+      return [{ id: "message-1", role: "human", content: "你好", timestamp: "2026-09-29" }];
+    },
+  } } as unknown as Window & typeof globalThis;
+  try {
+    const container = new FakeContainer();
+    const manager = new ChatHistoryManager(container as unknown as HTMLDivElement);
+    await manager.loadHistory("s");
+    manager.addMessage({ id: "message-1", role: "human", content: "你好", timestamp: "2026-09-29" });
+    assert.equal(container.children.length, 1);
+  } finally {
+    globalThis.document = originalDocument;
+    globalThis.window = originalWindow;
+    globalThis.requestAnimationFrame = originalFrame;
+  }
+});

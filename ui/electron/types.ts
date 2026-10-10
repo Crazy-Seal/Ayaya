@@ -4,10 +4,7 @@
  */
 import type {
   ApiResponse as SharedApiResponse,
-  ChatInterruptPayload as SharedChatInterruptPayload,
-  ChatChunkData,
   ChatHistoryItem as SharedChatHistoryItem,
-  ChatResult as SharedChatResult,
   ChatSettingsData as SharedChatSettingsData,
   CursorSyncData,
   FrontendSettings as SharedFrontendSettings,
@@ -16,11 +13,9 @@ import type {
   ModelTransformData,
   MotionConfig as SharedMotionConfig,
   MotionSettingType as SharedMotionSettingType,
-  PendingInterruptResult as SharedPendingInterruptResult,
   PluginItem as SharedPluginItem,
   ScreenActionRequest as SharedScreenActionRequest,
   ScreenActionResult as SharedScreenActionResult,
-  ToolCallEventData,
   ToolItem as SharedToolItem,
 } from "../shared-types.js";
 
@@ -34,11 +29,6 @@ export type ApiResponse<T> = SharedApiResponse<T>;
 export type CursorSyncPayload = CursorSyncData;
 export type ModelChangedPayload = ModelInfo;
 export type ModelTransformChangedPayload = ModelTransformData;
-export type ChatChunkPayload = ChatChunkData;
-export type ChatInterruptPayload = SharedChatInterruptPayload;
-export type ChatResult = SharedChatResult;
-export type PendingInterruptResult = SharedPendingInterruptResult;
-export type ToolCallEventPayload = ToolCallEventData;
 export type FrontendSettings = SharedFrontendSettings;
 export type ImportPreview = SharedImportPreview;
 export type ScreenActionRequest = SharedScreenActionRequest;

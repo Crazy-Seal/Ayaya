@@ -1,13 +1,10 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 
 import type {
-  ChatChunkData,
   DesktopPetApi,
   ModelInfo,
   ModelTransformData,
   MotionConfig,
-  ChatInterruptPayload,
-  ToolCallEventData,
 } from "../shared-types.js";
 
 const subscribe = <T>(channel: string, listener: (payload: T) => void): (() => void) => {
@@ -17,8 +14,88 @@ const subscribe = <T>(channel: string, listener: (payload: T) => void): (() => v
 };
 
 const desktopPetApi: DesktopPetApi = {
-  chat: (message, sessionId, requestId, images) =>
-    ipcRenderer.invoke("desktop-pet:chat", { message, sessionId, requestId, images }),
+  /**
+   * 通过主进程查询当前会话任务列表，返回已经解包的记录数组。
+   *
+   * Args:
+   *     sessionId (string): 共享 Ayaya 会话标识。
+   *
+   * Returns:
+   *     Promise<any>: 当前查询、回调或视图操作的结果。
+   */
+  getBackgroundTasks: (sessionId) =>
+    ipcRenderer.invoke("desktop-pet:get-background-tasks", sessionId),
+  /**
+   * 通过主进程按字节游标查询任务输出页。
+   *
+   * Args:
+   *     sessionId (string): 共享 Ayaya 会话标识。
+   *     taskId (string): 受管进程任务标识。
+   *     offset (number): 完整输出文件的字节游标。
+   *
+   * Returns:
+   *     Promise<any>: 当前查询、回调或视图操作的结果。
+   */
+  getBackgroundTaskOutput: (sessionId, taskId, offset) =>
+    ipcRenderer.invoke("desktop-pet:get-background-task-output", sessionId, taskId, offset),
+  /**
+   * 通过主进程读取每会话渠道订阅列表。
+   *
+   * Args:
+   *     sessionId (string): 共享 Ayaya 会话标识。
+   *
+   * Returns:
+   *     Promise<any>: 当前查询、回调或视图操作的结果。
+   */
+  getChannelSubscriptions: (sessionId) =>
+    ipcRenderer.invoke("desktop-pet:get-channel-subscriptions", sessionId),
+  /**
+   * 通过主进程保存渠道启用状态并返回更新后的列表。
+   *
+   * Args:
+   *     sessionId (string): 共享 Ayaya 会话标识。
+   *     channel (string): 已注册渠道标识。
+   *     enabled (boolean): 该渠道是否参与此会话的双向互通。
+   *
+   * Returns:
+   *     Promise<any>: 当前查询、回调或视图操作的结果。
+   */
+  setChannelSubscription: (sessionId, channel, enabled) =>
+    ipcRenderer.invoke("desktop-pet:set-channel-subscription", sessionId, channel, enabled),
+  /**
+   * 提交统一渠道命令并返回受理结果，Agent 回复从独立事件流取得。
+   *
+   * Args:
+   *     command (ChannelCommand): 带桌面来源的统一入站命令。
+   *
+   * Returns:
+   *     Promise<any>: 当前查询、回调或视图操作的结果。
+   */
+  submitInteractionCommand: (command) =>
+    ipcRenderer.invoke("desktop-pet:interaction-command", command),
+  /**
+   * 订阅当前桌面会话，重连先取快照；返回首次快照到达的等待 Promise。
+   *
+   * Args:
+   *     sessionId (string): 共享 Ayaya 会话标识。
+   *     options (DesktopSessionSubscriptionOptions | undefined): 新页面要求刷新快照，普通发送省略。
+   *
+   * Returns:
+   *     Promise<any>: 当前查询、回调或视图操作的结果。
+   */
+  subscribeDesktopSession: (sessionId, options) =>
+    ipcRenderer.invoke("desktop-pet:subscribe-desktop-session", sessionId, options),
+  /**
+   * 监听主进程转发的渠道事件，返回只移除当前监听器的函数。
+   *
+   * Args:
+   *     listener ((event: InteractionEvent) => void): 收到主进程事件时执行的 Renderer 回调。
+   *
+   * Returns:
+   *     () => void: 当前查询、回调或视图操作的结果。
+   */
+  onInteractionEvent: (listener) =>
+    subscribe("desktop-pet:interaction-event", listener),
   selectImages: () => ipcRenderer.invoke("desktop-pet:select-images"),
   setMousePassthrough: (enabled) => {
     ipcRenderer.send("desktop-pet:set-mouse-passthrough", Boolean(enabled));
@@ -26,9 +103,25 @@ const desktopPetApi: DesktopPetApi = {
   setPointerInteractive: (enabled) => {
     ipcRenderer.send("desktop-pet:set-pointer-interactive", Boolean(enabled));
   },
-  openSettingsWindow: () => {
-    ipcRenderer.send("desktop-pet:open-settings-window");
+  /**
+   * 打开普通设置或直接进入任务页，页面参数由主进程再次校验。
+   *
+   * Args:
+   *     page ("tasks" | undefined): 指定任务页或保留普通设置入口行为。
+   */
+  openSettingsWindow: (page) => {
+    ipcRenderer.send("desktop-pet:open-settings-window", page);
   },
+  /**
+   * 监听已打开窗口的任务页导航。
+   *
+   * Args:
+   *     listener ((page: "tasks") => void): 页面导航回调。
+   *
+   * Returns:
+   *     () => void: 移除当前监听的清理函数。
+   */
+  onOpenSettingsPage: (listener) => subscribe("desktop-pet:open-settings-page", listener),
   openLogWindow: () => {
     ipcRenderer.send("desktop-pet:open-log-window");
   },
@@ -50,8 +143,6 @@ const desktopPetApi: DesktopPetApi = {
     ipcRenderer.invoke("desktop-pet:get-chat-history", sessionId, start, limit),
   getChatHistoryLastN: (sessionId, n) =>
     ipcRenderer.invoke("desktop-pet:get-chat-history-last-n", sessionId, n),
-  getPendingInterrupt: (sessionId) =>
-    ipcRenderer.invoke("desktop-pet:get-pending-interrupt", sessionId),
   updateChatSettings: (payload) =>
     ipcRenderer.invoke("desktop-pet:update-chat-settings", payload),
   getToolPermissions: (sessionId) =>
@@ -82,21 +173,6 @@ const desktopPetApi: DesktopPetApi = {
     subscribe<ModelInfo>("desktop-pet:model-changed", listener),
   onModelTransformChanged: (listener) =>
     subscribe<ModelTransformData>("desktop-pet:model-transform-changed", listener),
-  onChatChunk: (listener) =>
-    subscribe<ChatChunkData>("desktop-pet:chat-chunk", listener),
-  toolAuthorizationRespond: (payload) =>
-    ipcRenderer.invoke("desktop-pet:tool-authorization-respond", payload),
-  toolContinuationRespond: (payload) =>
-    ipcRenderer.invoke("desktop-pet:tool-continuation-respond", payload),
-  claimToolContinuation: (payload) =>
-    ipcRenderer.invoke("desktop-pet:tool-continuation-claim", payload),
-  captureScreen: () => ipcRenderer.invoke("desktop-pet:capture-screen"),
-  performScreenAction: (payload) =>
-    ipcRenderer.invoke("desktop-pet:perform-screen-action", payload),
-  onChatInterrupt: (listener) =>
-    subscribe<ChatInterruptPayload>("desktop-pet:chat-interrupt", listener),
-  onToolCall: (listener) =>
-    subscribe<ToolCallEventData>("desktop-pet:chat-tool-call", listener),
   getFrontendSettings: () => ipcRenderer.invoke("desktop-pet:get-frontend-settings"),
   updateFrontendSettings: (settings) =>
     ipcRenderer.invoke("desktop-pet:update-frontend-settings", settings),

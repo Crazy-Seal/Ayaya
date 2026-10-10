@@ -15,6 +15,8 @@ import {
 } from "./window-manager.js";
 import { startCursorTracking, stopCursorTracking } from "./cursor-tracker.js";
 import { registerIpcHandlers } from "./ipc-handlers.js";
+import { startDesktopExecutor } from "./desktop-executor.js";
+import { stopDesktopSession } from "./interaction-adapter.js";
 import { clearChatSettingsCache } from "./chat-settings.js";
 import { initAyayaImageProtocolHandler } from "./ayaya-image-protocol.js";
 import {
@@ -77,9 +79,16 @@ onBackendUnexpectedExit((event) => {
   backendRecoveryCoordinator.handleUnexpectedExit(event);
 });
 
+/**
+ * 先停止两条桌面订阅，再交给统一关闭协调器释放应用资源。
+ */
 const requestApplicationShutdown = (): void => {
+  stopDesktopExecutor?.();
+  stopDesktopSession();
   void applicationShutdownCoordinator.requestShutdown();
 };
+
+let stopDesktopExecutor: (() => void) | undefined;
 
 process.on("SIGINT", requestApplicationShutdown);
 process.on("SIGTERM", requestApplicationShutdown);
@@ -96,7 +105,13 @@ process.on("unhandledRejection", (reason) => {
 registerLive2DProtocol();
 
 // 应用就绪后初始化
-app.whenReady().then(async () => {
+app.whenReady().then(/**
+ * 应用已经完成的异步结果，继续当前事件或页面更新。
+ *
+ * Returns:
+ *     Promise<void>: 当前异步处理完成的等待结果。
+ */
+async () => {
   initializeLogFiles(app.getPath("logs"));
   registerLogIpcHandlers({
     policy: getTrustedRendererPolicy(),
@@ -125,6 +140,7 @@ app.whenReady().then(async () => {
   appendFrontendLog("info", "startup", "后端已就绪");
   // 创建主窗口
   const mainWindow = createMainWindow();
+  stopDesktopExecutor = startDesktopExecutor();
   mainWindow.once("closed", requestApplicationShutdown);
 
   // 初始化 Live2D 协议处理器

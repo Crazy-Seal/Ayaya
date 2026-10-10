@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from app.agent.context._projection import build_model_window, project_messages_with_time
-from app.agent.memory.manager import MemoryManager
+from app.agent.memory.memories.episodic import EpisodicMemory
 from app.agent.memory.memories.semantic_mem0 import Mem0SemanticMemory
 from app.agent.state import AgentState
 from app.agent.state.messages import (
@@ -75,11 +75,12 @@ def test_context_strategy_projects_time_and_removes_internal_metadata() -> None:
 
 
 def test_episodic_and_semantic_inputs_include_structured_message_time() -> None:
+    """验证两种提取器保留领域消息的结构化时间，不修改消息正文。"""
     message = HumanMessage(text="我准备学习 Python", created_at=FIXED_TIME)
 
-    manager = object.__new__(MemoryManager)
-    manager.chat_settings = SimpleNamespace(address="主人", name="Ayaya")
-    episodic_text = manager._format_messages([message])
+    episodic = object.__new__(EpisodicMemory)
+    episodic.chat_settings = SimpleNamespace(address="主人", name="Ayaya")
+    episodic_text = episodic._format_messages([message])
 
     semantic = object.__new__(Mem0SemanticMemory)
     semantic_messages = semantic._convert_messages([message])

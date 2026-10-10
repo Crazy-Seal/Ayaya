@@ -8,6 +8,7 @@ from app.schemas.chat_settings import (
 )
 from app.services.mcp_connection_manager import MCPConnectionManager
 from app.agent.tools.authorization.manager import ToolAuthorization
+from app.agent.tools.base import TaskLauncher
 
 
 def _plugin_config(chat_settings: ChatSettings, name: str, defaults: dict) -> dict:
@@ -22,15 +23,18 @@ def build_agent(
     chat_settings: ChatSettings,
     mcp_connection_manager: MCPConnectionManager | None = None,
     tool_authorization: ToolAuthorization | None = None,
+    task_launcher: TaskLauncher | None = None,
 ) -> Agent:
-    """根据会话配置构造 Agent。
+    """按会话设置创建 Agent，并注入共享授权与任务启动端口。
 
     Args:
-        chat_settings: 当前模型和会话的完整配置。
-        mcp_connection_manager: 可选的进程级 MCP 连接管理器。
+        chat_settings (ChatSettings): 会话模型和插件配置。
+        mcp_connection_manager (MCPConnectionManager | None): 共享 MCP 连接管理器。
+        tool_authorization (ToolAuthorization | None): 工具单次授权验证器。
+        task_launcher (TaskLauncher | None): 工具使用的共享进程启动端口。
 
     Returns:
-        已注入模型配置和 MCP 权限的 Agent。
+        Agent: 当前查询或执行结果。
     """
     plugins: list[dict] = [
         {
@@ -57,6 +61,7 @@ def build_agent(
             diary_coverage=get_memory_manager(chat_settings.session_id),
             chat_settings=chat_settings,
             tool_authorization=tool_authorization,
+            task_launcher=task_launcher,
         )
     return Agent(
         config,
@@ -64,4 +69,5 @@ def build_agent(
         diary_coverage=get_memory_manager(chat_settings.session_id),
         chat_settings=chat_settings,
         tool_authorization=tool_authorization,
+        task_launcher=task_launcher,
     )

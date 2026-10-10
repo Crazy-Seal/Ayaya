@@ -5,6 +5,9 @@ from __future__ import annotations
 import logging
 from datetime import date
 
+from app.schemas.runtime_types import (
+    DESKTOP_CHANNEL,
+)
 from app.agent.memory.config import MemoryConfig
 from app.agent.memory.store.chat_history_store import ChatHistoryStore
 from app.agent.memory.store.diary_sqlite_store import DiarySqliteStore
@@ -24,7 +27,16 @@ logger = logging.getLogger(__name__)
 
 
 class DiaryMemory:
-    """从协议日志生成并检索每日记忆。"""
+    """从协议日志生成并检索每日记忆。
+
+    Attributes:
+        session_id (str): 共享 Ayaya 会话标识。
+        config (MemoryConfig): 当前 Agent 配置。
+        chat_settings (ChatSettings): 会话模型和插件配置。
+        chat_history_store (ChatHistoryStore): 领域聊天历史查询端口。
+        store (日记持久访问器): 该记忆模块的持久存取对象。
+        llm (LLM 客户端): 用于记忆生成的模型客户端。
+    """
 
     def __init__(
         self,
@@ -180,17 +192,28 @@ class DiaryMemory:
 
     @staticmethod
     def _format_messages(messages: list[BaseMessage]) -> str:
+        """为日记提取格式化对话，同时保留用户来源和 Ayaya 回复渠道。
+
+        Args:
+            messages (list[BaseMessage]): 需要转换或交付的领域消息集合。
+
+        Returns:
+            str: 当前查询或执行结果。
+        """
         lines: list[str] = []
+        # 1. 将来源纳入日记材料，运行时通知保持独立标签，避免当成真人发言。
         for message in messages:
             if isinstance(message, ToolMediaMessage):
                 continue
             if isinstance(message, HumanMessage):
-                lines.append(f"用户：{message.text}")
+                source = "" if message.origin_channel == DESKTOP_CHANNEL else f"（来自 {message.origin_channel}）"
+                lines.append(f"用户{source}：{message.text}")
             elif isinstance(message, RuntimeInputMessage):
                 lines.append(f"运行时输入：{message.to_openai_format()['content']}")
             elif isinstance(message, AssistantMessage):
                 if message.text:
-                    lines.append(f"AI：{message.text}")
+                    source = "" if message.origin_channel == DESKTOP_CHANNEL else f"（回复 {message.origin_channel}）"
+                    lines.append(f"AI{source}：{message.text}")
                 for call in message.tool_calls:
                     lines.append(
                         f"AI：调用工具 {call.name}，参数："

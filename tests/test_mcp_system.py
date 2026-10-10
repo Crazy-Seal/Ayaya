@@ -29,7 +29,6 @@ from app.services.mcp_connection_manager import (
 from app.services.mcp_service import MCPService
 from app.services.chat_settings_service import ChatSettingsService
 from app.services.settings_mutation import SettingsMutationCoordinator
-from app.services.agent_service import AgentService
 from app.schemas.chat_settings import ChatSettings
 from app.schemas.tool_permissions import ToolPolicy
 from app.schemas.mcp import (
@@ -1446,98 +1445,3 @@ async def test_concurrent_server_delete_and_stale_chat_settings_put_cannot_resto
     )
 
     assert ChatSettingsDao(chat_file).get_chat_settings("session-a").mcp.servers == {}
-
-
-@pytest.mark.asyncio
-async def test_mcp_authorization_resume_rejects_stale_request_id(monkeypatch) -> None:
-    from app.services import agent_service as agent_service_module
-
-    state = AgentState.create_new("session-a")
-    state.set_interrupt(
-        {
-            "type": "authorization_request",
-            "request_id": "request-current",
-            "message": "允许调用？",
-        }
-    )
-
-    class _StateManager:
-        def __init__(self, _session_id):
-            pass
-
-        async def load(self):
-            return state
-
-        async def close(self):
-            pass
-
-    monkeypatch.setattr(agent_service_module, "StateManager", _StateManager)
-    service = AgentService(
-        chat_history_dao=None,
-        chat_settings_loader=lambda _session_id: object(),
-        agent_factory=lambda _settings: (_ for _ in ()).throw(AssertionError("不应构造 Agent")),
-    )
-
-    with pytest.raises(ValueError, match="已过期"):
-        async for _ in service.resume_after_tool_authorization(
-            "session-a", request_id="request-stale", decision={"kind": "approve"},
-        ):
-            pass
-
-
-@pytest.mark.asyncio
-async def test_mcp_authorization_resume_passes_single_decision_to_agent(monkeypatch) -> None:
-    from app.services import agent_service as agent_service_module
-
-    state = AgentState.create_new("session-a")
-    state.set_interrupt(
-        {
-            "type": "authorization_request",
-            "request_id": "request-current",
-            "message": "允许调用？",
-        }
-    )
-
-    class _StateManager:
-        def __init__(self, _session_id):
-            pass
-
-        async def load(self):
-            return state
-
-        async def close(self):
-            pass
-
-    class _Agent:
-        def __init__(self):
-            self.resume_data = None
-            self.initial_state = None
-            self.closed = False
-
-        async def resume(self, data, *, initial_state=None):
-            self.resume_data = data
-            self.initial_state = initial_state
-            yield AgentEvent(EventType.TEXT_CHUNK, "继续")
-
-        async def close(self):
-            self.closed = True
-
-    agent = _Agent()
-    monkeypatch.setattr(agent_service_module, "StateManager", _StateManager)
-    service = AgentService(
-        chat_history_dao=None,
-        chat_settings_loader=lambda _session_id: object(),
-        agent_factory=lambda _settings: agent,
-    )
-
-    events = [
-        event
-        async for event in service.resume_after_tool_authorization(
-            "session-a", request_id="request-current", decision={"kind": "reject"},
-        )
-    ]
-
-    assert [event.data for event in events] == ["继续"]
-    assert agent.resume_data == {"kind": "reject"}
-    assert agent.initial_state is state
-    assert agent.closed is True

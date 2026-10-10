@@ -2,24 +2,24 @@
  * IPC 处理器注册
  */
 
-import { BrowserWindow, dialog, desktopCapturer, screen, clipboard, type IpcMainInvokeEvent } from "electron";
+import { BrowserWindow, dialog, screen, clipboard } from "electron";
 import fs from "node:fs";
 import path from "node:path";
 
 import { FRONTEND_SETTINGS_PATH } from "./config.js";
 import { backendFetch } from "./backend-client.js";
-import { requestChatStream } from "./chat-stream-request.js";
+import { submitInteractionCommand, subscribeDesktopSession } from "./interaction-adapter.js";
+import type { ChannelCommand } from "../shared-types.js";
+import { DESKTOP_CHANNEL } from "../shared-types.js";
 import type {
   ChatSettingsData,
   ModelTransformPayload,
   ToolItem,
   ModelChangedPayload,
   ModelTransformChangedPayload,
-  ChatChunkPayload,
   ScreenActionRequest,
   ScreenActionResult,
   FrontendSettings,
-  ChatResult,
 } from "./types.js";
 import {
   loadModelConfig,
@@ -52,10 +52,8 @@ import {
 import { getMainWindow, getSettingsWindow, getTrustedRendererPolicy, openSettingsWindow, openImagePreviewWindow } from "./window-manager.js";
 import { createTrustedIpcRegistrar } from "./ipc-security.js";
 import { resolveScreenActionPoint } from "./screen-action-coordinates.js";
-import { selectPrimaryDisplaySource } from "./screen-capture-source.js";
 import { pasteScreenActionText } from "./screen-action-input.js";
 import { appendFrontendLog } from "./logging/app-logger.js";
-import { buildBackendInterruptIdentity } from "./interrupt-response.js";
 import {
   createMcpServer,
   deleteMcpServer,
@@ -67,7 +65,6 @@ import {
 } from "./mcp-api.js";
 import type {
   MCPServerConfig,
-  ApprovalDecision,
   ToolPolicy,
 } from "../shared-types.js";
 
@@ -126,28 +123,7 @@ const notifyModelTransformChanged = (model: {
   mainWindow.webContents.send("desktop-pet:model-transform-changed", payload);
 };
 
-/** 将共享流请求事件转发到发起请求的窗口。 */
-const streamBackendResponse = (
-  event: IpcMainInvokeEvent,
-  path: string,
-  body: object,
-  requestId: string | undefined,
-): Promise<ChatResult> => requestChatStream(path, body, {
-  onChunk: (chunk, aggregated) => {
-    if (!requestId) return;
-    const chunkPayload: ChatChunkPayload = { requestId, chunk, aggregated };
-    event.sender.send("desktop-pet:chat-chunk", chunkPayload);
-  },
-  onToolCall: (toolName) => {
-    if (!requestId) return;
-    event.sender.send("desktop-pet:chat-tool-call", { requestId, toolName });
-  },
-  onInterrupt: (interrupt) => {
-    event.sender.send("desktop-pet:chat-interrupt", interrupt);
-  },
-});
-
-const performScreenAction = async (payload: ScreenActionRequest): Promise<ScreenActionResult> => {
+export const performScreenAction = async (payload: ScreenActionRequest): Promise<ScreenActionResult> => {
   const coordinates = payload.coordinates;
   if (!coordinates || typeof coordinates.x_ratio !== "number" || typeof coordinates.y_ratio !== "number") {
     return { executed: false, error: "缺少有效的屏幕坐标" };
@@ -210,7 +186,7 @@ const performScreenAction = async (payload: ScreenActionRequest): Promise<Screen
 };
 
 /**
- * 注册 IPC 处理器
+ * 注册受信任 Renderer 的 IPC 入口，将运行时命令、事件和任务查询接入主进程。
  */
 export const registerIpcHandlers = (): void => {
   const trustedIpc = createTrustedIpcRegistrar(getTrustedRendererPolicy());
@@ -303,20 +279,6 @@ export const registerIpcHandlers = (): void => {
       return await fetchChatHistoryLastN(sessionId, n);
     }
   );
-
-  trustedIpc.handle("desktop-pet:get-pending-interrupt", async (_event, sessionId: string) => {
-    const res = await backendFetch(
-      `/agent/pending-interrupt/${encodeURIComponent(sessionId)}`
-    );
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(text || `读取待处理中断失败: ${res.status}`);
-    }
-    const result = await res.json() as {
-      data?: import("./types.js").PendingInterruptResult;
-    };
-    return result.data ?? { pending: false };
-  });
 
   // 更新聊天设置
   trustedIpc.handle("desktop-pet:update-chat-settings", async (_event, payload: ChatSettingsData) => {
@@ -530,8 +492,15 @@ export const registerIpcHandlers = (): void => {
   });
 
   // 打开设置窗口
-  trustedIpc.on("desktop-pet:open-settings-window", () => {
-    openSettingsWindow();
+  trustedIpc.on("desktop-pet:open-settings-window", /**
+   * 校验快捷入口的页面参数，其他值保持原有普通设置行为。
+   *
+   * Args:
+   *     _event (IpcMainEvent): 已通过来源校验的 IPC 事件。
+   *     page (unknown): Renderer 提供的目标页面，仅允许任务页。
+   */
+  (_event, page: unknown) => {
+    openSettingsWindow(page === "tasks" ? "tasks" : undefined);
   });
 
   // 最小化当前窗口
@@ -589,123 +558,117 @@ export const registerIpcHandlers = (): void => {
   });
 
   // 聊天请求
-  trustedIpc.handle(
-    "desktop-pet:chat",
-    async (
-      event,
-      payload:
-        | string
-        | { message: string; sessionId?: string; requestId?: string; images?: string[] }
-    ) => {
-      const message = typeof payload === "string" ? payload : payload.message;
-      const sessionId = typeof payload === "string" ? undefined : payload.sessionId;
-      const requestId = typeof payload === "string" ? undefined : payload.requestId;
-      const images = typeof payload === "string" ? undefined : payload.images;
-      const body: { message: string; session_id?: string; images?: string[] } = { message };
-      if (sessionId) {
-        body.session_id = sessionId;
-      }
-      if (images && images.length > 0) {
-        body.images = images;
-      }
-      return await streamBackendResponse(event, "/chat", body, requestId);
-    }
-  );
+  trustedIpc.handle("desktop-pet:get-background-tasks", /**
+   * 读取任务记录并解包 tasks 数组。
+   *
+   * Args:
+   *     _event (IpcMainInvokeEvent): 已由主进程信任校验的 IPC 事件。
+   *     sessionId (string): 共享 Ayaya 会话标识。
+   *
+   * Returns:
+   *     Promise<unknown[]>: 当前查询、回调或视图操作的结果。
+   */
+  async (_event, sessionId: string) => {
+    const response = await backendFetch(`/tasks/${encodeURIComponent(sessionId)}/records`);
+    if (!response.ok) throw new Error(`读取后台任务失败: ${response.status}`);
+    const data = await response.json() as { tasks: unknown[] };
+    return data.tasks;
+  });
+  trustedIpc.handle("desktop-pet:get-background-task-output", /**
+   * 按游标读取任务输出页。
+   *
+   * Args:
+   *     _event (IpcMainInvokeEvent): 已由主进程信任校验的 IPC 事件。
+   *     sessionId (string): 共享 Ayaya 会话标识。
+   *     taskId (string): 受管进程任务标识。
+   *     offset (number): 完整输出文件的字节游标。
+   *
+   * Returns:
+   *     Promise<any>: 当前查询、回调或视图操作的结果。
+   */
+  async (
+    _event, sessionId: string, taskId: string, offset: number,
+  ) => {
+    const response = await backendFetch(
+      `/tasks/${encodeURIComponent(sessionId)}/${encodeURIComponent(taskId)}/output?offset=${offset}`,
+    );
+    if (!response.ok) throw new Error(`读取任务输出失败: ${response.status}`);
+    return await response.json();
+  });
 
-  trustedIpc.handle(
-    "desktop-pet:tool-authorization-respond",
-    async (event, payload: {
-      sessionId: string;
-      requestId: string;
-      streamRequestId?: string;
-      decision: ApprovalDecision;
-    }) => {
-      const body = {
-        ...buildBackendInterruptIdentity(payload),
-        ...payload.decision,
-      };
-      return await streamBackendResponse(
-        event,
-        "/tool-authorization/respond",
-        body,
-        payload.streamRequestId,
-      );
-    }
-  );
-
-  trustedIpc.handle(
-    "desktop-pet:tool-continuation-claim",
-    async (_event, payload: { sessionId: string; requestId: string }) => {
-      const res = await backendFetch("/tool-continuation/claim", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          session_id: payload.sessionId,
-          request_id: payload.requestId,
-        }),
-      });
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text || `工具 continuation 执行前复核失败: ${res.status}`);
-      }
-    }
-  );
-
-  trustedIpc.handle(
-    "desktop-pet:tool-continuation-respond",
-    async (event, payload: {
-      sessionId: string;
-      requestId: string;
-      streamRequestId?: string;
-      response: Record<string, unknown>;
-    }) => await streamBackendResponse(
-      event,
-      "/tool-continuation/respond",
+  // 聊天请求
+  trustedIpc.handle("desktop-pet:get-channel-subscriptions", /**
+   * 读取订阅配置并解包 channels 数组。
+   *
+   * Args:
+   *     _event (IpcMainInvokeEvent): 已由主进程信任校验的 IPC 事件。
+   *     sessionId (string): 共享 Ayaya 会话标识。
+   *
+   * Returns:
+   *     Promise<unknown[]>: 当前查询、回调或视图操作的结果。
+   */
+  async (_event, sessionId: string) => {
+    const response = await backendFetch(`/agent/channels/${encodeURIComponent(sessionId)}`);
+    if (!response.ok) throw new Error(`读取渠道订阅失败: ${response.status}`);
+    const data = await response.json() as { channels: unknown[] };
+    return data.channels;
+  });
+  trustedIpc.handle("desktop-pet:set-channel-subscription", /**
+   * 保存可选订阅并返回更新列表。
+   *
+   * Args:
+   *     _event (IpcMainInvokeEvent): 已由主进程信任校验的 IPC 事件。
+   *     sessionId (string): 共享 Ayaya 会话标识。
+   *     channel (string): 已注册渠道标识。
+   *     enabled (boolean): 该渠道是否参与此会话的双向互通。
+   *
+   * Returns:
+   *     Promise<unknown[]>: 当前查询、回调或视图操作的结果。
+   */
+  async (
+    _event, sessionId: string, channel: string, enabled: boolean,
+  ) => {
+    const response = await backendFetch(
+      `/agent/channels/${encodeURIComponent(sessionId)}/${encodeURIComponent(channel)}`,
       {
-        ...buildBackendInterruptIdentity(payload),
-        response: payload.response,
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
       },
-      payload.streamRequestId,
-    )
-  );
+    );
+    if (!response.ok) throw new Error(`更新渠道订阅失败: ${response.status}`);
+    const data = await response.json() as { channels: unknown[] };
+    return data.channels;
+  });
 
-  // 执行屏幕控制动作
-  trustedIpc.handle(
-    "desktop-pet:perform-screen-action",
-    async (_event, payload: ScreenActionRequest): Promise<ScreenActionResult> => {
-      return await performScreenAction(payload);
-    }
-  );
-
-  // 截取屏幕
-  trustedIpc.handle("desktop-pet:capture-screen", async () => {
-    appendFrontendLog("info", "capture-screen", "开始截屏");
-    try {
-      const sources = await desktopCapturer.getSources({
-        types: ["screen"],
-        thumbnailSize: { width: 1920, height: 1080 },
-      });
-
-      const primaryDisplay = screen.getPrimaryDisplay();
-      const primaryScreen = selectPrimaryDisplaySource(sources, primaryDisplay.id);
-      const size = primaryScreen.thumbnail.getSize();
-      const dataUrl = primaryScreen.thumbnail.toDataURL();
-
-      appendFrontendLog(
-        "info",
-        "capture-screen",
-        `截屏成功，尺寸 ${size.width}x${size.height}，数据长度 ${dataUrl.length}`,
-      );
-
-      return {
-        dataUrl,
-        width: size.width,
-        height: size.height,
-      };
-    } catch (error) {
-      appendFrontendLog("error", "capture-screen", "截屏失败", error);
-      throw error;
-    }
+  // 聊天请求
+  trustedIpc.handle("desktop-pet:interaction-command", /**
+   * 验证桌面来源后提交统一命令。
+   *
+   * Args:
+   *     _event (IpcMainInvokeEvent): 已由主进程信任校验的 IPC 事件。
+   *     command (ChannelCommand): 带桌面来源的统一入站命令。
+   *
+   * Returns:
+   *     Promise<CommandReceipt>: 当前查询、回调或视图操作的结果。
+   */
+  async (_event, command: ChannelCommand) => {
+    if (command.origin_channel !== DESKTOP_CHANNEL) throw new Error("桌面入口不能冒用其他渠道");
+    return await submitInteractionCommand(command);
+  });
+  trustedIpc.handle("desktop-pet:subscribe-desktop-session", /**
+   * 等待桌面会话的首次快照。
+   *
+   * Args:
+   *     _event (IpcMainInvokeEvent): 已由主进程信任校验的 IPC 事件。
+   *     sessionId (string): 共享 Ayaya 会话标识。
+   *     options ({ refreshSnapshot?: boolean } | undefined): 新页面要求重建订阅并取得新快照。
+   *
+   * Returns:
+   *     Promise<void>: 当前异步处理完成的等待结果。
+   */
+  async (_event, sessionId: string, options?: { refreshSnapshot?: boolean }) => {
+    await subscribeDesktopSession(sessionId, { refreshSnapshot: options?.refreshSnapshot === true });
   });
 
   // 获取前端设置

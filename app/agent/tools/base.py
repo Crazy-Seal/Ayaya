@@ -3,8 +3,11 @@
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Protocol
 
+from app.schemas.runtime_types import (
+    DesktopExecutionKind, InterruptKind,
+)
 from app.agent.tools._schema import normalize_tool_schema_for_model
 
 
@@ -15,11 +18,11 @@ class InterruptEvent:
     """中断事件 - 用于需要用户确认的场景
 
     区分两类序列化：
-    - to_client(): 只发给前端的最小字段（保持 SSE 字节兼容）
+    - to_client(): 提供交互事件与桌面执行通道使用的最小展示字段
     - to_state():  写入 AgentState.interrupt_data 的完整快照，
                    含恢复同一工具所需的全部路由信息（可持久化、跨请求）
     """
-    type: str                    # 中断类型，如 "authorization_request"
+    type: InterruptKind | str    # 已知中断或沿既有路径处理的扩展类型。
     request_id: str              # 请求唯一标识
     message: str                 # 展示给用户的提示
     data: dict = field(default_factory=dict)  # 额外数据（发给前端的附加内容）
@@ -30,9 +33,26 @@ class InterruptEvent:
     tool_args: dict = field(default_factory=dict)  # 工具原始参数
     resume_state: dict = field(default_factory=dict)  # 工具中间态（如 VLM 坐标）
 
+    def __post_init__(self) -> None:
+        """已知中断归一化为枚举，扩展值继续沿既有工具恢复路径处理。
+        """
+        try:
+            self.type = InterruptKind(self.type)
+        except (ValueError, TypeError):
+            pass
+
     @classmethod
-    def create(cls, type: str, message: str, data: dict | None = None) -> "InterruptEvent":
-        """创建中断事件"""
+    def create(cls, type: InterruptKind | str, message: str, data: dict | None = None) -> "InterruptEvent":
+        """创建带稳定请求身份的中断事件，不执行工具副作用。
+
+        Args:
+            type (InterruptKind | str): 已知中断类型或既有扩展值。
+            message (str): 交互端展示文案。
+            data (dict | None): 需要随请求发送的数据。
+
+        Returns:
+            InterruptEvent: 可展示与持久恢复的中断对象。
+        """
         return cls(
             type=type,
             request_id=str(uuid.uuid4()),
@@ -75,15 +95,60 @@ class InterruptEvent:
 
 @dataclass
 class ToolContext:
-    """工具执行上下文"""
+    """向单次工具提供状态、授权快照、恢复数据与后台任务启动端口。
+
+    Attributes:
+        session_id (str): 共享 Ayaya 会话标识。
+        state (Any): 当前 Agent 状态。
+        emit_event (Callable[[str, Any], Awaitable[None]]): 通知 Agent 内部事件的异步回调，不直接编码 SSE。
+        get_checkpoint (Callable[[], dict]): 读取工具恢复中间态的回调。
+        set_checkpoint (Callable[[dict], None]): 更新工具恢复中间态的回调。
+        resume_data (dict | None): 审批决定或桌面执行的实际结果。
+        resume_state (dict | None): 中断前保存的工具中间状态。
+        authorization_grant (dict | None): 绑定当前调用的单次授权快照。
+        task_launcher ('TaskLauncher | None'): 工具使用的共享进程启动端口。
+        origin_run_id (str): 发起进程任务的运行轮次标识。
+        origin_tool_call_id (str): 发起任务的工具调用标识。
+    """
     session_id: str
     state: Any  # AgentState（避免循环引用，使用 Any）
-    emit_event: Callable[[str, Any], Awaitable[None]]  # 发送 SSE 事件
+    emit_event: Callable[[str, Any], Awaitable[None]]  # 通知 Agent 内部事件，由运行时负责渠道发布
     get_checkpoint: Callable[[], dict]                  # 获取当前 checkpoint
     set_checkpoint: Callable[[dict], None]              # 设置 checkpoint
     resume_data: dict | None = None                     # 中断恢复时用户回传的数据
     resume_state: dict | None = None                    # 中断前工具暂存的中间态（恢复执行时读取）
     authorization_grant: dict | None = None             # 当前调用绑定的单次授权快照
+    task_launcher: "TaskLauncher | None" = None
+    origin_run_id: str = ""
+    origin_tool_call_id: str = ""
+
+
+class TaskLauncher(Protocol):
+    """定义工具依赖的进程启动端口，具体进程和输出管理由 Supervisor 实现。
+
+    """
+    async def launch(
+        self, session_id: str, command: str, argv: list[str], *,
+        cwd: str, background: bool, timeout_sec: int,
+        origin_run_id: str | None = None,
+        origin_tool_call_id: str | None = None,
+    ) -> Any:
+        """启动同一进程句柄，按前台等待预算或显式后台模式返回启动结果。
+
+        Args:
+            session_id (str): 共享 Ayaya 会话标识。
+            command (str): 统一渠道命令或需要执行的命令正文，类型决定其含义。
+            argv (list[str]): 已经构造好的进程参数列表。
+            cwd (str): 命令执行工作目录。
+            background (bool): 是否立即后台运行。
+            timeout_sec (int): 前台等待预算，超时后保留同一进程。
+            origin_run_id (str | None): 发起进程任务的运行轮次标识。
+            origin_tool_call_id (str | None): 发起任务的工具调用标识。
+
+        Returns:
+            Any: 当前查询或执行结果。
+        """
+        ...
 
 
 @dataclass
@@ -120,7 +185,7 @@ class ToolResult:
     @classmethod
     def needs_input(
         cls,
-        type: str,
+        type: InterruptKind | str,
         message: str,
         resume_state: dict | None = None,
         data: dict | None = None,
@@ -128,10 +193,13 @@ class ToolResult:
         """创建「需要用户输入」的中断结果（可恢复工具在首次执行、尚未拿到用户输入时使用）
 
         Args:
-            type: 中断类型，如 "continuation_request"
-            message: 展示给用户的提示
-            resume_state: 恢复执行时需要的中间态（如 VLM 算出的坐标）
-            data: 发给前端的附加数据
+            type (InterruptKind | str): 已知中断类型或沿原路径处理的扩展值。
+            message (str): 展示给用户的提示。
+            resume_state (dict | None): 恢复执行时需要的中间态。
+            data (dict | None): 发给前端的附加数据。
+
+        Returns:
+            ToolResult: 不执行副作用的中断结果。
         """
         return cls(
             content="",
@@ -142,15 +210,25 @@ class ToolResult:
     @classmethod
     def continuation(
         cls,
-        kind: str,
+        kind: DesktopExecutionKind,
         message: str,
         *,
         payload: dict | None = None,
         resume_state: dict | None = None,
     ) -> "ToolResult":
-        """请求 Adapter 自动补充数据或执行已获授权的动作。"""
+        """请求独立桌面执行器补充屏幕数据或执行已获授权的动作。
+
+        Args:
+            kind (DesktopExecutionKind): 截屏或屏幕动作类别。
+            message (str): 展示给用户的工具状态。
+            payload (dict | None): 执行所需的数据。
+            resume_state (dict | None): 后端恢复工具所需的中间态。
+
+        Returns:
+            ToolResult: 不包含实际副作用的 continuation 请求。
+        """
         return cls.needs_input(
-            type="continuation_request",
+            type=InterruptKind.CONTINUATION_REQUEST,
             message=message,
             data={"kind": kind, "payload": payload or {}},
             resume_state=resume_state,

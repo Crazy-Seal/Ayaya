@@ -6,6 +6,9 @@
 
 from typing import Annotated, Literal
 
+from app.schemas.runtime_types import (
+    AUTHORIZATION_GRANTED_KIND, DesktopExecutionKind,
+)
 from app.agent.state.messages import SCREENSHOT_MESSAGE_NAME
 from app.agent.tools.base import ToolContext, ToolResult
 from app.agent.models.vlm import VLMService, clamp_bbox
@@ -118,7 +121,7 @@ async def control_screen_with_vlm(
 
     if context.resume_data is None:
         return ToolResult.continuation(
-            "capture_screen",
+            DesktopExecutionKind.CAPTURE_SCREEN,
             "正在截取屏幕以定位要操作的位置。",
             resume_state={
                 "phase": "awaiting_capture",
@@ -143,14 +146,14 @@ async def control_screen_with_vlm(
         )
 
     if phase == "awaiting_authorization":
-        if context.resume_data.get("kind") != "authorization_granted":
+        if context.resume_data.get("kind") != AUTHORIZATION_GRANTED_KIND:
             return ToolResult(content="错误: 屏幕操作授权恢复状态无效。")
         execute_data = {
             **action_state,
             "coordinates": (context.resume_state or {}).get("coordinates"),
         }
         return ToolResult.continuation(
-            "perform_screen_action",
+            DesktopExecutionKind.PERFORM_SCREEN_ACTION,
             f"正在对“{resolved_target}”执行 {resolved_operation} 操作。",
             payload=execute_data,
             resume_state={

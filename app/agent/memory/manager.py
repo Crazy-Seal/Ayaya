@@ -9,20 +9,9 @@ from typing import Any
 from app.agent.memory.config import MemoryConfig
 from app.agent.memory.memories.episodic import EpisodicMemory
 from app.agent.memory.memories.semantic_mem0 import Mem0SemanticMemory
-from app.agent.memory.memories.semantic_mem0 import MEM0_CUSTOM_INSTRUCTIONS
 from app.agent.memory.memories.diary import DiaryMemory
 from app.agent.memory.store.chat_history_store import ChatHistoryStore
-from app.agent.state.messages import (
-    AssistantMessage,
-    BaseMessage,
-    HumanMessage,
-    RuntimeInputMessage,
-    ToolMediaMessage,
-    ToolMessage,
-)
-from app.agent.state.time import render_timed_text
-from app.agent.utils.domain.weighted_text import truncate_weighted_text
-from app.agent.utils.domain.token_estimation import RoughTokenEstimator
+from app.agent.state.messages import BaseMessage
 from app.crud.chat_settings_dao import ChatSettingsDao
 from app.schemas.chat_settings import MEMORY_DEFAULT_CONFIG, ChatSettings
 
@@ -30,21 +19,17 @@ logger = logging.getLogger(__name__)
 
 
 class MemoryManager:
-    """记忆管理器
+    """协调记忆提取与召回，各提取器自行构造输入并处理提取预算。
 
-    职责：
-    - 统一管理日记、情景记忆和语义记忆
-    - 提供统一的添加/检索接口
-    - 组装记忆上下文
-
-    数据边界：
-    - 日记读取 append-only OpenAI 协议日志，并按有效日期生成
-    - 情景/语义记忆由插件每完成十个真人轮次调用一次 add()
-    - 主上下文摘要由 ModelInputCoordinator 负责，不经过 MemoryManager
-
-    时间规则：
-    - 使用配置的时区（默认系统时区）
-    - 凌晨 N 点前算前一天，N 点后算当天
+    Attributes:
+        session_id (str): 共享 Ayaya 会话标识。
+        config (MemoryConfig): 共享给提取器的记忆配置。
+        memory_options (dict[str, Any]): 当前会话的记忆启用配置。
+        chat_history_store (ChatHistoryStore | None): 领域聊天历史查询端口。
+        episodic_memory (EpisodicMemory | None): 可选情景记忆提取与检索实例。
+        chat_settings (ChatSettings): 会话模型和插件配置。
+        diary_memory (DiaryMemory | None): 可选日记记忆实例。
+        semantic_memory (Mem0SemanticMemory | None): 可选语义记忆提取与检索实例。
     """
 
     def __init__(
@@ -106,66 +91,55 @@ class MemoryManager:
         enable_episodic: bool = True,
         enable_semantic: bool = True,
     ) -> dict[str, int]:
-        """添加记忆 - 只处理情景记忆和语义记忆
+        """并行交付领域消息给启用的提取器，独立汇总情景和语义记忆数量。
+
+        记忆插件提供已选定的当前批次与历史；本方法不格式化或估算子模块的
+        输入。每个提取器使用自己的配置处理预算，一个提取器失败不阻止另一个。
 
         Args:
-            messages: 当前聊天记录
-            history: 历史聊天记录（用于前情提要）
+            messages (list[BaseMessage]): 当前批次的领域消息。
+            history (list[BaseMessage] | None): 仅作为前情提要的历史消息。
+            enable_episodic (bool): 本次是否执行情景记忆提取。
+            enable_semantic (bool): 本次是否执行语义记忆提取。
 
         Returns:
-            添加结果，如 {"episodic": 3, "semantic": 2}
+            dict[str, int]: 两种提取器分别保存的记忆数量，禁用或失败时为零。
         """
-        # 格式化消息
-        episodic_messages = list(messages)
-        semantic_messages = list(messages)
+        # 1. 固定本次交付列表；两个提取器分别接收列表副本，预算处理不影响另一方。
+        messages = list(messages)
         history = list(history or [])
-        messages_text = self._format_messages(episodic_messages)
-        history_text = self._format_messages(history, mark_as_history=True) if history else ""
-
-        limit = self.config.extraction_max_context_tokens
-        if limit:
-            estimator = RoughTokenEstimator()
-            episodic_raw = estimator.estimate_value(
-                self.episodic_memory._build_extraction_prompt(messages_text, history_text)
-                if self.episodic_memory is not None else ""
-            )
-            if episodic_raw > limit:
-                episodic_messages = self._compress_memory_tool_results(episodic_messages)
-                messages_text = self._format_messages(episodic_messages)
-                logger.warning("[MemoryManager] 情景记忆粗略估算超限，工具结果改为800+200权重")
-            semantic_raw = estimator.estimate_value(
-                MEM0_CUSTOM_INSTRUCTIONS
-                + str(self.semantic_memory._convert_messages(semantic_messages, False))
-                + str(self.semantic_memory._convert_messages(history, True))
-                if self.semantic_memory is not None else ""
-            )
-            if semantic_raw > limit:
-                semantic_messages = self._compress_memory_tool_results(semantic_messages)
-                logger.warning("[MemoryManager] 语义记忆粗略估算超限，工具结果改为800+200权重")
 
         async def process_episodic() -> int:
-            """处理情景记忆"""
+            """交付当前批次给情景提取器，失败时只将本项数量记为零。
+
+            Returns:
+                int: 本次保存的情景记忆数量。
+            """
             if not enable_episodic or self.episodic_memory is None:
                 return 0
             try:
-                episodic_ids = await self.episodic_memory.add(messages_text, history_text)
+                episodic_ids = await self.episodic_memory.add(list(messages), list(history))
                 return len(episodic_ids)
             except Exception as e:
                 logger.warning("[MemoryManager] 情景记忆处理失败: %s", e)
                 return 0
 
         async def process_semantic() -> int:
-            """处理语义记忆"""
+            """交付当前批次给语义提取器，失败时只将本项数量记为零。
+
+            Returns:
+                int: 本次保存的语义记忆数量。
+            """
             if not enable_semantic or self.semantic_memory is None:
                 return 0
             try:
-                semantic_ids = await self.semantic_memory.add(semantic_messages, history)
+                semantic_ids = await self.semantic_memory.add(list(messages), list(history))
                 return len(semantic_ids)
             except Exception as e:
                 logger.warning("[MemoryManager] 语义记忆处理失败: %s", e)
                 return 0
 
-        # 并行处理情景记忆和语义记忆
+        # 2. 并行等待启用的提取器完成，保持两项结果和异常处理相互独立。
         episodic_count, semantic_count = await asyncio.gather(
             process_episodic(),
             process_semantic(),
@@ -359,76 +333,6 @@ class MemoryManager:
                 config["enable_episodic"] = False
                 config["enable_semantic"] = False
         return config
-
-    # ==================== 工具方法 ====================
-
-    @staticmethod
-    def _compress_memory_tool_results(messages: list[BaseMessage]) -> list[BaseMessage]:
-        from dataclasses import replace
-
-        copied: list[BaseMessage] = []
-        for message in messages:
-            if isinstance(message, ToolMessage):
-                message = replace(
-                    message,
-                    content=truncate_weighted_text(
-                        message.content,
-                        max_weight=1_000,
-                        head_weight=800,
-                        tail_weight=200,
-                    ),
-                )
-            copied.append(message)
-        return copied
-
-    def _format_messages(self, messages: list[BaseMessage], *, mark_as_history: bool = False) -> str:
-        """格式化消息列表为文本
-
-        只保留用户和 AI 的普通对话，过滤掉：
-        - Tool 消息
-        - System 消息
-
-        对于工具调用的 AI 消息，简化为 "[调用了工具: xxx]" 格式
-        """
-        if not messages:
-            return ""
-        user_name = self.chat_settings.address or "用户"
-        ai_name = self.chat_settings.name or "AI"
-        lines = []
-        for msg in messages:
-            if isinstance(msg, ToolMediaMessage):
-                continue
-            if isinstance(msg, HumanMessage):
-                role = user_name
-                content = msg.text
-            elif isinstance(msg, RuntimeInputMessage):
-                lines.append(
-                    f"运行时输入: {render_timed_text(msg.to_openai_format()['content'], msg.created_at)}"
-                )
-                continue
-            elif isinstance(msg, AssistantMessage):
-                role = ai_name
-                if msg.tool_calls:
-                    if mark_as_history:
-                        lines.extend(f"AI：调用了工具 {tc.name}" for tc in msg.tool_calls)
-                    else:
-                        lines.extend(
-                            f"AI：调用工具 {tc.name}，参数："
-                            f"{tc.to_dict()['function']['arguments']}"
-                            for tc in msg.tool_calls
-                        )
-                    continue
-                else:
-                    content = msg.text
-            elif isinstance(msg, ToolMessage):
-                if not mark_as_history:
-                    lines.append(f"工具结果：{msg.content}")
-                continue
-            else:
-                continue
-            lines.append(f"{role}: {render_timed_text(content, msg.created_at)}")
-        return "\n".join(lines)
-
 
 # ==================== 工厂函数 ====================
 

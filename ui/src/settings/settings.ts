@@ -15,6 +15,9 @@ import { MultimodalPage } from "./pages/multimodal-page.js";
 import { authorizeBaseUrlChange } from "./url-security.js";
 import { MotionPage } from "./pages/motion-page.js";
 import { McpPage } from "./pages/mcp-page.js";
+import { ChannelSubscriptionsPage } from "./pages/channel-subscriptions-page.js";
+import { BackgroundTasksPage } from "./pages/background-tasks-page.js";
+import { InteractionEventKind } from "../../shared-types.js";
 import type {
   ChatSettingsState,
   ModelConfig,
@@ -26,7 +29,11 @@ import type {
 } from "./types.js";
 
 /**
- * 设置窗口应用（Controller）
+ * 装配模型设置、渠道订阅和后台任务等设置页面。
+ *
+ * Attributes:
+ *     channelsPage (ChannelSubscriptionsPage): 当前会话的渠道订阅设置页。
+ *     tasksPage (BackgroundTasksPage): 当前会话的任务记录和输出设置页。
  */
 class SettingsApp {
   private sidebar: HTMLDivElement;
@@ -42,10 +49,12 @@ class SettingsApp {
   private multimodalPage: MultimodalPage;
   private motionPage: ISettingsPage;
   private mcpPage: ISettingsPage;
+  private channelsPage: ChannelSubscriptionsPage;
+  private tasksPage: BackgroundTasksPage;
   private confirmDialog: ConfirmDialog;
   private toast: SettingsToast;
 
-  private currentPage = "model";
+  private currentPage = new URL(window.location.href).searchParams.get("page") === "tasks" ? "tasks" : "model";
 
   /** 已保存状态（来自后端，不可变） */
   private savedState: ChatSettingsState | null = null;
@@ -55,6 +64,9 @@ class SettingsApp {
   /** 页面映射 */
   private pages: Map<string, ISettingsPage | null> = new Map();
 
+  /**
+   * 装配 SettingsApp 的依赖并初始化本地视图状态。
+   */
   constructor() {
     // 获取 DOM 元素
     this.sidebar = this.getElement("#settings-sidebar");
@@ -144,6 +156,13 @@ class SettingsApp {
       this.getElement("#motion-system-prompt")
     );
     this.mcpPage = new McpPage(this.getElement("#mcp-page"), this.confirmDialog, this.toast);
+    this.channelsPage = new ChannelSubscriptionsPage(this.getElement("#channel-subscriptions-list"));
+    this.tasksPage = new BackgroundTasksPage(
+      this.getElement("#background-tasks-list"),
+      this.getElement("#background-task-output"),
+      this.getElement("#background-task-more"),
+      this.getElement("#refresh-background-tasks"),
+    );
 
     // 注册页面到映射
     this.pages.set("llm", this.llmPage);
@@ -182,6 +201,25 @@ class SettingsApp {
    * 设置事件监听
    */
   private setupEventListeners(): void {
+    const unsubscribeSettingsPage = window.desktopPetApi.onOpenSettingsPage(/**
+     * 接收主进程的任务快捷入口导航，不重新加载整个设置窗口。
+     *
+     * Args:
+     *     page ("tasks"): 已由主进程校验的目标页。
+     */
+    (page) => { this.switchPage(page); });
+    const unsubscribeTasks = window.desktopPetApi.onInteractionEvent(/**
+     * 任务页可见时按状态事件刷新，其他会话或页面不参与更新。
+     *
+     * Args:
+     *     event (InteractionEvent): 主进程转发的共享会话可见事件。
+     */
+    (event) => {
+      if (this.currentPage === "tasks" && event.session_id === this.savedState?.session_id
+          && (event.kind === InteractionEventKind.TASK_STATUS || event.kind === InteractionEventKind.SESSION_SNAPSHOT)) {
+        void this.tasksPage.render(event.session_id);
+      }
+    });
     // 侧边栏导航
     this.sidebar.addEventListener("click", (event) => {
       const target = event.target as HTMLElement | null;
@@ -222,7 +260,11 @@ class SettingsApp {
     });
 
     // 页面卸载清理
-    window.addEventListener("beforeunload", () => {
+    window.addEventListener("beforeunload", /** 关闭设置窗口时移除实时监听及任务页计时器。 */
+    () => {
+      unsubscribeSettingsPage();
+      unsubscribeTasks();
+      this.tasksPage.setActive(false);
       if (typeof unsubscribeTransformChanged === "function") {
         unsubscribeTransformChanged();
       }
@@ -234,11 +276,15 @@ class SettingsApp {
   }
 
   /**
-   * 切换页面
+   * 切换设置页并只在任务页可见时启用运行任务的定时刷新。
+   *
+   * Args:
+   *     newPage (string): 当前选择的设置页名称。
    */
   private switchPage(newPage: string): void {
     // 更新当前页面
     this.currentPage = newPage;
+    this.tasksPage.setActive(newPage === "tasks");
 
     // 更新 UI
     document.querySelectorAll<HTMLButtonElement>(".settings-tab").forEach((item) => {
@@ -254,7 +300,13 @@ class SettingsApp {
   }
 
   /**
-   * 渲染页面
+   * 根据选中的设置页加载当前会话数据，包括渠道与任务页面。
+   *
+   * Args:
+   *     pageName (string): 当前定义使用的 pageName 参数。
+   *
+   * Returns:
+   *     Promise<void>: 当前异步处理完成的等待结果。
    */
   private async renderPage(pageName: string): Promise<void> {
     if (!this.savedState) {
@@ -268,6 +320,11 @@ class SettingsApp {
         void this.modelPage.refreshModelConfig();
       } else if (pageName === "multimodal") {
         void this.multimodalPage.render();
+      // 1. 渠道和任务页按当前保存会话查询，不修改模型设置的保存流程。
+      } else if (pageName === "channels") {
+        await this.channelsPage.render(this.savedState.session_id);
+      } else if (pageName === "tasks") {
+        await this.tasksPage.render(this.savedState.session_id);
       }
       return;
     }
@@ -670,7 +727,10 @@ class SettingsApp {
   }
 
   /**
-   * 初始化
+   * 初始化保存配置后应用初始导航，使任务快捷入口同时选中对应页签。
+   *
+   * Returns:
+   *     Promise<void>: 设置配置已加载且初始页面已选择。
    */
   async init(): Promise<void> {
     await Promise.all([
@@ -683,7 +743,7 @@ class SettingsApp {
     this.modelConfig = await window.desktopPetApi.getModelConfig();
 
     // 渲染初始页面
-    await this.renderPage(this.currentPage);
+    this.switchPage(this.currentPage);
   }
 }
 

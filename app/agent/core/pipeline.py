@@ -11,7 +11,12 @@ tool_call_id/tool_args/resume_state）写入 state.interrupt_data，使恢复能
 import logging
 from typing import Any, AsyncIterator, Awaitable, Callable, Protocol
 
+from app.schemas.runtime_types import (
+    AUTHORIZATION_GRANTED_KIND, ApprovalDecisionKind, DESKTOP_CHANNEL,
+    DesktopExecutionKind, InterruptKind,
+)
 from app.agent.context import ModelInputCoordinator, RuntimeContext
+from app.agent.runtime.turn_control import TurnInterrupted
 from app.agent.core.event_router import EventType, AgentEvent
 from app.agent.core.plugin_manager import PluginManager
 from app.agent.core.response_filter import AssistantTimePrefixFilter
@@ -25,7 +30,7 @@ from app.agent.state.messages import (
     ToolCall,
 )
 from app.agent.state import AgentState
-from app.agent.tools.base import BaseTool, InterruptEvent, ToolContext, ToolResult
+from app.agent.tools.base import BaseTool, InterruptEvent, ToolContext, ToolResult, TaskLauncher
 from app.agent.tools.result_normalizer import ToolResultNormalizer
 from app.agent.tools.authorization.manager import ToolAuthorization, descriptor_for_tool
 from app.agent.tools.authorization.models import AuthorizationRequired, ToolInvocation
@@ -64,7 +69,19 @@ EventEmitter = Callable[[EventType, Any], Awaitable[None]]
 
 
 class ExecutionPipeline:
-    """执行管道 - 编排 LLM 调用和工具执行"""
+    """执行模型与工具循环，在安全点响应停止信号并保留完整工具协议。
+
+    Attributes:
+        _prompt_source (SystemPromptSource): 当前模型循环使用的系统提示来源。
+        _llm_client (StreamingLLMClient): 可替换的流式模型客户端。
+        _tool_manager (ToolManager): 本地及 MCP 工具注册管理器。
+        _plugin_manager (PluginManager): 插件生命周期与执行钩子的分发器。
+        _emit_event (EventEmitter): Agent 内部事件通知回调。
+        _tool_result_normalizer (ToolResultNormalizer): 工具输出与媒体的统一规范化器。
+        _model_input (ModelInputCoordinator): 模型消息投影、上下文压缩和溢出恢复协调器。
+        _tool_authorization (ToolAuthorization | None): 工具单次授权验证器。
+        _task_launcher (TaskLauncher | None): 工具使用的共享进程启动端口。
+    """
 
     def __init__(
         self,
@@ -76,7 +93,20 @@ class ExecutionPipeline:
         model_input: ModelInputCoordinator,
         emit_event: EventEmitter,
         tool_authorization: ToolAuthorization | None = None,
+        task_launcher: TaskLauncher | None = None,
     ) -> None:
+        """装配模型输入、授权和任务启动端口，管道不持有渠道连接。
+
+        Args:
+            prompt_source (SystemPromptSource): 当前模型循环使用的系统提示来源。
+            llm_client (StreamingLLMClient): 可替换的流式模型客户端。
+            tool_manager (ToolManager): 本地及 MCP 工具注册管理器。
+            plugin_manager (PluginManager): 插件生命周期与执行钩子的分发器。
+            model_input (ModelInputCoordinator): 模型消息投影、上下文压缩和溢出恢复协调器。
+            emit_event (EventEmitter): Agent 内部事件通知回调。
+            tool_authorization (ToolAuthorization | None): 工具单次授权验证器。
+            task_launcher (TaskLauncher | None): 工具使用的共享进程启动端口。
+        """
         self._prompt_source = prompt_source
         self._llm_client = llm_client
         self._tool_manager = tool_manager
@@ -85,6 +115,7 @@ class ExecutionPipeline:
         self._tool_result_normalizer = ToolResultNormalizer()
         self._model_input = model_input
         self._tool_authorization = tool_authorization
+        self._task_launcher = task_launcher
 
     # ==================== 主入口 ====================
 
@@ -94,14 +125,19 @@ class ExecutionPipeline:
         checkpoint: CheckpointCallback | None = None,
         runtime_context: RuntimeContext | None = None,
     ) -> AsyncIterator[AgentEvent]:
-        """执行主循环（一轮对话的起点）"""
+        """确定本轮真人输入标识，运行调用钩子后进入模型工具循环。
+
+        Args:
+            state (AgentState): 当前 Agent 状态。
+            checkpoint (CheckpointCallback | None): 持久化管道进度的异步回调。
+            runtime_context (RuntimeContext | None): 本轮临时上下文，不写入持久消息。
+
+        Yields:
+            AgentEvent: 按执行顺序产生的 Agent 事件。
+        """
         runtime_context = runtime_context or RuntimeContext.capture()
-        latest_human = next(
-            (message for message in reversed(state.messages) if isinstance(message, HumanMessage)),
-            None,
-        )
-        if latest_human:
-            runtime_context.latest_human_message_id = latest_human.message_id
+        if state.messages and isinstance(state.messages[-1], HumanMessage):
+            runtime_context.latest_human_message_id = state.messages[-1].message_id
         # ON_INVOKE 钩子 - 每轮仅在此触发一次
         await self._plugin_manager.run_hooks(
             PluginHook.ON_INVOKE, state, data={"runtime_context": runtime_context}
@@ -118,9 +154,16 @@ class ExecutionPipeline:
         checkpoint: CheckpointCallback | None = None,
         runtime_context: RuntimeContext | None = None,
     ) -> AsyncIterator[AgentEvent]:
-        """从中断恢复：先跑完被中断的工具与剩余待执行工具，再回到 LLM 循环。
+        """先重入中断工具，再处理剩余调用，最后继续模型循环。
 
-        注意：这里不再触发 ON_INVOKE（它属于「新一轮」语义），避免重复副作用。
+        Args:
+            state (AgentState): 当前 Agent 状态。
+            resume_data (dict): 审批决定或桌面执行的实际结果。
+            checkpoint (CheckpointCallback | None): 持久化管道进度的异步回调。
+            runtime_context (RuntimeContext | None): 本轮临时上下文，不写入持久消息。
+
+        Yields:
+            AgentEvent: 按执行顺序产生的 Agent 事件。
         """
         interrupt_data = state.interrupt_data or {}
         pending_actions = list(state.pending_actions)
@@ -140,11 +183,15 @@ class ExecutionPipeline:
         # 1. 重入被中断的工具（用持久化的路由信息重建 ToolCall）
         if tool_name:
             interrupted_call = resumed_calls[0]
+            if runtime_context and runtime_context.turn_control:
+                runtime_context.turn_control.start_tool()
             result = await self._execute_tool(
                 state,
                 interrupted_call,
                 resume_data=resume_data,
                 resume_state=interrupt_data.get("resume_state", {}),
+                origin_run_id=runtime_context.turn_control.run_id
+                if runtime_context and runtime_context.turn_control else "",
             )
 
             # 恢复执行时又触发了新的中断
@@ -161,12 +208,22 @@ class ExecutionPipeline:
                 result,
                 checkpoint,
             )
+            if runtime_context and runtime_context.turn_control:
+                runtime_context.turn_control.check()
 
         # 2. 执行中断时尚未轮到的剩余工具
         for i, tool_call in enumerate(pending_actions):
+            if runtime_context and runtime_context.turn_control:
+                runtime_context.turn_control.start_tool()
             yield AgentEvent(EventType.TOOL_CALL, tool_call.name)
+            if runtime_context and runtime_context.turn_control:
+                runtime_context.turn_control.check()
 
-            result = await self._execute_tool(state, tool_call)
+            result = await self._execute_tool(
+                state, tool_call,
+                origin_run_id=runtime_context.turn_control.run_id
+                if runtime_context and runtime_context.turn_control else "",
+            )
             if result.interrupt:
                 yield await self._commit_interrupt(
                     state, tool_call, result.interrupt,
@@ -180,6 +237,8 @@ class ExecutionPipeline:
                 result,
                 checkpoint,
             )
+            if runtime_context and runtime_context.turn_control:
+                runtime_context.turn_control.check()
 
         # 3. 回到 LLM 循环（不重跑 ON_INVOKE）
         runtime_context = runtime_context or RuntimeContext.capture()
@@ -196,14 +255,31 @@ class ExecutionPipeline:
         checkpoint: CheckpointCallback | None = None,
         runtime_context: RuntimeContext | None = None,
     ) -> AsyncIterator[AgentEvent]:
-        """LLM ↔ 工具循环主体（不含 ON_INVOKE）"""
+        """在每次模型调用前接收内部通知，流式输出文本并依次执行工具。
+
+        Args:
+            state (AgentState): 当前 Agent 状态。
+            checkpoint (CheckpointCallback | None): 持久化管道进度的异步回调。
+            runtime_context (RuntimeContext | None): 本轮临时上下文，不写入持久消息。
+
+        Yields:
+            AgentEvent: 按执行顺序产生的 Agent 事件。
+
+        Raises:
+            RuntimeError: 输入、持久状态或系统调用不满足当前执行约束。
+        """
         while True:
-            # 1. BEFORE_LLM 钩子
+            # 1. 模型调用前交付当前后台通知，然后设置 LLM 安全点和片段缓冲。
+            if runtime_context and runtime_context.before_next_llm:
+                await runtime_context.before_next_llm(state)
+            if runtime_context and runtime_context.turn_control:
+                runtime_context.turn_control.start_llm()
+            # 2. 执行 BEFORE_LLM 钩子，通知插件即将准备本次模型输入。
             await self._plugin_manager.run_hooks(
                 PluginHook.BEFORE_LLM, state
             )
 
-            # 2. 调用 LLM（流式）
+            # 3. 准备本次模型输出的正文、工具调用和时间前缀缓冲。
             accumulated_content = ""
             tool_calls: list[ToolCall] = []
             finish_reason: str | None = None
@@ -211,25 +287,54 @@ class ExecutionPipeline:
 
             try:
                 runtime_context = runtime_context or RuntimeContext.capture()
-                async for chunk in self._call_llm(state, runtime_context, checkpoint):
-                    if chunk.content:
-                        filtered_content = time_prefix_filter.feed(chunk.content)
-                        if filtered_content:
-                            accumulated_content += filtered_content
-                            yield AgentEvent(EventType.TEXT_CHUNK, filtered_content)
-                    if chunk.tool_call:
-                        tool_calls.append(chunk.tool_call)
-                    if chunk.finish_reason:
-                        finish_reason = chunk.finish_reason
+                # 3.1. 逐项读取模型输出，等待任务可被停止，但会话收尾任务仍保留。
+                llm_stream = self._call_llm(state, runtime_context, checkpoint)
+                try:
+                    while True:
+                        try:
+                            chunk = (
+                                await runtime_context.turn_control.next_llm_chunk(llm_stream)
+                                if runtime_context.turn_control else await anext(llm_stream)
+                            )
+                        except StopAsyncIteration:
+                            break
+                        if chunk.content:
+                            filtered_content = time_prefix_filter.feed(chunk.content)
+                            if filtered_content:
+                                accumulated_content += filtered_content
+                                if runtime_context.turn_control:
+                                    runtime_context.turn_control.append(filtered_content)
+                                yield AgentEvent(EventType.TEXT_CHUNK, filtered_content)
+                                if runtime_context.turn_control:
+                                    runtime_context.turn_control.check()
+                        if chunk.tool_call:
+                            tool_calls.append(chunk.tool_call)
+                        if chunk.finish_reason:
+                            finish_reason = chunk.finish_reason
+                finally:
+                    await llm_stream.aclose()
 
                 trailing_content = time_prefix_filter.finish()
                 if trailing_content:
                     accumulated_content += trailing_content
+                    if runtime_context.turn_control:
+                        runtime_context.turn_control.append(trailing_content)
                     yield AgentEvent(EventType.TEXT_CHUNK, trailing_content)
+                    if runtime_context.turn_control:
+                        runtime_context.turn_control.check()
 
                 if not tool_calls and not accumulated_content.strip():
                     reason = finish_reason or "unknown"
                     raise RuntimeError(f"模型未返回有效文本（finish_reason={reason}）")
+            # 3.2. 先冲刷时间前缀过滤器的剩余正文，确保已展示片段能够保存。
+            except TurnInterrupted:
+                trailing_content = time_prefix_filter.finish()
+                if trailing_content:
+                    accumulated_content += trailing_content
+                    if runtime_context.turn_control:
+                        runtime_context.turn_control.append(trailing_content)
+                    yield AgentEvent(EventType.TEXT_CHUNK, trailing_content)
+                raise
             except Exception as e:
                 trailing_content = time_prefix_filter.finish()
                 if trailing_content:
@@ -242,28 +347,47 @@ class ExecutionPipeline:
                 yield AgentEvent(EventType.ERROR, str(e))
                 return
 
-            # 3. AFTER_LLM 钩子
+            # 4. AFTER_LLM 钩子前后都检查打断，避免收到停止后仍记录新步骤。
+            if runtime_context.turn_control:
+                runtime_context.turn_control.check()
             await self._plugin_manager.run_hooks(
                 PluginHook.AFTER_LLM, state,
                 data={"content": accumulated_content, "tool_calls": tool_calls},
             )
+            if runtime_context.turn_control:
+                runtime_context.turn_control.check()
 
-            # 4. 助手消息入状态
+            # 5. 将 Assistant 步骤加入状态，工具前写入 checkpoint 后标记已保存。
             if accumulated_content or tool_calls:
-                self._add_assistant_message(state, accumulated_content, tool_calls)
+                self._add_assistant_message(
+                    state, accumulated_content, tool_calls,
+                    origin_channel=runtime_context.origin_channel,
+                )
+                if runtime_context.turn_control:
+                    runtime_context.turn_control.partial_persisted = True
+                    # 5.1. 内存记录不等于事务已经落盘，关闭收尾通过身份核对实际 checkpoint。
+                    runtime_context.turn_control.partial_message_id = state.messages[-1].message_id
 
             if tool_calls:
                 await self._checkpoint(state, checkpoint)
 
-            # 5. 无工具调用 → 本轮结束
+            # 6. 没有工具调用时结束本轮，由 Agent 执行最终提交。
             if not tool_calls:
                 break
 
-            # 6. 工具循环
+            # 7. 逐个执行工具；提示事件之后再检查停止，副作用开始后只等待真实结果。
             for i, tool_call in enumerate(tool_calls):
+                if runtime_context.turn_control:
+                    runtime_context.turn_control.start_tool()
                 yield AgentEvent(EventType.TOOL_CALL, tool_call.name)
+                if runtime_context.turn_control:
+                    runtime_context.turn_control.check()
 
-                result = await self._execute_tool(state, tool_call)
+                result = await self._execute_tool(
+                    state, tool_call,
+                    origin_run_id=runtime_context.turn_control.run_id
+                    if runtime_context.turn_control else "",
+                )
 
                 # 中断：持久化路由信息 + 剩余工具，仅发最小字段给前端
                 if result.interrupt:
@@ -280,6 +404,8 @@ class ExecutionPipeline:
                     result,
                     checkpoint,
                 )
+                if runtime_context.turn_control:
+                    runtime_context.turn_control.check()
 
     @staticmethod
     async def _checkpoint(
@@ -360,8 +486,21 @@ class ExecutionPipeline:
         tool_call: ToolCall,
         resume_data: dict | None = None,
         resume_state: dict | None = None,
+        origin_run_id: str = "",
     ) -> ToolResult:
-        """执行单个工具（支持中断后恢复执行：传入 resume_data + resume_state）"""
+        """复核工具及调用授权，注入任务启动上下文并执行一次工具。
+
+        Args:
+            state (AgentState): 当前 Agent 状态。
+            tool_call (ToolCall): 当前执行的工具调用。
+            resume_data (dict | None): 审批决定或桌面执行的实际结果。
+            resume_state (dict | None): 中断前保存的工具中间状态。
+            origin_run_id (str): 发起进程任务的运行轮次标识。
+
+        Returns:
+            ToolResult: 当前查询或执行结果。
+        """
+        # 1. 查找当前工具，缺失时返回可闭合调用的错误结果。
         tool = self._tool_manager.get(tool_call.name)
         if not tool:
             logger.warning("工具 '%s' 不存在", tool_call.name)
@@ -374,6 +513,7 @@ class ExecutionPipeline:
         descriptor = descriptor_for_tool(tool)
         hooks_started = False
 
+        # 2. 根据当前调用身份复核授权，新调用、审批恢复和 continuation 恢复使用各自快照。
         if self._tool_authorization is not None:
             envelope = resume_state or {}
             hooks_started = bool(envelope.get("hooks_started"))
@@ -386,6 +526,7 @@ class ExecutionPipeline:
                 prepared_action=prepared_action,
             )
 
+            # 2.1. 恢复人工决定并保留原工具中间态；新权限变化可能再次要求审批。
             if "authorization_request" in envelope:
                 outcome = self._tool_authorization.resolve_authorization(
                     invocation,
@@ -404,10 +545,11 @@ class ExecutionPipeline:
                 grant = outcome.grant.to_dict() if outcome.grant else None
                 tool_resume_state = envelope.get("tool_resume_state") or {}
                 effective_resume_data = (
-                    {"kind": "authorization_granted"}
+                    {"kind": AUTHORIZATION_GRANTED_KIND}
                     if prepared_action is not None
                     else None
                 )
+            # 2.2. 桌面结果回传时仍复核单次 grant，执行前授权不代表恢复时仍有效。
             elif "continuation" in envelope:
                 grant = envelope.get("authorization_grant")
                 if not self._tool_authorization.validate_grant(invocation, grant):
@@ -421,6 +563,7 @@ class ExecutionPipeline:
                     return self._authorization_result(outcome)
                 grant = outcome.grant.to_dict() if outcome.grant else None
 
+        # 3. BEFORE_TOOL 在该调用链只运行一次，恢复时沿用持久 hooks_started。
         if not hooks_started:
             await self._plugin_manager.run_hooks(
                 PluginHook.BEFORE_TOOL, state,
@@ -428,6 +571,7 @@ class ExecutionPipeline:
             )
             hooks_started = True
 
+        # 4. 注入状态与任务端口，run_ps 的进程由共享 Supervisor 持有，并记录来源 run 和工具调用。
         context = ToolContext(
             session_id=state.session_id,
             state=state,
@@ -437,8 +581,12 @@ class ExecutionPipeline:
             resume_data=effective_resume_data,
             resume_state=tool_resume_state,
             authorization_grant=grant,
+            task_launcher=self._task_launcher,
+            origin_run_id=origin_run_id,
+            origin_tool_call_id=tool_call.id,
         )
 
+        # 5. 执行工具并把普通异常转换为 ToolResult，再统一规范化过长输出与媒体。
         try:
             result = await tool.execute(tool_call.args, context)
         except Exception as e:
@@ -451,6 +599,7 @@ class ExecutionPipeline:
             persist_overflow=tool.persist_oversized_result,
         )
 
+        # 6. 只读准备得到具体动作后重新授权，获准后才重入准备完毕的工具。
         if self._tool_authorization is not None and result.prepared_action is not None:
             prepared_invocation = ToolInvocation(
                 session_id=state.session_id,
@@ -479,13 +628,14 @@ class ExecutionPipeline:
             )
             prepared_action = prepared_invocation.prepared_action
 
-        if result.interrupt and result.interrupt.type == "continuation_request":
+        # 7. continuation 保存单次 grant、准备动作和钩子状态，交给独立屏幕通道等待。
+        if result.interrupt and result.interrupt.type == InterruptKind.CONTINUATION_REQUEST:
             continuation_kind = result.interrupt.data.get("kind")
             if (
                 self._tool_authorization is not None
                 and descriptor.authorization_timing == "after_prepare"
                 and prepared_action is None
-                and continuation_kind != "capture_screen"
+                and continuation_kind != DesktopExecutionKind.CAPTURE_SCREEN
             ):
                 return ToolResult(
                     content="错误: after_prepare 工具在授权前只能请求只读准备数据"
@@ -499,6 +649,7 @@ class ExecutionPipeline:
             }
             return result
 
+        # 8. 只有工具实际完成才运行 AFTER_TOOL，等待中断不提前触发完成钩子。
         await self._plugin_manager.run_hooks(
             PluginHook.AFTER_TOOL, state,
             data={"tool_call": tool_call.to_dict(), "result": result},
@@ -513,6 +664,17 @@ class ExecutionPipeline:
         prepared_action: dict | None = None,
         hooks_started: bool = False,
     ) -> ToolResult:
+        """把待审批结果封装为可恢复工具状态，保留动作与钩子是否已执行的事实。
+
+        Args:
+            outcome (AuthorizationRequired): 授权模块生成的待决请求。
+            tool_resume_state (dict | None): 工具自身的中间态。
+            prepared_action (dict | None): 已准备且待批准的动作。
+            hooks_started (bool): 本次工具前置钩子是否已开始。
+
+        Returns:
+            ToolResult: 仅请求审批、不产生工具副作用的中断结果。
+        """
         return ToolResult(
             content="",
             interrupt=outcome.interrupt,
@@ -532,16 +694,31 @@ class ExecutionPipeline:
         resume_state: dict,
         grant: dict | None,
     ) -> ToolResult:
+        """使用已准备动作和当前授权重入工具，屏幕副作用仍交给桌面执行通道。
+
+        Args:
+            state (AgentState): 当前 Agent 状态。
+            tool_call (ToolCall): 当前执行的工具调用。
+            tool (BaseTool): 当前准备或执行的工具实例。
+            resume_state (dict): 中断前保存的工具中间状态。
+            grant (dict | None): 绑定本次调用的授权快照。
+
+        Returns:
+            ToolResult: 当前查询或执行结果。
+        """
+        # 1. 使用已获准的具体动作和中间态重入工具，仍传入共享任务端口。
         context = ToolContext(
             session_id=state.session_id,
             state=state,
             emit_event=self._emit_event,
             get_checkpoint=state.to_checkpoint,
             set_checkpoint=lambda data: state.update_extra(data),
-            resume_data={"kind": "authorization_granted"},
+            resume_data={"kind": AUTHORIZATION_GRANTED_KIND},
             resume_state=resume_state,
             authorization_grant=grant,
+            task_launcher=self._task_launcher,
         )
+        # 2. 普通工具异常转换为可展示结果，随后执行统一结果规范化。
         try:
             result = await tool.execute(tool_call.args, context)
         except Exception as exc:
@@ -555,12 +732,22 @@ class ExecutionPipeline:
 
     @staticmethod
     def _normalize_authorization_decision(resume_data: dict | None) -> dict[str, Any]:
-        if resume_data and resume_data.get("kind") in {"approve", "reject", "steer"}:
+        """沿用原有恢复格式，将布尔批准标记映射为具名用户决定。
+
+        Args:
+            resume_data (dict | None): 已知决定对象或现有 approved 布尔恢复数据。
+
+        Returns:
+            dict[str, Any]: 原决定对象或按原规则生成的批准、拒绝决定。
+        """
+        # 1. 已知决定原样返回，保留审批框引导的正文及其他已有数据。
+        if resume_data and resume_data.get("kind") in {ApprovalDecisionKind.APPROVE, ApprovalDecisionKind.REJECT, ApprovalDecisionKind.STEER}:
             return resume_data
+        # 2. 其他恢复数据继续使用原布尔约定，缺失或非 True 都表示拒绝。
         return {
-            "kind": "approve"
+            "kind": ApprovalDecisionKind.APPROVE
             if resume_data and resume_data.get("approved") is True
-            else "reject"
+            else ApprovalDecisionKind.REJECT
         }
 
     def validate_pending_continuation(self, interrupt_data: dict[str, Any]) -> bool:
@@ -659,9 +846,18 @@ class ExecutionPipeline:
         state: AgentState,
         content: str,
         tool_calls: list[ToolCall],
+        *,
+        origin_channel: str = DESKTOP_CHANNEL,
     ) -> None:
-        """添加助手消息到状态"""
+        """保存带入口来源的 Assistant 步骤，并登记需要闭合的工具调用。
+
+        Args:
+            state (AgentState): 当前 Agent 状态。
+            content (str): Assistant 正文。
+            tool_calls (list[ToolCall]): 本步模型请求的工具调用。
+            origin_channel (str): 输入或本轮回复所属的渠道。
+        """
         if tool_calls:
-            state.record_assistant_step(content, tool_calls)
+            state.record_assistant_step(content, tool_calls, origin_channel=origin_channel)
         else:
-            state.add_assistant_message(content)
+            state.add_assistant_message(content, origin_channel=origin_channel)

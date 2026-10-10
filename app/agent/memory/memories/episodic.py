@@ -8,6 +8,13 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from app.agent.memory.base import MemoryItem
+from app.agent.memory.materials import compress_tool_results
+from app.agent.state.messages import (
+    AssistantMessage, BaseMessage, HumanMessage, RuntimeInputMessage, ToolMediaMessage, ToolMessage,
+)
+from app.agent.state.time import render_timed_text
+from app.agent.utils.domain.token_estimation import RoughTokenEstimator
+from app.schemas.runtime_types import DESKTOP_CHANNEL
 from app.agent.memory.config import MemoryConfig
 from app.agent.memory.store.episodic_chroma_store import EpisodicChromaStore
 from app.agent.memory.store.episodic_sqlite_store import EpisodicSqliteStore
@@ -78,17 +85,18 @@ EPISODIC_MEMORY_SCHEMA = {
 
 
 class EpisodicMemory:
-    """情景记忆类
+    """构造和预算检查情景提取输入，提取事件记忆并保存到 SQLite 与向量索引。
 
-    职责：
-    - 存储具体事件记忆
-    - LLM 提取时间元数据和重要性
-    - 支持向量检索
+    MemoryManager 交付领域消息后，本类保留时间和来源构造提示词，使用自身
+    配置粗估预算，超限时只压缩当前工具结果；历史与原始消息保持原内容。
 
-    核心方法：
-    - add(messages, history): 从对话提取记忆并存储
-    - search(query, top_k): 向量检索相关记忆
-    - get_timeline(start, end): 时间线查询
+    Attributes:
+        session_id (str): 记忆所属会话。
+        config (MemoryConfig): 提取预算、模型及存储配置。
+        chat_settings (ChatSettings): 角色设定及对话称呼。
+        llm (LLMClient): 情景记忆的结构化提取客户端。
+        sqlite_store (EpisodicSqliteStore): 情景记忆权威存储。
+        chroma_store (EpisodicChromaStore): 情景记忆检索索引。
     """
 
     NAMESPACE = "episodic_memory"
@@ -132,27 +140,38 @@ class EpisodicMemory:
 
     # ==================== 核心方法 ====================
 
-    async def add(self, messages: str, history: str) -> list[str]:
-        """添加情景记忆
+    async def add(
+        self, messages: list[BaseMessage], history: list[BaseMessage] | None = None,
+    ) -> list[str]:
+        """将当前领域对话构造为提取输入，处理预算后提取并保存情景记忆。
 
         将聊天记录交由 LLM 总结，生成记忆条目（含日期和重要性）
 
         Args:
-            messages: 当前聊天记录（格式化后的文本）
-            history: 历史聊天记录（前情提要）
+            messages (list[BaseMessage]): 当前批次的领域消息，不会被原地修改。
+            history (list[BaseMessage] | None): 仅用于理解前情、不压缩的历史消息。
 
         Returns:
-            记忆ID列表
+            list[str]: 成功保存到 SQLite 的记忆编号。
         """
-        if not messages.strip():
+        # 1. 先按既有时间、来源和工具规则构造文本，没有可提取内容时不调用模型。
+        messages_text = self._format_messages(messages)
+        history_text = self._format_messages(history or [], mark_as_history=True)
+        if not messages_text.strip():
             return []
-
+        prompt = self._build_extraction_prompt(messages_text, history_text)
+        # 2. 对本次提示词粗估预算；沿用一次工具结果压缩，不承诺压缩后一定低于预算。
+        limit = self.config.extraction_max_context_tokens
+        if limit and RoughTokenEstimator().estimate_value(prompt) > limit:
+            messages_text = self._format_messages(compress_tool_results(messages))
+            prompt = self._build_extraction_prompt(messages_text, history_text)
+            logger.warning("[EpisodicMemory] 情景记忆粗略估算超限，工具结果改为800+200权重")
         logger.info("[EpisodicMemory] 开始提取情景记忆")
 
-        # 1. 使用 LLM 提取记忆（可能多条）
-        memory_items = await self._extract_memories(messages, history)
+        # 3. 发送已完成预算处理的提示词，不在发送阶段重新解释领域消息。
+        memory_items = await self._extract_memories(prompt)
 
-        # 2. 存储每条记忆（双写：SQLite + Chroma）
+        # 4. 存储每条记忆（双写：SQLite + Chroma）。
         memory_ids = []
         for item in memory_items:
             memory_id = f"episodic_{uuid.uuid4().hex[:16]}"
@@ -164,7 +183,7 @@ class EpisodicMemory:
                 "created_at": datetime.now().isoformat(),
             }
 
-            # 2.1 SQLite 存储（权威数据源，优先写入）
+            # 4.1. SQLite 存储是权威数据，优先保存，失败时跳过该条记忆。
             try:
                 await self.sqlite_store.add(
                     record_id=memory_id,
@@ -177,7 +196,7 @@ class EpisodicMemory:
                 logger.exception("[EpisodicMemory] SQLite 存储失败: %s", e)
                 continue
 
-            # 2.2 Chroma 向量存储（索引层）
+            # 4.2. 再更新向量索引，索引失败不撤销已经保存的 SQLite 记忆。
             try:
                 await self.chroma_store.upsert(
                     record_id=memory_id,
@@ -349,30 +368,26 @@ class EpisodicMemory:
 
     async def _extract_memories(
         self,
-        messages: str,
-        history: str,
+        prompt: str,
     ) -> list[dict[str, Any]]:
-        """使用 LLM 提取多条记忆
+        """发送 add 已完成预算处理的提示词，并验证结构化提取结果。
 
         Args:
-            messages: 当前聊天记录
-            history: 历史聊天记录
+            prompt (str): 本次实际发送的完整情景记忆提示词。
 
         Returns:
-            记忆列表，每条包含 content, event_date, importance
+            list[dict[str, Any]]: 记忆内容、事件日期和重要性；提取或验证失败时为空。
         """
-        prompt = self._build_extraction_prompt(messages, history)
-
+        # 1. 只发送已构造的请求，模型失败或结构化结果无效时沿用空结果处理。
         try:
             result = await self.llm.ainvoke_structured(
                 messages=[{"role": "user", "content": prompt}],
                 schema=EPISODIC_MEMORY_SCHEMA,
             )
 
-            # 使用 Pydantic 验证返回数据
+            # 2. 验证事件日期和重要性，再转换为存储需要的字段。
             validated = EpisodicMemoryOutput.model_validate(result)
 
-            # 处理每条记忆
             memory_items = []
             for item in validated.memories:
                 memory_items.append({
@@ -386,6 +401,58 @@ class EpisodicMemory:
         except Exception as e:
             logger.exception("[EpisodicMemory] LLM 提取记忆失败: %s", e)
             return []
+
+    def _format_messages(self, messages: list[BaseMessage], *, mark_as_history: bool = False) -> str:
+        """构造情景提取文本，保留消息时间、渠道来源和既有工具上下文规则。
+
+        Args:
+            messages (list[BaseMessage]): 当前批次或前情提要的领域消息。
+            mark_as_history (bool): 历史仅保留工具名称，不保留参数和工具结果。
+
+        Returns:
+            str: 用于情景提取提示词的文本，不包含媒体原文。
+        """
+        if not messages:
+            return ""
+        user_name = self.chat_settings.address or "用户"
+        ai_name = self.chat_settings.name or "AI"
+        lines = []
+        # 1. 跳过媒体原文，按消息类型保留真人来源、回复目标和消息时间。
+        for msg in messages:
+            if isinstance(msg, ToolMediaMessage):
+                continue
+            if isinstance(msg, HumanMessage):
+                role = user_name if msg.origin_channel == DESKTOP_CHANNEL else f"{user_name}（来自 {msg.origin_channel}）"
+                content = msg.text
+            elif isinstance(msg, RuntimeInputMessage):
+                lines.append(
+                    f"运行时输入: {render_timed_text(msg.to_openai_format()['content'], msg.created_at)}"
+                )
+                continue
+            elif isinstance(msg, AssistantMessage):
+                role = ai_name if msg.origin_channel == DESKTOP_CHANNEL else f"{ai_name}（回复 {msg.origin_channel}）"
+                # 1.1. 当前调用保留参数，历史调用只保留名称，沿用原有证据解释方式。
+                if msg.tool_calls:
+                    if mark_as_history:
+                        lines.extend(f"AI：调用了工具 {tc.name}" for tc in msg.tool_calls)
+                    else:
+                        lines.extend(
+                            f"AI：调用工具 {tc.name}，参数："
+                            f"{tc.to_dict()['function']['arguments']}"
+                            for tc in msg.tool_calls
+                        )
+                    continue
+                else:
+                    content = msg.text
+            elif isinstance(msg, ToolMessage):
+                # 1.2. 工具结果只作为当前提取上下文，历史结果不进入提示词。
+                if not mark_as_history:
+                    lines.append(f"工具结果：{msg.content}")
+                continue
+            else:
+                continue
+            lines.append(f"{role}: {render_timed_text(content, msg.created_at)}")
+        return "\n".join(lines)
 
     def _build_extraction_prompt(
         self,

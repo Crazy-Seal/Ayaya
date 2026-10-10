@@ -5,7 +5,7 @@
 - ToolManager: 工具注册、查找、热插拔
 - PluginManager: 插件生命周期管理、钩子分发
 - StateManager: 状态持久化、checkpoint 管理
-- EventRouter: SSE 事件推送
+- EventRouter: Agent 内部事件通知
 - ExecutionPipeline: 执行管道
 """
 

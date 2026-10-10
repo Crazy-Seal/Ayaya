@@ -17,9 +17,26 @@ const rawStderrWrite = process.stderr.write.bind(process.stderr);
 const logHub = new LogHub({ immediateSides: ["backend"] });
 let logDirectory = "";
 
-const describeError = (error: unknown): string => {
+/**
+ * 保留错误堆栈、底层原因和错误码，避免 fetch 的 terminated 包装掩盖断线原因。
+ *
+ * Args:
+ *     error (unknown): 当前异常或它的底层 cause。
+ *     seen (Set<unknown>): 已处理的原因对象，防止循环 cause 无限递归。
+ *
+ * Returns:
+ *     string: 交给统一脱敏、限长及 UTF-8 写入的异常说明。
+ */
+const describeError = (error: unknown, seen = new Set<unknown>()): string => {
   if (error instanceof Error) {
-    return error.stack || `${error.name}: ${error.message}`;
+    // 1. 原因链可能引用自己，最多展开八层，保留诊断信息而不无限遍历。
+    if (seen.has(error) || seen.size >= 8) return "[错误原因链已截断]";
+    seen.add(error);
+    const code = (error as Error & { code?: unknown }).code;
+    const details = (error.stack || `${error.name}: ${error.message}`)
+      + (code === undefined ? "" : `\n错误码: ${String(code)}`);
+    // 2. native fetch 把 BodyTimeoutError 放在 cause 中，必须随外层堆栈一起记录。
+    return error.cause === undefined ? details : `${details}\n原因: ${describeError(error.cause, seen)}`;
   }
   return String(error);
 };

@@ -7,10 +7,20 @@ from typing import Any
 
 
 class PluginHook(str, Enum):
-    """插件钩子点。"""
+    """定义插件可订阅的执行阶段，激活输入钩子只属于新一轮输入提交。
 
-    BEFORE_USER_INPUT_COMMIT = "before_user_input_commit"
-    AFTER_USER_INPUT_COMMIT = "after_user_input_commit"
+    Args:
+        value (str): 对应执行阶段的内部字符串标识。
+
+    Attributes:
+        BEFORE_ACTIVATION_INPUT_COMMIT (PluginHook): Agent 在新一轮真人或内部通知
+            输入追加前触发，用于准备上一批派生任务；原轮次恢复和中途通知不触发。
+        AFTER_ACTIVATION_INPUT_COMMIT (PluginHook): 同一激活的输入、协议历史和
+            Inbox 交付保存成功后触发；提交失败时不触发。
+    """
+
+    BEFORE_ACTIVATION_INPUT_COMMIT = "before_activation_input_commit"
+    AFTER_ACTIVATION_INPUT_COMMIT = "after_activation_input_commit"
     ON_INVOKE = "on_invoke"
     BEFORE_LLM = "before_llm"
     AFTER_LLM = "after_llm"

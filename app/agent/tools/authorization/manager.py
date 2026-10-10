@@ -7,6 +7,9 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Callable, TYPE_CHECKING
 
+from app.schemas.runtime_types import (
+    ApprovalDecisionKind, InterruptKind,
+)
 from app.agent.state.messages import to_json_value
 from app.agent.tools.base import InterruptEvent, ToolResult
 from app.schemas.tool_permissions import ToolPolicy
@@ -151,10 +154,20 @@ class ToolAuthorization:
         invocation: ToolInvocation,
         grant: dict[str, Any] | None,
     ) -> bool:
-        """校验 continuation 携带的批准快照仍绑定当前调用。"""
+        """校验 continuation 携带的批准快照仍绑定当前调用。
+
+        Args:
+            invocation (ToolInvocation): 当前工具、参数和准备动作。
+            grant (dict[str, Any] | None): 单次授权快照；允许策略可不携带快照。
+
+        Returns:
+            bool: 当前权限与授权快照均允许继续执行。
+        """
+        # 1. 先读取最新策略，已撤销的权限不能靠旧授权继续执行。
         policy = self.get_policy(invocation.session_id, invocation.descriptor.identity)
         if policy == ToolPolicy.DENY:
             return False
+        # 2. 未带 grant 时沿用自动允许或准备阶段规则，不把它当作人工批准。
         if grant is None:
             return (
                 policy == ToolPolicy.ALLOW
@@ -163,8 +176,9 @@ class ToolAuthorization:
                     and invocation.prepared_action is None
                 )
             )
+        # 3. 人工授权需同时匹配调用身份、参数、契约及具体准备动作。
         return (
-            grant.get("decision") == "approve"
+            grant.get("decision") == ApprovalDecisionKind.APPROVE
             and grant.get("tool_call_id") == invocation.tool_call_id
             and grant.get("tool_identity") == invocation.descriptor.identity.stable_key
             and grant.get("arguments_fingerprint") == _fingerprint(invocation.arguments)
@@ -181,7 +195,15 @@ class ToolAuthorization:
         self,
         invocation: ToolInvocation,
     ) -> AuthorizationOutcome:
-        """按最新策略判断一个尚未产生用户决定的工具调用。"""
+        """按最新策略判断一个尚未产生用户决定的工具调用。
+
+        Args:
+            invocation (ToolInvocation): 当前调用的工具、参数与可选准备动作。
+
+        Returns:
+            AuthorizationOutcome: 已允许、待人工审批或按原规则拒绝的结果。
+        """
+        # 1. 禁止策略立即拒绝；动作准备阶段沿用既有授权时机。
         policy = self.get_policy(invocation.session_id, invocation.descriptor.identity)
         if policy == ToolPolicy.DENY:
             return ToolResult(content="错误: 当前工具不允许使用")
@@ -192,12 +214,13 @@ class ToolAuthorization:
         ):
             return Granted()
 
+        # 2. 自动允许不创建审批请求；其他策略冻结调用信息后等待真人决定。
         if policy == ToolPolicy.ALLOW:
             return Granted()
 
         snapshot = self._snapshot(invocation)
         interrupt = InterruptEvent.create(
-            type="authorization_request",
+            type=InterruptKind.AUTHORIZATION_REQUEST,
             message=f"Agent 请求调用工具 {invocation.descriptor.display_name}",
             data={
                 "tool_call_id": invocation.tool_call_id,
@@ -219,15 +242,27 @@ class ToolAuthorization:
         decision: dict[str, Any],
         authorization_snapshot: dict[str, Any],
     ) -> AuthorizationOutcome:
-        """校验原审批快照，并消费用户对该请求作出的明确决定。"""
+        """校验原审批快照，并消费用户对该请求作出的明确决定。
+
+        Args:
+            invocation (ToolInvocation): 恢复时的实际工具调用。
+            decision (dict[str, Any]): 已知用户决定，拒绝或非批准继续沿原分支处理。
+            authorization_snapshot (dict[str, Any]): 创建审批时冻结的身份与摘要。
+
+        Returns:
+            AuthorizationOutcome: 绑定当前调用的批准快照或原有拒绝结果。
+        """
+        # 1. 审批快照先匹配当前调用，过期决定不能被重用。
         if not self._matches(invocation, authorization_snapshot):
             return ToolResult(content="错误: 工具审批已过期，请重新发起调用")
+        # 2. 只有明确批准能发放 grant，拒绝保留原提示，其他决定按原过期路径处理。
         kind = decision.get("kind")
-        if kind == "reject":
+        if kind == ApprovalDecisionKind.REJECT:
             return ToolResult(content="工具调用已被用户拒绝")
-        if kind != "approve":
+        if kind != ApprovalDecisionKind.APPROVE:
             return ToolResult(content="错误: 工具审批已过期，请重新发起调用")
 
+        # 3. 发放前再次检查最新权限，撤销优先于已有用户批准。
         policy = self.get_policy(invocation.session_id, invocation.descriptor.identity)
         if policy == ToolPolicy.DENY:
             return ToolResult(content="错误: 当前工具不允许使用")

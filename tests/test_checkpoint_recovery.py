@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from app.agent.agent import Agent, AgentConfig, INTERRUPTED_TOOL_RESULT
+from app.agent.runtime.turn_control import TurnControl
 from app.agent.context import ContextStrategyConfig, ModelInputCoordinator
 from app.agent.core.event_router import EventType
 from app.agent.core.pipeline import ExecutionPipeline
@@ -23,8 +24,6 @@ from app.agent.state.messages import (
 from app.agent.models.llm_client import StreamChunk
 from app.agent.state import AgentState
 from app.agent.tools.base import BaseTool, ToolContext, ToolResult
-from app.schemas.chat import AgentInput
-from app.services.agent_service import AgentService
 import app.agent.plugins.memory as memory_plugin_module
 
 
@@ -314,6 +313,147 @@ async def checkpoint_types(manager: StateManager) -> list[str]:
         return [row[0] for row in await cursor.fetchall()]
 
 
+def test_stop_during_llm_saves_visible_partial_and_completed_checkpoint(tmp_path: Path) -> None:
+    """验证模型输出中停止保留可见片段和完成态 checkpoint。
+
+    Args:
+        tmp_path (Path): Pytest 创建的隔离临时目录。
+    """
+    # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
+    async def scenario() -> None:
+        """在隔离异步环境中安排并验证：模型输出中停止保留可见片段和完成态 checkpoint。
+
+        """
+        # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
+        first_chunk = asyncio.Event()
+
+        class WaitingLLM:
+            """提供隔离测试替身，用于验证：模型输出中停止保留可见片段和完成态 checkpoint。
+
+            """
+            async def astream(self, messages, tools=None):
+                """按场景产生模型分片或工具调用。
+
+                Args:
+                    messages (消息序列): 需要转换或交付的领域消息集合。
+                    tools (list | None): 当前模型可用的工具 schema。
+
+                Yields:
+                    LLMChunk: 当前测试场景的预设分片或事件。
+                """
+                yield StreamChunk(content="已经展示的回答")
+                first_chunk.set()
+                await asyncio.Event().wait()
+
+            async def close(self):
+                """完成替身清理而不访问真实服务。
+
+                """
+                pass
+
+        agent = Agent(
+            AgentConfig(
+                session_id="stop-test", model_name="test", api_key="test",
+                context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100),
+            ),
+            db_path=str(tmp_path / "state.sqlite3"), llm_client=WaitingLLM(),
+        )
+        control = TurnControl("run-1")
+        events = []
+
+        async def run() -> None:
+            """按场景屏障产生 Agent 事件并提交测试输入。
+
+            """
+            async for event in agent.run("说句话", turn_control=control):
+                events.append(event)
+
+        task = asyncio.create_task(run())
+        try:
+            await asyncio.wait_for(first_chunk.wait(), 1)
+            control.request("stop")
+            await asyncio.wait_for(task, 1)
+            state = await agent.state_manager.load()
+            assert state.messages[-1].text == "已经展示的回答……（被用户打断）"
+            assert agent.state_manager.last_loaded_checkpoint_type == "completed"
+            assert events[-1].type == EventType.DONE
+        finally:
+            await agent.close()
+
+    asyncio.run(scenario())
+
+
+def test_stop_flushes_incomplete_time_prefix_before_saving_partial(tmp_path: Path) -> None:
+    """验证停止时先冲刷时间前缀缓冲再保存片段。
+
+    Args:
+        tmp_path (Path): Pytest 创建的隔离临时目录。
+    """
+    # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
+    async def scenario() -> None:
+        """在隔离异步环境中安排并验证：停止时先冲刷时间前缀缓冲再保存片段。
+
+        """
+        # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
+        first_chunk = asyncio.Event()
+
+        class WaitingLLM:
+            """提供隔离测试替身，用于验证：停止时先冲刷时间前缀缓冲再保存片段。
+
+            """
+            async def astream(self, messages, tools=None):
+                """按场景产生模型分片或工具调用。
+
+                Args:
+                    messages (消息序列): 需要转换或交付的领域消息集合。
+                    tools (list | None): 当前模型可用的工具 schema。
+
+                Yields:
+                    LLMChunk: 当前测试场景的预设分片或事件。
+                """
+                yield StreamChunk(content="[发送时间：")
+                first_chunk.set()
+                await asyncio.Event().wait()
+
+            async def close(self):
+                """完成替身清理而不访问真实服务。
+
+                """
+                pass
+
+        agent = Agent(
+            AgentConfig(
+                session_id="filter-stop", model_name="test", api_key="test",
+                context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100),
+            ),
+            db_path=str(tmp_path / "state.sqlite3"), llm_client=WaitingLLM(),
+        )
+        control = TurnControl("run-1")
+        events = []
+
+        async def run() -> None:
+            """按场景屏障产生 Agent 事件并提交测试输入。
+
+            """
+            async for event in agent.run("说句话", turn_control=control):
+                events.append(event)
+
+        task = asyncio.create_task(run())
+        try:
+            await asyncio.wait_for(first_chunk.wait(), 1)
+            control.request("stop")
+            await asyncio.wait_for(task, 1)
+            assert [event.data for event in events if event.type == EventType.TEXT_CHUNK] == [
+                "[发送时间：", "……（被用户打断）",
+            ]
+            state = await agent.state_manager.load()
+            assert state.messages[-1].text == "[发送时间：……（被用户打断）"
+        finally:
+            await agent.close()
+
+    asyncio.run(scenario())
+
+
 def tool_call(call_id: str, name: str = "step", label: str = "") -> StreamChunk:
     args = {"label": label} if label else {}
     return StreamChunk(tool_call=ToolCall(id=call_id, name=name, args=args))
@@ -342,34 +482,56 @@ class CommitOrderPlugin(BasePlugin):
             self.order.append("after_commit")
 
 
-class UserInputCommitOrderPlugin(BasePlugin):
-    name = "user_input_commit_order"
+class ActivationInputCommitOrderPlugin(BasePlugin):
+    """观察新激活输入保存前后的插件事件和共享提交数据。
+
+    Attributes:
+        order (list[str]): 钩子与 checkpoint 保存顺序的共同记录。
+    """
+    name = "activation_input_commit_order"
 
     def __init__(self, order: list[str]):
+        """绑定需要观察的激活提交顺序。
+
+        Args:
+            order (list[str]): 测试共用的执行顺序记录。
+        """
         self.order = order
 
     @property
     def hooks(self) -> list[PluginHook]:
+        """订阅新激活的输入提交前后事件。
+
+        Returns:
+            list[PluginHook]: 输入保存之前和成功之后的两个钩子。
+        """
         return [
-            PluginHook.BEFORE_USER_INPUT_COMMIT,
-            PluginHook.AFTER_USER_INPUT_COMMIT,
+            PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT,
+            PluginHook.AFTER_ACTIVATION_INPUT_COMMIT,
         ]
 
     async def execute(self, context: HookContext) -> None:
-        if context.hook == PluginHook.BEFORE_USER_INPUT_COMMIT:
+        """核对输入所在阶段，记录前后钩子并检查提交数据共用。
+
+        Args:
+            context (HookContext): Agent 分发的激活提交上下文。
+        """
+        # 1. 前置事件应看不到本次新输入，准备的数据交给后置事件继续检查。
+        if context.hook == PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT:
             assert not any(
                 isinstance(message, HumanMessage) and message.text == "本轮新输入"
                 for message in context.agent_state.messages
             )
-            self.order.append("before_user_input_commit")
+            self.order.append("before_activation_input_commit")
             context.data["prepared_previous_turn"] = True
-        elif context.hook == PluginHook.AFTER_USER_INPUT_COMMIT:
+        # 2. 后置事件应看到已保存的新输入，并接到同一个前置准备结果。
+        elif context.hook == PluginHook.AFTER_ACTIVATION_INPUT_COMMIT:
             assert context.data == {"prepared_previous_turn": True}
             assert any(
                 isinstance(message, HumanMessage) and message.text == "本轮新输入"
                 for message in context.agent_state.messages
             )
-            self.order.append("after_user_input_commit")
+            self.order.append("after_activation_input_commit")
 
 
 def test_response_commit_hooks_wrap_completed_checkpoint(tmp_path: Path) -> None:
@@ -406,18 +568,37 @@ def test_response_commit_hooks_wrap_completed_checkpoint(tmp_path: Path) -> None
     ]
 
 
-def test_user_input_commit_hooks_wrap_intermediate_checkpoint(tmp_path: Path) -> None:
+def test_activation_input_commit_hooks_wrap_intermediate_checkpoint(tmp_path: Path) -> None:
+    """新激活前后钩子包围输入 checkpoint，不等待最终回复提交。
+
+    Args:
+        tmp_path (Path): Pytest 提供的临时存储目录。
+    """
     async def scenario() -> list[str]:
+        """记录真实真人激活中的钩子与两次 checkpoint 保存顺序。
+
+        Returns:
+            list[str]: 激活钩子、中间保存和最终保存的顺序。
+        """
         order: list[str] = []
         agent = await make_agent(
             tmp_path / "checkpoints.sqlite3",
             [[StreamChunk(content="完成")]],
             StepTool(),
         )
-        await agent.plugin_manager.register(UserInputCommitOrderPlugin(order))
+        await agent.plugin_manager.register(ActivationInputCommitOrderPlugin(order))
         original_save = agent.state_manager.save
 
         async def tracked_save(state, *, checkpoint_type):
+            """真实保存成功后记录 checkpoint 类别，不改变事务结果。
+
+            Args:
+                state (AgentState): 当前激活或回复状态。
+                checkpoint_type (CheckpointType): 输入中间状态或完成状态。
+
+            Returns:
+                int: 实际保存成功的 checkpoint 编号。
+            """
             checkpoint_id = await original_save(state, checkpoint_type=checkpoint_type)
             order.append(f"save_{checkpoint_type}")
             return checkpoint_id
@@ -430,26 +611,45 @@ def test_user_input_commit_hooks_wrap_intermediate_checkpoint(tmp_path: Path) ->
             await agent.close()
 
     assert asyncio.run(scenario()) == [
-        "before_user_input_commit",
+        "before_activation_input_commit",
         "save_intermediate",
-        "after_user_input_commit",
+        "after_activation_input_commit",
         "save_completed",
     ]
 
 
-def test_intermediate_checkpoint_failure_skips_after_user_input_hook(
+def test_intermediate_checkpoint_failure_skips_after_activation_input_hook(
     tmp_path: Path,
 ) -> None:
+    """激活输入保存失败时只执行前置钩子，不通知输入已提交。
+
+    Args:
+        tmp_path (Path): Pytest 提供的临时存储目录。
+    """
     async def scenario() -> list[str]:
+        """拒绝中间 checkpoint，观察后置钩子是否保持未触发。
+
+        Returns:
+            list[str]: 保存失败前实际发生的事件。
+        """
         order: list[str] = []
         agent = await make_agent(
             tmp_path / "checkpoints.sqlite3",
             [[StreamChunk(content="不应执行")]],
             StepTool(),
         )
-        await agent.plugin_manager.register(UserInputCommitOrderPlugin(order))
+        await agent.plugin_manager.register(ActivationInputCommitOrderPlugin(order))
 
         async def failing_save(state, *, checkpoint_type):
+            """模拟输入事务失败，让激活入口停止后续处理。
+
+            Args:
+                state (AgentState): 尝试提交的新激活状态。
+                checkpoint_type (CheckpointType): 应为 intermediate 的提交类别。
+
+            Raises:
+                RuntimeError: 模拟中间 checkpoint 保存失败。
+            """
             assert checkpoint_type == "intermediate"
             order.append("save_intermediate_failed")
             raise RuntimeError("模拟 intermediate 保存失败")
@@ -463,7 +663,7 @@ def test_intermediate_checkpoint_failure_skips_after_user_input_hook(
             await agent.close()
 
     assert asyncio.run(scenario()) == [
-        "before_user_input_commit",
+        "before_activation_input_commit",
         "save_intermediate_failed",
     ]
 
@@ -950,102 +1150,6 @@ def test_resumed_last_tool_checkpoint_flushes_deferred_images(tmp_path: Path) ->
     assert [item.associated_message_id for item in image_messages] == [
         item.message_id for item in tool_messages
     ]
-
-
-def test_interrupt_recovers_across_fresh_agents_and_repeated_response_fails(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    async def scenario() -> None:
-        db_path = tmp_path / "checkpoints.sqlite3"
-        from app.services import agent_service as agent_service_module
-
-        monkeypatch.setattr(
-            agent_service_module,
-            "StateManager",
-            lambda session_id: StateManager(session_id, db_path=str(db_path)),
-        )
-        resumed_calls: list[bool] = []
-        all_agents = [
-            await make_agent(db_path, [[tool_call("shot-1", name="screenshot")]], ResumableScreenshotTool(resumed_calls)),
-            await make_agent(db_path, [[tool_call("shot-2", name="screenshot")]], ResumableScreenshotTool(resumed_calls)),
-            await make_agent(db_path, [[StreamChunk(content="恢复完成")]], ResumableScreenshotTool(resumed_calls)),
-            await make_agent(db_path, [], ResumableScreenshotTool(resumed_calls)),
-        ]
-        agents = list(all_agents)
-
-        class Settings:
-            model_name = "test"
-
-        service = AgentService(
-            chat_history_dao=None,
-            chat_settings_loader=lambda session_id: Settings(),
-            agent_factory=lambda settings: agents.pop(0),
-        )
-
-        first_stream = service.stream_chat(AgentInput(message="截屏"), "checkpoint-test")
-        assert (await anext(first_stream)).type == EventType.TOOL_CALL
-        assert (await anext(first_stream)).type == EventType.INTERRUPT
-
-        # 生成器仍停在 interrupt yield 处时，另一连接已经能读取中断 checkpoint。
-        manager = StateManager("checkpoint-test", db_path=str(db_path))
-        try:
-            first_interrupt = await manager.load()
-            assert first_interrupt.is_interrupted()
-            first_request_id = first_interrupt.interrupt_data["request_id"]
-            assert first_interrupt.long_term_memory_turn_counter == 1
-            assert await checkpoint_types(manager) == ["intermediate"]
-        finally:
-            await manager.close()
-        await first_stream.aclose()
-        assert all_agents[0].llm_client.closed is True
-
-        # 即使创建新的 Agent，请求也能从 checkpoint 恢复，并再次产生持久化中断。
-        second_events = await drain(service.resume_after_tool_authorization(
-            "checkpoint-test",
-            request_id=first_request_id,
-            decision={"kind": "approve"},
-        ))
-        assert second_events[-1].type == EventType.INTERRUPT
-        assert all_agents[1].llm_client.closed is True
-
-        manager = StateManager("checkpoint-test", db_path=str(db_path))
-        try:
-            second_interrupt = await manager.load()
-            second_request_id = second_interrupt.interrupt_data["request_id"]
-            assert second_request_id != first_request_id
-        finally:
-            await manager.close()
-
-        third_events = await drain(service.resume_after_tool_authorization(
-            "checkpoint-test",
-            request_id=second_request_id,
-            decision={"kind": "reject"},
-        ))
-        assert any(event.type == EventType.TEXT_CHUNK for event in third_events)
-        assert resumed_calls == [True, False]
-        assert all_agents[2].llm_client.closed is True
-
-        manager = StateManager("checkpoint-test", db_path=str(db_path))
-        try:
-            resumed_state = await manager.load()
-            assert resumed_state.long_term_memory_turn_counter == 1
-        finally:
-            await manager.close()
-
-        # 中断已消费，重复响应不得再次执行工具。
-        with pytest.raises(ValueError, match="没有待处理的确认请求"):
-            await drain(service.resume_after_tool_authorization(
-                "checkpoint-test",
-                request_id=second_request_id,
-                decision={"kind": "reject"},
-            ))
-        assert resumed_calls == [True, False]
-        assert agents == [all_agents[3]]
-        assert all_agents[3].llm_client.closed is False
-        await all_agents[3].close()
-
-    asyncio.run(scenario())
 
 
 def test_chat_resolves_unresolved_interrupt_before_new_message(tmp_path: Path) -> None:

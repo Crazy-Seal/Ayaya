@@ -9,8 +9,12 @@ from typing import Any
 
 from mem0 import Memory
 
+from app.schemas.runtime_types import (
+    DESKTOP_CHANNEL,
+)
 from app.agent.memory.base import MemoryItem
 from app.agent.memory.config import MemoryConfig
+from app.agent.memory.materials import compress_tool_results
 from app.agent.memory.memories.mem0_llm_compat import (
     MEM0_FACT_EXTRACTION_MARKER,
     Mem0FactExtractionLLMAdapter,
@@ -24,6 +28,7 @@ from app.agent.state.messages import (
     ToolMessage,
 )
 from app.agent.state.time import render_timed_text
+from app.agent.utils.domain.token_estimation import RoughTokenEstimator
 from app.schemas.chat_settings import ChatSettings
 
 logger = logging.getLogger(__name__)
@@ -117,15 +122,13 @@ MEM0_CUSTOM_INSTRUCTIONS = MEM0_FACT_EXTRACTION_MARKER + """
 
 
 class Mem0SemanticMemory:
-    """基于 Mem0 的语义记忆实现
+    """拥有语义提取材料转换和预算检查，交给 Mem0 保存并检索记忆。
 
-    职责：
-    - 存储抽象知识和概念
-    - Mem0 自动提取事实
-    - 向量检索（Qdrant）
-
-    存储架构：
-    - Qdrant：向量存储（Mem0 默认）
+    Attributes:
+        session_id (str): 共享 Ayaya 会话标识。
+        config (MemoryConfig): 当前 Agent 配置。
+        chat_settings (ChatSettings): 会话模型和插件配置。
+        _memory (Mem0 Memory): Mem0 客户端实例，保存语义记忆。
     """
 
     def __init__(
@@ -157,31 +160,41 @@ class Mem0SemanticMemory:
         messages: list[BaseMessage],
         history: list[BaseMessage] | None = None,
     ) -> list[str]:
-        """添加语义记忆
+        """转换领域对话并处理提取预算，再交给 Mem0 提取语义记忆。
 
-        将聊天记录交由 Mem0 提取语义知识。
+        使用自身配置粗估自定义提示词和已转换材料；超限时只复制并压缩当前
+        工具结果，历史和共享原始消息保持不变，沿用一次压缩的现有策略。
 
         Args:
-            messages: 当前聊天记录
-            history: 历史聊天记录（前情提要）
+            messages (list[BaseMessage]): 当前批次的领域消息。
+            history (list[BaseMessage] | None): 仅作前情提要、不压缩的历史消息。
 
         Returns:
-            记忆 ID 列表
+            list[str]: Mem0 返回的记忆编号，空材料或外部提取失败时为空。
         """
         if not messages:
             return []
 
         logger.info("[Mem0SemanticMemory] 开始提取语义记忆")
 
-        # 转换历史消息（带前情提要标记）
+        # 1. 转换历史和当前材料，保留历史标记、时间和渠道来源，空材料不请求提取。
         mem0_history = self._convert_messages(history, mark_as_history=True) if history else []
 
-        # 转换当前消息
         mem0_messages = self._convert_messages(messages)
         if not mem0_messages:
             return []
 
-        # 组合：前情提要 + 当前消息
+        # 2. 沿用自定义提示词加转换材料的粗估口径，不模拟 Mem0 内部额外请求。
+        limit = self.config.extraction_max_context_tokens
+        if limit:
+            raw = RoughTokenEstimator().estimate_value(
+                MEM0_CUSTOM_INSTRUCTIONS + str(mem0_messages) + str(mem0_history)
+            )
+            if raw > limit:
+                # 2.1. 只重新转换压缩后的当前工具结果，历史仍使用刚构造的原材料。
+                mem0_messages = self._convert_messages(compress_tool_results(messages))
+                logger.warning("[Mem0SemanticMemory] 语义记忆粗略估算超限，工具结果改为800+200权重")
+        # 3. 将实际构造的材料按历史在前的顺序交给 Mem0，不再由上层重建输入。
         combined_messages = mem0_history + mem0_messages
 
         try:
@@ -189,6 +202,7 @@ class Mem0SemanticMemory:
                 self._memory.add, combined_messages, agent_id=self.session_id
             )
 
+            # 4. 沿用 Mem0 返回的结果编号，供协调者汇总本项提取数量。
             memory_ids = []
             if result and result.get("results"):
                 for item in result["results"]:
@@ -283,26 +297,27 @@ class Mem0SemanticMemory:
         messages: list[BaseMessage],
         mark_as_history: bool = False,
     ) -> list[dict]:
-        """转换消息为 Mem0 格式
+        """将领域消息转换为 Mem0 输入，在正文中保留非桌面渠道来源。
 
         Args:
-            messages: 消息列表
-            mark_as_history: 是否标记为前情提要
+            messages (list[BaseMessage]): 需要转换或交付的领域消息集合。
+            mark_as_history (bool): 是否将材料标记为历史回忆而非当前对话。
 
         Returns:
-            Mem0 消息列表 [{"role": "user/assistant", "content": "..."}]
+            list[dict]: 当前查询或执行结果。
         """
         mem0_messages = []
 
+        # 1. 给非桌面输入和回复补来源正文标签，转换后的 role 保持 Mem0 契约。
         for msg in messages:
             if isinstance(msg, ToolMediaMessage):
                 continue
             if isinstance(msg, HumanMessage):
                 role = "user"
-                text = msg.text
+                text = msg.text if msg.origin_channel == DESKTOP_CHANNEL else f"[来自 {msg.origin_channel}] {msg.text}"
             elif isinstance(msg, AssistantMessage):
                 role = "assistant"
-                text = msg.text
+                text = msg.text if msg.origin_channel == DESKTOP_CHANNEL else f"[回复 {msg.origin_channel}] {msg.text}"
             elif isinstance(msg, RuntimeInputMessage):
                 role = "assistant"
                 text = f"运行时输入：{msg.to_openai_format()['content']}"

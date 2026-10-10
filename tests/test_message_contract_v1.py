@@ -52,6 +52,44 @@ def test_domain_message_round_trip_keeps_type_and_hides_metadata_from_wire() -> 
     assert restored == message
 
 
+def test_orphaned_and_mixed_task_results_do_not_claim_success_or_failure() -> None:
+    """验证未知与混合终态不会被标记为成功或失败。
+
+    """
+    # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
+    orphaned = TaskResultMessage(
+        task_id="task-1", task_name="重启前的任务", status="orphaned", result="结果未知",
+    )
+    mixed = TaskResultMessage(
+        task_id="batch:1,2", task_name="两个后台任务", status="mixed",
+        result="一个完成，一个取消",
+    )
+    # 2. 核对公开结果和持久状态，确保场景中的输入、通知或副作用未重复。
+    assert "状态未知" in orphaned.to_openai_format()["content"]
+    assert "状态汇总" in mixed.to_openai_format()["content"]
+
+
+def test_channel_origin_survives_message_storage_without_changing_provider_wire() -> None:
+    """验证来源经过存储恢复且不污染模型协议字段。
+
+    """
+    # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
+    human = HumanMessage(text="请帮我看看屏幕", origin_channel="qq")
+    assistant = AssistantMessage(text="好的", origin_channel="qq")
+
+    for message in (human, assistant):
+        stored = message.to_storage_format()
+        restored = message_from_storage_format(stored)
+        assert restored.origin_channel == "qq"
+        assert restored.to_openai_format() == message.to_openai_format()
+        assert "origin_channel" not in restored.to_openai_format()
+
+    legacy = human.to_storage_format()
+    legacy["_human"].pop("origin_channel")
+    # 2. 核对公开结果和持久状态，确保场景中的输入、通知或副作用未重复。
+    assert message_from_storage_format(legacy).origin_channel == "desktop"
+
+
 def test_screenshot_payload_is_closed_and_compaction_never_rehydrates_image() -> None:
     available = ToolMediaMessage(
         tool_name="screenshot",

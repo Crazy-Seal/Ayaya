@@ -40,6 +40,8 @@
           <button class="settings-tab ui-nav-item" type="button" data-page="tools">工具调用</button>
           <button class="settings-tab ui-nav-item" type="button" data-page="mcp">MCP</button>
           <button class="settings-tab ui-nav-item" type="button" data-page="multimodal">多模态</button>
+          <button class="settings-tab ui-nav-item" type="button" data-page="channels">渠道订阅</button>
+          <button class="settings-tab ui-nav-item" type="button" data-page="tasks">后台任务</button>
           <div class="settings-utility-section">
             <button
               id="open-log-window-btn"
@@ -289,6 +291,23 @@
                 </label>
                 <div class="multimodal-hint">开启后，截屏和屏幕操作时会暂时隐藏 Live2D 模型、对话框和聊天界面</div>
               </div>
+            </div>
+          </div>
+          <!-- 当前会话的渠道配置和任务记录分别查询，不复用模型设置提交。 -->
+          <div class="settings-page" data-page="channels">
+            <div class="ui-surface channel-subscriptions-panel">
+              <h2>交互渠道</h2>
+              <p>桌面始终显示共享会话。未来接入的渠道可在这里选择是否参与收发。</p>
+              <div id="channel-subscriptions-list"></div>
+            </div>
+          </div>
+          <div class="settings-page" data-page="tasks">
+            <div class="ui-surface background-tasks-panel">
+              <h2>后台任务</h2>
+              <button id="refresh-background-tasks" type="button" class="ui-button ui-button--secondary ui-button--small">刷新</button>
+              <div id="background-tasks-list"></div>
+              <pre id="background-task-output" hidden></pre>
+              <button id="background-task-more" type="button" hidden>加载更多输出</button>
             </div>
           </div>
         </section>

@@ -5,7 +5,6 @@ from types import SimpleNamespace
 
 from app.agent.plugins.base import HookContext, PluginHook
 from app.agent.state.manager import StateManager
-from app.agent.memory.manager import MemoryManager
 from app.agent.memory.memories.diary import DiaryMemory
 from app.agent.memory.memories.episodic import EpisodicMemory
 from app.agent.memory.memories.semantic_mem0 import MEM0_CUSTOM_INSTRUCTIONS
@@ -89,8 +88,9 @@ def test_completed_turn_query_does_not_accept_a_chunk_head_fragment(tmp_path: Pa
 
 
 def test_long_term_memory_format_has_full_current_tools_and_light_history_tools() -> None:
-    manager = MemoryManager.__new__(MemoryManager)
-    manager.chat_settings = SimpleNamespace(address="用户", name="AI")
+    """验证情景提取器对当前和历史工具上下文沿用原有格式。"""
+    memory = EpisodicMemory.__new__(EpisodicMemory)
+    memory.chat_settings = SimpleNamespace(address="用户", name="AI")
     messages = [
         AssistantMessage(
             text="",
@@ -99,8 +99,8 @@ def test_long_term_memory_format_has_full_current_tools_and_light_history_tools(
         ToolMessage(content="result", tool_name="read_file", tool_call_id="c"),
     ]
 
-    current = manager._format_messages(messages)
-    history = manager._format_messages(messages, mark_as_history=True)
+    current = memory._format_messages(messages)
+    history = memory._format_messages(messages, mark_as_history=True)
 
     assert 'AI：调用工具 read_file，参数：{"path":"a.py"}' in current
     assert "工具结果：result" in current
@@ -236,20 +236,43 @@ def test_diary_prompt_marks_missing_reference_context_as_unavailable() -> None:
     assert "None" not in prompt
 
 
-def test_long_term_memory_is_scheduled_after_next_user_input_commit(monkeypatch) -> None:
+def test_long_term_memory_is_scheduled_after_next_activation_input_commit(monkeypatch) -> None:
+    """到期长期记忆只在下一激活输入提交成功后启动，响应提交不启动。
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): 替换后台调度和记忆准备依赖的工具。
+    """
     scheduled: list[str] = []
 
     class MemoryManager:
+        """提供激活前记忆准备所需的固定协议截止位置。"""
         async def get_protocol_history_cutoff(self):
+            """返回用于检验前后钩子传递的历史截止位置。
+
+            Returns:
+                int: 测试中固定的截止消息编号。
+            """
             return 42
 
     def capture(coro, *, logger, task_name):
+        """记录后台任务准备成功，但不执行外部提取。
+
+        Args:
+            coro (Coroutine): 插件准备的真实后台协程。
+            logger (logging.Logger): 插件日志对象。
+            task_name (str): 派生任务名称。
+        """
         scheduled.append(task_name)
         coro.close()
 
     monkeypatch.setattr(memory_plugin_module, "create_background_task", capture)
 
     async def scenario():
+        """依次触发响应和激活提交事件，比较到期计数的消费时点。
+
+        Returns:
+            tuple[AgentState, list[str]]: 最终状态和已启动任务的名称。
+        """
         plugin = MemoryPlugin(enable_diary=False)
         monkeypatch.setattr(plugin, "_mm", lambda state: MemoryManager())
         state = AgentState.create_new("session")
@@ -267,7 +290,7 @@ def test_long_term_memory_is_scheduled_after_next_user_input_commit(monkeypatch)
 
         input_context = {}
         await plugin.execute(HookContext.create(
-            PluginHook.BEFORE_USER_INPUT_COMMIT, state, data=input_context
+            PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, state, data=input_context
         ))
         assert state.long_term_memory_turn_counter == 0
         assert scheduled == []
@@ -281,7 +304,7 @@ def test_long_term_memory_is_scheduled_after_next_user_input_commit(monkeypatch)
         }
 
         await plugin.execute(HookContext.create(
-            PluginHook.AFTER_USER_INPUT_COMMIT, state, data=input_context
+            PluginHook.AFTER_ACTIVATION_INPUT_COMMIT, state, data=input_context
         ))
         return state, scheduled
 
@@ -291,22 +314,53 @@ def test_long_term_memory_is_scheduled_after_next_user_input_commit(monkeypatch)
 
 
 def test_diary_and_long_term_memory_are_scheduled_independently(monkeypatch) -> None:
+    """一次新激活可同时准备日记和长期记忆，两类后台任务独立启动。
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): 替换后台调度和记忆准备依赖的工具。
+    """
     scheduled: list[str] = []
 
     class MemoryManager:
+        """提供固定历史范围和不实际运行的日记入口。"""
         async def get_protocol_history_cutoff(self):
+            """返回两类派生任务共用的截止编号。
+
+            Returns:
+                int: 测试中固定的截止消息编号。
+            """
             return 84
 
         async def check_diary(self, *, max_history_id):
+            """提供后台日记协程，本测试只检查它是否被安排。
+
+            Args:
+                max_history_id (int): 激活前固定的历史截止编号。
+
+            Raises:
+                AssertionError: 调度记录测试意外执行了后台协程。
+            """
             raise AssertionError("background coroutine should not run in this test")
 
     def capture(coro, *, logger, task_name):
+        """记录两类任务各自的调度，不执行派生处理。
+
+        Args:
+            coro (Coroutine): 插件准备的真实后台协程。
+            logger (logging.Logger): 插件日志对象。
+            task_name (str): 日记或长期记忆任务名称。
+        """
         scheduled.append(task_name)
         coro.close()
 
     monkeypatch.setattr(memory_plugin_module, "create_background_task", capture)
 
     async def scenario():
+        """用同一激活上下文执行准备和提交成功事件。
+
+        Returns:
+            tuple[AgentState, dict]: 消费批次后的状态和任务准备数据。
+        """
         plugin = MemoryPlugin()
         monkeypatch.setattr(plugin, "_mm", lambda state: MemoryManager())
         state = AgentState.create_new("session")
@@ -314,10 +368,10 @@ def test_diary_and_long_term_memory_are_scheduled_independently(monkeypatch) -> 
         commit_context = {}
 
         await plugin.execute(HookContext.create(
-            PluginHook.BEFORE_USER_INPUT_COMMIT, state, data=commit_context
+            PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, state, data=commit_context
         ))
         await plugin.execute(HookContext.create(
-            PluginHook.AFTER_USER_INPUT_COMMIT, state, data=commit_context
+            PluginHook.AFTER_ACTIVATION_INPUT_COMMIT, state, data=commit_context
         ))
         return state, commit_context
 
@@ -384,7 +438,13 @@ def test_long_term_memory_uses_frozen_protocol_cutoff(monkeypatch) -> None:
 
 
 def test_disabled_long_term_memory_resets_reached_interval_on_next_input() -> None:
+    """长期记忆关闭时，新激活消费已到期计数而不准备提取任务。"""
     async def scenario():
+        """触发关闭所有记忆类别的激活准备事件。
+
+        Returns:
+            tuple[AgentState, dict]: 清零后的状态与空任务准备数据。
+        """
         plugin = MemoryPlugin(
             enable_diary=False,
             enable_episodic=False,
@@ -394,7 +454,7 @@ def test_disabled_long_term_memory_resets_reached_interval_on_next_input() -> No
         state.long_term_memory_turn_counter = 10
         commit_context = {}
         await plugin.execute(HookContext.create(
-            PluginHook.BEFORE_USER_INPUT_COMMIT, state, data=commit_context
+            PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, state, data=commit_context
         ))
         return state, commit_context
 
@@ -406,7 +466,17 @@ def test_disabled_long_term_memory_resets_reached_interval_on_next_input() -> No
 def test_disabled_long_term_memory_resets_counter_when_diary_preparation_fails(
     monkeypatch,
 ) -> None:
+    """长期记忆关闭时，日记准备失败也不阻止新激活清零到期计数。
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): 注入日记准备失败的工具。
+    """
     async def scenario():
+        """在长期记忆关闭的激活准备中注入记忆查询失败。
+
+        Returns:
+            tuple[AgentState, dict]: 已消费计数的状态和未准备成功的任务数据。
+        """
         plugin = MemoryPlugin(
             enable_diary=True,
             enable_episodic=False,
@@ -414,6 +484,14 @@ def test_disabled_long_term_memory_resets_counter_when_diary_preparation_fails(
         )
 
         def fail(_state):
+            """模拟日记依赖不可用。
+
+            Args:
+                _state (AgentState): 本次新激活的状态。
+
+            Raises:
+                RuntimeError: 测试指定的记忆管理器不可用错误。
+            """
             raise RuntimeError("diary manager unavailable")
 
         monkeypatch.setattr(plugin, "_mm", fail)
@@ -421,7 +499,7 @@ def test_disabled_long_term_memory_resets_counter_when_diary_preparation_fails(
         state.long_term_memory_turn_counter = 10
         commit_context = {}
         await plugin.execute(HookContext.create(
-            PluginHook.BEFORE_USER_INPUT_COMMIT, state, data=commit_context
+            PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, state, data=commit_context
         ))
         return state, commit_context
 
@@ -431,10 +509,28 @@ def test_disabled_long_term_memory_resets_counter_when_diary_preparation_fails(
 
 
 def test_memory_preparation_failure_keeps_pending_turn_counter(monkeypatch) -> None:
+    """长期记忆准备失败时保留计数，让下一次新激活重新准备批次。
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): 注入记忆准备失败的工具。
+    """
     async def scenario():
+        """触发已到期批次的准备失败，观察计数和任务数据。
+
+        Returns:
+            tuple[AgentState, dict]: 保留到期计数的状态和空任务数据。
+        """
         plugin = MemoryPlugin(enable_diary=False)
 
         def fail(_state):
+            """模拟长期记忆准备依赖不可用。
+
+            Args:
+                _state (AgentState): 本次新激活的状态。
+
+            Raises:
+                RuntimeError: 测试指定的记忆管理器不可用错误。
+            """
             raise RuntimeError("memory manager unavailable")
 
         monkeypatch.setattr(plugin, "_mm", fail)
@@ -442,7 +538,7 @@ def test_memory_preparation_failure_keeps_pending_turn_counter(monkeypatch) -> N
         state.long_term_memory_turn_counter = 10
         commit_context = {}
         await plugin.execute(HookContext.create(
-            PluginHook.BEFORE_USER_INPUT_COMMIT, state, data=commit_context
+            PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, state, data=commit_context
         ))
         return state, commit_context
 

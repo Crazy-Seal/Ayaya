@@ -1,0 +1,16 @@
+{
+  "SessionPhase": ["idle", "running", "pending_interrupt", "pending_execution", "error"],
+  "TurnPhase": ["idle", "llm", "tool", "committing"],
+  "TurnInterruptReason": ["stop", "steer"],
+  "CommandKind": ["human_turn", "human_steer", "queue_turn", "stop_turn", "resolve_authorization", "stop_background_task", "cancel_queued"],
+  "InteractionEventKind": ["session_snapshot", "human_message", "queued_message", "queued_cancelled", "task_status", "run_started", "text_chunk", "tool_call", "interrupt", "authorization_resolved", "run_completed", "error"],
+  "InterruptKind": ["authorization_request", "continuation_request"],
+  "DesktopExecutionKind": ["capture_screen", "perform_screen_action"],
+  "ApprovalDecisionKind": ["approve", "reject", "steer"],
+  "AuthorizationResolutionKind": ["approve", "reject", "steer", "cancelled"],
+  "InboxKind": ["human", "task_terminal"],
+  "InboxStatus": ["pending", "claimed", "delivered"],
+  "InboxDeliveryMode": ["immediate", "queued"],
+  "TaskStatus": ["running", "completed", "failed", "stopped", "orphaned"],
+  "TaskResultStatus": ["completed", "failed", "cancelled", "orphaned", "mixed"]
+}

@@ -429,6 +429,74 @@ body {
   transition: transform var(--transition-fast);
 }
 
+/* 外部渠道的真人消息和回复在气泡首行标明来源。 */
+.message-origin-label {
+  display: block;
+  margin-bottom: 2px;
+  font-size: 10px;
+  font-weight: 700;
+  opacity: 0.65;
+}
+
+/* 排队入口及列表独立显示，隐藏状态由当前运行阶段控制。 */
+#queue-btn {
+  border: 0;
+  border-radius: 8px;
+  padding: 5px 7px;
+  background: #e4efff;
+  color: #315a8e;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+#queue-btn[hidden], #queue-status[hidden] { display: none; }
+
+#queue-status {
+  font-size: 11px;
+  color: #315a8e;
+  max-height: 84px;
+  overflow-y: auto;
+  padding: 4px 8px;
+  background: rgba(255, 255, 255, 0.92);
+  border-radius: 8px;
+}
+
+/* 聊天区域容纳任务标题栏，完整输出在设置窗口单独读取。 */
+.chat-history-region {
+  width: 400px;
+  min-height: 0;
+  flex-shrink: 1;
+}
+
+/* 任务入口位于聊天记录标题栏，不使用固定 bottom 悬浮覆盖输入框。 */
+.chat-history-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  padding: 0 8px;
+  pointer-events: auto;
+  font-size: 11px;
+}
+
+.chat-history-title { color: var(--color-text-secondary); margin-right: auto; }
+.background-task-notice { color: var(--color-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.background-task-entry {
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 8px;
+  padding: 4px 8px;
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--color-accent);
+  cursor: pointer;
+  font: inherit;
+}
+.chat-history-toolbar[hidden], .background-task-entry[hidden], .background-task-notice[hidden] { display: none; }
+
+.queued-message { display: flex; align-items: center; gap: 6px; }
+.queued-message span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.queued-message button { border: 0; background: transparent; color: #315a8e; cursor: pointer; }
+
 .message-item.human .message-bubble {
   background: linear-gradient(135deg, var(--color-bubble-human) 0%, #DBEAFE 100%);
   color: var(--color-text-primary);

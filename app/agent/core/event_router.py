@@ -1,13 +1,13 @@
 """
 事件路由器
 
-负责 SSE 事件推送和事件类型定义。
+负责 Agent 内部事件通知和事件类型定义。
 """
 
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, AsyncIterator, Callable, Awaitable
+from typing import Any, Callable, Awaitable
 
 logger = logging.getLogger(__name__)
 
@@ -23,38 +23,18 @@ class EventType(str, Enum):
 
 @dataclass
 class AgentEvent:
-    """Agent 事件"""
+    """携带 Agent 内部事件类型和内容，由 Scheduler 转成渠道可见事件。
+
+    Attributes:
+        type (EventType): Agent 内部事件类型。
+        data (Any): 待还原的领域存储值。
+    """
     type: EventType
     data: Any
 
-    def to_sse(self) -> str:
-        """转换为 SSE 格式"""
-        if self.type == EventType.DONE:
-            return "data: [DONE]\n\n"
-
-        import json
-        if self.type == EventType.INTERRUPT:
-            # 中断事件使用特殊的 event 类型
-            data_str = json.dumps({"value": self.data}, ensure_ascii=False)
-            return f"event: interrupt\ndata: {data_str}\n\n"
-
-        if self.type == EventType.ERROR:
-            # 错误事件使用特殊的 event 类型
-            data_str = json.dumps({"detail": str(self.data)}, ensure_ascii=False)
-            return f"event: error\ndata: {data_str}\n\n"
-
-        if self.type == EventType.TOOL_CALL:
-            # 工具调用事件
-            data_str = json.dumps({"tool_name": self.data}, ensure_ascii=False)
-            return f"event: tool_call\ndata: {data_str}\n\n"
-
-        # 默认文本事件
-        data_str = json.dumps({"response": self.data}, ensure_ascii=False)
-        return f"data: {data_str}\n\n"
-
 
 class EventRouter:
-    """事件路由器 - 管理 SSE 事件推送"""
+    """事件路由器 - 管理 Agent 内部事件通知"""
 
     def __init__(self):
         self._subscribers: list[Callable[[AgentEvent], Awaitable[None]]] = []
@@ -96,39 +76,3 @@ class EventRouter:
     async def emit_done(self) -> None:
         """发送完成事件"""
         await self.emit(EventType.DONE, None)
-
-
-class EventCollector:
-    """事件收集器 - 收集事件并转换为 AsyncIterator"""
-
-    def __init__(self):
-        self._events: list[AgentEvent] = []
-        self._done = False
-
-    async def collect(self, event: AgentEvent) -> None:
-        """收集事件"""
-        self._events.append(event)
-        if event.type == EventType.DONE:
-            self._done = True
-
-    def get_events(self) -> list[AgentEvent]:
-        """获取所有事件"""
-        return self._events
-
-    async def to_iterator(self) -> AsyncIterator[AgentEvent]:
-        """转换为异步迭代器"""
-        for event in self._events:
-            yield event
-
-
-def events_to_sse(events: list[AgentEvent]) -> str:
-    """将事件列表转换为 SSE 字符串"""
-    return "".join(event.to_sse() for event in events)
-
-
-async def stream_events_as_sse(
-    event_stream: AsyncIterator[AgentEvent]
-) -> AsyncIterator[str]:
-    """将事件流转换为 SSE 字符串流"""
-    async for event in event_stream:
-        yield event.to_sse()

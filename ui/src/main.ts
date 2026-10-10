@@ -10,7 +10,7 @@ import { Live2DModelLoader, clamp } from "./live2d/model-loader.js";
 import { GazeTracker, createGazeUpdateFunction } from "./live2d/gaze-tracker.js";
 import { PointerInteractiveManager } from "./live2d/pointer-interactive.js";
 import { BubbleManager } from "./chat/bubble.js";
-import { ChatClient, startLatestAiMessageBootstrap } from "./chat/chat-client.js";
+import { RuntimeChatClient as ChatClient } from "./chat/runtime-chat-client.js";
 import { ChatHistoryManager } from "./chat/chat-history-manager.js";
 import { ImageManager } from "./chat/image-manager.js";
 import { setupDropHandler } from "./chat/drop-handler.js";
@@ -20,7 +20,7 @@ import type { MotionConfig } from "./types.js";
 (globalThis as unknown as { PIXI: typeof PIXI }).PIXI = PIXI;
 
 /**
- * 主应用
+ * 装配桌面 Renderer 的模型、输入、附件和运行时视图。
  */
 class MainApp {
   private elements = getMainUiElements();
@@ -36,7 +36,6 @@ class MainApp {
   private modelInfo: Awaited<ReturnType<Live2DModelLoader["loadModel"]>> | null = null;
   private live2dModel: unknown = null;
   private motionConfig: MotionConfig[] = [];
-  private stopLatestAiMessageBootstrap: (() => void) | null = null;
   private currentSessionId = "";
   private activeModelId = "";
   private userScale = 1;
@@ -49,6 +48,9 @@ class MainApp {
   private motionQueue: string[] = [];
   private isPlayingMotion = false;
 
+  /**
+   * 装配 MainApp 的依赖并初始化本地视图状态。
+   */
   constructor() {
     this.app = Live2DModelLoader.createApp(this.elements.stageHost);
     this.modelLoader = new Live2DModelLoader(this.app, this.elements.stageHost);
@@ -61,6 +63,13 @@ class MainApp {
       sendBtn: this.elements.sendBtn,
       input: this.elements.input,
       sessionId: "",
+      /**
+       * 检查图片附件是否构成有效草稿。
+       *
+       * Returns:
+       *     boolean: 当前查询、回调或视图操作的结果。
+       */
+      hasAttachments: () => this.imageManager.getDataUrls().length > 0,
       onChatComplete: () => {
         // 聊天完成后清空图片
         this.imageManager.clear();
@@ -82,7 +91,7 @@ class MainApp {
   }
 
   /**
-   * 设置事件监听
+   * 连接草稿、附件、IME 和排队动作，Enter 只在非组合输入期间提交。
    */
   private setupEventListeners(): void {
     // 设置按钮
@@ -91,13 +100,23 @@ class MainApp {
     });
 
     // 输入框自动调整高度
-    this.elements.input.addEventListener("input", () => {
+    this.elements.input.addEventListener("input", /**
+     * 响应当前控件事件，调用所属视图的刷新、输出或命令入口。
+     */
+    () => {
       this.autoResizeInput();
+      this.chatClient.updateSendButton();
     });
 
     // 输入框键盘事件：Enter 发送，Shift+Enter 换行
-    this.elements.input.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" && !event.shiftKey) {
+    this.elements.input.addEventListener("keydown", /**
+     * 非 IME 状态下把 Enter 转为表单提交，Shift+Enter 保留换行。
+     *
+     * Args:
+     *     event (KeyboardEvent): 渠道事件或 DOM 事件，由所属定义决定。
+     */
+    (event) => {
+      if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
         event.preventDefault();
         this.elements.form.requestSubmit();
       }
@@ -109,7 +128,7 @@ class MainApp {
       (event) => {
         const hoveredElement = document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null;
         // 如果在聊天历史列表或输入框上，不拦截事件，让它正常滚动
-        if (hoveredElement?.closest("#chat-history-list, #chat-input")) {
+        if (hoveredElement?.closest("#chat-history-region, #chat-input")) {
           return;
         }
 
@@ -154,9 +173,22 @@ class MainApp {
     });
 
     // 图片状态变化监听
-    this.imageManager.subscribe(() => {
+    this.imageManager.subscribe(/**
+     * 刷新附件视图并重新计算纯图片草稿的发送动作。
+     */
+    () => {
       this.updateImagePreview();
+      this.chatClient.updateSendButton();
     });
+    // 1. 输入法组合事件只同步发送状态，Enter 处理另检查 isComposing。
+    this.elements.input.addEventListener("compositionstart", /**
+     * 标记 IME 开始组合输入，暂停发送按钮模式变化。
+     */
+    () => this.chatClient.setComposing(true));
+    this.elements.input.addEventListener("compositionend", /**
+     * 标记 IME 结束组合输入并重新计算发送动作。
+     */
+    () => this.chatClient.setComposing(false));
 
     // 使用事件委托处理图片删除按钮点击
     this.elements.imagePreviewList.addEventListener("click", (event) => {
@@ -170,15 +202,31 @@ class MainApp {
       }
     });
 
-    // 表单提交
-    this.elements.form.addEventListener("submit", async (event) => {
+    this.elements.form.addEventListener("submit", /**
+     * 用户提交聊天表单时，把文本和当前附件交给统一命令入口。
+     *
+     * Args:
+     *     event (SubmitEvent): 浏览器表单提交事件，需要阻止默认页面跳转。
+     *
+     * Returns:
+     *     Promise<void>: 输入或停止命令提交结束，历史刷新由后端事件决定。
+     */
+    async (event) => {
       event.preventDefault();
-      if (this.stopLatestAiMessageBootstrap) {
-        this.stopLatestAiMessageBootstrap();
-        this.stopLatestAiMessageBootstrap = null;
-      }
       const images = this.imageManager.getDataUrls();
       await this.chatClient.sendMessage(images.length > 0 ? images : undefined);
+    });
+
+    // 2. 排队提交与普通发送共用文本和附件来源，由后端决定交付时机。
+    document.getElementById("queue-btn")?.addEventListener("click", /**
+     * 把当前文本和附件提交为后续轮次排队输入。
+     *
+     * Returns:
+     *     Promise<void>: 当前异步处理完成的等待结果。
+     */
+    async () => {
+      const images = this.imageManager.getDataUrls();
+      await this.chatClient.queueMessage(images.length > 0 ? images : undefined);
     });
 
     // 模型变化监听
@@ -235,13 +283,10 @@ class MainApp {
       }
     );
 
-    // 页面卸载清理
-    window.addEventListener("beforeunload", () => {
-      if (this.stopLatestAiMessageBootstrap) {
-        this.stopLatestAiMessageBootstrap();
-        this.stopLatestAiMessageBootstrap = null;
-      }
-
+    window.addEventListener("beforeunload", /**
+     * 页面卸载时取消模型和桌面状态监听，避免旧页面继续处理主进程通知。
+     */
+    () => {
       if (typeof unsubscribeModelChanged === "function") {
         unsubscribeModelChanged();
       }
@@ -267,7 +312,10 @@ class MainApp {
   }
 
   /**
-   * 加载模型
+   * 切换模型与会话，历史恢复交给运行时快照，最近回复只用于启动气泡。
+   *
+   * Returns:
+   *     Promise<void>: 当前异步处理完成的等待结果。
    */
   private async loadModel(): Promise<void> {
     this.pointerManager.forceWindowInteractive();
@@ -315,46 +363,7 @@ class MainApp {
     }
     this.setIdleMotion();
 
-    // 尝试加载聊天历史（后端未开启时会失败）
-    let historyLoaded = false;
-    try {
-      await this.chatHistoryManager.loadHistory(activeModel.sessionId);
-      const pendingInterrupt = await window.desktopPetApi.getPendingInterrupt(
-        activeModel.sessionId
-      );
-      historyLoaded = true;
-      if (pendingInterrupt.pending) {
-        void this.chatClient.restorePendingInterrupt(pendingInterrupt.interrupt);
-      }
-    } catch {
-      // 后端未开启，等待轮询成功后重试
-    }
-
-    // 启动最新消息加载（失败后会自动重试，成功后会加载聊天历史）
-    this.stopLatestAiMessageBootstrap = startLatestAiMessageBootstrap(
-      activeModel.sessionId,
-      this.bubbleManager,
-      () => this.chatClient.hasUserSubmitted(),
-      () => {
-        // 首次成功连接后端时，如果历史未加载则尝试加载
-        if (!historyLoaded) {
-          void (async () => {
-            try {
-              await this.chatHistoryManager.loadHistory(activeModel.sessionId);
-              const pendingInterrupt = await window.desktopPetApi.getPendingInterrupt(
-                activeModel.sessionId
-              );
-              historyLoaded = true;
-              if (pendingInterrupt.pending) {
-                await this.chatClient.restorePendingInterrupt(pendingInterrupt.interrupt);
-              }
-            } catch {
-              // 保持未加载状态，等待下一次连接轮询重试。
-            }
-          })();
-        }
-      }
-    );
+    // 历史和气泡由桌面事件流统一装载，不再单独查询最后一条回答。
   }
 
   /**

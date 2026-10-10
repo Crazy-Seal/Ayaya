@@ -903,3 +903,26 @@
     grid-template-columns: 1fr;
   }
 }
+/* 渠道订阅页沿用窗口共享控件，只在此定义行布局。 */
+.channel-subscriptions-panel { padding: 20px; }
+.channel-subscription-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 0;
+}
+.channel-subscription-row span:first-child { flex: 1; font-weight: 700; }
+
+/* 任务输出保留换行并限制高度，避免持续日志撑开设置窗口。 */
+.background-tasks-panel { padding: 20px; }
+.background-task-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 8px 0; }
+.background-task-row span { flex: 1; overflow-wrap: anywhere; }
+#background-task-output { max-height: 280px; overflow: auto; white-space: pre-wrap; }
+.background-task-recent {
+  order: 1;
+  flex: 1 1 100%;
+  color: var(--color-text-secondary);
+  max-height: 4em;
+  overflow: auto;
+  white-space: pre-wrap;
+}

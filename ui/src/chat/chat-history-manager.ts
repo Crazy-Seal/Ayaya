@@ -3,6 +3,7 @@
  */
 
 import type { ChatHistoryItem } from "../types.js";
+import { DESKTOP_CHANNEL } from "../../shared-types.js";
 
 // 后端静态文件服务地址
 
@@ -40,17 +41,31 @@ const extractCompleteSentences = (text: string): { complete: string[]; remaining
 };
 
 /**
- * 聊天历史管理器
+ * 管理历史与流式气泡，使用消息身份和加载版本防止快照覆盖实时增量。
+ *
+ * Attributes:
+ *     streamingOrigin (string): 流式回复的渠道来源。
+ *     streamLabelShown (boolean): 当前流式气泡是否已显示来源标签。
+ *     pendingSteerIndicator (HTMLDivElement | null): 已提交引导的本地等待元素。
+ *     historyRevision (number): 历史和增量视图版本，防止旧查询覆盖新内容。
+ *     historyRequest (number): 历史请求代次，clear 或新查询使旧响应失效。
+ *     sessionId (string): 当前会话标识，用于丢弃跨会话迟到响应。
  */
 export class ChatHistoryManager {
   private container: HTMLDivElement;
   private messages: ChatHistoryItem[] = [];
   private isStreaming = false;
   private streamingContent = "";
+  private streamingOrigin = DESKTOP_CHANNEL;
+  private streamLabelShown = false;
   private streamingDraftItems: HTMLElement[] = [];
   private outputSentenceCount = 0;
   private typingIndicator: HTMLDivElement | null = null;
   private toolCallIndicator: HTMLDivElement | null = null;
+  private pendingSteerIndicator: HTMLDivElement | null = null;
+  private historyRevision = 0;
+  private historyRequest = 0;
+  private sessionId = "";
 
   // 句子队列和定时器（用于延迟输出）
   private sentenceQueue: string[] = [];
@@ -59,6 +74,43 @@ export class ChatHistoryManager {
 
   constructor(container: HTMLDivElement) {
     this.container = container;
+  }
+
+  /**
+   * 切换会话并清理上一会话的临时视图，异步结果必须再核对会话归属。
+   *
+   * Args:
+   *     sessionId (string): 共享 Ayaya 会话标识。
+   */
+  setSessionId(sessionId: string): void {
+    if (sessionId === this.sessionId) return;
+    this.sessionId = sessionId;
+    this.clear();
+  }
+
+  /**
+   * 展示引导已提交的本地等待提示，并区分是否在等待已启动工具。
+   *
+   * Args:
+   *     waitingForTool (boolean): 是否仍等待已启动工具完成。
+   */
+  showPendingSteer(waitingForTool: boolean): void {
+    this.clearPendingSteer();
+    const indicator = document.createElement("div");
+    indicator.className = "typing-indicator pending-steer-indicator";
+    indicator.textContent = waitingForTool
+      ? "已收到引导，等待当前工具完成" : "引导已收到，等待应用";
+    this.container.appendChild(indicator);
+    this.pendingSteerIndicator = indicator;
+    this.scrollToBottom();
+  }
+
+  /**
+   * 移除本地引导等待提示，不改变后端轮次状态。
+   */
+  clearPendingSteer(): void {
+    this.pendingSteerIndicator?.remove();
+    this.pendingSteerIndicator = null;
   }
 
   /**
@@ -145,11 +197,28 @@ export class ChatHistoryManager {
   }
 
   /**
-   * 加载聊天历史（获取10对消息）
+   * 读取历史并校验请求版本，返回实际显示的记录供聊天气泡复用。
+   *
+   * Args:
+   *     sessionId (string): 共享 Ayaya 会话标识。
+   *
+   * Returns:
+   *     Promise<ChatHistoryItem[] | null>: 已应用的历史；查询被会话切换或新内容作废时返回 null。
    */
-  async loadHistory(sessionId: string): Promise<void> {
+  async loadHistory(sessionId: string): Promise<ChatHistoryItem[] | null> {
+    // 1. 捕获请求代次和视图版本，新增量或会话切换使旧历史加载失效。
+    const request = ++this.historyRequest;
+    const revision = this.historyRevision;
+    // 1.1. 调用方已结束流式草稿；先显示剩余句子并停止动画，查询失败也保留已有正文。
+    if (!this.isStreaming) {
+      this.flushFinalizedQueue();
+      this.stopOutputTimer();
+    }
     // 直接获取最后 100 条记录，足够包含 10 对消息
     const lastNHistory = await window.desktopPetApi.getChatHistoryLastN(sessionId, 100);
+    // 2. 加载结果仍属于当前视图时才应用，避免用旧列表覆盖实时文本。
+    if (request !== this.historyRequest || revision !== this.historyRevision
+        || (this.sessionId && sessionId !== this.sessionId)) return null;
 
     // 从末尾向前找到第10条人类消息
     let humanCount = 0;
@@ -174,31 +243,56 @@ export class ChatHistoryManager {
     // 成功取得历史后，已完成的流式尾句由历史重绘接管，避免计时器重复追加。
     if (!this.isStreaming) this.abortStreaming();
     this.messages = lastNHistory.slice(startIndex);
+    this.historyRevision += 1;
     this.render();
+    if (this.pendingSteerIndicator) this.container.appendChild(this.pendingSteerIndicator);
 
     // 等待图片加载完成后再滚动到底部
     this.scrollToBottomAfterImagesLoad();
+    return this.messages;
   }
 
   /**
-   * 添加新消息
+   * 按领域消息标识去重，追加历史项并保持输入提示位于时间线末尾。
+   *
+   * Args:
+   *     message (ChatHistoryItem): 已提交的可见消息，包含身份、正文及附件。
    */
   addMessage(message: ChatHistoryItem): void {
+    // 1. 历史快照与真人增量可能包含同一消息，先按稳定身份去重。
+    if (message.id && this.messages.some(/**
+     * 比较消息身份以判断历史与增量是否重复。
+     *
+     * Args:
+     *     item (ChatHistoryItem): 当前集合元素。
+     *
+     * Returns:
+     *     boolean: 当前查询、回调或视图操作的结果。
+     */
+    (item) => item.id === message.id)) return;
+    this.historyRevision += 1;
     this.messages.push(message);
-    // 所有消息直接渲染
+    // 2. 消息按提交顺序追加；run_started 可能先到，已有输入提示必须移到消息之后。
     this.renderMessage(message);
+    if (this.typingIndicator) this.container.appendChild(this.typingIndicator);
     this.scrollToBottom();
   }
 
   /**
-   * 启动流式响应状态
+   * 为当前回复来源启动流式视图，避免重复创建草稿。
+   *
+   * Args:
+   *     originChannel (string): 本轮回复所属渠道。
    */
-  startStreaming(): void {
+  startStreaming(originChannel = DESKTOP_CHANNEL): void {
+    this.historyRevision += 1;
     if (!this.isStreaming && this.sentenceQueue.length > 0) {
       this.flushFinalizedQueue();
     }
     this.abortStreaming();
     this.streamingContent = "";
+    this.streamingOrigin = originChannel;
+    this.streamLabelShown = false;
     this.isStreaming = true;
     this.outputSentenceCount = 0;
     this.sentenceQueue = [];
@@ -228,9 +322,13 @@ export class ChatHistoryManager {
   }
 
   /**
-   * 更新最后一条AI消息（流式响应）
+   * 更新当前流式正文，携带所属回复渠道。
+   *
+   * Args:
+   *     content (string): 完整的当前流式正文。
    */
   updateLastAiMessage(content: string): void {
+    this.historyRevision += 1;
     this.streamingContent = content;
 
     if (!this.isStreaming) {
@@ -239,6 +337,7 @@ export class ChatHistoryManager {
         role: "ai",
         content,
         timestamp: new Date().toISOString(),
+        origin_channel: this.streamingOrigin,
       });
       return;
     }
@@ -255,7 +354,7 @@ export class ChatHistoryManager {
   }
 
   /**
-   * 完成流式响应
+   * 收尾句子队列并保存本地回复项，保留跨端来源标识。
    */
   finalizeStreamingMessage(): void {
     if (!this.isStreaming) {
@@ -263,6 +362,7 @@ export class ChatHistoryManager {
     }
 
     this.isStreaming = false;
+    this.historyRevision += 1;
 
     // 处理剩余内容
     const { complete, remaining } = extractCompleteSentences(this.streamingContent);
@@ -282,6 +382,7 @@ export class ChatHistoryManager {
         role: "ai",
         content: this.streamingContent,
         timestamp: new Date().toISOString(),
+        origin_channel: this.streamingOrigin,
       });
     }
 
@@ -291,9 +392,12 @@ export class ChatHistoryManager {
   }
 
   /**
-   * 清空历史
+   * 作废历史加载版本并清空当前会话视图。
    */
   clear(): void {
+    this.historyRequest += 1;
+    this.historyRevision += 1;
+    this.clearPendingSteer();
     this.messages = [];
     this.container.innerHTML = "";
     this.isStreaming = false;
@@ -355,7 +459,10 @@ export class ChatHistoryManager {
   }
 
   /**
-   * 追加一个句子气泡
+   * 追加流式句子气泡，仅首个可见气泡展示外部渠道来源。
+   *
+   * Args:
+   *     sentence (string): 已经切分好的可见句子。
    */
   private appendSentenceBubble(sentence: string): void {
     const item = document.createElement("div");
@@ -363,7 +470,17 @@ export class ChatHistoryManager {
 
     const bubble = document.createElement("div");
     bubble.className = "message-bubble";
-    bubble.textContent = removeTrailingPeriod(sentence);
+    // 1. 外部渠道来源只在本轮首个句子气泡显示，后续句子沿用同一来源。
+    if (!this.streamLabelShown && this.streamingOrigin !== DESKTOP_CHANNEL) {
+      const label = document.createElement("span");
+      label.className = "message-origin-label";
+      label.textContent = `Ayaya · ${this.streamingOrigin}`;
+      bubble.appendChild(label);
+      this.streamLabelShown = true;
+    }
+    const text = document.createElement("span");
+    text.textContent = removeTrailingPeriod(sentence);
+    bubble.appendChild(text);
 
     item.appendChild(bubble);
     this.container.appendChild(item);
@@ -389,7 +506,10 @@ export class ChatHistoryManager {
   }
 
   /**
-   * 渲染单条消息（文本气泡在前，图片气泡在后）
+   * 根据角色、文本和附件渲染历史项，并标记非桌面来源。
+   *
+   * Args:
+   *     msg (ChatHistoryItem): 历史消息正文、角色和附件。
    */
   private renderMessage(msg: ChatHistoryItem): void {
     const role = msg.role.toLowerCase();
@@ -413,7 +533,7 @@ export class ChatHistoryManager {
     const sentences = this.splitIntoSentences(cleanContent);
 
     // 1. 先渲染文本气泡（如果有文本）
-    for (const sentence of sentences) {
+    for (const [index, sentence] of sentences.entries()) {
       if (!sentence) continue;
 
       const item = document.createElement("div");
@@ -421,6 +541,15 @@ export class ChatHistoryManager {
 
       const bubble = document.createElement("div");
       bubble.className = "message-bubble";
+
+      if (index === 0 && msg.origin_channel && msg.origin_channel !== DESKTOP_CHANNEL) {
+        const label = document.createElement("span");
+        label.className = "message-origin-label";
+        label.textContent = isHuman
+          ? `你 · ${msg.origin_channel}`
+          : `Ayaya · ${msg.origin_channel}`;
+        bubble.appendChild(label);
+      }
 
       // 渲染文本
       const textNode = document.createTextNode(removeTrailingPeriod(sentence));

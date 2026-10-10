@@ -13,7 +13,6 @@ if not is_test_environment():
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
-from app.agent.state.manager import StateManager
 
 from app.routes.agent import router as agent_router
 from app.routes.chat_settings import router as chat_settings_router
@@ -21,7 +20,7 @@ from app.routes.chat_history import router as memory_router
 from app.routes.tools import router as tools_router
 from app.routes.plugins import router as plugins_router
 from app.routes.mcp import router as mcp_router
-from app.dependencies import get_mcp_connection_manager
+from app.dependencies import get_mcp_connection_manager, get_runtime_scheduler, get_task_supervisor
 from app.security.local_api import install_local_api_security, load_api_token
 
 # 控制台日志基础配置：让 Agent 的收发日志在本地启动时可见
@@ -32,21 +31,36 @@ logging.basicConfig(
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """在任何 DAO 或记忆组件访问前完成统一存储初始化和迁移。"""
-    manager = StateManager("__storage_init__")
-    try:
-        await manager._get_db()
-    finally:
-        await manager.close()
+    """先结束旧轮次再开放请求，应用退出时封住执行并保留任务事实。
+
+    Args:
+        _app (FastAPI): 正在启动或关闭的 FastAPI 应用。
+
+    Yields:
+        None: 启动完成后交还应用控制，退出时执行持久收尾。
+    """
     mcp_manager = get_mcp_connection_manager()
-    preconnect_task = asyncio.create_task(mcp_manager.preconnect_enabled())
+    preconnect_task: asyncio.Task | None = None
     try:
+        # 1. Scheduler 拥有存储初始化和旧意图收尾，完成前不开放执行。
+        await get_runtime_scheduler().start()
+        preconnect_task = asyncio.create_task(mcp_manager.preconnect_enabled())
         yield
     finally:
-        if not preconnect_task.done():
-            preconnect_task.cancel()
-        await asyncio.gather(preconnect_task, return_exceptions=True)
-        await mcp_manager.close()
+        # 2. 停止预连接后，由 Scheduler 封住激活入口并保存任务终态、关闭执行资源。
+        if preconnect_task is not None:
+            if not preconnect_task.done():
+                preconnect_task.cancel()
+            await asyncio.gather(preconnect_task, return_exceptions=True)
+        try:
+            if get_runtime_scheduler.cache_info().currsize:
+                await get_runtime_scheduler().close()
+        finally:
+            # 3. 生命周期结束后不能复用旧对象；收尾失败也必须释放 MCP 连接。
+            get_runtime_scheduler.cache_clear()
+            get_task_supervisor.cache_clear()
+            await mcp_manager.close()
+
 
 
 # FastAPI 应用入口：仅负责启动和挂载路由
@@ -84,6 +98,8 @@ async def internal_shutdown(request: Request):
     server = getattr(request.app.state, "uvicorn_server", None)
     if server is None:
         raise HTTPException(status_code=503, detail="后端不由受控启动器管理")
+    # 1. 长连接与任务回调先失去执行资格，服务器等待请求退出期间也不能启动新轮次。
+    await get_runtime_scheduler().begin_shutdown()
     server.should_exit = True
     return {"shutting_down": True}
 

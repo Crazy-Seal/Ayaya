@@ -22,6 +22,12 @@ from app.agent.state.messages import (
 )
 from app.agent.state.model import AgentState
 from app.agent.state.time import utc_now
+from app.agent.runtime.session_inbox import (
+    InboxEnvelope,
+    ensure_inbox_schema,
+    mark_delivered_in_transaction,
+    release_queued_in_transaction,
+)
 from app.agent.utils.domain.images import ImageCategory, save_multiple_images
 from app.runtime import get_checkpoint_db
 
@@ -38,9 +44,68 @@ WHERE id = (
 """
 
 class StateManager:
-    """在一个 SQLite 事务中持久化可恢复状态和协议历史。"""
+    """拥有会话 checkpoint 和协议历史，协调状态保存与输入交付的原子提交。
+
+    这是共享的数据库访问实现，不是某个 Agent 的私有存储。Agent 保存执行进度，
+    Scheduler 保存审批决定，桌面 Broker 保存领取标记和结果，各自可创建访问对象。
+    同一会话的对象访问同一数据库；消息保存和 Inbox delivered 在同一事务完成。
+    Inbox 的领取校验和排队筛选由 Inbox 模块执行；本类负责跨表事务的连接、
+    执行顺序、统一提交，以及失败或取消时的全部数据库写入回滚。
+
+    Attributes:
+        session_id (str): 共享 Ayaya 会话标识。
+        db_path (str | None): 共享 SQLite 路径，省略时使用当前环境的隔离存储。
+        _db (aiosqlite.Connection | None): 参与当前原子持久化操作的 SQLite 连接。
+        last_loaded_checkpoint_type (CheckpointType | None): 最近载入的 checkpoint 类型，用于恢复判断。
+    """
 
     MAX_COMPLETED_CHECKPOINTS_PER_SESSION = 30
+
+    @staticmethod
+    async def unfinished_sessions(db_path: str | None = None) -> list[str]:
+        """列出最新 checkpoint 尚未完成或工具协议未闭合的会话。
+
+        Args:
+            db_path (str | None): 已初始化的共享 SQLite 路径。
+
+        Returns:
+            list[str]: 需要无执行收尾的会话，不包含已终止的历史 checkpoint。
+        """
+        async with aiosqlite.connect(str(db_path or get_checkpoint_db())) as db:
+            rows = await db.execute_fetchall(
+                "SELECT session_id, state_json, checkpoint_type FROM checkpoints AS current "
+                "WHERE id = (SELECT MAX(id) FROM checkpoints "
+                "WHERE session_id = current.session_id)"
+            )
+        # 1. 普通模型步骤可能只有真人输入，不能只查询 interrupt_data。
+        result = []
+        for session_id, state_json, checkpoint_type in rows:
+            state = json.loads(state_json)
+            if checkpoint_type == "intermediate" or state.get("interrupt_data") or state.get("pending_tool_calls"):
+                result.append(str(session_id))
+        return result
+
+    @staticmethod
+    async def interrupted_sessions(db_path: str | None = None) -> list[str]:
+        """查询每会话最新 checkpoint，列出仍携带工具中断的会话。
+
+        Args:
+            db_path (str | None): 共享 SQLite 路径，省略时使用当前环境的隔离存储。
+
+        Returns:
+            list[str]: 当前查询或执行结果。
+        """
+        path = str(db_path or get_checkpoint_db())
+        async with aiosqlite.connect(path) as db:
+            rows = await db.execute_fetchall(
+                "SELECT session_id, state_json FROM checkpoints AS current "
+                "WHERE id = (SELECT MAX(id) FROM checkpoints "
+                "WHERE session_id = current.session_id)"
+            )
+        return [
+            str(session_id) for session_id, state_json in rows
+            if json.loads(state_json).get("interrupt_data")
+        ]
 
     def __init__(self, session_id: str, db_path: str | None = None):
         self.session_id = session_id
@@ -56,7 +121,13 @@ class StateManager:
         return self._db
 
     async def _init_tables(self) -> None:
+        """初始化共享 checkpoint、协议日志与 Inbox 表，保持既有存储约束。
+
+        Raises:
+            RuntimeError: 输入、持久状态或系统调用不满足当前执行约束。
+        """
         db = await self._get_db()
+        await ensure_inbox_schema(db)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS checkpoints (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -253,12 +324,36 @@ class StateManager:
         state: AgentState,
         *,
         checkpoint_type: CheckpointType,
+        inbox_claims: tuple[InboxEnvelope, ...] = (),
+        rewritten_message_id: str | None = None,
+        release_queued: bool = False,
     ) -> int:
+        """在同一事务中提交 checkpoint、协议日志、Inbox 交付和排队放行。
+
+        调用方决定本次是否放行排队输入。本方法先保存状态和协议历史，再调用
+        Inbox 的事务函数；这些函数不提交，任一步失败或取消都由本方法统一回滚。
+
+        Args:
+            state (AgentState): 当前 Agent 状态。
+            checkpoint_type (CheckpointType): 中间态或完成态检查点类型。
+            inbox_claims (tuple[InboxEnvelope, ...]): 随本次 checkpoint 原子交付的领取快照集合。
+            rewritten_message_id (str | None): 需要同步更新协议行的既有 Assistant 消息标识。
+            release_queued (bool): 是否随正常完成的 checkpoint 原子放行排队输入。
+
+        Returns:
+            int: 本次新写入的 checkpoint 数据库编号，其他写入已经同事务提交。
+
+        Raises:
+            RuntimeError: 数据库未返回 checkpoint ID，或 Inbox 领取已失效。
+            ValueError: 重写目标不是当前 assistant 消息，或领取属于其他会话、缺少令牌。
+        """
         db = await self._get_db()
+        # 1. 先外置媒体并准备 checkpoint 和协议行，SQLite 事务只覆盖持久写入。
         await asyncio.to_thread(self._externalize_images, state)
         state_json = json.dumps(state.to_checkpoint(), ensure_ascii=False)
         protocol_rows = self._protocol_rows(state)
         try:
+            # 2. checkpoint 与协议历史在同一写事务提交，保留原有中间态清理及 completed 保留规则。
             await db.execute("BEGIN IMMEDIATE")
             cursor = await db.execute(
                 """
@@ -307,7 +402,27 @@ class StateManager:
                     """,
                     protocol_rows,
                 )
+            # 3. 打断后缀重写已有 Assistant 行，保留 message_id，避免历史出现重复气泡。
+            if rewritten_message_id is not None:
+                rewritten = next(
+                    (row for row in protocol_rows if row[1] == rewritten_message_id), None,
+                )
+                if rewritten is None or rewritten[10] != "assistant":
+                    raise ValueError("仅允许重写当前状态中的 assistant 消息")
+                result = await db.execute(
+                    "UPDATE conversation_messages SET message_json = ?, domain_json = ? "
+                    "WHERE session_id = ? AND message_id = ?",
+                    (rewritten[4], rewritten[11], self.session_id, rewritten_message_id),
+                )
+                if result.rowcount != 1:
+                    raise RuntimeError("中断文本对应的协议消息不存在")
+            # 4. Inbox 用当前连接校验并更新交付记录，不单独提交，失败时回滚前面的状态写入。
+            await mark_delivered_in_transaction(db, self.session_id, inbox_claims)
+            # 5. 调用方请求放行时，复用 Inbox 规则；完成状态和排队资格必须一起提交。
+            if release_queued:
+                await release_queued_in_transaction(db, self.session_id)
             await db.commit()
+        # 6. 输入令牌失效、数据库失败或取消时回滚 checkpoint、协议行和交付标记。
         except BaseException:
             await db.rollback()
             raise

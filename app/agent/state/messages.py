@@ -10,6 +10,7 @@ from types import MappingProxyType
 from typing import Any, ClassVar, Iterator, Literal, Mapping, Sequence, cast, get_args
 from uuid import uuid4
 
+from app.schemas.runtime_types import DESKTOP_CHANNEL, TaskResultStatus
 from app.agent.state.message_names import (
     CONTEXT_SUMMARY_MESSAGE_NAME,
     MCP_TOOL_IMAGE_MESSAGE_NAME,
@@ -209,15 +210,33 @@ class BaseMessage(ABC):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class HumanMessage(BaseMessage):
+    """保存不可变真人输入及渠道来源，模型 wire 与存储元数据分别投影。
+
+    Attributes:
+        message_type (ClassVar[MessageType]): 该消息对应的领域类型常量。
+        text (str): 需要保存或追加的文本。
+        image_urls (tuple[str, ...]): 真人附件的模型图片地址。
+        image_filenames (tuple[str, ...]): 已外置保存的附件路径。
+        origin_channel (str): 输入或本轮回复所属的渠道。
+    """
     message_type: ClassVar[MessageType] = "human"
     text: str
     image_urls: tuple[str, ...] = ()
     image_filenames: tuple[str, ...] = ()
+    origin_channel: str = DESKTOP_CHANNEL
 
     def __post_init__(self) -> None:
+        """校验真人正文、渠道来源和附件数量，规范化不可变附件集合。
+
+        Raises:
+            TypeError: HumanMessage.text 必须是字符串。
+            ValueError: HumanMessage.origin_channel 不能为空。
+        """
         BaseMessage.__post_init__(self)
         if not isinstance(self.text, str):
             raise TypeError("HumanMessage.text 必须是字符串")
+        if not isinstance(self.origin_channel, str) or not self.origin_channel:
+            raise ValueError("HumanMessage.origin_channel 不能为空")
         object.__setattr__(self, "image_urls", tuple(self.image_urls))
         object.__setattr__(self, "image_filenames", tuple(self.image_filenames))
         if not all(isinstance(item, str) and item for item in self.image_urls):
@@ -238,7 +257,15 @@ class HumanMessage(BaseMessage):
         return {"role": "user", "content": content}
 
     def _storage_fields(self) -> dict[str, Any]:
-        return {"_human": {"image_filenames": list(self.image_filenames)}}
+        """返回该消息专用的存储元数据，保留渠道来源且不混入模型 wire。
+
+        Returns:
+            dict[str, Any]: 当前查询或执行结果。
+        """
+        return {"_human": {
+            "image_filenames": list(self.image_filenames),
+            "origin_channel": self.origin_channel,
+        }}
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -261,14 +288,31 @@ class SystemMessage(BaseMessage):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AssistantMessage(BaseMessage):
+    """保存不可变 Assistant 文本、工具调用及所属轮次的入口来源。
+
+    Attributes:
+        message_type (ClassVar[MessageType]): 该消息对应的领域类型常量。
+        text (str): 需要保存或追加的文本。
+        tool_calls (tuple[ToolCall, ...]): 本步模型请求的工具调用。
+        origin_channel (str): 输入或本轮回复所属的渠道。
+    """
     message_type: ClassVar[MessageType] = "assistant"
     text: str = ""
     tool_calls: tuple[ToolCall, ...] = ()
+    origin_channel: str = DESKTOP_CHANNEL
 
     def __post_init__(self) -> None:
+        """校验 Assistant 正文和来源，将工具调用转为不可变集合。
+
+        Raises:
+            TypeError: AssistantMessage.text 必须是字符串。
+            ValueError: AssistantMessage.origin_channel 不能为空。
+        """
         BaseMessage.__post_init__(self)
         if not isinstance(self.text, str):
             raise TypeError("AssistantMessage.text 必须是字符串")
+        if not isinstance(self.origin_channel, str) or not self.origin_channel:
+            raise ValueError("AssistantMessage.origin_channel 不能为空")
         object.__setattr__(self, "tool_calls", tuple(self.tool_calls))
         if not all(isinstance(call, ToolCall) for call in self.tool_calls):
             raise TypeError("AssistantMessage.tool_calls 只能包含 ToolCall")
@@ -278,6 +322,14 @@ class AssistantMessage(BaseMessage):
         if self.tool_calls:
             result["tool_calls"] = [call.to_dict() for call in self.tool_calls]
         return result
+
+    def _storage_fields(self) -> dict[str, Any]:
+        """返回该消息专用的存储元数据，保留渠道来源且不混入模型 wire。
+
+        Returns:
+            dict[str, Any]: 当前查询或执行结果。
+        """
+        return {"_assistant": {"origin_channel": self.origin_channel}}
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -460,18 +512,34 @@ class RuntimeInputMessage(BaseMessage, ABC):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class TaskResultMessage(RuntimeInputMessage):
+    """表示后台任务终态或合并终态通知，未知和混合状态不能伪称成功。
+
+    Attributes:
+        message_type (ClassVar[MessageType]): 该消息对应的领域类型常量。
+        task_id (str): 受管进程任务标识。
+        task_name (str): 后台通知展示的任务名称，当前由命令正文或批次标题产生。
+        status (TaskResultStatus): 交付给模型的通知终态，不与受管进程状态混用。
+        result (str): 桌面执行结果或任务终态输出摘要。
+    """
     message_type: ClassVar[MessageType] = "task_result"
     task_id: str
     task_name: str
-    status: Literal["completed", "failed", "cancelled"]
+    status: TaskResultStatus
     result: str
 
     def __post_init__(self) -> None:
+        """校验任务标识、名称、终态和结果正文，拒绝未知状态值。
+
+        Raises:
+            ValueError: 后台任务标识与名称不能为空。
+            TypeError: TaskResultMessage.result 必须是字符串。
+        """
         BaseMessage.__post_init__(self)
         if not self.task_id or not self.task_name:
             raise ValueError("后台任务标识与名称不能为空")
-        if self.status not in {"completed", "failed", "cancelled"}:
+        if self.status not in set(TaskResultStatus):
             raise ValueError(f"未知后台任务状态: {self.status!r}")
+        object.__setattr__(self, "status", TaskResultStatus(self.status))
         if not isinstance(self.result, str):
             raise TypeError("TaskResultMessage.result 必须是字符串")
 
@@ -480,10 +548,17 @@ class TaskResultMessage(RuntimeInputMessage):
         return self.result
 
     def to_openai_format(self) -> dict[str, Any]:
+        """渲染运行时任务通知，未知和混合状态使用各自明确标签。
+
+        Returns:
+            dict[str, Any]: 当前查询或执行结果。
+        """
         status_label = {
-            "completed": "完成",
-            "failed": "失败",
-            "cancelled": "取消",
+            TaskResultStatus.COMPLETED: "完成",
+            TaskResultStatus.FAILED: "失败",
+            TaskResultStatus.CANCELLED: "取消",
+            TaskResultStatus.ORPHANED: "状态未知",
+            TaskResultStatus.MIXED: "状态汇总",
         }[self.status]
         return {
             "role": "user",
@@ -496,7 +571,7 @@ class TaskResultMessage(RuntimeInputMessage):
             "_task": {
                 "task_id": self.task_id,
                 "task_name": self.task_name,
-                "status": self.status,
+                "status": self.status.value,
             }
         }
 
@@ -590,7 +665,18 @@ def _decode_human_content(content: object) -> tuple[str, tuple[str, ...]]:
 
 
 def message_from_storage_format(data: Mapping[str, Any]) -> BaseMessage:
-    """严格恢复 schema-v2 checkpoint，不猜测旧消息类型。"""
+    """按领域消息类型恢复 checkpoint 值，缺少渠道字段的旧消息解释为 desktop。
+
+    Args:
+        data (Mapping[str, Any]): 待还原的领域存储值。
+
+    Returns:
+        BaseMessage: 当前查询或执行结果。
+
+    Raises:
+        MessageContractError: 输入、持久状态或系统调用不满足当前执行约束。
+        ValueError: _human.image_filenames 必须是字符串数组。
+    """
 
     message_type = data.get("_message_type")
     if not isinstance(message_type, str) or message_type not in _STORAGE_MESSAGE_TYPES:
@@ -599,15 +685,21 @@ def message_from_storage_format(data: Mapping[str, Any]) -> BaseMessage:
         )
     common = _common_fields(data)
     content = data.get("content", "")
+    # 1. 真人来源从领域元数据读取，旧记录省略字段时按 desktop 恢复。
     if message_type == "human":
         text, images = _decode_human_content(content)
         human = _require_mapping(data.get("_human"), "_human")
         refs = human.get("image_filenames") or []
         if not isinstance(refs, list) or not all(isinstance(item, str) for item in refs):
             raise ValueError("_human.image_filenames 必须是字符串数组")
-        return HumanMessage(text=text, image_urls=images, image_filenames=tuple(refs), **common)
+        return HumanMessage(
+            text=text, image_urls=images, image_filenames=tuple(refs),
+            origin_channel=_require_string(human.get("origin_channel", DESKTOP_CHANNEL), "_human.origin_channel", allow_empty=False),
+            **common,
+        )
     if message_type == "system":
         return SystemMessage(text=_require_string(content, "content"), **common)
+    # 2. Assistant 来源从专用存储字段恢复，模型 wire 仍只包含文本和工具调用。
     if message_type == "assistant":
         raw_calls = data.get("tool_calls") or []
         if not isinstance(raw_calls, list):
@@ -615,6 +707,10 @@ def message_from_storage_format(data: Mapping[str, Any]) -> BaseMessage:
         return AssistantMessage(
             text=_require_string(content, "content"),
             tool_calls=tuple(ToolCall.from_dict(call) for call in raw_calls),
+            origin_channel=_require_string(
+                _require_mapping(data.get("_assistant", {}), "_assistant").get("origin_channel", DESKTOP_CHANNEL),
+                "_assistant.origin_channel", allow_empty=False,
+            ),
             **common,
         )
     if message_type == "tool":
@@ -707,7 +803,23 @@ def message_from_protocol_format(
     domain_json: Mapping[str, Any] | None = None,
     associated_message_id: str | None = None,
 ) -> BaseMessage:
-    """通过 schema-v2 Adapter 恢复一条强类型协议日志。"""
+    """从协议正文和领域元数据恢复强类型消息，保留真人及回复的入口来源。
+
+    Args:
+        message_type (str | None): 协议行的领域消息类型。
+        message_json (Mapping[str, Any]): 模型协议正文。
+        message_id (str): 领域消息稳定标识。
+        created_at (str | datetime): 原消息 UTC 创建时间。
+        domain_json (Mapping[str, Any] | None): 领域专用存储元数据。
+        associated_message_id (str | None): 工具媒体关联的消息标识。
+
+    Returns:
+        BaseMessage: 当前查询或执行结果。
+
+    Raises:
+        MessageContractError: 输入、持久状态或系统调用不满足当前执行约束。
+        ValueError: 协议日志 assistant.tool_calls 必须是数组。
+    """
     if not isinstance(message_type, str) or message_type not in PROTOCOL_MESSAGE_TYPES:
         raise MessageContractError(
             f"协议日志 message_type={message_type!r} 非法；数据库与当前消息契约不兼容"
@@ -716,6 +828,7 @@ def message_from_protocol_format(
     domain = dict(domain_json or {})
     common = {"message_id": message_id, "created_at": normalize_utc(created_at)}
     content = wire.get("content", "")
+    # 1. 使用协议正文恢复真人内容，来源保存在 domain_json 而非供应商 wire。
     if message_type == "human":
         text, images = _decode_human_content(content)
         human = domain.get("human") if isinstance(domain.get("human"), Mapping) else {}
@@ -724,8 +837,10 @@ def message_from_protocol_format(
             text=text,
             image_urls=images,
             image_filenames=tuple(str(item) for item in refs),
+            origin_channel=_require_string(human.get("origin_channel", DESKTOP_CHANNEL), "human.origin_channel", allow_empty=False),
             **common,
         )
+    # 2. 同样从 Assistant 领域字段取来源，旧协议记录缺字段时使用 desktop。
     if message_type == "assistant":
         calls = wire.get("tool_calls") or []
         if not isinstance(calls, list):
@@ -733,6 +848,10 @@ def message_from_protocol_format(
         return AssistantMessage(
             text=_require_string(content, "content"),
             tool_calls=tuple(ToolCall.from_dict(item) for item in calls),
+            origin_channel=_require_string(
+                (domain.get("assistant") if isinstance(domain.get("assistant"), Mapping) else {}).get("origin_channel", DESKTOP_CHANNEL),
+                "assistant.origin_channel", allow_empty=False,
+            ),
             **common,
         )
     if message_type == "tool":

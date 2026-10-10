@@ -60,15 +60,27 @@ export class PointerInteractiveManager {
   }
 
   /**
-   * 检查光标是否在聊天控件上
+   * 检查光标是否在聊天控件或任务标题栏上。
+   *
+   * Args:
+   *     windowX (number): 光标在窗口内的横坐标。
+   *     windowY (number): 光标在窗口内的纵坐标。
+   *
+   * Returns:
+   *     boolean: 当前区域应由应用接收鼠标事件。
    */
   isCursorOnChatControls(windowX: number, windowY: number): boolean {
     const hoveredElement = document.elementFromPoint(windowX, windowY) as HTMLElement | null;
-    return Boolean(hoveredElement?.closest("#chat-form, #bubble, #chat-history-list, #image-preview-container, #screenshot-confirm-dialog"));
+    return Boolean(hoveredElement?.closest("#chat-form, #bubble, #chat-history-region, #image-preview-container, #screenshot-confirm-dialog"));
   }
 
   /**
-   * 更新指针交互状态
+   * 根据聊天区域和模型像素决定窗口是否捕获鼠标，任务入口不能点击穿透。
+   *
+   * Args:
+   *     windowX (number): 光标在窗口内的横坐标。
+   *     windowY (number): 光标在窗口内的纵坐标。
+   *     modelBounds ({ x: number; y: number; width: number; height: number }): 模型命中范围。
    */
   updatePointerInteractive(
     windowX: number,
@@ -81,7 +93,7 @@ export class PointerInteractiveManager {
 
     const hoveredElement = document.elementFromPoint(windowX, windowY) as HTMLElement | null;
     const onControls = Boolean(
-      hoveredElement?.closest("#chat-form, #bubble, #chat-history-list, #settings-panel, #settings-btn, #image-preview-container, #screenshot-confirm-dialog")
+      hoveredElement?.closest("#chat-form, #bubble, #chat-history-region, #settings-panel, #settings-btn, #image-preview-container, #screenshot-confirm-dialog")
     );
 
     const onModelBounds =

@@ -15,6 +15,11 @@ from app.runtime import get_chat_history_db
 
 logger = logging.getLogger(__name__)
 class ChatHistoryDao:
+    """从协议日志生成桌面历史视图，保留真人和 Assistant 的入口来源。
+
+    Attributes:
+        db_path (Path | None): 共享 SQLite 路径，省略时使用当前环境的隔离存储。
+    """
     READ_CHUNK_SIZE = 256
 
     def __init__(self, db_path: Path | None = None):
@@ -62,6 +67,17 @@ class ChatHistoryDao:
 
     @staticmethod
     def _project_protocol_row(row: tuple) -> list[dict]:
+        """恢复协议行并生成可见历史项，真人和 Assistant 项携带入口来源。
+
+        Args:
+            row (tuple): 固定查询列顺序的 SQLite 行。
+
+        Returns:
+            list[dict]: 一条协议行对应的零个或多个可见历史项。
+
+        Raises:
+            MessageContractError: 输入、持久状态或系统调用不满足当前执行约束。
+        """
         (
             row_id,
             message_id,
@@ -130,12 +146,14 @@ class ChatHistoryDao:
             ]
             return [{**base, "role": "AI", "content": content, "images": images or image_urls}]
         if isinstance(domain_message, HumanMessage):
-            return [{**base, "role": "Human", "content": domain_message.text}]
+            return [{**base, "role": "Human", "content": domain_message.text,
+                     "origin_channel": domain_message.origin_channel}]
         if not isinstance(domain_message, AssistantMessage):
             return []
         projected: list[dict] = []
         if domain_message.text:
-            projected.append({**base, "role": "AI", "content": domain_message.text})
+            projected.append({**base, "role": "AI", "content": domain_message.text,
+                              "origin_channel": domain_message.origin_channel})
         if domain_message.tool_calls:
             names = [call.name for call in domain_message.tool_calls]
             projected.append({
@@ -143,6 +161,7 @@ class ChatHistoryDao:
                 "id": f"{base['id']}:tools",
                 "role": "AI_Tool_Calling",
                 "content": f"调用了工具: {', '.join(names)}",
+                "origin_channel": domain_message.origin_channel,
             })
         return projected
 
