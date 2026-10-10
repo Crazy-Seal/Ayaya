@@ -107,16 +107,14 @@ def test_committed_human_is_visible_before_first_model_chunk(tmp_path: Path) -> 
         tmp_path (Path): Pytest 创建的隔离存储目录。
     """
     async def scenario() -> None:
-        """阻塞真实 Agent 的模型读取，从公共事件订阅检查真人消息。
-        """
+        """阻塞真实 Agent 的模型读取，从公共事件订阅检查真人消息。"""
         # 1. 使用真实 Agent 和 SQLite，只替换模型输出并设置确定性的首片屏障。
         model_entered = asyncio.Event()
         release_model = asyncio.Event()
         db_path = str(tmp_path / "state.sqlite3")
 
         class WaitingLLM:
-            """在测试放行前不产生任何模型分片。
-            """
+            """在测试放行前不产生任何模型分片。"""
             async def astream(self, messages: list[dict], tools=None):
                 """标记模型已开始等待，放行后提供有效回复。
 
@@ -132,8 +130,7 @@ def test_committed_human_is_visible_before_first_model_chunk(tmp_path: Path) -> 
                 yield StreamChunk(content="回复。")
 
             async def close(self) -> None:
-                """关闭模型替身，不访问外部服务。
-                """
+                """关闭模型替身，不访问外部服务。"""
                 pass
 
         def make_agent(session_id: str) -> Agent:
@@ -192,16 +189,14 @@ def test_subscriber_disconnect_does_not_cancel_run_and_origin_is_scoped(tmp_path
     """
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：订阅断开不取消运行，回复只向桌面及原来源投递。
-        """
+        """在隔离异步环境中安排并验证：订阅断开不取消运行，回复只向桌面及原来源投递。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         release = asyncio.Event()
         completed = asyncio.Event()
         calls: list[tuple[str, str]] = []
 
         class FakeAgent:
-            """提供隔离测试替身，用于验证：订阅断开不取消运行，回复只向桌面及原来源投递。
-            """
+            """提供隔离测试替身，用于验证：订阅断开不取消运行，回复只向桌面及原来源投递。"""
             async def run(self, message, images=None, *, origin_channel="desktop", inbox_claim=None, turn_control=None, before_next_llm=None, on_input_committed=None):
                 """按场景屏障产生 Agent 事件并提交测试输入。
 
@@ -237,8 +232,7 @@ def test_subscriber_disconnect_does_not_cancel_run_and_origin_is_scoped(tmp_path
                 yield AgentEvent(EventType.DONE, None)
 
             async def close(self):
-                """完成替身清理而不访问真实服务。
-                """
+                """完成替身清理而不访问真实服务。"""
                 pass
 
         hub = InteractionEventHub()
@@ -287,15 +281,13 @@ def test_snapshot_excludes_reply_text_before_and_after_tool_call(tmp_path) -> No
     """
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：快照不携带回答正文，工具前后的文字仅通过增量转发。
-        """
+        """在隔离异步环境中安排并验证：快照不携带回答正文，工具前后的文字仅通过增量转发。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         tool_started = asyncio.Event()
         release = asyncio.Event()
 
         class FakeAgent:
-            """提供隔离测试替身，用于验证：快照不携带回答正文，工具前后的文字仅通过增量转发。
-            """
+            """提供隔离测试替身，用于验证：快照不携带回答正文，工具前后的文字仅通过增量转发。"""
             async def run(self, message, images=None, *, origin_channel="desktop", inbox_claim=None, turn_control=None, before_next_llm=None, on_input_committed=None):
                 """按场景屏障产生 Agent 事件并提交测试输入。
 
@@ -319,8 +311,7 @@ def test_snapshot_excludes_reply_text_before_and_after_tool_call(tmp_path) -> No
                 yield AgentEvent(EventType.DONE, None)
 
             async def close(self):
-                """完成替身清理而不访问真实服务。
-                """
+                """完成替身清理而不访问真实服务。"""
                 pass
 
         scheduler = AgentRuntimeScheduler(
@@ -353,8 +344,7 @@ def test_stop_while_publishing_chunk_still_saves_interrupted_response(tmp_path) 
     """
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：发布分片期间停止仍能保存打断回复。
-        """
+        """在隔离异步环境中安排并验证：发布分片期间停止仍能保存打断回复。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         publishing = asyncio.Event()
         release_publish = asyncio.Event()
@@ -362,8 +352,7 @@ def test_stop_while_publishing_chunk_still_saves_interrupted_response(tmp_path) 
         db_path = str(tmp_path / "state.sqlite3")
 
         class WaitingLLM:
-            """提供隔离测试替身，用于验证：发布分片期间停止仍能保存打断回复。
-            """
+            """提供隔离测试替身，用于验证：发布分片期间停止仍能保存打断回复。"""
             async def astream(self, messages, tools=None):
                 """按场景产生模型分片或工具调用。
 
@@ -378,13 +367,11 @@ def test_stop_while_publishing_chunk_still_saves_interrupted_response(tmp_path) 
                 await asyncio.Event().wait()
 
             async def close(self):
-                """完成替身清理而不访问真实服务。
-                """
+                """完成替身清理而不访问真实服务。"""
                 pass
 
         class BlockingHub(InteractionEventHub):
-            """提供隔离测试替身，用于验证：发布分片期间停止仍能保存打断回复。
-            """
+            """提供隔离测试替身，用于验证：发布分片期间停止仍能保存打断回复。"""
             async def publish(self, event, *, update_snapshot_state=None):
                 """在指定事件处阻塞发布以构造停止竞争。
 
@@ -407,7 +394,7 @@ def test_stop_while_publishing_chunk_still_saves_interrupted_response(tmp_path) 
                 session (str): 测试会话标识。
 
             Returns:
-                Agent: 当前查询或执行结果。
+                Agent: 当前用例创建并装配测试工具的 Agent。
             """
             return Agent(
                 AgentConfig(
@@ -457,8 +444,7 @@ def test_stop_after_tool_notice_prevents_unstarted_tool_side_effect(tmp_path) ->
     """
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：工具提示后受理停止可阻止尚未开始的副作用。
-        """
+        """在隔离异步环境中安排并验证：工具提示后受理停止可阻止尚未开始的副作用。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         tool_notice = asyncio.Event()
         release_notice = asyncio.Event()
@@ -467,8 +453,7 @@ def test_stop_after_tool_notice_prevents_unstarted_tool_side_effect(tmp_path) ->
         executed: list[str] = []
 
         class RecordingTool(BaseTool):
-            """提供隔离测试替身，用于验证：工具提示后受理停止可阻止尚未开始的副作用。
-            """
+            """提供隔离测试替身，用于验证：工具提示后受理停止可阻止尚未开始的副作用。"""
             name = "recording_tool"
             description = "记录是否执行"
             parameters_schema = {"type": "object", "properties": {}}
@@ -481,14 +466,13 @@ def test_stop_after_tool_notice_prevents_unstarted_tool_side_effect(tmp_path) ->
                     context (ToolContext): 后端注入的工具上下文。
 
                 Returns:
-                    ToolResult: 当前查询或执行结果。
+                    ToolResult: 供本用例检查的工具执行结果。
                 """
                 executed.append("executed")
                 return ToolResult.success("完成")
 
         class ToolLLM:
-            """提供隔离测试替身，用于验证：工具提示后受理停止可阻止尚未开始的副作用。
-            """
+            """提供隔离测试替身，用于验证：工具提示后受理停止可阻止尚未开始的副作用。"""
             async def astream(self, messages, tools=None):
                 """按场景产生模型分片或工具调用。
 
@@ -503,13 +487,11 @@ def test_stop_after_tool_notice_prevents_unstarted_tool_side_effect(tmp_path) ->
                 yield StreamChunk(finish_reason="tool_calls")
 
             async def close(self):
-                """完成替身清理而不访问真实服务。
-                """
+                """完成替身清理而不访问真实服务。"""
                 pass
 
         class BlockingHub(InteractionEventHub):
-            """提供隔离测试替身，用于验证：工具提示后受理停止可阻止尚未开始的副作用。
-            """
+            """提供隔离测试替身，用于验证：工具提示后受理停止可阻止尚未开始的副作用。"""
             async def publish(self, event, *, update_snapshot_state=None):
                 """在指定事件处阻塞发布以构造停止竞争。
 
@@ -532,7 +514,7 @@ def test_stop_after_tool_notice_prevents_unstarted_tool_side_effect(tmp_path) ->
                 session (str): 测试会话标识。
 
             Returns:
-                Agent: 当前查询或执行结果。
+                Agent: 当前用例创建并装配测试工具的 Agent。
             """
             agent = Agent(
                 AgentConfig(
@@ -582,16 +564,14 @@ def test_new_message_from_other_channel_steers_active_run(tmp_path) -> None:
     """
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：其他渠道的新输入能引导共享会话的活动轮次。
-        """
+        """在隔离异步环境中安排并验证：其他渠道的新输入能引导共享会话的活动轮次。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         first_running = asyncio.Event()
         finished = asyncio.Event()
         calls: list[tuple[str, str]] = []
 
         class FakeAgent:
-            """提供隔离测试替身，用于验证：其他渠道的新输入能引导共享会话的活动轮次。
-            """
+            """提供隔离测试替身，用于验证：其他渠道的新输入能引导共享会话的活动轮次。"""
             async def run(self, message, images=None, *, origin_channel="desktop", inbox_claim=None, turn_control=None, before_next_llm=None, on_input_committed=None):
                 """按场景屏障产生 Agent 事件并提交测试输入。
 
@@ -617,8 +597,7 @@ def test_new_message_from_other_channel_steers_active_run(tmp_path) -> None:
                 yield AgentEvent(EventType.DONE, None)
 
             async def close(self):
-                """完成替身清理而不访问真实服务。
-                """
+                """完成替身清理而不访问真实服务。"""
                 pass
 
         hub = InteractionEventHub()
@@ -650,16 +629,14 @@ def test_queued_turn_receives_new_run_id(tmp_path) -> None:
     """
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：排队输入放行后取得独立运行标识。
-        """
+        """在隔离异步环境中安排并验证：排队输入放行后取得独立运行标识。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         release = asyncio.Event()
         second_done = asyncio.Event()
         ids: list[str] = []
 
         class FakeAgent:
-            """提供隔离测试替身，用于验证：排队输入放行后取得独立运行标识。
-            """
+            """提供隔离测试替身，用于验证：排队输入放行后取得独立运行标识。"""
             async def run(self, message, images=None, *, origin_channel="desktop", inbox_claim=None, turn_control=None, before_next_llm=None, on_input_committed=None):
                 """按场景屏障产生 Agent 事件并提交测试输入。
 
@@ -682,8 +659,7 @@ def test_queued_turn_receives_new_run_id(tmp_path) -> None:
                 yield AgentEvent(EventType.DONE, None)
 
             async def close(self):
-                """完成替身清理而不访问真实服务。
-                """
+                """完成替身清理而不访问真实服务。"""
                 pass
 
         hub = InteractionEventHub()
@@ -725,16 +701,14 @@ def test_interrupted_turn_applies_steer_before_older_queued_message(tmp_path) ->
     """
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：打断后先处理引导，再放行较早的排队输入。
-        """
+        """在隔离异步环境中安排并验证：打断后先处理引导，再放行较早的排队输入。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         started = asyncio.Event()
         all_done = asyncio.Event()
         calls: list[str] = []
 
         class FakeAgent:
-            """提供隔离测试替身，用于验证：打断后先处理引导，再放行较早的排队输入。
-            """
+            """提供隔离测试替身，用于验证：打断后先处理引导，再放行较早的排队输入。"""
             async def run(self, message, images=None, *, origin_channel="desktop", inbox_claim=None, turn_control=None, before_next_llm=None, on_input_committed=None):
                 """按场景屏障产生 Agent 事件并提交测试输入。
 
@@ -760,8 +734,7 @@ def test_interrupted_turn_applies_steer_before_older_queued_message(tmp_path) ->
                 yield AgentEvent(EventType.DONE, None)
 
             async def close(self):
-                """完成替身清理而不访问真实服务。
-                """
+                """完成替身清理而不访问真实服务。"""
                 pass
 
         scheduler = AgentRuntimeScheduler(
@@ -795,8 +768,7 @@ def test_task_only_wakeup_does_not_release_queue_left_by_stopped_turn(tmp_path) 
     """
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：后台通知唤醒不放行停止轮次遗留的排队消息。
-        """
+        """在隔离异步环境中安排并验证：后台通知唤醒不放行停止轮次遗留的排队消息。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         db_path = str(tmp_path / "state.sqlite3")
         first_started = asyncio.Event()
@@ -805,8 +777,7 @@ def test_task_only_wakeup_does_not_release_queue_left_by_stopped_turn(tmp_path) 
         calls: list[str] = []
 
         class FakeAgent:
-            """提供隔离测试替身，用于验证：后台通知唤醒不放行停止轮次遗留的排队消息。
-            """
+            """提供隔离测试替身，用于验证：后台通知唤醒不放行停止轮次遗留的排队消息。"""
             async def run(self, message, images=None, *, origin_channel="desktop", inbox_claim=None, turn_control=None, before_next_llm=None, on_input_committed=None):
                 """按场景屏障产生 Agent 事件并提交测试输入。
 
@@ -847,8 +818,7 @@ def test_task_only_wakeup_does_not_release_queue_left_by_stopped_turn(tmp_path) 
                 yield AgentEvent(EventType.DONE, None)
 
             async def close(self):
-                """完成替身清理而不访问真实服务。
-                """
+                """完成替身清理而不访问真实服务。"""
                 pass
 
         scheduler = AgentRuntimeScheduler(
@@ -900,8 +870,7 @@ def test_after_restart_abandoned_queue_is_discarded(tmp_path) -> None:
     """
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：异常重启后排队输入作废，不能由新轮次重新放行。
-        """
+        """在隔离异步环境中安排并验证：异常重启后排队输入作废，不能由新轮次重新放行。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         db_path = str(tmp_path / "state.sqlite3")
         before_restart = SessionInbox("s", db_path)
@@ -914,8 +883,7 @@ def test_after_restart_abandoned_queue_is_discarded(tmp_path) -> None:
         queue_done = asyncio.Event()
 
         class FakeAgent:
-            """提供隔离测试替身，用于验证：异常重启后排队输入作废，不能由新轮次重新放行。
-            """
+            """提供隔离测试替身，用于验证：异常重启后排队输入作废，不能由新轮次重新放行。"""
             async def run(self, message, images=None, *, origin_channel="desktop", inbox_claim=None, turn_control=None, before_next_llm=None, on_input_committed=None):
                 """按场景屏障产生 Agent 事件并提交测试输入。
 
@@ -937,8 +905,7 @@ def test_after_restart_abandoned_queue_is_discarded(tmp_path) -> None:
                 yield AgentEvent(EventType.DONE, None)
 
             async def close(self):
-                """完成替身清理而不访问真实服务。
-                """
+                """完成替身清理而不访问真实服务。"""
                 pass
 
         scheduler = AgentRuntimeScheduler(
@@ -974,8 +941,7 @@ def test_stale_steer_cannot_cancel_current_run(tmp_path) -> None:
     """
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：过期引导不能停止当前不同轮次。
-        """
+        """在隔离异步环境中安排并验证：过期引导不能停止当前不同轮次。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         started = asyncio.Event()
         release = asyncio.Event()
@@ -984,8 +950,7 @@ def test_stale_steer_cannot_cancel_current_run(tmp_path) -> None:
         second_done = asyncio.Event()
 
         class FakeAgent:
-            """提供隔离测试替身，用于验证：过期引导不能停止当前不同轮次。
-            """
+            """提供隔离测试替身，用于验证：过期引导不能停止当前不同轮次。"""
             async def run(self, message, images=None, *, origin_channel="desktop", inbox_claim=None, turn_control=None, before_next_llm=None, on_input_committed=None):
                 """按场景屏障产生 Agent 事件并提交测试输入。
 
@@ -1011,8 +976,7 @@ def test_stale_steer_cannot_cancel_current_run(tmp_path) -> None:
                 yield AgentEvent(EventType.DONE, None)
 
             async def close(self):
-                """完成替身清理而不访问真实服务。
-                """
+                """完成替身清理而不访问真实服务。"""
                 pass
 
         scheduler = AgentRuntimeScheduler(
@@ -1048,8 +1012,7 @@ def test_run_completion_waits_for_steer_inbox_commit(tmp_path) -> None:
     """
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：轮次结束与引导持久受理的竞争不会丢失输入。
-        """
+        """在隔离异步环境中安排并验证：轮次结束与引导持久受理的竞争不会丢失输入。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         started = asyncio.Event()
         finish_first = asyncio.Event()
@@ -1059,8 +1022,7 @@ def test_run_completion_waits_for_steer_inbox_commit(tmp_path) -> None:
         controls = []
 
         class SlowInbox(SessionInbox):
-            """提供隔离测试替身，用于验证：轮次结束与引导持久受理的竞争不会丢失输入。
-            """
+            """提供隔离测试替身，用于验证：轮次结束与引导持久受理的竞争不会丢失输入。"""
             async def submit_human(self, origin_channel, message, **kwargs):
                 """延迟持久受理以验证并发时序。
 
@@ -1075,8 +1037,7 @@ def test_run_completion_waits_for_steer_inbox_commit(tmp_path) -> None:
                 return await super().submit_human(origin_channel, message, **kwargs)
 
         class FakeAgent:
-            """提供隔离测试替身，用于验证：轮次结束与引导持久受理的竞争不会丢失输入。
-            """
+            """提供隔离测试替身，用于验证：轮次结束与引导持久受理的竞争不会丢失输入。"""
             async def run(self, message, images=None, *, origin_channel="desktop", inbox_claim=None, turn_control=None, before_next_llm=None, on_input_committed=None):
                 """按场景屏障产生 Agent 事件并提交测试输入。
 
@@ -1101,8 +1062,7 @@ def test_run_completion_waits_for_steer_inbox_commit(tmp_path) -> None:
                 yield AgentEvent(EventType.DONE, None)
 
             async def close(self):
-                """完成替身清理而不访问真实服务。
-                """
+                """完成替身清理而不访问真实服务。"""
                 pass
 
         scheduler = AgentRuntimeScheduler(
@@ -1142,12 +1102,10 @@ def test_failed_input_commit_never_publishes_human_message(tmp_path) -> None:
     """
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：输入 checkpoint 失败时不会发布真人消息。
-        """
+        """在隔离异步环境中安排并验证：输入 checkpoint 失败时不会发布真人消息。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         class FakeAgent:
-            """提供隔离测试替身，用于验证：输入 checkpoint 失败时不会发布真人消息。
-            """
+            """提供隔离测试替身，用于验证：输入 checkpoint 失败时不会发布真人消息。"""
             async def run(self, message, images=None, *, origin_channel="desktop", inbox_claim=None, turn_control=None, before_next_llm=None, on_input_committed=None):
                 """按场景屏障产生 Agent 事件并提交测试输入。
 
@@ -1167,8 +1125,7 @@ def test_failed_input_commit_never_publishes_human_message(tmp_path) -> None:
                 yield AgentEvent(EventType.DONE, None)
 
             async def close(self):
-                """完成替身清理而不访问真实服务。
-                """
+                """完成替身清理而不访问真实服务。"""
                 pass
 
         hub = InteractionEventHub()
@@ -1199,8 +1156,7 @@ def test_queued_message_waits_during_approval_and_can_be_cancelled(tmp_path, mon
     """
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：审批期间排队消息保持等待且可撤销。
-        """
+        """在隔离异步环境中安排并验证：审批期间排队消息保持等待且可撤销。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         db_path = str(tmp_path / "state.sqlite3")
         state = AgentState.create_new("s")
@@ -1269,15 +1225,13 @@ def test_authorization_is_first_wins_across_channels(tmp_path) -> None:
     """
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：多端审批只接受第一个有效决定。
-        """
+        """在隔离异步环境中安排并验证：多端审批只接受第一个有效决定。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         db_path = str(tmp_path / "runtime.sqlite3")
         decisions: list[dict] = []
 
         class FakeAgent:
-            """提供隔离测试替身，用于验证：多端审批只接受第一个有效决定。
-            """
+            """提供隔离测试替身，用于验证：多端审批只接受第一个有效决定。"""
             async def run(self, message, images=None, *, origin_channel="desktop", inbox_claim=None, turn_control=None, before_next_llm=None, on_input_committed=None):
                 """按场景屏障产生 Agent 事件并提交测试输入。
 
@@ -1331,8 +1285,7 @@ def test_authorization_is_first_wins_across_channels(tmp_path) -> None:
                 yield AgentEvent(EventType.DONE, None)
 
             async def close(self):
-                """完成替身清理而不访问真实服务。
-                """
+                """完成替身清理而不访问真实服务。"""
                 pass
 
         hub = InteractionEventHub()

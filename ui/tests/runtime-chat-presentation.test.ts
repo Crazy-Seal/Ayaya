@@ -24,9 +24,13 @@ class PresentationElement {
   handlers = new Map<string, () => void>();
   scrollHeight = 100;
   classList = {
-    /** 提供展示器切换动画样式所需的占位方法。 */
+    /**
+     *  提供展示器切换动画样式所需的占位方法。
+     */
     add(): void {},
-    /** 提供展示器恢复动画样式所需的占位方法。 */
+    /**
+     *  提供展示器恢复动画样式所需的占位方法。
+     */
     remove(): void {},
   };
 
@@ -38,13 +42,12 @@ class PresentationElement {
    */
   get textContent(): string {
     return this.value + this.children.map(/**
-     * 读取子节点正文。
+     * 由集合的 map 遍历每项数据时调用，读取 child.textContent 供当前步骤继续处理。
+     *
+     * 此定义用于：返回本节点与子节点的实际可见文字。
      *
      * Args:
-     *     child (PresentationElement): 当前子节点。
-     *
-     * Returns:
-     *     string: 子节点可见文字。
+     *     child (PresentationElement): 本次管理的子进程。
      */
     (child) => child.textContent).join("");
   }
@@ -88,7 +91,9 @@ class PresentationElement {
     return child;
   }
 
-  /** 从父节点移除提示或草稿。 */
+  /**
+   *  从父节点移除提示或草稿。
+   */
   remove(): void {
     if (this.parent) this.parent.children.splice(this.parent.children.indexOf(this), 1);
   }
@@ -101,10 +106,14 @@ class PresentationElement {
    */
   querySelectorAll(): PresentationElement[] { return []; }
 
-  /** 提供历史渲染所需的属性设置占位方法。 */
+  /**
+   *  提供历史渲染所需的属性设置占位方法。
+   */
   setAttribute(): void {}
 
-  /** 提供展示器滚动容器所需的占位方法。 */
+  /**
+   *  提供展示器滚动容器所需的占位方法。
+   */
   scrollTo(): void {}
 
   /**
@@ -124,15 +133,14 @@ class PresentationElement {
    */
   append(...children: PresentationElement[]): void { for (const child of children) this.appendChild(child); }
 
-  /** 清空任务列表，让刷新后的记录替换旧行。 */
+  /**
+   *  清空任务列表，让刷新后的记录替换旧行。
+   */
   replaceChildren(): void { this.children = []; this.value = ""; }
 }
 
 test("用户消息先于输入提示，工具提示在同轮用户消息之后", /**
- * 通过实际展示类验证运行启动先到、真人提交后到时的时间线顺序。
- *
- * Returns:
- *     Promise<void>: 场景已检查并释放展示计时器。
+ * 验证用户消息先于输入提示，工具提示在同轮用户消息之后。
  */
 async () => {
   const view = createPresentation();
@@ -142,13 +150,12 @@ async () => {
     await view.emit("run_started", {}, 1);
     await view.emit("human_message", { message: "请执行命令", message_id: "h1" }, 2);
     assert.deepEqual(view.root.children.map(/**
-     * 读取当前时间线的可见节点文字。
+     * 由集合的 map 遍历每项数据时调用，读取 item.textContent 供当前步骤继续处理。
+     *
+     * 此定义用于：验证用户消息先于输入提示，工具提示在同轮用户消息之后。
      *
      * Args:
-     *     item (PresentationElement): 当前时间线节点。
-     *
-     * Returns:
-     *     string: 节点正文。
+     *     item (PresentationElement): 当前遍历的配置或目录条目。
      */
     (item) => item.textContent), ["请执行命令", "对方正在输入"]);
     // 2. 工具提示替换输入提示，不能跑到本轮用户消息前面。
@@ -160,10 +167,7 @@ async () => {
 });
 
 test("未知线协议事件仍被忽略，后续已知事件继续正常展示", /**
- * 在已确认的事件入口注入未来类别，检查类型标注没有改变兼容行为。
- *
- * Returns:
- *     Promise<void>: 未知事件及后续正文已经投影完成。
+ * 验证未知线协议事件仍被忽略，后续已知事件继续正常展示。
  */
 async () => {
   const view = createPresentation();
@@ -187,7 +191,7 @@ async () => {
  *     withTaskEntry (boolean): 是否创建实际任务入口所需的标题栏控件。
  *
  * Returns:
- *     object: 事件入口、可见容器、动作记录、历史替身及清理函数。
+ *     { root: PresentationElement; bubble: PresentationElement; motions: string[]; persisted: ChatHistoryItem[]; taskHeader: PresentationElement; ... 8 more ...; close(): void; }: 事件入口、可见容器、动作记录、历史替身及清理函数。
  */
 function createPresentation(withTaskEntry = false) {
   const previousDocument = globalThis.document;
@@ -212,7 +216,12 @@ function createPresentation(withTaskEntry = false) {
    */
   let listener = (_event: InteractionEvent): void => {};
   globalThis.document = {
-    /** 返回不存在的可选任务和排队 DOM。 */
+    /**
+     *  返回不存在的可选任务和排队 DOM。
+     *
+     * Args:
+     *     id (string): 当前模型参数或日志记录的编号。
+     */
     getElementById: (id: string) => withTaskEntry ? ({
       "chat-history-toolbar": taskHeader,
       "background-task-entry": taskButton,
@@ -232,18 +241,17 @@ function createPresentation(withTaskEntry = false) {
      *     text (string): 需要展示的正文。
      *
      * Returns:
-     *     PresentationElement: 含该正文的节点。
+     *     PresentationElement & { textContent: string; }: 含该正文的节点。
      */
     createTextNode: (text: string) => Object.assign(new PresentationElement(), { textContent: text }),
   } as unknown as Document;
   globalThis.requestAnimationFrame = /**
-   * 同步结束历史重绘的动画禁用状态。
+   * 由浏览器在requestAnimationFrame时调用，取得本用例指定的条目或响应，供外层断言处理结果。
+   *
+   * 此定义用于：装配真实聊天展示类，只替换主进程 bridge 和 DOM 环境。
    *
    * Args:
-   *     callback (FrameRequestCallback): 展示器动画回调。
-   *
-   * Returns:
-   *     number: 测试帧标识。
+   *     callback (FrameRequestCallback): 触发后交给调用方继续处理的回调。
    */
   (callback) => { callback(0); return 0; };
   globalThis.window = { desktopPetApi: {
@@ -277,7 +285,9 @@ function createPresentation(withTaskEntry = false) {
   playMotionByLabel: (label: string) => { motions.push(label); },
   } as unknown as Window & typeof globalThis;
   const bridge: NonNullable<RuntimeChatClientOptions["bridge"]> = {
-    /** 模拟事件订阅已经就绪。 */
+    /**
+     *  模拟事件订阅已经就绪。
+     */
     subscribeDesktopSession: async () => {},
     /**
      * 保存公共事件入口，返回监听清理占位函数。
@@ -290,14 +300,24 @@ function createPresentation(withTaskEntry = false) {
      */
     onInteractionEvent: (callback) => {
       listener = callback;
-      /** 当前替身无需额外清理。 */
+      /**
+       * 由外层操作在对应处理阶段调用；当前用例无需使用此通知内容。
+       *
+       * 此定义用于：保存公共事件入口，返回监听清理占位函数。
+       */
       return () => {};
     },
-    /** 返回预设受理回执，当前展示测试不执行真实命令。 */
+    /**
+     *  返回预设受理回执，当前展示测试不执行真实命令。
+     */
     submitInteractionCommand: async () => ({ accepted: true }),
-    /** 返回空任务列表。 */
+    /**
+     *  返回空任务列表。
+     */
     getBackgroundTasks: async () => tasks,
-    /** 返回空任务输出页。 */
+    /**
+     *  返回空任务输出页。
+     */
     getBackgroundTaskOutput: async () => ({ text: "", next_offset: 0, has_more: false }),
   };
   const history = new ChatHistoryManager(root as unknown as HTMLDivElement);
@@ -305,16 +325,26 @@ function createPresentation(withTaskEntry = false) {
     sessionId: "s", bridge, chatHistory: history,
     bubble: new BubbleManager(bubble as unknown as HTMLDivElement),
     sendBtn: { innerHTML: "send",
-      /** 提供发送按钮的属性设置占位方法。 */
+      /**
+       *  提供发送按钮的属性设置占位方法。
+       */
       setAttribute() {},
     } as unknown as HTMLButtonElement,
-    input: { value: "", style: {}, /** 模拟提交后的输入框聚焦。 */
+    input: { value: "", style: {}, /**
+     * 记录输入框焦点恢复。
+     *
+     * 此定义用于：装配真实聊天展示类，只替换主进程 bridge 和 DOM 环境。
+     */
       focus() {},
     } as unknown as HTMLTextAreaElement,
     confirmDialog: {
-      /** 当前测试不显示审批，返回预设决定。 */
+      /**
+       *  当前测试不显示审批，返回预设决定。
+       */
       open: async () => { approvals.opened += 1; return { kind: "approve" }; },
-      /** 提供跨端审批关闭占位方法。 */
+      /**
+       *  提供跨端审批关闭占位方法。
+       */
       dismiss() {},
     },
   });
@@ -338,7 +368,9 @@ function createPresentation(withTaskEntry = false) {
         run_id: runId, stream_epoch: "epoch", event_sequence: sequence });
       await flushEvents();
     },
-    /** 停止展示计时器并恢复测试前的全局环境。 */
+    /**
+     *  停止展示计时器并恢复测试前的全局环境。
+     */
     close(): void {
       history.abortStreaming();
       globalThis.document = previousDocument;
@@ -349,13 +381,10 @@ function createPresentation(withTaskEntry = false) {
 }
 
 test("任务入口只计运行任务，点击打开详情，全部结束后短提示消失", /**
- * 经统一事件和真实视图验证任务入口生命周期，不把历史任务长期铺在桌面。
+ * 验证任务入口只计运行任务，点击打开详情，全部结束后短提示消失。
  *
  * Args:
- *     t (TestContext): 推进短提示计时器的隔离测试上下文。
- *
- * Returns:
- *     Promise<void>: 所有任务展示行为已检查。
+ *     t (TestContext): Node 测试上下文，供登记用例结束后恢复全局依赖的清理函数。
  */
 async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
@@ -389,13 +418,10 @@ async (t) => {
 });
 
 test("任务页可见时刷新运行状态和最近输出，终态或切页后停止轮询", /**
- * 验证移到设置窗口的任务详情持续更新，后台计时器不会留在其他页。
+ * 验证任务页可见时刷新运行状态和最近输出，终态或切页后停止轮询。
  *
  * Args:
- *     t (TestContext): 隔离推进页面刷新计时器。
- *
- * Returns:
- *     Promise<void>: 页面生命周期及终态更新已检查。
+ *     t (TestContext): Node 测试上下文，供登记用例结束后恢复全局依赖的清理函数。
  */
 async (t) => {
   t.mock.timers.enable({ apis: ["setInterval"] });
@@ -408,10 +434,9 @@ async (t) => {
   let reads = 0;
   let status: "running" | "completed" = "running";
   window.desktopPetApi.getBackgroundTasks = /**
-   * 返回可控的真实页面记录，统计实际查询次数。
+   * 由浏览器在getBackgroundTasks时调用，取得本用例指定的条目或响应，供外层断言处理结果。
    *
-   * Returns:
-   *     Promise<BackgroundTaskRecord[]>: 当前状态的隔离任务记录。
+   * 此定义用于：验证任务页可见时刷新运行状态和最近输出，终态或切页后停止轮询。
    */
   async () => {
     reads += 1;
@@ -448,13 +473,10 @@ async (t) => {
 });
 
 test("流式表情标签跨分片时两处正文均不显示标签，动作每轮只播放一次", /**
- * 验证实际聊天列表和桌面气泡在每个流式阶段都使用清洗后的正文。
+ * 验证流式表情标签跨分片时两处正文均不显示标签，动作每轮只播放一次。
  *
  * Args:
- *     t (TestContext): 用于推进展示计时器的测试上下文。
- *
- * Returns:
- *     Promise<void>: 场景完成并恢复隔离环境。
+ *     t (TestContext): Node 测试上下文，供登记用例结束后恢复全局依赖的清理函数。
  */
 async (t) => {
   t.mock.timers.enable({ apis: ["setInterval"] });
@@ -488,13 +510,10 @@ async (t) => {
 });
 
 test("重连等待完整回答且不重播表情，新轮恢复实时正文", /**
- * 验证重连不恢复半段正文，完成后复用历史显示，新轮允许播放表情。
+ * 验证重连等待完整回答且不重播表情，新轮恢复实时正文。
  *
  * Args:
- *     t (TestContext): 用于推进展示计时器的测试上下文。
- *
- * Returns:
- *     Promise<void>: 场景完成并清理展示环境。
+ *     t (TestContext): Node 测试上下文，供登记用例结束后恢复全局依赖的清理函数。
  */
 async (t) => {
   t.mock.timers.enable({ apis: ["setInterval"] });
@@ -530,10 +549,7 @@ async (t) => {
 });
 
 test("历史只在初始化、人工审批和终态读取，重复审批及自动桌面操作不重复查询", /**
- * 通过真实聊天展示检查查询次数和审批前正文，不以实现字段作为断言。
- *
- * Returns:
- *     Promise<void>: 各类事件的查询次数及最终正文已检查。
+ * 验证历史只在初始化、人工审批和终态读取，重复审批及自动桌面操作不重复查询。
  */
 async () => {
   const view = createPresentation();
@@ -577,21 +593,27 @@ async () => {
 });
 
 test("历史查询期间到达的新回答先不显示，结束时完整显示且下一轮继续实时输出", /**
- * 固定完成查询与下一轮文字交错，验证积压分片不会追加到已读取的历史上。
- *
- * Returns:
- *     Promise<void>: 查询屏障、新回答完成及后续实时显示均已验证。
+ * 验证历史查询期间到达的新回答先不显示，结束时完整显示且下一轮继续实时输出。
  */
 async () => {
   const view = createPresentation();
-  /** 由测试放行历史读取，避免依赖执行速度。 */
+  /**
+   *  由测试放行历史读取，避免依赖执行速度。
+   */
   let release = (): void => {};
   try {
     await view.emit("session_snapshot", { phase: "idle" }, 0);
     await view.emit("run_started", {}, 1);
     await view.emit("text_chunk", { value: "上一轮。" }, 2);
     view.persisted.push({ id: "old", role: "AI", content: "上一轮。", timestamp: "2026-10-10" });
-    view.historyReads.barrier = new Promise<void>(/** 记录查询放行函数。 */
+    view.historyReads.barrier = new Promise<void>(/**
+     * 由 Promise 构造器立即调用，取得本用例指定的条目或响应，供外层断言处理结果。
+     *
+     * 此定义用于：验证历史查询期间到达的新回答先不显示，结束时完整显示且下一轮继续实时输出。
+     *
+     * Args:
+     *     resolve ((value: void | PromiseLike<void>) => void): 准备成功或等待结束时完成 Promise 的函数。
+     */
     (resolve) => { release = resolve; });
     // 1. 完成事件阻塞在查询，后续新轮和正文通过公共事件入口到达。
     await view.emit("run_completed", { value: null }, 3);
@@ -618,10 +640,7 @@ async () => {
 });
 
 test("审批历史读取失败保留原文且允许审批，下一次同审批成功刷新后不再重复查询", /**
- * 模拟离线后恢复，验证失败不被记为已刷新，也不丢失已显示的尾句。
- *
- * Returns:
- *     Promise<void>: 失败保留、审批展示和成功后的去重均已检查。
+ * 验证审批历史读取失败保留原文且允许审批，下一次同审批成功刷新后不再重复查询。
  */
 async () => {
   const view = createPresentation();
@@ -649,10 +668,7 @@ async () => {
 });
 
 test("错误刷新只显示已保存历史且错误提示位于重绘之后", /**
- * 验证重连后未保存的尾部不会冒出，已保存说明与错误同时保留。
- *
- * Returns:
- *     Promise<void>: 错误历史、气泡和提示顺序已检查。
+ * 验证错误刷新只显示已保存历史且错误提示位于重绘之后。
  */
 async () => {
   const view = createPresentation();
@@ -671,10 +687,7 @@ async () => {
 });
 
 test("停止命令回执不读取历史，保存后的完成事件才恢复被打断正文", /**
- * 用受理回执和完成事件分开检查，避免停止点击时查询保存前的内容。
- *
- * Returns:
- *     Promise<void>: 停止回执和持久化完成两个时机已验证。
+ * 验证停止命令回执不读取历史，保存后的完成事件才恢复被打断正文。
  */
 async () => {
   const view = createPresentation();
@@ -692,18 +705,24 @@ async () => {
 });
 
 test("历史读取期间切换会话，旧查询不能更新新会话正文或气泡", /**
- * 查询延迟期间切换，实际历史管理器与客户端都校验会话代次。
- *
- * Returns:
- *     Promise<void>: 旧结果作废及新会话初始化已检查。
+ * 验证历史读取期间切换会话，旧查询不能更新新会话正文或气泡。
  */
 async () => {
   const view = createPresentation();
-  /** 由测试完成旧会话查询。 */
+  /**
+   *  由测试完成旧会话查询。
+   */
   let release = (): void => {};
   try {
     view.persisted.push({ id: "old", role: "AI", content: "旧会话正文。", timestamp: "2026-10-10" });
-    view.historyReads.barrier = new Promise<void>(/** 保存查询放行函数。 */
+    view.historyReads.barrier = new Promise<void>(/**
+     * 由 Promise 构造器立即调用，取得本用例指定的条目或响应，供外层断言处理结果。
+     *
+     * 此定义用于：验证历史读取期间切换会话，旧查询不能更新新会话正文或气泡。
+     *
+     * Args:
+     *     resolve ((value: void | PromiseLike<void>) => void): 准备成功或等待结束时完成 Promise 的函数。
+     */
     (resolve) => { release = resolve; });
     await view.emit("session_snapshot", { phase: "idle" }, 0);
     view.client.setSessionId("other");

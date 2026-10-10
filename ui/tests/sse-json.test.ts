@@ -5,9 +5,6 @@ import { readSseJson } from "../electron/sse-json.js";
 
 test("SSE 解码跨分片 UTF-8、CRLF 和多个事件", /**
  * 验证SSE 解码跨分片 UTF-8、CRLF 和多个事件。
- *
- * Returns:
- *     Promise<void>: 当前异步处理完成的等待结果。
  */
 async () => {
   // 1. 建立隔离 DOM、bridge 替身与事件监听，按场景安排输入和到达顺序。

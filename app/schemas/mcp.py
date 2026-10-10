@@ -27,10 +27,10 @@ class MCPModelSettings(BaseModel):
         """校验模型权限中引用的 MCP Server ID。
 
         Args:
-            value: Server ID 到模型级权限的映射。
+            value (dict[str, MCPServerPolicy]): Server ID 到模型级权限的映射。
 
         Returns:
-            校验通过的原映射。
+            dict[str, MCPServerPolicy]: 校验通过的原映射。
 
         Raises:
             ValueError: 任一 Server ID 不符合命名规则。
@@ -67,10 +67,10 @@ class StdioMCPServerConfig(MCPServerConfigBase):
         """禁止 MCP 子进程覆盖桌面后端运行控制变量。
 
         Args:
-            value: 用户为该 Server 显式配置的环境变量。
+            value (dict[str, str]): 用户为该 Server 显式配置的环境变量。
 
         Returns:
-            校验通过的环境变量映射。
+            dict[str, str]: 校验通过的环境变量映射。
 
         Raises:
             ValueError: 配置中包含禁止传递的运行控制变量。
@@ -98,10 +98,10 @@ class StreamableHttpMCPServerConfig(MCPServerConfigBase):
         """校验并规范化 Streamable HTTP Endpoint。
 
         Args:
-            value: 用户提供的 Endpoint URL。
+            value (str): 用户提供的 Endpoint URL。
 
         Returns:
-            去除首尾空白后的 URL。
+            str: 去除首尾空白后的 URL。
 
         Raises:
             ValueError: URL 非 HTTP(S) 地址或包含用户凭据。
@@ -130,7 +130,7 @@ class MCPServersConfig(BaseModel):
         """校验 MCP Server ID 在配置中唯一。
 
         Returns:
-            校验通过的当前配置对象。
+            MCPServersConfig: 校验通过的当前配置对象。
 
         Raises:
             ValueError: 配置中存在重复的 Server ID。

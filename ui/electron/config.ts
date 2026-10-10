@@ -14,7 +14,12 @@ export const LOG_WINDOW_MIN_HEIGHT = 500;
 export const CHAT_HISTORY_PAGE_SIZE = 200;
 export const CHAT_HISTORY_MAX_PAGES = 500;
 
-/** 根据 Electron 主进程环境解析后端基础地址。 */
+/**
+ *  根据 Electron 主进程环境解析后端基础地址。
+ *
+ * Args:
+ *     env (NodeJS.ProcessEnv): 主进程读取的环境变量，供解析本机后端地址。
+ */
 export const resolveBackendBaseUrl = (env: NodeJS.ProcessEnv): string =>
   env.AYAYA_BACKEND_BASE_URL ?? "http://127.0.0.1:8000";
 

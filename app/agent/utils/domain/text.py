@@ -8,7 +8,11 @@ logger = logging.getLogger(__name__)
 
 
 def get_last_human_text(messages: list[BaseMessage] | tuple[BaseMessage, ...]) -> str:
-    """返回最新真人文本，忽略所有 RuntimeInput。"""
+    """返回最新真人文本，忽略所有 RuntimeInput。
+
+    Args:
+        messages (list[BaseMessage] | tuple[BaseMessage, ...]): 按对话顺序排列的消息集合。
+    """
     for message in reversed(messages):
         if isinstance(message, HumanMessage):
             return message.text
@@ -20,6 +24,9 @@ def normalize_messages_for_model(messages: list[dict]) -> list[dict]:
 
     部分 OpenAI-compatible gateway 要求每条 tool 消息都有 ``name``。优先从前置
     assistant 调用恢复名称；无法恢复时丢弃该工具槽，避免发送畸形 wire 数据。
+
+    Args:
+        messages (list[dict]): 按对话顺序排列的消息集合。
     """
     normalized: list[dict] = []
     tool_call_names: dict[str, str] = {}

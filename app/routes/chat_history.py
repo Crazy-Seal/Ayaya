@@ -16,6 +16,20 @@ async def list_chat_history(
     limit: int = Query(default=200, ge=1),
     chat_history_service: ChatHistoryService = Depends(get_chat_history_service),
 ) -> Result:
+    """聊天页查询历史时返回可见消息，协议不兼容则明确返回 HTTP 500。
+
+    Args:
+        session_id (str): 当前操作所属的会话编号。
+        start (int): 可见聊天历史的起始位置，从零开始。
+        limit (int): 最多返回的记录数量。
+        chat_history_service (ChatHistoryService): 查询界面可见聊天历史的应用服务。
+
+    Returns:
+        Result: 包含历史消息列表的统一接口结果。
+
+    Raises:
+        HTTPException: 持久消息与当前协议不兼容。
+    """
     try:
         history = await chat_history_service.get_chat_history_data(
             session_id=session_id, start=start, limit=limit
@@ -35,7 +49,13 @@ async def list_chat_history_last_n(
     n: int = Query(default=100, ge=1, le=500),
     chat_history_service: ChatHistoryService = Depends(get_chat_history_service),
 ) -> Result:
-    """获取会话最后 N 条历史记录，按时间升序返回。"""
+    """获取会话最后 N 条历史记录，按时间升序返回。
+
+    Args:
+        session_id (str): 当前操作所属的会话编号。
+        n (int): 最多返回的日记条数。
+        chat_history_service (ChatHistoryService): 查询界面可见聊天历史的应用服务。
+    """
     try:
         history = await chat_history_service.get_chat_history_last_n(
             session_id=session_id, n=n

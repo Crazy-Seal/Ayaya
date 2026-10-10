@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class ToolRegistry:
-    """工具注册表 - 支持延迟加载"""
+    """维护进程级工具类目录，支持直接注册和首次使用时的延迟导入。"""
 
     # 工具注册表：名称 -> 工具类
     _tools: dict[str, Type[BaseTool]] = {}
@@ -28,8 +28,8 @@ class ToolRegistry:
         """延迟注册工具
 
         Args:
-            name: 工具名称
-            spec: "模块路径:符号名" 格式的规范字符串
+            name (str): 工具名称
+            spec (str): "模块路径:符号名" 格式的规范字符串
         """
         cls._lazy_tools[name] = spec
         logger.debug(f"延迟注册工具: {name} -> {spec}")
@@ -39,10 +39,10 @@ class ToolRegistry:
         """获取工具类
 
         Args:
-            name: 工具名称
+            name (str): 工具名称
 
         Returns:
-            工具类，如果不存在返回 None
+            Type[BaseTool] | None: 工具类，如果不存在返回 None
         """
         # 先检查已加载的工具
         if name in cls._tools:
@@ -65,6 +65,9 @@ class ToolRegistry:
         - "模块路径:符号名"：直接取该符号（显式 register_lazy 用）。
         - "模块路径"：导入后在模块内查找唯一的 BaseTool 子类（自动扫描用，
           同时兼容 @tool 产出的子类与手写的 BaseTool 子类）。
+
+        Args:
+            name (str): 当前对象的名称。
         """
         from importlib import import_module
 
@@ -91,7 +94,12 @@ class ToolRegistry:
 
     @staticmethod
     def _find_tool_class(module, name: str) -> Type[BaseTool] | None:
-        """在模块成员里挑出工具类：优先 .name 匹配，否则取唯一的 BaseTool 子类。"""
+        """在模块成员里挑出工具类：优先 .name 匹配，否则取唯一的 BaseTool 子类。
+
+        Args:
+            module (Any): 已导入且可能包含插件类的模块。
+            name (str): 当前对象的名称。
+        """
         candidates = [
             obj for obj in vars(module).values()
             if isinstance(obj, type) and issubclass(obj, BaseTool) and obj is not BaseTool
@@ -103,18 +111,22 @@ class ToolRegistry:
 
     @classmethod
     def list_tools(cls) -> list[str]:
-        """列出所有工具名称"""
+        """合并直接及延迟注册名称，供会话默认权限补齐和工具装配。"""
         all_names = set(cls._tools.keys()) | set(cls._lazy_tools.keys())
         return sorted(all_names)
 
     @classmethod
     def has(cls, name: str) -> bool:
-        """检查工具是否存在"""
+        """检查工具是否已登记，不为检查操作触发模块导入。
+
+        Args:
+            name (str): 当前对象的名称。
+        """
         return name in cls._tools or name in cls._lazy_tools
 
     @classmethod
     def clear(cls) -> None:
-        """清空注册表"""
+        """清空进程内两类工具登记，供测试隔离或重新装配使用。"""
         cls._tools.clear()
         cls._lazy_tools.clear()
 

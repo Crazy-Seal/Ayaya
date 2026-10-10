@@ -16,6 +16,10 @@ export interface PromptTemplateParams {
 
 /**
  * 构建系统提示词
+ *
+ * Args:
+ *     params (PromptTemplateParams): 助手名称、角色、称呼和行为约束组成的提示词模板数据。
+ *     expressionLabels (string[]): 当前模型允许使用的表情标签名称。
  */
 export function buildSystemPrompt(
   params: PromptTemplateParams,
@@ -38,7 +42,16 @@ export function buildSystemPrompt(
 
   // 添加表情标签说明
   if (expressionLabels.length > 0) {
-    const tagsList = expressionLabels.map((l) => `<${l}>`).join("");
+    const tagsList = expressionLabels.map(/**
+     * 把可用表情名称转换为角色提示词中的合法输出标签。
+     *
+     * Args:
+     *     l (string): 当前可用于提示词的表情名称。
+     *
+     * Returns:
+     *     string: 带尖括号的表情标签。
+     */
+    (l) => `<${l}>`).join("");
     prompt += `\n你可以在对话中使用以下表情标签:${tagsList}使用时必须像示例一样使用尖括号<>包裹`;
   }
 

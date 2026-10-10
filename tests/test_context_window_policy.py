@@ -3,6 +3,7 @@ from app.agent.state import AgentState
 
 
 def test_model_projection_no_longer_uses_fixed_human_window() -> None:
+    """验证模型消息不再按固定真人输入数截取历史。"""
     state = AgentState.create_new("session")
     for index in range(25):
         state.add_user_message(f"human-{index}")

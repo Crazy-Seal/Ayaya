@@ -33,23 +33,23 @@ export async function* readSseJson<T>(
         // 3. 合并同帧 data 行再解析 JSON，不能把 event 或其他字段当载荷。
         const data = frame.split(/\r?\n/)
           .filter(/**
-           * 只保留 SSE data 字段。
+           * 只保留 SSE 事件中的 data 行，跳过心跳和其他字段。
            *
            * Args:
-           *     line (string): SSE 帧中的一行。
+           *     line (string): 已经拼接完整的一行后端输出。
            *
            * Returns:
-           *     boolean: 当前查询、回调或视图操作的结果。
+           *     boolean: 当前行以 data: 开头时为 true。
            */
           (line) => line.startsWith("data:"))
           .map(/**
-           * 移除 SSE data 字段前缀，保留 JSON 正文。
+           * 移除 data 字段前缀和开头空白，再由外层合并并解析 JSON。
            *
            * Args:
-           *     line (string): SSE 帧中的一行。
+           *     line (string): 已经拼接完整的一行后端输出。
            *
            * Returns:
-           *     string: 当前查询、回调或视图操作的结果。
+           *     string: 当前行的事件正文。
            */
           (line) => line.slice(5).trimStart());
         if (data.length) yield JSON.parse(data.join("\n")) as T;
@@ -59,7 +59,7 @@ export async function* readSseJson<T>(
   } finally {
     // 4. 订阅退出时释放 reader，清理失败不覆盖原运行结果。
     await reader.cancel().catch(/**
-     * 忽略连接已经关闭造成的 reader 清理失败。
+     * 事件读取已经结束后取消 reader；取消失败不覆盖原读取结果。
      */
     () => {});
   }

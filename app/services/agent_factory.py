@@ -12,6 +12,16 @@ from app.agent.tools.base import TaskLauncher
 
 
 def _plugin_config(chat_settings: ChatSettings, name: str, defaults: dict) -> dict:
+    """从会话设置取得插件配置，在默认值副本上合并覆盖项。
+
+    Args:
+        chat_settings (ChatSettings): 当前会话的模型、角色及插件设置。
+        name (str): 当前对象的名称。
+        defaults (dict): 该插件的默认配置副本来源。
+
+    Returns:
+        dict: 该插件当前使用的独立配置字典。
+    """
     settings = chat_settings.agent_plugins.get(name)
     config = dict(defaults)
     if settings:
@@ -34,7 +44,7 @@ def build_agent(
         task_launcher (TaskLauncher | None): 工具使用的共享进程启动端口。
 
     Returns:
-        Agent: 当前查询或执行结果。
+        Agent: 按最新会话设置装配的 Agent，尚未开始模型轮次。
     """
     plugins: list[dict] = [
         {

@@ -45,6 +45,15 @@ export class MotionPage implements ISettingsPage {
   // 已保存的状态（用于预览）
   private savedState: ChatSettingsState | null = null;
 
+  /**
+   * 绑定动作设置表格、空状态和提示词预览，后续按模型可用动作渲染。
+   *
+   * Args:
+   *     motionTableBody (HTMLTableSectionElement): 显示动作配置行的表格正文。
+   *     motionEmpty (HTMLDivElement): 没有动作时显示的占位元素。
+   *     confirmBtn (HTMLButtonElement): 用户点击后提交本页修改的按钮。
+   *     systemPromptPreview (HTMLTextAreaElement): 显示动作规则提示词的只读输入框。
+   */
   constructor(
     motionTableBody: HTMLTableSectionElement,
     motionEmpty: HTMLDivElement,
@@ -61,6 +70,9 @@ export class MotionPage implements ISettingsPage {
 
   /**
    * 设置事件回调
+   *
+   * Args:
+   *     callback (PageEventCallback): 设置页主控制器接收本页提交或编辑事件的回调。
    */
   onEvent(callback: PageEventCallback): void {
     this.eventCallback = callback;
@@ -71,12 +83,21 @@ export class MotionPage implements ISettingsPage {
    */
   private setupEventListeners(): void {
     // 保存按钮
-    this.confirmBtn.addEventListener("click", () => {
+    this.confirmBtn.addEventListener("click", /**
+     * 用户点击动作确认后通知设置控制器保存本页规则。
+     */
+    () => {
       this.eventCallback?.({ type: "submit", page: "motion" });
     });
 
     // 表格事件委托
-    this.motionTableBody.addEventListener("click", (event) => {
+    this.motionTableBody.addEventListener("click", /**
+     * 用户点击动作预览按钮时取得对应动作名并请求桌面播放。
+     *
+     * Args:
+     *     event (PointerEvent): 调用方或浏览器触发的当前事件。
+     */
+    (event) => {
       const target = event.target as HTMLElement;
       const previewBtn = target.closest<HTMLButtonElement>(".motion-preview-btn");
       if (previewBtn) {
@@ -88,7 +109,13 @@ export class MotionPage implements ISettingsPage {
     });
 
     // 设置下拉框变化
-    this.motionTableBody.addEventListener("change", (event) => {
+    this.motionTableBody.addEventListener("change", /**
+     * 用户改变动作类型后更新本行设置，并确保只有一项空闲动作。
+     *
+     * Args:
+     *     event (Event): 调用方或浏览器触发的当前事件。
+     */
+    (event) => {
       const target = event.target as HTMLElement;
       if (target.classList.contains("motion-setting-select")) {
         const motionName = target.dataset.motionName;
@@ -100,7 +127,13 @@ export class MotionPage implements ISettingsPage {
     });
 
     // 标签输入变化
-    this.motionTableBody.addEventListener("input", (event) => {
+    this.motionTableBody.addEventListener("input", /**
+     * 用户编辑表情标签后更新本行动作标签及提示词预览。
+     *
+     * Args:
+     *     event (Event): 调用方或浏览器触发的当前事件。
+     */
+    (event) => {
       const target = event.target as HTMLElement;
       if (target.classList.contains("motion-label-input")) {
         const motionName = target.dataset.motionName;
@@ -114,6 +147,9 @@ export class MotionPage implements ISettingsPage {
 
   /**
    * 渲染页面
+   *
+   * Args:
+   *     data (PageRenderData): 当前已保存设置和本页所需模型、插件及工具目录。
    */
   render(data: PageRenderData): void {
     // 保存已保存状态
@@ -126,6 +162,15 @@ export class MotionPage implements ISettingsPage {
     let motionConfigs: MotionConfig[];
     if (data.dependencies?.modelConfig) {
       const activeModel = data.dependencies.modelConfig.models.find(
+        /**
+         * 渲染动作配置时查找当前活动模型。
+         *
+         * Args:
+         *     m ({ id: string; name: string; sessionId: string; source: "builtin" | "custom"; deletable: boolean; offsetX: number; offsetY: number; userScale: number; followCursor: boolean; motionConfig?: MotionConfig[] | undefined; entry?: string | undefined; modelUrl?: string | undefined; }): 当前模型动作的配置记录。
+         *
+         * Returns:
+         *     boolean: 模型编号与活动编号一致时为 true。
+         */
         (m) => m.id === data.dependencies!.modelConfig!.activeModelId
       );
       motionConfigs = activeModel?.motionConfig || this.createDefaultMotionConfigs();
@@ -144,7 +189,16 @@ export class MotionPage implements ISettingsPage {
    * 创建默认动作配置
    */
   private createDefaultMotionConfigs(): MotionConfig[] {
-    return this.availableMotions.map((name) => ({
+    return this.availableMotions.map(/**
+     * 为未配置动作生成默认规则，名为 idle 的动作默认空闲，其余默认不自动播放。
+     *
+     * Args:
+     *     name (string): 当前对象的名称。
+     *
+     * Returns:
+     *     { motionName: string; setting: "idle" | "none"; }: 当前动作的初始规则。
+     */
+    (name) => ({
       motionName: name,
       setting: name.toLowerCase() === "idle" ? ("idle" as const) : ("none" as const),
     }));
@@ -166,7 +220,13 @@ export class MotionPage implements ISettingsPage {
    */
   private collectMotionConfigs(): MotionConfig[] {
     const configs: MotionConfig[] = [];
-    this.motionTableBody.querySelectorAll<HTMLSelectElement>(".motion-setting-select").forEach((select) => {
+    this.motionTableBody.querySelectorAll<HTMLSelectElement>(".motion-setting-select").forEach(/**
+     * 逐行动作收集类型和可选表情标签，组成当前尚未保存的配置。
+     *
+     * Args:
+     *     select (HTMLSelectElement): 当前动作配置的下拉选择框。
+     */
+    (select) => {
       const motionName = select.dataset.motionName;
       if (motionName) {
         const setting = select.value as MotionSettingType;
@@ -187,11 +247,21 @@ export class MotionPage implements ISettingsPage {
 
   /**
    * 处理设置变化
+   *
+   * Args:
+   *     motionName (string): 需要播放或保存规则的模型动作名称。
+   *     setting (MotionSettingType): 当前动作的自动播放类型。
    */
   private handleSettingChange(motionName: string, setting: MotionSettingType): void {
     // 如果设置为 idle，清除其他 idle
     if (setting === "idle") {
-      this.motionTableBody.querySelectorAll<HTMLSelectElement>(".motion-setting-select").forEach((select) => {
+      this.motionTableBody.querySelectorAll<HTMLSelectElement>(".motion-setting-select").forEach(/**
+       * 用户指定新的空闲动作时取消其他行的空闲标记，避免多项同时作为默认动作。
+       *
+       * Args:
+       *     select (HTMLSelectElement): 当前动作配置的下拉选择框。
+       */
+      (select) => {
         if (select.dataset.motionName !== motionName && select.value === "idle") {
           select.value = "none";
         }
@@ -213,6 +283,10 @@ export class MotionPage implements ISettingsPage {
 
   /**
    * 处理标签变化
+   *
+   * Args:
+   *     motionName (string): 需要播放或保存规则的模型动作名称。
+   *     label (string): 当前工具、表情或动作的显示名称。
    */
   private handleLabelChange(motionName: string, label: string): void {
     // 标签变化时更新预览
@@ -225,6 +299,9 @@ export class MotionPage implements ISettingsPage {
 
   /**
    * 预览动作
+   *
+   * Args:
+   *     motionName (string): 需要播放或保存规则的模型动作名称。
    */
   private previewMotion(motionName: string): void {
     window.desktopPetApi.playMotion?.(motionName);
@@ -232,6 +309,9 @@ export class MotionPage implements ISettingsPage {
 
   /**
    * 渲染动作表格
+   *
+   * Args:
+   *     motionConfigs (MotionConfig[]): 当前模型动作规则列表。
    */
   private renderMotionTable(motionConfigs: MotionConfig[]): void {
     this.motionTableBody.innerHTML = "";
@@ -244,7 +324,16 @@ export class MotionPage implements ISettingsPage {
     this.motionEmpty.hidden = true;
 
     for (const motionName of this.availableMotions) {
-      const config = motionConfigs.find((c) => c.motionName === motionName) || {
+      const config = motionConfigs.find(/**
+       * 按动作名称查找当前行已有规则，未找到则由外层使用默认配置。
+       *
+       * Args:
+       *     c (MotionConfig): 当前动作的配置项。
+       *
+       * Returns:
+       *     boolean: 动作名称匹配时为 true。
+       */
+      (c) => c.motionName === motionName) || {
         motionName,
         setting: "none" as const,
       };
@@ -312,6 +401,10 @@ export class MotionPage implements ISettingsPage {
 
   /**
    * 更新系统提示词预览
+   *
+   * Args:
+   *     saved (PageRenderData["saved"]): 当前会话已保存的服务启用及权限策略。
+   *     motionConfigs (MotionConfig[]): 当前模型动作规则列表。
    */
   private updateSystemPromptPreview(saved: PageRenderData["saved"], motionConfigs: MotionConfig[]): void {
     const name = saved.name || "日和";
@@ -331,11 +424,38 @@ export class MotionPage implements ISettingsPage {
 
     // 添加表情标签说明
     const expressionLabels = motionConfigs
-      .filter((c) => c.setting === "expression" && c.label)
-      .map((c) => c.label!);
+      .filter(/**
+       * 仅保留已声明为表情且填写标签的动作，供提示词预览。
+       *
+       * Args:
+       *     c (MotionConfig): 当前动作的配置项。
+       *
+       * Returns:
+       *     string | false | undefined: 表情设置与非空标签都满足时为 true。
+       */
+      (c) => c.setting === "expression" && c.label)
+      .map(/**
+       * 提取已筛选动作的表情标签。
+       *
+       * Args:
+       *     c (MotionConfig): 当前动作的配置项。
+       *
+       * Returns:
+       *     string: 当前表情名称。
+       */
+      (c) => c.label!);
 
     if (expressionLabels.length > 0) {
-      const tagsList = expressionLabels.map((l) => `<${l}>`).join("");
+      const tagsList = expressionLabels.map(/**
+       * 把表情名称转换为模型输出可使用的标签。
+       *
+       * Args:
+       *     l (string): 当前可用于提示词的表情名称。
+       *
+       * Returns:
+       *     string: 带尖括号的表情标签。
+       */
+      (l) => `<${l}>`).join("");
       prompt += `\n你可以在对话中使用以下表情标签:${tagsList}使用时必须像示例一样使用尖括号<>包裹`;
     }
 

@@ -26,6 +26,7 @@ from app.agent.state.messages import (
 
 
 def test_domain_message_round_trip_keeps_type_and_hides_metadata_from_wire() -> None:
+    """验证领域消息恢复保留类型且模型正文不含内部元数据。"""
     message = TaskResultMessage(
         task_id="task-1",
         task_name="索引代码",
@@ -53,9 +54,7 @@ def test_domain_message_round_trip_keeps_type_and_hides_metadata_from_wire() -> 
 
 
 def test_orphaned_and_mixed_task_results_do_not_claim_success_or_failure() -> None:
-    """验证未知与混合终态不会被标记为成功或失败。
-
-    """
+    """验证未知与混合终态不会被标记为成功或失败。"""
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     orphaned = TaskResultMessage(
         task_id="task-1", task_name="重启前的任务", status="orphaned", result="结果未知",
@@ -70,9 +69,7 @@ def test_orphaned_and_mixed_task_results_do_not_claim_success_or_failure() -> No
 
 
 def test_channel_origin_survives_message_storage_without_changing_provider_wire() -> None:
-    """验证来源经过存储恢复且不污染模型协议字段。
-
-    """
+    """验证来源经过存储恢复且不污染模型协议字段。"""
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     human = HumanMessage(text="请帮我看看屏幕", origin_channel="qq")
     assistant = AssistantMessage(text="好的", origin_channel="qq")
@@ -91,6 +88,7 @@ def test_channel_origin_survives_message_storage_without_changing_provider_wire(
 
 
 def test_screenshot_payload_is_closed_and_compaction_never_rehydrates_image() -> None:
+    """验证截图内容类型封闭且压缩后不恢复图片。"""
     available = ToolMediaMessage(
         tool_name="screenshot",
         media_kind="screenshot",
@@ -119,6 +117,7 @@ def test_screenshot_payload_is_closed_and_compaction_never_rehydrates_image() ->
 
 
 def test_agent_state_exposes_snapshot_and_closes_tool_batch_semantically() -> None:
+    """验证状态以只读消息快照暴露并按工具语义闭合批次。"""
     state = AgentState.create_new("message-contract")
     first = ToolCall(id="call-a", name="screenshot", args={})
     second = ToolCall(id="call-b", name="read_file", args={})
@@ -150,6 +149,7 @@ def test_agent_state_exposes_snapshot_and_closes_tool_batch_semantically() -> No
 
 
 def test_runtime_input_subclasses_have_distinct_storage_discriminators() -> None:
+    """验证运行时通知子类保存各自独立类型。"""
     task = TaskResultMessage(
         task_id="task-1",
         task_name="任务",
@@ -169,6 +169,7 @@ def test_runtime_input_subclasses_have_distinct_storage_discriminators() -> None
 
 
 def test_closed_discriminators_reject_unknown_values_at_construction() -> None:
+    """验证构造消息时拒绝未知封闭类型。"""
     with pytest.raises(ValueError, match="媒体类型"):
         ToolMediaMessage(
             tool_name="capture",
@@ -193,6 +194,7 @@ def test_closed_discriminators_reject_unknown_values_at_construction() -> None:
 
 
 def test_tool_call_arguments_are_deeply_immutable() -> None:
+    """验证工具调用参数深层结构不可变。"""
     call = ToolCall(
         id="call-1",
         name="read_file",
@@ -227,6 +229,7 @@ def test_tool_call_arguments_are_deeply_immutable() -> None:
 
 
 def test_abstract_message_types_cannot_be_instantiated() -> None:
+    """验证抽象消息类型不能直接创建。"""
     with pytest.raises(TypeError, match="abstract"):
         BaseMessage()  # type: ignore[abstract]
     with pytest.raises(TypeError, match="abstract"):
@@ -234,6 +237,7 @@ def test_abstract_message_types_cannot_be_instantiated() -> None:
 
 
 def test_tool_message_requires_non_empty_call_id_in_all_decoders() -> None:
+    """验证所有工具结果解码路径要求非空调用编号。"""
     with pytest.raises((TypeError, ValueError)):
         ToolMessage(content="结果", tool_name="read_file")  # type: ignore[call-arg]
     with pytest.raises(ValueError, match="tool_call_id"):
@@ -257,6 +261,7 @@ def test_tool_message_requires_non_empty_call_id_in_all_decoders() -> None:
 
 
 def test_decoders_report_missing_or_illegal_message_type_as_contract_error() -> None:
+    """验证缺失或非法消息类型明确报告契约错误。"""
     with pytest.raises(MessageContractError, match="_message_type"):
         message_from_storage_format({})
     with pytest.raises(MessageContractError, match="message_type"):
@@ -282,6 +287,17 @@ def _restore_state(
     pending_actions=(),
     interrupt_data=None,
 ) -> AgentState:
+    """将测试消息和工具恢复字段经 checkpoint 格式重新还原为状态。
+
+    Args:
+        messages (list[dict]): 按对话顺序排列的消息集合。
+        pending (Any): 尚未得到文本结果的工具调用。
+        pending_actions (Any): 当前中断之后尚未执行的同批工具调用。
+        interrupt_data (Any): 当前等待审批或桌面执行的恢复信息。
+
+    Returns:
+        AgentState: 供外层用例断言使用的预设结果。
+    """
     state = AgentState.create_new("contract")
     checkpoint = state.to_checkpoint()
     checkpoint["messages"] = [message.to_storage_format() for message in messages]
@@ -292,6 +308,7 @@ def _restore_state(
 
 
 def test_agent_state_rejects_invalid_tool_protocol_sequences() -> None:
+    """验证状态拒绝非法工具请求结果顺序。"""
     call = ToolCall(id="call-1", name="read_file", args={})
     assistant = AssistantMessage(text="", tool_calls=(call,))
     result = ToolMessage(
@@ -314,6 +331,7 @@ def test_agent_state_rejects_invalid_tool_protocol_sequences() -> None:
 
 
 def test_agent_state_requires_unclosed_batch_to_match_recovery_state_exactly() -> None:
+    """验证未闭合工具批次与恢复记录必须精确对应。"""
     first = ToolCall(id="call-1", name="read_file", args={})
     second = ToolCall(id="call-2", name="write_file", args={})
     third = ToolCall(id="call-3", name="list_files", args={})
@@ -369,6 +387,7 @@ def test_agent_state_requires_unclosed_batch_to_match_recovery_state_exactly() -
 
 
 def test_agent_state_rejects_system_messages_and_compaction_insertion_abuse() -> None:
+    """验证状态拒绝系统提示词和非法压缩插入。"""
     state = AgentState.create_new("contract")
     with pytest.raises(ValueError, match="SystemMessage"):
         state.commit_compaction((SystemMessage(text="系统提示"),))

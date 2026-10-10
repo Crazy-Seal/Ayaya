@@ -34,24 +34,45 @@ from app.agent.tools.base import BaseTool, ToolResult
 # ==================== 测试替身 ====================
 
 def _delta(content=None, tool_calls=None, finish_reason=None):
-    """构造一个伪 openai 流式 chunk"""
+    """构造一个伪 openai 流式 chunk
+
+    Args:
+        content (Any): 当前处理的正文。
+        tool_calls (Any): 同一模型步骤中请求的工具调用。
+        finish_reason (Any): 脚本模型片段的结束原因。
+    """
     delta = types.SimpleNamespace(content=content, tool_calls=tool_calls)
     choice = types.SimpleNamespace(delta=delta, finish_reason=finish_reason)
     return types.SimpleNamespace(choices=[choice])
 
 
 def _tc_delta(index, id=None, name=None, arguments=None):
+    """生成指定工具索引、编号和参数片段的模型响应。
+
+    Args:
+        index (Any): 模型片段中的工具调用索引。
+        id (Any): 本次测试对象的稳定编号。
+        name (Any): 当前对象的名称。
+        arguments (Any): 模型工具调用的参数文本或字典。
+    """
     fn = types.SimpleNamespace(name=name, arguments=arguments)
     return types.SimpleNamespace(index=index, id=id, function=fn)
 
 
 class _FakeScreenshotTool(BaseTool):
+    """提供用例指定的工具响应、中断或异常，验证执行管道的结果保存与恢复。"""
     name = "screenshot"
     description = "截屏"
     parameters_schema = {"type": "object", "properties": {}}
     is_resumable = True
 
     async def execute(self, args, context):
+        """管道或插件管理器调用时执行本用例预设的结果、状态修改或异常分支。
+
+        Args:
+            args (dict[str, Any]): 当前工具调用或被包装函数的参数。
+            context (Any): 执行管道提供的工具运行上下文。
+        """
         if context.resume_data is None:
             return ToolResult.continuation("capture_screen", "获取截屏")
         return ToolResult.success(
@@ -62,6 +83,7 @@ class _FakeScreenshotTool(BaseTool):
 
 
 class _FakeSearchTool(BaseTool):
+    """提供用例指定的工具响应、中断或异常，验证执行管道的结果保存与恢复。"""
     name = "search_memory"
     description = "搜索记忆"
     parameters_schema = {
@@ -71,6 +93,12 @@ class _FakeSearchTool(BaseTool):
     }
 
     async def execute(self, args, context):
+        """管道或插件管理器调用时执行本用例预设的结果、状态修改或异常分支。
+
+        Args:
+            args (dict[str, Any]): 当前工具调用或被包装函数的参数。
+            context (Any): 执行管道提供的工具运行上下文。
+        """
         return ToolResult.success(f"检索结果: {args['query']}")
 
 
@@ -78,11 +106,26 @@ class _FakeLLM:
     """按调用次序回放脚本的伪 LLM 客户端。"""
 
     def __init__(self, scripts):
+        """保存本用例的脚本输入和依赖，初始化测试对象的执行记录。
+
+        该定义仅用于外层用例：按调用次序回放脚本的伪 LLM 客户端。
+
+        Args:
+            scripts (Any): 按模型调用顺序准备的响应或片段列表。
+        """
         self.scripts = scripts
         self.calls = 0
         self.messages = []
 
     async def astream(self, messages, tools=None):
+        """模型管道调用时按测试脚本顺序产出片段或异常，供外层检查消息和用量处理。
+
+        该定义仅用于外层用例：按调用次序回放脚本的伪 LLM 客户端。
+
+        Args:
+            messages (list[dict]): 按对话顺序排列的消息集合。
+            tools (list[dict] | None): 当前向模型公开的工具定义。
+        """
         self.messages.append(messages)
         script = self.scripts[self.calls]
         self.calls += 1
@@ -91,7 +134,14 @@ class _FakeLLM:
 
 
 class _PipelineHarness:
+    """提供当前用例所需的 _PipelineHarness 测试替身，执行记录仅供外层断言使用。"""
     def __init__(self, llm, tools):
+        """保存本用例的脚本输入和依赖，初始化测试对象的执行记录。
+
+        Args:
+            llm (Any): 当前用例提供的脚本模型客户端。
+            tools (list[dict] | None): 当前向模型公开的工具定义。
+        """
         self.config = AgentConfig(
             session_id="t", model_name="m", api_key="k",
             context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100), system_prompt="sys",
@@ -117,17 +167,35 @@ class _PipelineHarness:
 
 
 async def _drain(agen):
+    """完整消费异步事件流，供外层检查产出的事件。
+
+    Args:
+        agen (Any): 需要完整消费的异步事件生成器。
+    """
     return [ev async for ev in agen]
 
 
 # ==================== 流式工具调用聚合 ====================
 
 def test_astream_emits_each_tool_call_once():
+    """验证每次流式工具调用只产出一次。"""
     async def run():
+        """由外层测试调用，完成“每次流式工具调用只产出一次”的异步步骤。"""
         client = LLMClient(LLMConfig(model="m", api_key="k", base_url="http://x/v1"))
 
         async def fake_create(**kwargs):
+            """按脚本返回模型响应或模型流，替代 SDK 的远程创建请求。
+
+            该定义仅用于外层用例：验证每次流式工具调用只产出一次。
+
+            Args:
+                kwargs (dict[str, Any]): 传递给被调用函数的其他关键字参数。
+            """
             async def gen():
+                """向外层测试或模型客户端逐项产出本用例准备的流式片段。
+
+                该定义仅用于外层用例：验证每次流式工具调用只产出一次。
+                """
                 yield _delta(content="好的")
                 yield _delta(tool_calls=[_tc_delta(0, id="call_1", name="screenshot", arguments="")])
                 yield _delta(tool_calls=[_tc_delta(0, arguments="{}")])
@@ -150,11 +218,24 @@ def test_astream_emits_each_tool_call_once():
 
 
 def test_astream_accumulates_fragmented_arguments_and_signature():
+    """验证流式碎片正确合并参数和签名。"""
     async def run():
+        """由外层测试调用，完成“流式碎片正确合并参数和签名”的异步步骤。"""
         client = LLMClient(LLMConfig(model="m", api_key="k", base_url="http://x/v1"))
 
         async def fake_create(**kwargs):
+            """按脚本返回模型响应或模型流，替代 SDK 的远程创建请求。
+
+            该定义仅用于外层用例：验证流式碎片正确合并参数和签名。
+
+            Args:
+                kwargs (dict[str, Any]): 传递给被调用函数的其他关键字参数。
+            """
             async def gen():
+                """向外层测试或模型客户端逐项产出本用例准备的流式片段。
+
+                该定义仅用于外层用例：验证流式碎片正确合并参数和签名。
+                """
                 first_delta = _tc_delta(
                     0,
                     id="call_1",
@@ -193,11 +274,24 @@ def test_astream_accumulates_fragmented_arguments_and_signature():
 
 
 def test_astream_separates_different_calls_that_reuse_index():
+    """验证复用索引但编号不同的工具调用不会混淆。"""
     async def run():
+        """由外层测试调用，完成“复用索引但编号不同的工具调用不会混淆”的异步步骤。"""
         client = LLMClient(LLMConfig(model="m", api_key="k", base_url="http://x/v1"))
 
         async def fake_create(**kwargs):
+            """按脚本返回模型响应或模型流，替代 SDK 的远程创建请求。
+
+            该定义仅用于外层用例：验证复用索引但编号不同的工具调用不会混淆。
+
+            Args:
+                kwargs (dict[str, Any]): 传递给被调用函数的其他关键字参数。
+            """
             async def gen():
+                """向外层测试或模型客户端逐项产出本用例准备的流式片段。
+
+                该定义仅用于外层用例：验证复用索引但编号不同的工具调用不会混淆。
+                """
                 screenshot = _tc_delta(
                     0,
                     id="call_screenshot",
@@ -255,11 +349,28 @@ def test_astream_separates_different_calls_that_reuse_index():
     ['{"query":', "[]", '{} trailing', '{}{"query":"代码优化"}'],
 )
 def test_astream_rejects_invalid_tool_arguments(raw_arguments):
+    """验证无效工具参数被拒绝。
+
+    Args:
+        raw_arguments (Any): 尚未解析的工具参数 JSON 文本。
+    """
     async def run():
+        """由外层测试调用，完成“无效工具参数被拒绝”的异步步骤。"""
         client = LLMClient(LLMConfig(model="m", api_key="k", base_url="http://x/v1"))
 
         async def fake_create(**kwargs):
+            """按脚本返回模型响应或模型流，替代 SDK 的远程创建请求。
+
+            该定义仅用于外层用例：验证无效工具参数被拒绝。
+
+            Args:
+                kwargs (dict[str, Any]): 传递给被调用函数的其他关键字参数。
+            """
             async def gen():
+                """向外层测试或模型客户端逐项产出本用例准备的流式片段。
+
+                该定义仅用于外层用例：验证无效工具参数被拒绝。
+                """
                 yield _delta(tool_calls=[
                     _tc_delta(
                         0,
@@ -288,6 +399,7 @@ def test_astream_rejects_invalid_tool_arguments(raw_arguments):
 # ==================== 助手工具调用序列化 ====================
 
 def test_assistant_message_with_tools_serializes():
+    """验证带工具请求的助手消息可序列化。"""
     msg = AssistantMessage(
         text="",
         tool_calls=(ToolCall(id="c1", name="screenshot", args={}),),
@@ -298,7 +410,9 @@ def test_assistant_message_with_tools_serializes():
 
 
 def test_tool_call_extra_content_roundtrips_into_followup_request():
+    """验证工具附加协议内容在后续请求中完整保留。"""
     async def run():
+        """由外层测试调用，完成“工具附加协议内容在后续请求中完整保留”的异步步骤。"""
         signature = {"google": {"thought_signature": "signature-value"}}
         llm = _FakeLLM(scripts=[
             [StreamChunk(tool_call=ToolCall(
@@ -344,7 +458,9 @@ def test_tool_call_extra_content_roundtrips_into_followup_request():
 # ==================== 可恢复工具与图片注入 ====================
 
 def test_resumable_screenshot_roundtrip():
+    """验证截图工具可以经过中断与恢复完成。"""
     async def run():
+        """由外层测试调用，完成“截图工具可以经过中断与恢复完成”的异步步骤。"""
         llm = _FakeLLM(scripts=[
             # 第 1 次：模型请求截屏
             [StreamChunk(tool_call=ToolCall(id="c1", name="screenshot", args={}))],
@@ -395,7 +511,9 @@ def test_resumable_screenshot_roundtrip():
 # ==================== 核心上下文策略 ====================
 
 def test_pipeline_checkpoints_screenshot_compaction_before_llm_call():
+    """验证截图压缩先保存 checkpoint 再调用模型。"""
     async def run():
+        """由外层测试调用，完成“截图压缩先保存 checkpoint 再调用模型”的异步步骤。"""
         llm = _FakeLLM(scripts=[[StreamChunk(content="完成")]])
         agent = _PipelineHarness(llm, tools=[])
         state = AgentState.create_new("t")
@@ -412,6 +530,14 @@ def test_pipeline_checkpoints_screenshot_compaction_before_llm_call():
         snapshots: list[dict] = []
 
         async def checkpoint(current, *, checkpoint_type):
+            """记录当前状态保存类型和执行顺序，供用例确认先保存再调用模型或发布事件。
+
+            该定义仅用于外层用例：验证截图压缩先保存 checkpoint 再调用模型。
+
+            Args:
+                current (Any): 回调收到的当前 AgentState。
+                checkpoint_type (Any): 本次保存中间执行进度或完整轮次的类型。
+            """
             assert checkpoint_type == "intermediate"
             snapshots.append(deepcopy(current.to_checkpoint()))
             return len(snapshots)
@@ -444,7 +570,9 @@ def test_pipeline_checkpoints_screenshot_compaction_before_llm_call():
     ]
 
 def test_context_strategy_builds_without_temporary_state():
+    """验证上下文策略不依赖临时 Agent 状态。"""
     async def run():
+        """由外层测试调用，完成“上下文策略不依赖临时 Agent 状态”的异步步骤。"""
         llm = _FakeLLM(scripts=[[StreamChunk(content="你好呀")]])
         agent = _PipelineHarness(llm, tools=[])
         state = AgentState.create_new("t")
@@ -464,7 +592,9 @@ def test_context_strategy_builds_without_temporary_state():
 
 
 def test_pipeline_removes_streamed_assistant_time_prefix():
+    """验证流式助手回复的时间前缀被删除。"""
     async def run():
+        """由外层测试调用，完成“流式助手回复的时间前缀被删除”的异步步骤。"""
         llm = _FakeLLM(scripts=[[
             StreamChunk(content="[发送"),
             StreamChunk(content="时间：2026-09-10 10:11:12 +0800 星期四] "),
@@ -487,7 +617,9 @@ def test_pipeline_removes_streamed_assistant_time_prefix():
 
 
 def test_pipeline_keeps_expression_tag_before_removed_time_prefix():
+    """验证删除时间前缀时保留前置表情标签。"""
     async def run():
+        """由外层测试调用，完成“删除时间前缀时保留前置表情标签”的异步步骤。"""
         llm = _FakeLLM(scripts=[[
             StreamChunk(content="<开心>"),
             StreamChunk(content="[发送时间：2026-09-10 10:11:12 +0800 星期四]"),
@@ -510,9 +642,11 @@ def test_pipeline_keeps_expression_tag_before_removed_time_prefix():
 
 
 def test_pipeline_keeps_long_expression_tag_without_spending_prefix_buffer():
+    """验证长表情标签不消耗时间前缀缓冲预算。"""
     expression_tag = "<" + "x" * 120 + ">"
 
     async def run():
+        """由外层测试调用，完成“长表情标签不消耗时间前缀缓冲预算”的异步步骤。"""
         llm = _FakeLLM(scripts=[[
             StreamChunk(content=expression_tag),
             StreamChunk(content="[发送"),
@@ -536,9 +670,11 @@ def test_pipeline_keeps_long_expression_tag_without_spending_prefix_buffer():
 
 
 def test_pipeline_handles_long_expression_tag_split_into_characters():
+    """验证逐字到达的长表情标签仍正确保留。"""
     expression_tag = "<" + "x" * 120 + ">"
 
     async def run():
+        """由外层测试调用，完成“逐字到达的长表情标签仍正确保留”的异步步骤。"""
         script = [StreamChunk(content=char) for char in expression_tag]
         script.extend([
             StreamChunk(content="[发送"),
@@ -562,7 +698,9 @@ def test_pipeline_handles_long_expression_tag_split_into_characters():
 
 
 def test_pipeline_preserves_formatting_after_removed_time_prefix():
+    """验证删除时间前缀后保留正文格式。"""
     async def run():
+        """由外层测试调用，完成“删除时间前缀后保留正文格式”的异步步骤。"""
         llm = _FakeLLM(scripts=[[
             StreamChunk(content="[发送时间：2026-09-10 10:11:12 +0800 星期四]"),
             StreamChunk(content="\n\n    缩进正文"),
@@ -584,7 +722,9 @@ def test_pipeline_preserves_formatting_after_removed_time_prefix():
 
 
 def test_pipeline_handles_crlf_separator_split_across_chunks():
+    """验证跨片段的 CRLF 分隔符只去除一次。"""
     async def run():
+        """由外层测试调用，完成“跨片段的 CRLF 分隔符只去除一次”的异步步骤。"""
         llm = _FakeLLM(scripts=[[
             StreamChunk(content="[发送时间：2026-09-10 10:11:12 +0800 星期四]"),
             StreamChunk(content="\r"),
@@ -623,7 +763,14 @@ def test_pipeline_handles_crlf_separator_split_across_chunks():
     ],
 )
 def test_pipeline_preserves_non_prefix_assistant_text(chunks, expected):
+    """验证普通助手正文不会误当时间前缀删除。
+
+    Args:
+        chunks (Any): 本次模型流按顺序提供的片段。
+        expected (Any): 当前参数化用例预期的输出或状态。
+    """
     async def run():
+        """由外层测试调用，完成“普通助手正文不会误当时间前缀删除”的异步步骤。"""
         script = [StreamChunk(content=chunk) for chunk in chunks]
         script.append(StreamChunk(finish_reason="stop"))
         agent = _PipelineHarness(_FakeLLM(scripts=[script]), tools=[])
@@ -642,12 +789,26 @@ def test_pipeline_preserves_non_prefix_assistant_text(chunks, expected):
 
 
 def test_pipeline_flushes_unmatched_prefix_candidate_before_stream_error():
+    """验证模型流错误前释放未匹配成功的前缀文本。"""
     class FailingLLM:
+        """提供按用例脚本输出的模型响应，验证流式处理、摘要或失败恢复，不调用真实模型。
+
+        该定义仅用于外层用例：验证模型流错误前释放未匹配成功的前缀文本。
+        """
         async def astream(self, messages, tools=None):
+            """模型管道调用时按测试脚本顺序产出片段或异常，供外层检查消息和用量处理。
+
+            该定义仅用于外层用例：验证模型流错误前释放未匹配成功的前缀文本。
+
+            Args:
+                messages (list[dict]): 按对话顺序排列的消息集合。
+                tools (list[dict] | None): 当前向模型公开的工具定义。
+            """
             yield StreamChunk(content="[发送")
             raise RuntimeError("流式连接中断")
 
     async def run():
+        """由外层测试调用，完成“模型流错误前释放未匹配成功的前缀文本”的异步步骤。"""
         agent = _PipelineHarness(FailingLLM(), tools=[])
         state = AgentState.create_new("t")
         state.add_user_message("请回复")
@@ -663,9 +824,11 @@ def test_pipeline_flushes_unmatched_prefix_candidate_before_stream_error():
 
 
 def test_pipeline_stops_buffering_overlong_unclosed_expression_tag():
+    """验证超长未闭合表情标签停止缓冲。"""
     leading = "<" + "x" * 300
 
     async def run():
+        """由外层测试调用，完成“超长未闭合表情标签停止缓冲”的异步步骤。"""
         llm = _FakeLLM(scripts=[[
             StreamChunk(content=leading),
             StreamChunk(content="正文"),
@@ -685,7 +848,13 @@ def test_pipeline_stops_buffering_overlong_unclosed_expression_tag():
 
 @pytest.mark.parametrize("content", [None, "", "   \n\t"])
 def test_pipeline_rejects_empty_final_response(content):
+    """验证空最终回复明确报错。
+
+    Args:
+        content (Any): 当前处理的正文。
+    """
     async def run():
+        """由外层测试调用，完成“空最终回复明确报错”的异步步骤。"""
         script = [StreamChunk(finish_reason="stop")]
         if content is not None:
             script.insert(0, StreamChunk(content=content))
@@ -702,7 +871,9 @@ def test_pipeline_rejects_empty_final_response(content):
 
 
 def test_pipeline_keeps_content_filter_error():
+    """验证内容过滤错误保持原语义。"""
     async def run():
+        """由外层测试调用，完成“内容过滤错误保持原语义”的异步步骤。"""
         agent = _PipelineHarness(
             _FakeLLM(scripts=[[StreamChunk(finish_reason="content_filter")]]),
             tools=[],
@@ -719,18 +890,24 @@ def test_pipeline_keeps_content_filter_error():
 # ==================== Skill 与 MCP ====================
 
 def test_skill_loads_tools_and_prompt_fragment():
+    """验证技能装配工具并追加提示词片段。"""
     from app.agent.agent import Agent, AgentConfig
     from app.agent.skills.base import BaseSkill
     from app.agent.skills.registry import SkillRegistry
 
     @SkillRegistry.register("test_skill")
     class _TestSkill(BaseSkill):
+        """提供当前用例所需的 _TestSkill 测试替身，执行记录仅供外层断言使用。
+
+        该定义仅用于外层用例：验证技能装配工具并追加提示词片段。
+        """
         name = "test_skill"
         system_prompt_fragment = "你已获得读文件能力。"
         tools = ["read_file"]
         plugins = []
 
     async def run():
+        """由外层测试调用，完成“技能装配工具并追加提示词片段”的异步步骤。"""
         config = AgentConfig(session_id="t", model_name="m", api_key="k",
                              context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100),
                              system_prompt="基础", skills=["test_skill"])

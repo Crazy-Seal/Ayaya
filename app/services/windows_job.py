@@ -29,9 +29,7 @@ class WindowsJob:
         from ctypes import wintypes
 
         class BasicLimit(ctypes.Structure):
-            """定义 Windows 系统调用使用的 BasicLimit 内存布局。
-
-            """
+            """定义 Windows 系统调用使用的 BasicLimit 内存布局。"""
             _fields_ = [
                 ("PerProcessUserTimeLimit", ctypes.c_longlong),
                 ("PerJobUserTimeLimit", ctypes.c_longlong),
@@ -45,18 +43,14 @@ class WindowsJob:
             ]
 
         class IoCounters(ctypes.Structure):
-            """定义 Windows 系统调用使用的 IoCounters 内存布局。
-
-            """
+            """定义 Windows 系统调用使用的 IoCounters 内存布局。"""
             _fields_ = [(name, ctypes.c_ulonglong) for name in (
                 "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
                 "ReadTransferCount", "WriteTransferCount", "OtherTransferCount",
             )]
 
         class ExtendedLimit(ctypes.Structure):
-            """定义 Windows 系统调用使用的 ExtendedLimit 内存布局。
-
-            """
+            """定义 Windows 系统调用使用的 ExtendedLimit 内存布局。"""
             _fields_ = [
                 ("BasicLimitInformation", BasicLimit),
                 ("IoInfo", IoCounters),
@@ -107,9 +101,7 @@ class WindowsJob:
                 kernel.CloseHandle(process)
 
     def terminate(self) -> None:
-        """结束 Job 内进程树，非 Windows 实例不执行系统调用。
-
-        """
+        """结束 Job 内进程树，非 Windows 实例不执行系统调用。"""
         if self._handle is not None:
             self._kernel.TerminateJobObject(self._handle, 1)
 
@@ -122,16 +114,14 @@ class WindowsJob:
 
         Raises:
             ctypes.WinError: 输入、持久状态或系统调用不满足当前执行约束。
-            RuntimeError: 输入、持久状态或系统调用不满足当前执行约束。
+            RuntimeError: 进程 {pid} 的挂起线程不存在。
         """
         if os.name != "nt":
             return
         from ctypes import wintypes
 
         class ThreadEntry(ctypes.Structure):
-            """定义 Windows 系统调用使用的 ThreadEntry 内存布局。
-
-            """
+            """定义 Windows 系统调用使用的 ThreadEntry 内存布局。"""
             _fields_ = [
                 ("dwSize", wintypes.DWORD),
                 ("cntUsage", wintypes.DWORD),
@@ -184,9 +174,7 @@ class WindowsJob:
             kernel.CloseHandle(snapshot)
 
     def close(self) -> None:
-        """释放 Job 句柄并清空引用，关闭操作可重复调用。
-
-        """
+        """释放 Job 句柄并清空引用，关闭操作可重复调用。"""
         if self._handle is not None:
             self._kernel.CloseHandle(self._handle)
             self._handle = None

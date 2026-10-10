@@ -15,11 +15,21 @@ MEMORY_DEFAULT_CONFIG = {
 }
 
 class AgentPluginSettings(BaseModel):
+    """保存会话中一个插件的启用标记与专属配置。"""
     enabled: bool = True
     config: dict[str, Any] = Field(default_factory=dict)
 
 
 def _merge_plugin_config(defaults: dict[str, Any], value: dict[str, Any] | None) -> dict[str, Any]:
+    """在默认配置副本上覆盖已保存值，避免修改全局默认设置。
+
+    Args:
+        defaults (dict[str, Any]): 该插件的默认配置副本来源。
+        value (dict[str, Any] | None): 当前需要校验或转换的值。
+
+    Returns:
+        dict[str, Any]: 合并后的独立配置字典。
+    """
     merged = dict(defaults)
     if value:
         merged.update(value)
@@ -27,6 +37,15 @@ def _merge_plugin_config(defaults: dict[str, Any], value: dict[str, Any] | None)
 
 
 def _validate_plugin_config(name: str, config: dict[str, Any]) -> dict[str, Any]:
+    """使用插件声明的配置模型规范化设置，未声明模型时保持原配置。
+
+    Args:
+        name (str): 当前对象的名称。
+        config (dict[str, Any]): 调用方提供的配置。
+
+    Returns:
+        dict[str, Any]: 经过配置模型转换的字典，或原字典。
+    """
     from app.agent.plugins.registry import PluginRegistry
 
     plugin_class = PluginRegistry.get(name)
@@ -37,6 +56,7 @@ def _validate_plugin_config(name: str, config: dict[str, Any]) -> dict[str, Any]
 
 
 class ChatSettings(BaseModel):
+    """承载会话的模型、角色、上下文策略和权限，构造时同步规范化插件配置。"""
     session_id: str
     model_name: str
     openai_api_key: str
@@ -59,6 +79,11 @@ class ChatSettings(BaseModel):
 
     @model_validator(mode="after")
     def normalize_agent_plugins(self) -> "ChatSettings":
+        """Pydantic 字段校验后补齐固有记忆插件，并按各插件配置模型校验设置。
+
+        Returns:
+            ChatSettings: 已规范化插件设置的当前 ChatSettings。
+        """
         plugins = dict(self.agent_plugins or {})
 
         memory = plugins.get("memory")
@@ -88,6 +113,11 @@ class ChatSettings(BaseModel):
         return self
 
     def __hash__(self):
+        """按模型、权限、上下文和插件配置生成哈希，反映影响 Agent 装配的设置变化。
+
+        Returns:
+            int: 当前配置字段组合的哈希值。
+        """
         return hash((
             self.session_id,
             self.model_name,

@@ -4,13 +4,19 @@ import test from "node:test";
 import { buildEnabledServerPolicy, fingerprintMcpConfig } from "../src/settings/mcp-config.js";
 import type { MCPServerConfig } from "../shared-types.js";
 
-test("首次启用服务器只写入服务开关", () => {
+test("首次启用服务器只写入服务开关", /**
+ * 验证首次启用服务器只写入服务开关。
+ */
+() => {
   assert.deepEqual(buildEnabledServerPolicy(undefined), {
     enabled: true,
   });
 });
 
-test("重新启用服务器保留身份绑定", () => {
+test("重新启用服务器保留身份绑定", /**
+ * 验证重新启用服务器保留身份绑定。
+ */
+() => {
   const policy = buildEnabledServerPolicy(
     { enabled: true, identity_fingerprint: "a".repeat(64) }
   );
@@ -20,14 +26,20 @@ test("重新启用服务器保留身份绑定", () => {
   });
 });
 
-test("启用服务时不附加额外工具策略", () => {
+test("启用服务时不附加额外工具策略", /**
+ * 验证启用服务时不附加额外工具策略。
+ */
+() => {
   const policy = buildEnabledServerPolicy(
     { enabled: false }
   );
   assert.deepEqual(policy, { enabled: true });
 });
 
-test("MCP 配置指纹不受 env 键顺序影响", () => {
+test("MCP 配置指纹不受 env 键顺序影响", /**
+ * 验证MCP 配置指纹不受 env 键顺序影响。
+ */
+() => {
   const base: MCPServerConfig = {
     id: "fs",
     name: "Filesystem",

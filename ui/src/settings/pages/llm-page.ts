@@ -34,6 +34,24 @@ export class LlmPage implements ISettingsPage {
   /** 表情标签列表（从 motion 配置获取） */
   private expressionLabels: string[] = [];
 
+  /**
+   * 绑定模型、凭据和角色输入框，接入确认按钮及按住显示凭据行为。
+   *
+   * Args:
+   *     baseUrlInput (HTMLInputElement): 编辑模型服务地址的输入框。
+   *     apiKeyInput (HTMLInputElement): 编辑模型 API 凭据的输入框。
+   *     apiKeyRevealButton (HTMLButtonElement): 按住时临时显示凭据的按钮。
+   *     modelNameInput (HTMLInputElement): 编辑模型名称的输入框。
+   *     temperatureInput (HTMLInputElement): 编辑模型生成温度的输入框。
+   *     systemPromptInput (HTMLTextAreaElement): 显示或编辑系统提示词的输入框。
+   *     confirmBtn (HTMLButtonElement): 用户点击后提交本页修改的按钮。
+   *     nameInput (HTMLInputElement): 编辑助手称呼的输入框。
+   *     featureInput (HTMLInputElement): 编辑助手特征的输入框。
+   *     characterInput (HTMLInputElement): 编辑助手角色的输入框。
+   *     addressInput (HTMLInputElement): 编辑助手对用户称呼的输入框。
+   *     characteristicInput (HTMLTextAreaElement): 编辑助手性格说明的输入框。
+   *     constraintInput (HTMLTextAreaElement): 编辑助手行为约束的输入框。
+   */
   constructor(
     baseUrlInput: HTMLInputElement,
     apiKeyInput: HTMLInputElement,
@@ -68,6 +86,9 @@ export class LlmPage implements ISettingsPage {
 
   /**
    * 设置事件回调
+   *
+   * Args:
+   *     callback (PageEventCallback): 设置页主控制器接收本页提交或编辑事件的回调。
    */
   onEvent(callback: PageEventCallback): void {
     this.eventCallback = callback;
@@ -85,20 +106,35 @@ export class LlmPage implements ISettingsPage {
       this.addressInput,
       this.characteristicInput,
       this.constraintInput,
-    ].forEach((input) => {
-      input.addEventListener("input", () => {
+    ].forEach(/**
+     * 为每个角色相关输入框登记变化监听，修改后更新系统提示词预览。
+     *
+     * Args:
+     *     input (HTMLTextAreaElement | HTMLInputElement): 当前日志输入或配置输入框。
+     */
+    (input) => {
+      input.addEventListener("input", /**
+       * 角色字段输入变化后重新生成当前提示词预览。
+       */
+      () => {
         this.updateSystemPromptPreview();
       });
     });
 
     // 确认按钮
-    this.confirmBtn.addEventListener("click", () => {
+    this.confirmBtn.addEventListener("click", /**
+     * 用户点击确认后通知设置控制器校验并保存模型和角色设置。
+     */
+    () => {
       this.eventCallback?.({ type: "submit", page: "llm" });
     });
   }
 
   /**
    * 渲染页面
+   *
+   * Args:
+   *     data (PageRenderData): 当前已保存设置和本页所需模型、插件及工具目录。
    */
   render(data: PageRenderData): void {
     // 保存表情标签列表
@@ -179,7 +215,16 @@ export class LlmPage implements ISettingsPage {
 
     // 添加表情标签说明
     if (this.expressionLabels.length > 0) {
-      const tagsList = this.expressionLabels.map((l) => `<${l}>`).join("");
+      const tagsList = this.expressionLabels.map(/**
+       * 把当前可用表情标签转成模型可输出的标签格式。
+       *
+       * Args:
+       *     l (string): 当前可用于提示词的表情名称。
+       *
+       * Returns:
+       *     string: 带尖括号的表情标签。
+       */
+      (l) => `<${l}>`).join("");
       prompt += `\n你可以在对话中使用以下表情标签:${tagsList}使用时必须像示例一样使用尖括号<>包裹`;
     }
 

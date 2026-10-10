@@ -32,11 +32,11 @@ def validate_json_value(
     """在序列化前限制 JSON 值的深度、节点数和近似字节量。
 
     Args:
-        value: 待验证的 JSON 兼容值。
-        label: 错误消息中的数据名称。
-        max_depth: 允许的最大嵌套深度。
-        max_nodes: 允许遍历的最大节点数。
-        max_bytes: 允许的近似 UTF-8 字节数；``None`` 表示不在此处限制内容大小。
+        value (Any): 待验证的 JSON 兼容值。
+        label (str): 错误消息中的数据名称。
+        max_depth (int): 允许的最大嵌套深度。
+        max_nodes (int): 允许遍历的最大节点数。
+        max_bytes (int | None): 允许的近似 UTF-8 字节数；``None`` 表示不在此处限制内容大小。
 
     Raises:
         MCPResourceLimitError: 任一配额超限或对象不是 JSON 兼容值。
@@ -78,7 +78,11 @@ def validate_json_value(
 
 
 def validate_tool_catalog(tools: Iterable[Any]) -> list[Any]:
-    """在缓存或指纹计算前完整验证 MCP 工具目录。"""
+    """在缓存或指纹计算前完整验证 MCP 工具目录。
+
+    Args:
+        tools (Iterable[Any]): 当前向模型公开的工具定义。
+    """
     catalog = tools if isinstance(tools, list) else list(tools)
     if len(catalog) > MAX_TOOLS_PER_SERVER:
         raise MCPResourceLimitError("MCP 工具数量超过限制")
@@ -110,7 +114,11 @@ def validate_tool_catalog(tools: Iterable[Any]) -> list[Any]:
 
 
 def limit_instructions(value: Any) -> str | None:
-    """截断过长的 Server instructions，并附带明确标记。"""
+    """截断过长的 Server instructions，并附带明确标记。
+
+    Args:
+        value (Any): 当前需要校验或转换的值。
+    """
     if value is None:
         return None
     text = str(value)

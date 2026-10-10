@@ -8,7 +8,10 @@ import {
   isTrustedRendererUrl,
 } from "../electron/renderer-security.js";
 
-test("生产策略只允许明确列出的本地页面", () => {
+test("生产策略只允许明确列出的本地页面", /**
+ * 验证生产策略只允许明确列出的本地页面。
+ */
+() => {
   const policy = createTrustedRendererPolicy({
     productionEntryUrls: [
       "file:///C:/Ayaya/dist/index.html",
@@ -24,8 +27,16 @@ test("生产策略只允许明确列出的本地页面", () => {
   assert.equal(isTrustedRendererUrl("https://example.com", policy), false);
 });
 
-test("生产策略拒绝非本地入口和无法解析的目标", () => {
+test("生产策略拒绝非本地入口和无法解析的目标", /**
+ * 验证生产策略拒绝非本地入口和无法解析的目标。
+ */
+() => {
   assert.throws(
+    /**
+     * 由外层操作在对应处理阶段调用，取得本用例指定的条目或响应，供外层断言处理结果。
+     *
+     * 此定义用于：验证生产策略拒绝非本地入口和无法解析的目标。
+     */
     () => createTrustedRendererPolicy({
       productionEntryUrls: ["https://example.com/index.html"],
     }),
@@ -37,7 +48,10 @@ test("生产策略拒绝非本地入口和无法解析的目标", () => {
   assert.equal(isTrustedRendererUrl("not-a-url", policy), false);
 });
 
-test("开发策略只允许环回 Vite origin 的应用页面", () => {
+test("开发策略只允许环回 Vite origin 的应用页面", /**
+ * 验证开发策略只允许环回 Vite origin 的应用页面。
+ */
+() => {
   const policy = createTrustedRendererPolicy({
     devServerUrl: "http://127.0.0.1:5173",
     productionEntryUrls: [],
@@ -52,8 +66,16 @@ test("开发策略只允许环回 Vite origin 的应用页面", () => {
   assert.equal(isTrustedRendererUrl("http://evil@127.0.0.1:5173/", policy), false);
 });
 
-test("非环回开发服务器配置被拒绝", () => {
+test("非环回开发服务器配置被拒绝", /**
+ * 验证非环回开发服务器配置被拒绝。
+ */
+() => {
   assert.throws(
+    /**
+     * 由外层操作在对应处理阶段调用，取得本用例指定的条目或响应，供外层断言处理结果。
+     *
+     * 此定义用于：验证非环回开发服务器配置被拒绝。
+     */
     () => createTrustedRendererPolicy({
       devServerUrl: "http://192.168.1.20:5173",
       productionEntryUrls: [],
@@ -62,20 +84,31 @@ test("非环回开发服务器配置被拒绝", () => {
   );
 });
 
-test("开发服务器配置必须是纯 origin", () => {
+test("开发服务器配置必须是纯 origin", /**
+ * 验证开发服务器配置必须是纯 origin。
+ */
+() => {
   for (const devServerUrl of [
     "http://127.0.0.1:5173/app",
     "http://127.0.0.1:5173/?token=value",
     "http://127.0.0.1:5173/#fragment",
   ]) {
     assert.throws(
+      /**
+       * 由外层操作在对应处理阶段调用，取得本用例指定的条目或响应，供外层断言处理结果。
+       *
+       * 此定义用于：验证开发服务器配置必须是纯 origin。
+       */
       () => createTrustedRendererPolicy({ devServerUrl, productionEntryUrls: [] }),
       /纯 origin/
     );
   }
 });
 
-test("IPC 只接受可信顶层 frame", () => {
+test("IPC 只接受可信顶层 frame", /**
+ * 验证IPC 只接受可信顶层 frame。
+ */
+() => {
   const policy = createTrustedRendererPolicy({
     devServerUrl: "http://127.0.0.1:5173",
     productionEntryUrls: [],
@@ -96,7 +129,10 @@ test("IPC 只接受可信顶层 frame", () => {
   assert.equal(isTrustedIpcSender(null, policy), false);
 });
 
-test("安全日志描述不包含查询参数、片段或非 Web URL 内容", () => {
+test("安全日志描述不包含查询参数、片段或非 Web URL 内容", /**
+ * 验证安全日志描述不包含查询参数、片段或非 Web URL 内容。
+ */
+() => {
   assert.equal(
     describeRendererUrl("https://user:secret@example.com/path?token=secret#fragment"),
     "https://example.com/path"

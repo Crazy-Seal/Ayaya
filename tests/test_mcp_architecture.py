@@ -20,6 +20,14 @@ from app.schemas.tool_permissions import ToolPolicy
 
 
 def _chat_settings(**overrides) -> ChatSettings:
+    """构造当前 MCP 或记忆测试所需的会话配置。
+
+    Args:
+        overrides (Any): 覆盖当前测试配置或工具参数默认值的字段。
+
+    Returns:
+        ChatSettings: 供外层用例断言使用的预设结果。
+    """
     values = {
         "session_id": "session-a",
         "model_name": "model",
@@ -34,16 +42,28 @@ def _chat_settings(**overrides) -> ChatSettings:
 
 
 class _ExistingTool(BaseTool):
+    """提供用例指定的工具响应、中断或异常，验证执行管道的结果保存与恢复。"""
     name = "mcp__filesystem__read_file"
     description = "existing"
     parameters_schema = {"type": "object", "properties": {}}
 
     async def execute(self, args: dict, context: ToolContext) -> ToolResult:
+        """管道或插件管理器调用时执行本用例预设的结果、状态修改或异常分支。
+
+        Args:
+            args (dict): 当前工具调用或被包装函数的参数。
+            context (ToolContext): 执行管道提供的工具运行上下文。
+
+        Returns:
+            ToolResult: 供外层用例断言使用的预设结果。
+        """
         return ToolResult.success("ok")
 
 
 class _Manager:
+    """提供当前用例所需的 _Manager 测试替身，执行记录仅供外层断言使用。"""
     def __init__(self) -> None:
+        """保存本用例的脚本输入和依赖，初始化测试对象的执行记录。"""
         self.configs = {
             "filesystem": StdioMCPServerConfig(
                 id="filesystem", name="Filesystem", enabled=True, command="python"
@@ -58,14 +78,35 @@ class _Manager:
         self.connected: list[str] = []
 
     def get_server_config(self, server_id: str):
+        """读取测试目录中的 MCP 服务配置。
+
+        Args:
+            server_id (str): MCP 服务的稳定编号。
+        """
         if server_id not in self.configs:
             raise MCPConnectionError(f"MCP Server '{server_id}' 不存在")
         return self.configs[server_id]
 
     def get_server_identity(self, server_id: str) -> str:
+        """返回测试指定的服务身份摘要。
+
+        Args:
+            server_id (str): MCP 服务的稳定编号。
+
+        Returns:
+            str: 供外层用例断言使用的预设结果。
+        """
         return server_identity_fingerprint(self.configs[server_id])
 
     async def connect(self, server_id: str) -> list[MCPToolDescriptor]:
+        """记录服务连接请求，并提供用例指定的工具目录或失败。
+
+        Args:
+            server_id (str): MCP 服务的稳定编号。
+
+        Returns:
+            list[MCPToolDescriptor]: 供外层用例断言使用的预设结果。
+        """
         self.connected.append(server_id)
         if server_id == "broken":
             raise MCPConnectionError("连接失败")
@@ -78,6 +119,11 @@ class _Manager:
 
 @pytest.mark.asyncio
 async def test_agent_assembles_tools_and_isolates_server_failures(tmp_path: Path) -> None:
+    """验证Agent 装配 MCP 工具时隔离单个服务失败。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     manager = _Manager()
     settings = _chat_settings(
         tool_permissions={
@@ -123,6 +169,7 @@ async def test_agent_assembles_tools_and_isolates_server_failures(tmp_path: Path
 
 
 def test_connection_manager_public_surface_has_no_session_policy_methods() -> None:
+    """验证连接管理器不承担会话权限策略接口。"""
     from app.services.mcp_connection_manager import MCPConnectionManager
 
     assert not hasattr(MCPConnectionManager, "create_tool_adapters")

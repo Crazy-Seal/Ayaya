@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class EmbeddingConfig:
-    """Embedding 配置"""
+    """保存向量模型请求地址、凭据、模型、维数和超时。"""
     api_key: str
     model: str = "text-embedding-3-small"
     base_url: str = "https://api.openai.com/v1"
@@ -20,9 +20,14 @@ class EmbeddingConfig:
 
 
 class EmbeddingClient:
-    """Embedding API 客户端"""
+    """将文本交给配置的向量模型，并统一返回项目检索使用的向量。"""
 
     def __init__(self, config: EmbeddingConfig):
+        """保存向量模型配置并创建 HTTP 客户端，此时尚未发送向量计算请求。
+
+        Args:
+            config (EmbeddingConfig): 调用方提供的配置。
+        """
         self.config = config
         self._client = httpx.AsyncClient(
             base_url=config.base_url,
@@ -37,10 +42,10 @@ class EmbeddingClient:
         """批量文本向量化
 
         Args:
-            texts: 文本列表
+            texts (list[str]): 文本列表
 
         Returns:
-            向量列表
+            list[list[float]]: 向量列表
         """
         if not texts:
             return []
@@ -72,14 +77,14 @@ class EmbeddingClient:
         """单个查询向量化
 
         Args:
-            text: 查询文本
+            text (str): 查询文本
 
         Returns:
-            向量
+            list[float]: 向量
         """
         embeddings = await self.embed_documents([text])
         return embeddings[0]
 
     async def close(self) -> None:
-        """关闭连接"""
+        """释放异步向量模型 HTTP 客户端及连接资源。"""
         await self._client.aclose()

@@ -20,9 +20,7 @@ def test_inbox_input_and_checkpoint_commit_as_one_delivery(tmp_path) -> None:
     """
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：输入交付与 checkpoint 在同一事务提交或回滚。
-
-        """
+        """在隔离异步环境中安排并验证：输入交付与 checkpoint 在同一事务提交或回滚。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         db_path = str(tmp_path / "state.sqlite3")
         manager = StateManager("shared", db_path=db_path)
@@ -285,9 +283,7 @@ def test_queued_input_survives_connection_reopen_and_task_terminal_does_not_rele
     """
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：同一进程重开 Inbox 连接时排队输入仍保留且不被任务通知放行。
-
-        """
+        """在隔离异步环境中安排并验证：同一进程重开 Inbox 连接时排队输入仍保留且不被任务通知放行。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         db_path = str(tmp_path / "state.sqlite3")
         inbox = SessionInbox("shared", db_path)
@@ -330,9 +326,7 @@ def test_activation_batch_groups_later_task_terminal_before_human_projection(tmp
     """
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：同次激活的任务终态先于真人输入投影。
-
-        """
+        """在隔离异步环境中安排并验证：同次激活的任务终态先于真人输入投影。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         db_path = str(tmp_path / "state.sqlite3")
         inbox = SessionInbox("shared", db_path)
@@ -359,9 +353,7 @@ def test_completed_checkpoint_releases_queued_input_in_same_transaction(tmp_path
     """
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：正常完成 checkpoint 原子放行排队消息。
-
-        """
+        """在隔离异步环境中安排并验证：正常完成 checkpoint 原子放行排队消息。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         db_path = str(tmp_path / "state.sqlite3")
         inbox = SessionInbox("shared", db_path)

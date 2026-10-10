@@ -24,6 +24,14 @@ _LOCATE_SYSTEM_PROMPT = (
 
 
 def _vlm_config() -> tuple[str, str, str]:
+    """读取截图定位模型的环境配置，缺少凭据时立即拒绝调用。
+
+    Returns:
+        tuple[str, str, str]: API 凭据、服务地址和模型名称。
+
+    Raises:
+        RuntimeError: 未配置 VLM_API_KEY。
+    """
     api_key = os.getenv("VLM_API_KEY")
     if not api_key:
         raise RuntimeError("缺少VLM_API_KEY环境变量。")
@@ -33,7 +41,11 @@ def _vlm_config() -> tuple[str, str, str]:
 
 
 def extract_bbox(content: Any) -> list[int]:
-    """从 VLM 文本响应中解析 bbox_2d [x1,y1,x2,y2]（容错 JSON 提取）。"""
+    """从 VLM 文本响应中解析 bbox_2d [x1,y1,x2,y2]（容错 JSON 提取）。
+
+    Args:
+        content (Any): 当前处理的正文。
+    """
     if isinstance(content, list):
         content = "".join(
             part.get("text", "") if isinstance(part, dict) else str(part) for part in content
@@ -62,7 +74,13 @@ def extract_bbox(content: Any) -> list[int]:
 
 
 def clamp_bbox(bbox: list[int], width: int, height: int) -> list[int]:
-    """把 bbox 夹到图像范围内。"""
+    """把 bbox 夹到图像范围内。
+
+    Args:
+        bbox (list[int]): 归一化画布中的 xyxy 边界框。
+        width (int): 截图宽度，用于坐标范围判断。
+        height (int): 截图高度，用于坐标范围判断。
+    """
     x1, y1, x2, y2 = bbox
     x1 = max(0, min(x1, width - 1))
     y1 = max(0, min(y1, height - 1))
@@ -80,8 +98,8 @@ class VLMService:
         """在截图中定位元素，返回 bbox_2d。
 
         Args:
-            intent: 元素描述，如"屏幕中间的确定按钮"
-            image_data_url: 完整 data URL（data:image/...;base64,...）
+            intent (str): 元素描述，如"屏幕中间的确定按钮"
+            image_data_url (str): 完整 data URL（data:image/...;base64,...）
         """
         api_key, base_url, model = _vlm_config()
         client = AsyncOpenAI(api_key=api_key, base_url=base_url)

@@ -13,7 +13,7 @@ class MCPSettingsDao:
         """初始化 MCP 配置数据访问对象。
 
         Args:
-            config_file: 可选的配置文件路径；未提供时使用运行环境默认路径。
+            config_file (Path | None): 可选的配置文件路径；未提供时使用运行环境默认路径。
         """
         self.config_file = config_file or get_mcp_settings_file()
 
@@ -21,7 +21,7 @@ class MCPSettingsDao:
         """加载并校验 MCP Server 配置。
 
         Returns:
-            经过 Pydantic 校验的 MCP Server 配置；文件不存在时返回空配置。
+            MCPServersConfig: 经过 Pydantic 校验的 MCP Server 配置；文件不存在时返回空配置。
         """
         if not self.config_file.exists():
             return MCPServersConfig()
@@ -33,10 +33,10 @@ class MCPSettingsDao:
         """通过临时文件原子保存 MCP Server 配置。
 
         Args:
-            config: 待保存的 MCP Server 配置。
+            config (MCPServersConfig): 待保存的 MCP Server 配置。
 
         Returns:
-            已保存的原配置对象。
+            MCPServersConfig: 已保存的原配置对象。
         """
         self.config_file.parent.mkdir(parents=True, exist_ok=True)
         temp_file = self.config_file.with_suffix(f"{self.config_file.suffix}.tmp")

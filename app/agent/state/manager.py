@@ -93,7 +93,7 @@ class StateManager:
             db_path (str | None): 共享 SQLite 路径，省略时使用当前环境的隔离存储。
 
         Returns:
-            list[str]: 当前查询或执行结果。
+            list[str]: 最新 checkpoint 仍含工具中断恢复材料的会话编号。
         """
         path = str(db_path or get_checkpoint_db())
         async with aiosqlite.connect(path) as db:
@@ -108,12 +108,23 @@ class StateManager:
         ]
 
     def __init__(self, session_id: str, db_path: str | None = None):
+        """绑定会话和数据库路径；首次读写时才创建连接及共享表。
+
+        Args:
+            session_id (str): 当前操作所属的会话编号。
+            db_path (str | None): 当前环境使用的 SQLite 数据库路径。
+        """
         self.session_id = session_id
         self.db_path = str(db_path or get_checkpoint_db())
         self._db: aiosqlite.Connection | None = None
         self.last_loaded_checkpoint_type: CheckpointType | None = None
 
     async def _get_db(self) -> aiosqlite.Connection:
+        """首次使用时连接当前环境数据库并初始化共享表，之后复用本对象的连接。
+
+        Returns:
+            aiosqlite.Connection: 已完成表结构检查的 SQLite 连接。
+        """
         if self._db is None:
             os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
             self._db = await aiosqlite.connect(self.db_path)
@@ -121,11 +132,7 @@ class StateManager:
         return self._db
 
     async def _init_tables(self) -> None:
-        """初始化共享 checkpoint、协议日志与 Inbox 表，保持既有存储约束。
-
-        Raises:
-            RuntimeError: 输入、持久状态或系统调用不满足当前执行约束。
-        """
+        """初始化共享 checkpoint、协议日志与 Inbox 表，保持既有存储约束。"""
         db = await self._get_db()
         await ensure_inbox_schema(db)
         await db.execute("""
@@ -187,6 +194,14 @@ class StateManager:
 
     @staticmethod
     def _media_category(message: ToolMediaMessage) -> ImageCategory:
+        """按工具媒体类型选择图片保存目录，保持截图、本地图片和 MCP 图片分开。
+
+        Args:
+            message (ToolMediaMessage): 当前需要读取或追加的消息。
+
+        Returns:
+            ImageCategory: save_multiple_images 使用的图片分类。
+        """
         return {
             "screenshot": "screenshot",
             "mcp": "mcp",
@@ -195,7 +210,12 @@ class StateManager:
 
     @classmethod
     def _externalize_images(cls, state: AgentState) -> None:
-        """通过不可变消息替换附加本地文件引用。"""
+        """保存尚无完整文件引用的工具图片，并替换内存消息附加引用；失败保留原图片地址。
+
+        Args:
+            state (AgentState): 当前会话的内存 AgentState；保存由调用方负责。
+        """
+        # 1. 已压缩或已完整保存文件引用的图片跳过；其他可用图片尝试外置保存。
         for message in state.messages:
             if not isinstance(message, ToolMediaMessage):
                 continue
@@ -209,6 +229,7 @@ class StateManager:
                     category=cls._media_category(message),
                 )
             except Exception as exc:
+                # 1.1. 文件保存失败不丢图片，协议日志继续使用 Base64，后续保存还能再次尝试。
                 logger.warning(
                     "[StateManager] 工具图片外置失败，协议日志保留 Base64: %s",
                     exc,
@@ -225,6 +246,14 @@ class StateManager:
 
     @staticmethod
     def _domain_payload(message: BaseMessage) -> dict[str, Any]:
+        """提取模型正文之外的领域字段，单独保存来源、任务身份及媒体类别。
+
+        Args:
+            message (BaseMessage): 当前需要读取或追加的消息。
+
+        Returns:
+            dict[str, Any]: 写入协议日志 domain_json 的领域元数据。
+        """
         stored = message.to_storage_format()
         result: dict[str, Any] = {}
         for key, value in stored.items():
@@ -246,6 +275,14 @@ class StateManager:
     def _protocol_payload(
         message: BaseMessage,
     ) -> tuple[dict[str, Any], list[str] | None]:
+        """生成独立协议正文；图片文件引用完整时用本地路径替换 Base64，checkpoint 图片保持原样。
+
+        Args:
+            message (BaseMessage): 当前需要读取或追加的消息。
+
+        Returns:
+            tuple[dict[str, Any], list[str] | None]: 协议正文及对应附件路径；引用不完整时保留原图片地址并返回空附件。
+        """
         payload = deepcopy(message.to_openai_format())
         attachments: list[str] | None = None
         if isinstance(message, HumanMessage) and message.image_filenames:
@@ -262,6 +299,7 @@ class StateManager:
             for part in content
             if isinstance(part, dict) and part.get("type") == "image_url"
         ] if isinstance(content, list) else []
+        # 1. 文件引用与图片分段必须一一对应才替换地址，避免历史展示拿错附件。
         if attachments and len(attachments) == len(image_parts):
             for part, relative_path in zip(image_parts, attachments, strict=True):
                 image_url = part.get("image_url")
@@ -273,6 +311,17 @@ class StateManager:
 
     @classmethod
     def _protocol_rows(cls, state: AgentState) -> list[tuple[Any, ...]]:
+        """按消息顺序准备协议日志写入行，排除临时系统提示词和上下文摘要。
+
+        Args:
+            state (AgentState): 当前会话的内存 AgentState；保存由调用方负责。
+
+        Returns:
+            list[tuple[Any, ...]]: 供同一数据库事务批量插入的记录列表。
+
+        Raises:
+            ValueError: 消息转换后的角色不受协议日志支持。
+        """
         rows: list[tuple[Any, ...]] = []
         for message in state.messages:
             if not message.enters_protocol_log:
@@ -306,6 +355,14 @@ class StateManager:
         return rows
 
     async def load(self) -> AgentState:
+        """读取本会话编号最大的 checkpoint 并校验恢复材料，没有历史则只创建空内存状态。
+
+        Returns:
+            AgentState: 恢复后的状态或新会话空状态，同时记录载入的 checkpoint 类型。
+
+        Raises:
+            ValueError: checkpoint 版本或消息协议与当前代码不兼容。
+        """
         db = await self._get_db()
         async with db.execute(LATEST_CHECKPOINT_SQL, (self.session_id,)) as cursor:
             row = await cursor.fetchone()
@@ -435,6 +492,11 @@ class StateManager:
         return int(checkpoint_id)
 
     async def _prune_completed(self, db: aiosqlite.Connection) -> None:
+        """在当前写事务中只保留本会话最近三十份完成 checkpoint，不删除对话协议日志。
+
+        Args:
+            db (aiosqlite.Connection): 当前写事务使用的 SQLite 连接，由调用方统一提交。
+        """
         await db.execute(
             """
             DELETE FROM checkpoints
@@ -454,6 +516,11 @@ class StateManager:
         )
 
     async def clear_session(self) -> int:
+        """删除本会话的 checkpoint 并提交，对话协议日志和其他会话记录保留。
+
+        Returns:
+            int: 本次删除的 checkpoint 数量。
+        """
         db = await self._get_db()
         async with db.execute(
             "SELECT COUNT(*) FROM checkpoints WHERE session_id = ?",
@@ -467,13 +534,24 @@ class StateManager:
         return int(deleted_count)
 
     async def close(self) -> None:
+        """释放本对象持有的数据库连接；重复调用不会再次关闭已释放连接。"""
         if self._db:
             await self._db.close()
             self._db = None
 
     async def __aenter__(self) -> "StateManager":
+        """异步上下文开始时连接数据库并检查共享表。
+
+        Returns:
+            StateManager: 当前 StateManager。
+        """
         await self._get_db()
         return self
 
     async def __aexit__(self, *args) -> None:
+        """异步上下文结束时关闭数据库连接，不吞掉调用方异常。
+
+        Args:
+            args (Any): 当前工具调用或被包装函数的参数。
+        """
         await self.close()

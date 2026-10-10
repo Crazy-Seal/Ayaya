@@ -531,9 +531,7 @@ class SessionInbox:
         return cursor.rowcount == 1
 
     async def close(self) -> None:
-        """关闭实例持有的 SQLite 连接，后续访问可以重新打开。
-
-        """
+        """关闭实例持有的 SQLite 连接，后续访问可以重新打开。"""
         if self._db is not None:
             await self._db.close()
             self._db = None

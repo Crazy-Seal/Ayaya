@@ -22,7 +22,10 @@ CONTEXT_SUMMARY_PREFIX = "[系统提示：前情摘要]"
 
 
 class ContextCompressionPolicy:
-    """在不修改输入消息值的前提下选择 replacement。"""
+    """选择需要压缩的旧消息，并返回替换后的消息集合。
+
+    本类不写数据库，也不直接修改 AgentState；调用方确认候选结果后再更新状态。
+    """
 
     @staticmethod
     def compress_screenshots(
@@ -31,7 +34,18 @@ class ContextCompressionPolicy:
         ttl_human_messages: int,
         max_screenshots: int,
     ) -> tuple[tuple[BaseMessage, ...], int]:
+        """按后续真人输入数和截图总数，把旧截图替换为保留历史文件引用的占位内容。
+
+        Args:
+            messages (Sequence[BaseMessage]): 按对话顺序排列的领域消息。
+            ttl_human_messages (int): 截图后达到多少条真人消息时压缩该截图。
+            max_screenshots (int): 模型上下文中最多保留多少张未压缩截图。
+
+        Returns:
+            tuple[tuple[BaseMessage, ...], int]: 替换后的消息及本次压缩的截图数量；原消息不变。
+        """
         targets: set[int] = set()
+        # 1. 从最新消息往前数真人输入；工具结果和后台通知不会消耗截图保留次数。
         human_count_after = 0
         for index in range(len(messages) - 1, -1, -1):
             message = messages[index]
@@ -45,6 +59,7 @@ class ContextCompressionPolicy:
             if isinstance(message, HumanMessage):
                 human_count_after += 1
 
+        # 2. 过期截图之外，仍超出数量上限时优先压缩最旧的截图。
         remaining = [
             index
             for index, message in enumerate(messages)
@@ -56,6 +71,7 @@ class ContextCompressionPolicy:
         excess = max(len(remaining) - max_screenshots, 0)
         targets.update(remaining[:excess])
 
+        # 3. 新建截图消息只保留历史文件引用；原消息不变，由调用方提交替换结果。
         candidate = list(messages)
         for index in targets:
             message = candidate[index]
@@ -73,6 +89,17 @@ class ContextCompressionPolicy:
         keep_latest: int = 5,
         protected_tool_call_ids: Iterable[str] = (),
     ) -> tuple[tuple[BaseMessage, ...], int]:
+        """缩短允许压缩的旧工具结果，并删除与这些结果明确关联的工具图片。
+
+        Args:
+            messages (Sequence[BaseMessage]): 当前对话消息。
+            keep_latest (int): 保留最近多少条可压缩工具结果。
+            protected_tool_call_ids (Iterable[str]): 尚未结束的工具调用编号，这些结果不得压缩。
+
+        Returns:
+            tuple[tuple[BaseMessage, ...], int]: 替换后的消息及被替换或删除的消息数量。
+        """
+        # 1. 尚未结束的工具调用仍需完整结果，先从可压缩候选中排除。
         protected = set(protected_tool_call_ids)
         candidates = [
             message
@@ -81,11 +108,13 @@ class ContextCompressionPolicy:
             and message.compressible
             and message.tool_call_id not in protected
         ]
+        # 2. 最近几项保留原文；更旧的结果只有达到文本长度阈值才替换正文。
         targets = candidates[:-keep_latest] if keep_latest else candidates
         target_ids = {message.message_id for message in targets}
         changed = 0
         result: list[BaseMessage] = []
         for message in messages:
+            # 3. 工具图片必须明确关联到选中结果才删除，避免误删其他调用的图片。
             if (
                 isinstance(message, ToolMediaMessage)
                 and message.associated_message_id in target_ids
@@ -107,7 +136,16 @@ class ContextCompressionPolicy:
 
     @staticmethod
     def protocol_blocks(messages: Sequence[BaseMessage]) -> list[list[int]]:
+        """把模型工具请求与紧随其后的对应结果归为一组，供压缩边界检查使用。
+
+        Args:
+            messages (Sequence[BaseMessage]): 按执行顺序排列的消息。
+
+        Returns:
+            list[list[int]]: 每组消息在原序列中的下标；普通消息各自成组。
+        """
         blocks: list[list[int]] = []
+        # 1. 普通消息独立成组；模型的工具请求从对应结果中逐项扩展同一组。
         index = 0
         while index < len(messages):
             message = messages[index]
@@ -139,6 +177,20 @@ class ContextCompressionPolicy:
         *,
         ratio: float,
     ) -> list[int]:
+        """按完整历史轮次选择待总结的前段消息，始终保留最近一次真人输入及其后内容。
+
+        Args:
+            messages (Sequence[BaseMessage]): 本次压缩开始前捕获的消息集合。
+            budget_service (RoughTokenEstimator): 用于粗估各轮次大小的对象。
+            ratio (float): 希望覆盖的可压缩历史 token 比例。
+
+        Returns:
+            list[int]: 从最旧轮次开始选择的消息下标；没有已完成历史时为空。
+
+        Raises:
+            ValueError: 按真人输入划分的轮次拆开了工具请求和对应结果。
+        """
+        # 1. 最近真人输入及其后的工具执行属于当前工作，不参与历史摘要。
         latest_human_index = max(
             (
                 index
@@ -150,6 +202,7 @@ class ContextCompressionPolicy:
         eligible_indices = list(range(latest_human_index))
         if not eligible_indices:
             return []
+        # 2. 按真人输入划分完整旧轮次，之后检查每轮是否包含完整工具请求/结果。
         units: list[list[int]] = []
         current: list[int] = []
         for index in eligible_indices:
@@ -165,6 +218,7 @@ class ContextCompressionPolicy:
             for atomic in atomic_sets:
                 if unit_set & atomic and not atomic <= unit_set:
                     raise ValueError("压缩轮次边界拆分了工具协议块")
+        # 3. 按 token 比例从最旧轮次开始选取；最后一轮整体保留，不按单条消息截断。
         eligible_tokens = sum(
             budget_service.estimate_message(messages[index].to_openai_format())
             for unit in units

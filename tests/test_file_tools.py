@@ -13,16 +13,35 @@ from app.agent.tools.registry import ToolRegistry
 
 
 def _context(session_id: str = "session-a") -> SimpleNamespace:
+    """为桌面或文件工具构造当前用例的运行上下文。
+
+    Args:
+        session_id (str): 当前操作所属的会话编号。
+
+    Returns:
+        SimpleNamespace: 供外层用例断言使用的预设结果。
+    """
     return SimpleNamespace(session_id=session_id)
 
 
 def test_read_file_supports_line_and_character_ranges(tmp_path: Path, monkeypatch) -> None:
+    """验证文件读取支持行范围和字符范围。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
+    """
     import app.agent.utils.infra.safe_path as safe_path_module
 
     monkeypatch.setattr(safe_path_module, "WORKDIR", tmp_path)
     (tmp_path / "sample.txt").write_text("甲行\n乙行\n丙行\n", encoding="utf-8")
 
     async def scenario() -> tuple[str, str]:
+        """由外层测试调用，完成“文件读取支持行范围和字符范围”的异步步骤。
+
+        Returns:
+            tuple[str, str]: 供外层用例断言使用的预设结果。
+        """
         lines = await read_file._tool_func(
             path="sample.txt", start=1, end=3, unit="line", context=_context()
         )
@@ -38,6 +57,7 @@ def test_read_file_supports_line_and_character_ranges(tmp_path: Path, monkeypatc
 
 
 def test_read_file_resolves_current_session_artifact() -> None:
+    """验证文件读取解析当前会话工具结果引用。"""
     store = ToolResultArtifactStore(get_tool_results_dir())
     reference = store.save("session-a", "第一行\n第二行\n第三行")
 
@@ -53,6 +73,7 @@ def test_read_file_resolves_current_session_artifact() -> None:
 
 
 def test_read_file_rejects_invalid_range_and_cross_session_artifact() -> None:
+    """验证无效范围和跨会话结果引用被拒绝。"""
     store = ToolResultArtifactStore(get_tool_results_dir())
     reference = store.save("session-a", "secret")
 
@@ -76,10 +97,17 @@ def test_read_file_rejects_invalid_range_and_cross_session_artifact() -> None:
 
 
 def test_read_file_disables_oversized_result_persistence() -> None:
+    """验证读取工具不再外置保存超长读取结果。"""
     assert read_file.persist_oversized_result is False
 
 
 def test_read_image_returns_valid_images_as_system_tool_images(tmp_path: Path, monkeypatch) -> None:
+    """验证有效图片以内部工具图片返回。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
+    """
     import app.agent.utils.infra.safe_path as safe_path_module
 
     monkeypatch.setattr(safe_path_module, "WORKDIR", tmp_path)
@@ -96,6 +124,12 @@ def test_read_image_returns_valid_images_as_system_tool_images(tmp_path: Path, m
 
 
 def test_read_image_counts_only_valid_images_toward_limit(tmp_path: Path, monkeypatch) -> None:
+    """验证只有有效图片占用数量预算。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
+    """
     import app.agent.utils.infra.safe_path as safe_path_module
 
     monkeypatch.setattr(safe_path_module, "WORKDIR", tmp_path)
@@ -126,9 +160,7 @@ def test_run_ps_preserves_output_for_unified_normalization(monkeypatch) -> None:
     from app.services.task_supervisor import TaskLaunchResult
 
     class _Launcher:
-        """提供隔离测试替身，用于验证：任务运行器输出仍交给统一工具结果规范化。
-
-        """
+        """提供隔离测试替身，用于验证：任务运行器输出仍交给统一工具结果规范化。"""
         async def launch(self, session_id, command, argv, *, cwd, background, timeout_sec,
                          origin_run_id=None, origin_tool_call_id=None):
             """执行该回归场景中的局部测试步骤。
@@ -168,6 +200,12 @@ def test_run_ps_preserves_output_for_unified_normalization(monkeypatch) -> None:
 
 
 def test_apply_patch_adds_updates_and_deletes_files(tmp_path: Path, monkeypatch) -> None:
+    """验证补丁工具完成新增、修改和删除。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
+    """
     import app.agent.utils.infra.safe_path as safe_path_module
 
     monkeypatch.setattr(safe_path_module, "WORKDIR", tmp_path)
@@ -193,6 +231,12 @@ def test_apply_patch_adds_updates_and_deletes_files(tmp_path: Path, monkeypatch)
 
 
 def test_apply_patch_validates_every_operation_before_writing(tmp_path: Path, monkeypatch) -> None:
+    """验证补丁全部校验成功后才写入文件。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
+    """
     import app.agent.utils.infra.safe_path as safe_path_module
 
     monkeypatch.setattr(safe_path_module, "WORKDIR", tmp_path)
@@ -212,6 +256,12 @@ def test_apply_patch_validates_every_operation_before_writing(tmp_path: Path, mo
 
 
 def test_apply_patch_rejects_workspace_escape(tmp_path: Path, monkeypatch) -> None:
+    """验证补丁路径不能越过工作区。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
+    """
     import app.agent.utils.infra.safe_path as safe_path_module
 
     monkeypatch.setattr(safe_path_module, "WORKDIR", tmp_path)
@@ -227,6 +277,7 @@ def test_apply_patch_rejects_workspace_escape(tmp_path: Path, monkeypatch) -> No
 
 
 def test_tool_registry_exposes_new_tools_without_internal_modules() -> None:
+    """验证工具注册表公开新工具并跳过内部模块。"""
     names = ToolRegistry.list_tools()
 
     assert "apply_patch" in names
@@ -240,6 +291,7 @@ def test_tool_registry_exposes_new_tools_without_internal_modules() -> None:
 
 
 def test_apply_patch_schema_explains_the_supported_patch_grammar() -> None:
+    """验证补丁 Schema 明确说明支持的语法。"""
     description = apply_patch.parameters_schema["properties"]["patch"]["description"]
 
     assert "*** Add File:" in description

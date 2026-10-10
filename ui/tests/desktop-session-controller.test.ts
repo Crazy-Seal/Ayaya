@@ -9,17 +9,19 @@ import type { ApprovalDecision, ChannelCommand, InteractionEvent } from "../shar
  * 建立可由测试显式结束的等待，不连接真实后端。
  *
  * Returns:
- *     object: Promise 及完成、失败函数，用于查询或连接屏障。
+ *     { promise: Promise<T>; resolve: (value: T) => void; reject: (reason: unknown) => void; }: Promise 及完成、失败函数，用于查询或连接屏障。
  */
 const deferred = <T>() => {
   let resolve!: (value: T) => void;
   let reject!: (reason: unknown) => void;
   const promise = new Promise<T>(/**
-   * 保存测试等待的结束函数。
+   * 由 Promise 构造器立即调用，取得本用例指定的条目或响应，供外层断言处理结果。
+   *
+   * 此定义用于：建立可由测试显式结束的等待，不连接真实后端。
    *
    * Args:
-   *     done ((value: T | PromiseLike<T>) => void): 成功完成函数。
-   *     fail ((reason: unknown) => void): 失败完成函数。
+   *     done ((value: T | PromiseLike<T>) => void): 让测试等待以成功结果结束的函数。
+   *     fail ((reason?: any) => void): 让测试等待以脚本异常结束的函数。
    */
   (done, fail) => { resolve = done; reject = fail; });
   return { promise, resolve, reject };
@@ -32,10 +34,12 @@ const deferred = <T>() => {
  *     Promise<void>: 本轮异步回调已获得执行机会。
  */
 const flush = (): Promise<void> => new Promise<void>(/**
- * 将测试继续安排到微任务处理之后。
+ * 由 Promise 构造器立即调用，取得本用例指定的条目或响应，供外层断言处理结果。
+ *
+ * 此定义用于：等待当前流读取和页面事件链完成一轮调度。
  *
  * Args:
- *     resolve (() => void): 下一轮继续测试的函数。
+ *     resolve ((value: void | PromiseLike<void>) => void): 准备成功或等待结束时完成 Promise 的函数。
  */
 (resolve) => { setImmediate(resolve); });
 
@@ -43,7 +47,7 @@ const flush = (): Promise<void> => new Promise<void>(/**
  * 构造带测试 epoch 的真实线协议事件。
  *
  * Args:
- *     kind (string): 事件类别。
+ *     kind (InteractionEvent["kind"]): 事件类别。
  *     sequence (number): 会话发布编号。
  *     payload (Record<string, unknown>): 对应事件内容。
  *
@@ -72,7 +76,9 @@ class TestConnection {
    *     signal (AbortSignal): 本次后端请求的取消信号。
    */
   constructor(signal: AbortSignal) {
-    /** 取消连接时结束 pending reader，避免测试留下后台读取。 */
+    /**
+     *  取消连接时结束 pending reader，避免测试留下后台读取。
+     */
     const abort = (): void => {
       signal.removeEventListener("abort", abort);
       this.writer.error(new Error("测试连接已取消"));
@@ -82,13 +88,15 @@ class TestConnection {
        * 保存流写入端口并开始监听取消。
        *
        * Args:
-       *     writer (ReadableStreamDefaultController<Uint8Array>): SSE 字节流写入端口。
+       *     writer (ReadableStreamDefaultController<Uint8Array<ArrayBufferLike>>): SSE 字节流写入端口。
        */
       start: (writer) => {
         this.writer = writer;
         signal.addEventListener("abort", abort, { once: true });
       },
-      /** 读取方结束时移除取消监听。 */
+      /**
+       *  读取方结束时移除取消监听。
+       */
       cancel: () => { signal.removeEventListener("abort", abort); },
     });
     this.response = new Response(body);
@@ -158,7 +166,9 @@ class Harness {
         this.received.push(value);
         for (const listener of this.listeners) listener(value);
       },
-      /** 测试不写真实应用日志。 */
+      /**
+       *  测试不写真实应用日志。
+       */
       log: () => {},
       reconnectDelayMs: 1,
     });
@@ -168,14 +178,18 @@ class Harness {
        * 保存页面监听，并提供页面销毁时的移除函数。
        *
        * Args:
-       *     listener ((value: InteractionEvent) => void): 页面事件处理入口。
+       *     listener ((event: InteractionEvent) => void): 页面事件处理入口。
        *
        * Returns:
        *     () => void: 移除该页面的监听。
        */
       onInteractionEvent: (listener) => {
         this.listeners.add(listener);
-        /** 模拟页面销毁时解除 IPC 监听。 */
+        /**
+         * 由外层操作在对应处理阶段调用，移除该项已登记记录。
+         *
+         * 此定义用于：保存页面监听，并提供页面销毁时的移除函数。
+         */
         return () => { this.listeners.delete(listener); };
       },
       /**
@@ -185,21 +199,27 @@ class Harness {
        *     command (ChannelCommand): 页面决定提交的动作。
        *
        * Returns:
-       *     Promise<object>: 成功受理回执。
+       *     Promise<{ accepted: true; run_id: string; }>: 成功受理回执。
        */
       submitInteractionCommand: async (command) => {
         this.commands.push(command);
         return { accepted: true, run_id: "run" };
       },
-      /** 返回空任务列表，避免访问生产数据。 */
+      /**
+       *  返回空任务列表，避免访问生产数据。
+       */
       getBackgroundTasks: async () => [],
-      /** 返回空输出页，避免访问生产数据。 */
+      /**
+       *  返回空输出页，避免访问生产数据。
+       */
       getBackgroundTaskOutput: async () => ({ text: "", next_offset: 0, has_more: false }),
     };
   }
 }
 
-/** 提供无需执行动作的展示端口替身。 */
+/**
+ *  提供无需执行动作的展示端口替身。
+ */
 const noop = (): void => {};
 
 /**
@@ -210,7 +230,7 @@ const noop = (): void => {};
  *     history (Promise<void>): 历史读取完成屏障。
  *
  * Returns:
- *     object: 客户端、按钮和记录过的显示结果。
+ *     { client: RuntimeChatClient; button: { disabled: boolean; innerHTML: string; title: string; setAttribute: () => void; }; replies: string[]; errors: string[]; approvals: () => number; dismissed: () => number; }: 客户端、按钮和记录过的显示结果。
  */
 const makePage = (bridge: RuntimeChatClientOptions["bridge"], history = Promise.resolve()) => {
   const replies: string[] = [];
@@ -238,45 +258,59 @@ const makePage = (bridge: RuntimeChatClientOptions["bridge"], history = Promise.
        * 保存查询失败的可见错误。
        *
        * Args:
-       *     text (string): 错误说明。
+       *     text (string | undefined): 错误说明。
        */
       showErrorMessage: (text) => { errors.push(text ?? ""); },
       /**
        * 等待当前页面历史读取屏障并返回隔离历史。
        *
        * Returns:
-       *     Promise<ChatHistoryItem[]>: 当前页面已应用的隔离历史列表。
+       *     Promise<never[]>: 当前页面已应用的隔离历史列表。
        */
       loadHistory: async () => { await history; return []; },
     },
     confirmDialog: {
-      /** 展示审批并保持未决定，用后续事件验证关闭。 */
+      /**
+       *  展示审批并保持未决定，用后续事件验证关闭。
+       */
       open: async () => {
         approvals += 1;
-        return new Promise<ApprovalDecision>(/** 本测试不产生人工决定。 */
+        return new Promise<ApprovalDecision>(/**
+         * 由 Promise 构造器立即调用；当前用例无需使用此通知内容。
+         *
+         * 此定义用于：展示审批并保持未决定，用后续事件验证关闭。
+         */
         () => {});
       },
-      /** 记录后端已处理审批时关闭模态框。 */
+      /**
+       *  记录后端已处理审批时关闭模态框。
+       */
       dismiss: () => { dismissed += 1; },
     },
   });
   return { client, button, replies, errors,
-    /** 返回已打开的审批数。 */
+    /**
+     *  返回已打开的审批数。
+     */
     approvals: () => approvals,
-    /** 返回后端事件关闭的审批数。 */
+    /**
+     *  返回后端事件关闭的审批数。
+     */
     dismissed: () => dismissed,
   };
 };
 
 test("同会话页面重载取得新快照，历史完成前不能提交，之后等待完整回答并恢复审批", /**
- * 保留主进程控制器，只替换页面监听，覆盖删除非当前模型导致重载的连接状态。
- *
- * Returns:
- *     Promise<void>: 页面重载、事件显示和连接清理均完成。
+ * 验证同会话页面重载取得新快照，历史完成前不能提交，之后等待完整回答并恢复审批。
  */
 async () => {
   const oldDocument = globalThis.document;
-  globalThis.document = { /** 本测试不创建任务和排队容器。 */ getElementById: () => null } as unknown as Document;
+  globalThis.document = { /**
+   * 返回当前用例预设的聊天控件。
+   *
+   * 此定义用于：验证同会话页面重载取得新快照，历史完成前不能提交，之后等待完整回答并恢复审批。
+   */
+  getElementById: () => null } as unknown as Document;
   const harness = new Harness();
   const history = deferred<void>();
   try {
@@ -327,10 +361,7 @@ async () => {
 });
 
 test("旧请求忽略取消后迟到，其快照不会进入当前连接或完成新等待", /**
- * 使用延迟 fetch 验证本地代次保护，不只检查 AbortSignal。
- *
- * Returns:
- *     Promise<void>: 新旧请求和订阅清理结束。
+ * 验证旧请求忽略取消后迟到，其快照不会进入当前连接或完成新等待。
  */
 async () => {
   const harness = new Harness(true);
@@ -338,7 +369,11 @@ async () => {
     const old = harness.controller.subscribe("s");
     const current = harness.controller.subscribe("s", { refreshSnapshot: true });
     let completed = false;
-    void current.then(/** 记录当前首次快照等待是否已完成。 */
+    void current.then(/**
+     * 由上一步异步操作成功完成后调用，取得本用例指定的条目或响应，供外层断言处理结果。
+     *
+     * 此定义用于：验证旧请求忽略取消后迟到，其快照不会进入当前连接或完成新等待。
+     */
     () => { completed = true; });
     harness.firstResponse.resolve(harness.connections[0].response);
     await old;
@@ -357,14 +392,16 @@ async () => {
 });
 
 test("历史读取失败仍应用快照并允许之后发送", /**
- * 确认历史查询失败不让初始化永久等待。
- *
- * Returns:
- *     Promise<void>: 查询失败已显示且新页面仍可正常发送。
+ * 验证历史读取失败仍应用快照并允许之后发送。
  */
 async () => {
   const oldDocument = globalThis.document;
-  globalThis.document = { /** 不提供额外页面容器。 */ getElementById: () => null } as unknown as Document;
+  globalThis.document = { /**
+   * 返回当前用例预设的聊天控件。
+   *
+   * 此定义用于：验证历史读取失败仍应用快照并允许之后发送。
+   */
+  getElementById: () => null } as unknown as Document;
   const harness = new Harness();
   const history = deferred<void>();
   try {

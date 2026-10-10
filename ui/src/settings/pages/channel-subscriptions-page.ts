@@ -53,22 +53,22 @@ export class ChannelSubscriptionsPage {
       checkbox.setAttribute("aria-label", `订阅 ${channel.display_name}`);
       // 2. 保存成功用后端列表重绘，失败时回退本地勾选并显示原因。
       checkbox.addEventListener("change", /**
-       * 响应当前控件事件，调用所属视图的刷新、输出或命令入口。
+       * 用户修改渠道开关后等待后端保存，成功刷新列表，失败恢复原选择并显示原因。
        */
       () => {
         void window.desktopPetApi.setChannelSubscription(
           sessionId, channel.channel, checkbox.checked,
         ).then(/**
-         * 应用已经完成的异步结果，继续当前事件或页面更新。
+         * 订阅保存成功后使用后端返回的完整列表刷新当前会话显示。
          *
          * Args:
-         *     updated (any): 已经持久保存的渠道配置。
+         *     updated (ChannelSubscription[]): 后端保存后返回的最新订阅或设置记录。
          */
         (updated) => this.show(sessionId, updated)).catch(/**
-         * 处理异步失败并更新对应错误提示，不取消后端运行。
+         * 订阅保存失败后回退用户刚改变的开关，并在状态区域显示错误。
          *
          * Args:
-         *     error (unknown): 当前异步查询或提交失败原因。
+         *     error (unknown): 本次捕获的异常。
          */
         (error: unknown) => {
           checkbox.checked = !checkbox.checked;

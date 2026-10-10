@@ -25,7 +25,13 @@ from app.routes.chat_history import list_chat_history, list_chat_history_last_n
 
 
 def test_checkpoint_and_protocol_log_are_saved_atomically(tmp_path: Path) -> None:
+    """验证checkpoint 和协议日志在同一事务保存。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     async def scenario() -> None:
+        """由外层测试调用，完成“checkpoint 和协议日志在同一事务保存”的异步步骤。"""
         db_path = tmp_path / "agent.sqlite3"
         manager = StateManager("session", db_path=str(db_path))
         try:
@@ -65,7 +71,17 @@ def test_checkpoint_and_protocol_log_are_saved_atomically(tmp_path: Path) -> Non
 
 
 def test_history_dao_projects_visible_rows_before_pagination(tmp_path: Path) -> None:
+    """验证历史先筛选可见行再分页。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     async def scenario() -> list[dict]:
+        """由外层测试调用，完成“历史先筛选可见行再分页”的异步步骤。
+
+        Returns:
+            list[dict]: 供外层用例断言使用的预设结果。
+        """
         db_path = tmp_path / "agent.sqlite3"
         manager = StateManager("session", db_path=str(db_path))
         try:
@@ -80,6 +96,13 @@ def test_history_dao_projects_visible_rows_before_pagination(tmp_path: Path) -> 
             dao = ChatHistoryDao(db_path=db_path)
 
             async def reject_full_history_load(_session_id: str) -> list[dict]:
+                """全量历史读取被调用时主动失败，验证分页流程使用有限查询。
+
+                该定义仅用于外层用例：验证历史先筛选可见行再分页。
+
+                Args:
+                    _session_id (str): 当前操作所属的会话编号。
+                """
                 raise AssertionError("分页查询不应先加载并投影整个会话")
 
             dao._visible_protocol_rows = reject_full_history_load  # type: ignore[method-assign]
@@ -94,7 +117,17 @@ def test_history_dao_projects_visible_rows_before_pagination(tmp_path: Path) -> 
 
 
 def test_history_dao_keeps_projection_order_across_small_query_chunks(tmp_path: Path) -> None:
+    """验证小块查询仍保持可见历史顺序。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     async def scenario() -> tuple[list[dict], list[dict]]:
+        """由外层测试调用，完成“小块查询仍保持可见历史顺序”的异步步骤。
+
+        Returns:
+            tuple[list[dict], list[dict]]: 供外层用例断言使用的预设结果。
+        """
         db_path = tmp_path / "agent.sqlite3"
         manager = StateManager("session", db_path=str(db_path))
         try:
@@ -128,7 +161,17 @@ def test_history_dao_keeps_projection_order_across_small_query_chunks(tmp_path: 
 
 
 def test_tool_image_protocol_row_references_its_tool_message(tmp_path: Path) -> None:
+    """验证工具图片协议行引用对应文本结果。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     async def scenario() -> tuple[str, str | None]:
+        """由外层测试调用，完成“工具图片协议行引用对应文本结果”的异步步骤。
+
+        Returns:
+            tuple[str, str | None]: 供外层用例断言使用的预设结果。
+        """
         db_path = tmp_path / "agent.sqlite3"
         manager = StateManager("session", db_path=str(db_path))
         try:
@@ -164,7 +207,17 @@ def test_tool_image_protocol_row_references_its_tool_message(tmp_path: Path) -> 
 def test_compressed_checkpoint_preserves_externalized_screenshot_history(
     tmp_path: Path,
 ) -> None:
+    """验证截图从 checkpoint 压缩后历史仍保留外置文件。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     async def scenario() -> tuple[dict, dict, AgentState]:
+        """由外层测试调用，完成“截图从 checkpoint 压缩后历史仍保留外置文件”的异步步骤。
+
+        Returns:
+            tuple[dict, dict, AgentState]: 供外层用例断言使用的预设结果。
+        """
         db_path = tmp_path / "agent.sqlite3"
         manager = StateManager("session", db_path=str(db_path))
         try:
@@ -241,6 +294,7 @@ def test_compressed_checkpoint_preserves_externalized_screenshot_history(
 
 
 def test_tool_image_without_tool_call_id_is_not_misassociated() -> None:
+    """验证缺少调用编号的图片不会误关联其他工具。"""
     state = AgentState.create_new("session")
     message = ToolMediaMessage(
         tool_name="unknown",
@@ -258,7 +312,17 @@ def test_tool_image_without_tool_call_id_is_not_misassociated() -> None:
 def test_history_dao_raises_for_missing_message_type_but_keeps_legacy_notice(
     tmp_path: Path,
 ) -> None:
+    """验证消息类型缺失明确报错但保留旧工具提示兼容。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     async def scenario() -> tuple[MessageContractError, list[dict]]:
+        """由外层测试调用，完成“消息类型缺失明确报错但保留旧工具提示兼容”的异步步骤。
+
+        Returns:
+            tuple[MessageContractError, list[dict]]: 供外层用例断言使用的预设结果。
+        """
         db_path = tmp_path / "agent.sqlite3"
         manager = StateManager("session", db_path=str(db_path))
         try:
@@ -319,14 +383,41 @@ def test_history_dao_raises_for_missing_message_type_but_keeps_legacy_notice(
 
 @pytest.mark.parametrize("route", [list_chat_history, list_chat_history_last_n])
 def test_chat_history_routes_map_contract_errors_to_explicit_500(route) -> None:
+    """验证历史路由把协议契约错误转为明确 HTTP 500。
+
+    Args:
+        route (Any): 本次调用的历史或权限路由函数。
+    """
     class BrokenHistoryService:
+        """提供当前用例所需的 BrokenHistoryService 测试替身，执行记录仅供外层断言使用。
+
+        该定义仅用于外层用例：验证历史路由把协议契约错误转为明确 HTTP 500。
+        """
         async def get_chat_history_data(self, **_kwargs):
+            """返回用例指定的历史结果或异常，替代真实历史读取。
+
+            该定义仅用于外层用例：验证历史路由把协议契约错误转为明确 HTTP 500。
+
+            Args:
+                _kwargs (dict[str, Any]): 传递给被调用函数的其他关键字参数。
+            """
             raise MessageContractError("数据库与当前消息契约不兼容")
 
         async def get_chat_history_last_n(self, **_kwargs):
+            """返回用例指定的最近历史或异常，替代真实历史读取。
+
+            该定义仅用于外层用例：验证历史路由把协议契约错误转为明确 HTTP 500。
+
+            Args:
+                _kwargs (dict[str, Any]): 传递给被调用函数的其他关键字参数。
+            """
             raise MessageContractError("数据库与当前消息契约不兼容")
 
     async def invoke() -> None:
+        """调用当前测试路由，供外层检查状态码或异常转换。
+
+        该定义仅用于外层用例：验证历史路由把协议契约错误转为明确 HTTP 500。
+        """
         if route is list_chat_history:
             await route("session", 0, 200, BrokenHistoryService())
         else:

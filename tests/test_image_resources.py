@@ -14,11 +14,21 @@ from app.agent.utils.domain import images as image_utils
 
 
 class _UnusedLLM:
+    """提供当前用例所需的 _UnusedLLM 测试替身，执行记录仅供外层断言使用。"""
     async def close(self) -> None:
+        """接收测试对象的关闭请求，不释放任何生产资源。"""
         return None
 
 
 def _make_agent(db_path: Path) -> Agent:
+    """将用例提供的模型和临时存储组装成 Agent。
+
+    Args:
+        db_path (Path): 当前环境使用的 SQLite 数据库路径。
+
+    Returns:
+        Agent: 供外层用例断言使用的预设结果。
+    """
     return Agent(
         AgentConfig(
             session_id="image-test",
@@ -32,12 +42,23 @@ def _make_agent(db_path: Path) -> Agent:
 
 
 def _append_tool_image(state: AgentState, image: str) -> None:
+    """向测试状态追加带关联编号的工具图片。
+
+    Args:
+        state (AgentState): 当前会话的内存 AgentState；保存由调用方负责。
+        image (str): 本用例构造的图片内容。
+    """
     call = ToolCall(id="call-draw", name="draw", args={})
     state.record_assistant_step("", (call,))
     state.record_tool_result(call, "done", image_urls=(image,))
 
 
 def test_vlm_default_config(monkeypatch) -> None:
+    """验证定位模型使用声明的默认配置。
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
+    """
     monkeypatch.setenv("VLM_API_KEY", "test-key")
     monkeypatch.delenv("VLM_BASE_URL", raising=False)
     monkeypatch.delenv("VLM_MODEL", raising=False)
@@ -50,6 +71,11 @@ def test_vlm_default_config(monkeypatch) -> None:
 
 
 def test_vlm_environment_overrides_defaults(monkeypatch) -> None:
+    """验证定位模型环境设置覆盖默认值。
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
+    """
     monkeypatch.setenv("VLM_API_KEY", "test-key")
     monkeypatch.setenv("VLM_BASE_URL", "http://vlm.test/v1")
     monkeypatch.setenv("VLM_MODEL", "test-vlm")
@@ -62,20 +88,51 @@ def test_vlm_environment_overrides_defaults(monkeypatch) -> None:
 
 
 def test_vlm_locate_client_is_closed(monkeypatch) -> None:
+    """验证定位完成后关闭模型客户端。
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
+    """
     clients = []
 
     class FakeCompletions:
+        """提供当前用例所需的 FakeCompletions 测试替身，执行记录仅供外层断言使用。
+
+        该定义仅用于外层用例：验证定位完成后关闭模型客户端。
+        """
         async def create(self, **kwargs):
+            """按用例脚本返回响应，并记录请求参数供外层断言。
+
+            该定义仅用于外层用例：验证定位完成后关闭模型客户端。
+
+            Args:
+                kwargs (dict[str, Any]): 传递给被调用函数的其他关键字参数。
+            """
             message = SimpleNamespace(content='{"bbox_2d":[1,2,3,4]}')
             return SimpleNamespace(choices=[SimpleNamespace(message=message)])
 
     class FakeClient:
+        """提供当前用例所需的 FakeClient 测试替身，执行记录仅供外层断言使用。
+
+        该定义仅用于外层用例：验证定位完成后关闭模型客户端。
+        """
         def __init__(self, **kwargs):
+            """保存本用例的脚本输入和依赖，初始化测试对象的执行记录。
+
+            该定义仅用于外层用例：验证定位完成后关闭模型客户端。
+
+            Args:
+                kwargs (dict[str, Any]): 传递给被调用函数的其他关键字参数。
+            """
             self.chat = SimpleNamespace(completions=FakeCompletions())
             self.closed = False
             clients.append(self)
 
         async def close(self):
+            """接收测试对象的关闭请求，不释放任何生产资源。
+
+            该定义仅用于外层用例：验证定位完成后关闭模型客户端。
+            """
             self.closed = True
 
     monkeypatch.setattr(vlm, "AsyncOpenAI", FakeClient)
@@ -94,6 +151,12 @@ def test_vlm_locate_client_is_closed(monkeypatch) -> None:
 
 
 def test_save_multiple_images_writes_files(monkeypatch, tmp_path: Path) -> None:
+    """验证多图片保存生成对应文件。
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     monkeypatch.setattr(image_utils, "get_images_dir", lambda: tmp_path)
 
     filenames = image_utils.save_multiple_images(
@@ -105,6 +168,12 @@ def test_save_multiple_images_writes_files(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_save_multiple_images_uses_restricted_subdirectory(monkeypatch, tmp_path: Path) -> None:
+    """验证图片保存使用受限制的分类子目录。
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     monkeypatch.setattr(image_utils, "get_images_dir", lambda: tmp_path)
 
     filenames = image_utils.save_multiple_images(
@@ -118,10 +187,27 @@ def test_save_multiple_images_uses_restricted_subdirectory(monkeypatch, tmp_path
 
 
 def test_save_multiple_images_rolls_back_partial_group(monkeypatch, tmp_path: Path) -> None:
+    """验证一组图片部分保存失败时回滚已写文件。
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     monkeypatch.setattr(image_utils, "get_images_dir", lambda: tmp_path)
     calls = 0
 
     def save_one(image_data: str, *, category=None) -> str | None:
+        """保存单张测试图片，并按用例要求在指定位置制造失败。
+
+        该定义仅用于外层用例：验证一组图片部分保存失败时回滚已写文件。
+
+        Args:
+            image_data (str): 待模拟保存或定位的图片内容。
+            category (Any): 真人、截图、本地工具或 MCP 图片的保存分类。
+
+        Returns:
+            str | None: 供外层用例断言使用的预设结果。
+        """
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -146,10 +232,26 @@ def test_user_image_is_saved_before_first_protocol_commit(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
+    """验证真人图片先保存文件再提交首条协议记录。
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     image = "data:image/png;base64,AA=="
     calls: list[list[str]] = []
 
     def save_images(images: list[str]) -> list[str]:
+        """模拟图片保存并记录调用，用于检查消息提交先后顺序。
+
+        该定义仅用于外层用例：验证真人图片先保存文件再提交首条协议记录。
+
+        Args:
+            images (list[str]): 当前需要模拟保存的图片集合。
+
+        Returns:
+            list[str]: 供外层用例断言使用的预设结果。
+        """
         calls.append(list(images))
         return ["stored.png"]
 
@@ -161,6 +263,11 @@ def test_user_image_is_saved_before_first_protocol_commit(
     )
 
     async def scenario() -> tuple[AgentState, tuple[str, str | None]]:
+        """由外层测试调用，完成“真人图片先保存文件再提交首条协议记录”的异步步骤。
+
+        Returns:
+            tuple[AgentState, tuple[str, str | None]]: 供外层用例断言使用的预设结果。
+        """
         agent = _make_agent(tmp_path / "agent.sqlite3")
         try:
             state = await agent._commit_user_input(
@@ -189,7 +296,20 @@ def test_user_image_is_saved_before_first_protocol_commit(
 
 
 def test_text_input_does_not_save_images(monkeypatch, tmp_path: Path) -> None:
+    """验证纯文本输入不调用图片保存。
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     def unexpected_save(images: list[str]) -> list[str]:
+        """纯文本处理触发图片保存时主动失败，验证没有无必要写文件。
+
+        该定义仅用于外层用例：验证纯文本输入不调用图片保存。
+
+        Args:
+            images (list[str]): 当前需要模拟保存的图片集合。
+        """
         raise AssertionError("纯文本输入不应保存图片")
 
     monkeypatch.setattr(
@@ -200,6 +320,11 @@ def test_text_input_does_not_save_images(monkeypatch, tmp_path: Path) -> None:
     )
 
     async def scenario() -> AgentState:
+        """由外层测试调用，完成“纯文本输入不调用图片保存”的异步步骤。
+
+        Returns:
+            AgentState: 供外层用例断言使用的预设结果。
+        """
         agent = _make_agent(tmp_path / "agent.sqlite3")
         try:
             return await agent._commit_user_input(
@@ -220,9 +345,22 @@ def test_image_save_failure_does_not_block_user_commit(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
+    """验证图片保存失败不阻止真人输入提交。
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     called = False
 
     def fail_save(images: list[str]) -> list[str]:
+        """主动制造图片保存异常，验证提交和历史保留的降级行为。
+
+        该定义仅用于外层用例：验证图片保存失败不阻止真人输入提交。
+
+        Args:
+            images (list[str]): 当前需要模拟保存的图片集合。
+        """
         nonlocal called
         called = True
         raise OSError("disk unavailable")
@@ -235,6 +373,11 @@ def test_image_save_failure_does_not_block_user_commit(
     )
 
     async def scenario() -> tuple[AgentState, tuple[str, str | None]]:
+        """由外层测试调用，完成“图片保存失败不阻止真人输入提交”的异步步骤。
+
+        Returns:
+            tuple[AgentState, tuple[str, str | None]]: 供外层用例断言使用的预设结果。
+        """
         agent = _make_agent(tmp_path / "agent.sqlite3")
         try:
             state = await agent._commit_user_input(
@@ -265,10 +408,21 @@ def test_tool_image_is_externalized_for_protocol_but_kept_in_checkpoint(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
+    """验证工具图片协议日志外置但 checkpoint 保留模型地址。
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     image = "data:image/png;base64,AA=="
     monkeypatch.setattr(image_utils, "get_images_dir", lambda: tmp_path / "images")
 
     async def scenario() -> tuple[dict, dict, list[str]]:
+        """由外层测试调用，完成“工具图片协议日志外置但 checkpoint 保留模型地址”的异步步骤。
+
+        Returns:
+            tuple[dict, dict, list[str]]: 供外层用例断言使用的预设结果。
+        """
         manager = agent_module.StateManager("tool-image", db_path=str(tmp_path / "agent.sqlite3"))
         try:
             state = AgentState.create_new("tool-image")
@@ -298,9 +452,26 @@ def test_tool_image_protocol_row_upgrades_after_transient_save_failure(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
+    """验证临时保存失败后的图片协议行可升级为文件引用。
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     attempts = 0
 
     def save_images(images: list[str], *, category=None) -> list[str]:
+        """模拟图片保存并记录调用，用于检查消息提交先后顺序。
+
+        该定义仅用于外层用例：验证临时保存失败后的图片协议行可升级为文件引用。
+
+        Args:
+            images (list[str]): 当前需要模拟保存的图片集合。
+            category (Any): 真人、截图、本地工具或 MCP 图片的保存分类。
+
+        Returns:
+            list[str]: 供外层用例断言使用的预设结果。
+        """
         nonlocal attempts
         attempts += 1
         return [] if attempts == 1 else ["tool/recovered.png"]
@@ -308,6 +479,11 @@ def test_tool_image_protocol_row_upgrades_after_transient_save_failure(
     monkeypatch.setattr(state_manager_module, "save_multiple_images", save_images)
 
     async def scenario() -> tuple[dict, str | None, dict, str | None]:
+        """由外层测试调用，完成“临时保存失败后的图片协议行可升级为文件引用”的异步步骤。
+
+        Returns:
+            tuple[dict, str | None, dict, str | None]: 供外层用例断言使用的预设结果。
+        """
         manager = state_manager_module.StateManager(
             "retry-tool-image",
             db_path=str(tmp_path / "agent.sqlite3"),
@@ -346,12 +522,31 @@ def test_tool_image_save_exception_preserves_base64_and_checkpoint(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
+    """验证工具图片外置异常时保留 Base64 和 checkpoint。
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     def fail_save(_images: list[str], *, category=None) -> list[str]:
+        """主动制造图片保存异常，验证提交和历史保留的降级行为。
+
+        该定义仅用于外层用例：验证工具图片外置异常时保留 Base64 和 checkpoint。
+
+        Args:
+            _images (list[str]): 当前需要模拟保存的图片集合。
+            category (Any): 真人、截图、本地工具或 MCP 图片的保存分类。
+        """
         raise OSError("disk unavailable")
 
     monkeypatch.setattr(state_manager_module, "save_multiple_images", fail_save)
 
     async def scenario() -> tuple[dict, dict, str | None]:
+        """由外层测试调用，完成“工具图片外置异常时保留 Base64 和 checkpoint”的异步步骤。
+
+        Returns:
+            tuple[dict, dict, str | None]: 供外层用例断言使用的预设结果。
+        """
         manager = state_manager_module.StateManager(
             "failed-tool-image",
             db_path=str(tmp_path / "agent.sqlite3"),

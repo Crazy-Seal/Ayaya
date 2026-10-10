@@ -15,7 +15,7 @@ AuthorizationTiming = Literal["before_execute", "after_prepare"]
 
 @dataclass(frozen=True)
 class ToolIdentity:
-    """不依赖模型暴露名称的稳定工具身份。"""
+    """用来源、工具名和可选服务编号区分工具身份，避免本地与 MCP 同名工具权限混用。"""
 
     source: ToolSource
     name: str
@@ -23,14 +23,39 @@ class ToolIdentity:
 
     @classmethod
     def local(cls, name: str) -> "ToolIdentity":
+        """为本地工具建立与 MCP 工具区分的身份。
+
+        Args:
+            name (str): 当前对象的名称。
+
+        Returns:
+            ToolIdentity: source 为 local 的工具身份。
+        """
         return cls(source="local", name=name)
 
     @classmethod
     def mcp(cls, server_id: str, name: str) -> "ToolIdentity":
+        """为指定 MCP 服务的工具建立独立身份，避免同名工具权限混用。
+
+        Args:
+            server_id (str): MCP 服务的稳定编号。
+            name (str): 当前对象的名称。
+
+        Returns:
+            ToolIdentity: 包含 server_id 的 MCP 工具身份。
+        """
         return cls(source="mcp", server_id=server_id, name=name)
 
     @property
     def stable_key(self) -> str:
+        """生成持久权限字典和审批共同使用的工具标识。
+
+        Returns:
+            str: local:名称 或 mcp:服务编号:名称。
+
+        Raises:
+            ValueError: MCP 工具身份缺少服务编号。
+        """
         if self.source == "local":
             return f"local:{self.name}"
         if not self.server_id:
@@ -40,6 +65,7 @@ class ToolIdentity:
 
 @dataclass(frozen=True)
 class ToolDescriptor:
+    """记录工具身份、模型可见定义和授权时机，定义摘要用于检查审批后工具能力是否变化。"""
     identity: ToolIdentity
     exposed_name: str
     display_name: str
@@ -53,6 +79,7 @@ class ToolDescriptor:
 
 @dataclass(frozen=True)
 class ToolInvocation:
+    """描述当前会话的一次工具调用，包括审批需要绑定的参数和可选准备动作。"""
     session_id: str
     tool_call_id: str
     descriptor: ToolDescriptor
@@ -94,11 +121,13 @@ class AuthorizationGrant:
 
 @dataclass(frozen=True)
 class Granted:
+    """表示当前调用可以继续执行，按需携带与该调用绑定的单次批准材料。"""
     grant: AuthorizationGrant | None = None
 
 
 @dataclass(frozen=True)
 class AuthorizationRequired:
+    """表示当前调用需要等待用户审批，携带界面请求和后续恢复材料。"""
     interrupt: InterruptEvent
     resume_state: dict[str, Any] = field(default_factory=dict)
 

@@ -126,7 +126,7 @@ async def desktop_execution_requests(
         scheduler (AgentRuntimeScheduler): 进程级会话调度器。
 
     Returns:
-        StreamingResponse: 当前查询或执行结果。
+        StreamingResponse: 供 Electron 读取待执行桌面请求的事件流响应。
     """
     # 1. 空闲执行器同样需要响应体心跳，断线仍只释放订阅，不重放已领取动作。
     return StreamingResponse(stream_sse_json(

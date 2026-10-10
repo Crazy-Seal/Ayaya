@@ -34,7 +34,7 @@ class InteractionAdapter(Protocol):
             session_id (str): 共享 Ayaya 会话标识。
 
         Returns:
-            AsyncIterator[InteractionEvent]: 当前查询或执行结果。
+            AsyncIterator[InteractionEvent]: 当前会话渠道的展示事件迭代器，不因建立订阅而启动 Agent。
         """
         ...
 
@@ -85,6 +85,6 @@ class InProcessInteractionAdapter:
             session_id (str): 共享 Ayaya 会话标识。
 
         Returns:
-            AsyncIterator[InteractionEvent]: 当前查询或执行结果。
+            AsyncIterator[InteractionEvent]: 当前会话渠道的展示事件迭代器，不因建立订阅而启动 Agent。
         """
         return self._event_source(session_id, self.channel)

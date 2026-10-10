@@ -12,7 +12,22 @@ def _context(
     resume_data=None,
     resume_state=None,
 ) -> ToolContext:
+    """为桌面或文件工具构造当前用例的运行上下文。
+
+    Args:
+        resume_data (Any): 本次模拟审批或桌面回报的数据。
+        resume_state (Any): 工具中断时保存的恢复材料。
+
+    Returns:
+        ToolContext: 供外层用例断言使用的预设结果。
+    """
     async def emit_event(_event_type, _data):
+        """接收本次工具发布的事件；该用例不依赖事件内容。
+
+        Args:
+            _event_type (Any): 工具回调发布的事件类型。
+            _data (Any): 需要解析或保存的结构化数据。
+        """
         return None
 
     return ToolContext(
@@ -27,12 +42,21 @@ def _context(
 
 
 def _args(**overrides) -> dict:
+    """构造桌面操作的默认参数并应用本用例覆盖值。
+
+    Args:
+        overrides (Any): 覆盖当前测试配置或工具参数默认值的字段。
+
+    Returns:
+        dict: 供外层用例断言使用的预设结果。
+    """
     args = {"target": "search box", "bbox": [400, 200, 600, 400]}
     args.update(overrides)
     return args
 
 
 def test_control_screen_schema_only_describes_xyxy() -> None:
+    """验证桌面工具 Schema 只描述 xyxy 坐标。"""
     function = control_screen().to_openai_tool()["function"]
     serialized = json.dumps(function, ensure_ascii=False).lower()
 
@@ -43,6 +67,7 @@ def test_control_screen_schema_only_describes_xyxy() -> None:
 
 
 def test_bbox_is_always_interpreted_as_xyxy() -> None:
+    """验证边界框始终按 xyxy 解读。"""
     assert normalize_bbox([200, 400, 400, 600]) == [200, 400, 400, 600]
 
 
@@ -63,12 +88,19 @@ def test_bbox_is_always_interpreted_as_xyxy() -> None:
     ],
 )
 def test_invalid_bbox_is_rejected(bbox: object) -> None:
+    """验证无效边界框被拒绝。
+
+    Args:
+        bbox (object): 归一化画布中的 xyxy 边界框。
+    """
     with pytest.raises(ValueError):
         normalize_bbox(bbox)
 
 
 def test_initial_call_directly_requests_execution() -> None:
+    """验证直接定位工具首次调用直接请求执行。"""
     async def run():
+        """由外层测试调用，完成“直接定位工具首次调用直接请求执行”的异步步骤。"""
         return await control_screen().execute(
             _args(
                 operation="click",
@@ -98,7 +130,9 @@ def test_initial_call_directly_requests_execution() -> None:
 
 
 def test_initial_call_does_not_reorder_xyxy_coordinates() -> None:
+    """验证首次调用不会重排 xyxy 坐标。"""
     async def run():
+        """由外层测试调用，完成“首次调用不会重排 xyxy 坐标”的异步步骤。"""
         return await control_screen().execute(
             _args(bbox=[200, 400, 400, 600]),
             _context(),
@@ -115,7 +149,9 @@ def test_initial_call_does_not_reorder_xyxy_coordinates() -> None:
 
 
 def test_invalid_bbox_does_not_create_interrupt() -> None:
+    """验证无效边界框不会创建中断请求。"""
     async def run():
+        """由外层测试调用，完成“无效边界框不会创建中断请求”的异步步骤。"""
         return await control_screen().execute(
             _args(bbox=[1000, 0, 1000, 50]),
             _context(),
@@ -128,7 +164,9 @@ def test_invalid_bbox_does_not_create_interrupt() -> None:
 
 
 def test_control_screen_defaults_scroll_direction_to_down() -> None:
+    """验证滚轮方向默认向下。"""
     async def run():
+        """由外层测试调用，完成“滚轮方向默认向下”的异步步骤。"""
         return await control_screen().execute(
             _args(operation="scroll"),
             _context(),
@@ -141,7 +179,9 @@ def test_control_screen_defaults_scroll_direction_to_down() -> None:
 
 
 def test_control_screen_rejects_invalid_scroll_direction() -> None:
+    """验证无效滚轮方向被拒绝。"""
     async def run():
+        """由外层测试调用，完成“无效滚轮方向被拒绝”的异步步骤。"""
         return await control_screen().execute(
             _args(operation="scroll", scroll_direction="none"),
             _context(),
@@ -154,7 +194,9 @@ def test_control_screen_rejects_invalid_scroll_direction() -> None:
 
 
 def test_control_screen_execution_resume_injects_screenshot() -> None:
+    """验证执行恢复后向模型注入截图。"""
     async def run():
+        """由外层测试调用，完成“执行恢复后向模型注入截图”的异步步骤。"""
         return await control_screen().execute(
             _args(),
             _context(
@@ -174,7 +216,9 @@ def test_control_screen_execution_resume_injects_screenshot() -> None:
 
 
 def test_control_screen_execution_resume_requires_frontend_result() -> None:
+    """验证执行恢复必须提供前端结果。"""
     async def run():
+        """由外层测试调用，完成“执行恢复必须提供前端结果”的异步步骤。"""
         return await control_screen().execute(
             _args(),
             _context(
@@ -190,7 +234,9 @@ def test_control_screen_execution_resume_requires_frontend_result() -> None:
 
 
 def test_control_screen_execution_resume_reports_frontend_failure() -> None:
+    """验证前端动作失败在工具结果中明确报告。"""
     async def run():
+        """由外层测试调用，完成“前端动作失败在工具结果中明确报告”的异步步骤。"""
         return await control_screen().execute(
             _args(),
             _context(
@@ -210,7 +256,9 @@ def test_control_screen_execution_resume_reports_frontend_failure() -> None:
 
 
 def test_control_screen_rejects_legacy_resume_phase() -> None:
+    """验证旧恢复阶段标记被拒绝。"""
     async def run():
+        """由外层测试调用，完成“旧恢复阶段标记被拒绝”的异步步骤。"""
         return await control_screen().execute(
             _args(),
             _context(

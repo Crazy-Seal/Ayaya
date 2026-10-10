@@ -45,7 +45,7 @@ def _idle_event() -> asyncio.Event:
     """创建初始状态为已空闲的异步事件。
 
     Returns:
-        已设置的异步事件。
+        asyncio.Event: 已设置的异步事件。
     """
     event = asyncio.Event()
     event.set()
@@ -90,8 +90,8 @@ class MCPConnectionManager:
         """初始化 MCP 连接管理器。
 
         Args:
-            config_loader: 按需读取最新 MCP Server 配置的函数。
-            session_factory: 可选的 MCP ClientSession 上下文工厂。
+            config_loader (Callable[[], MCPServersConfig]): 按需读取最新 MCP Server 配置的函数。
+            session_factory (SessionFactory | None): 可选的 MCP ClientSession 上下文工厂。
         """
         self._config_loader = config_loader
         self._session_factory = session_factory or self._default_session_factory
@@ -101,10 +101,10 @@ class MCPConnectionManager:
         """按 ID 读取最新 MCP Server 配置。
 
         Args:
-            server_id: MCP Server 的稳定标识。
+            server_id (str): MCP Server 的稳定标识。
 
         Returns:
-            与 ID 对应的配置。
+            MCPServerConfig: 与 ID 对应的配置。
 
         Raises:
             MCPConnectionError: 指定 Server 不存在。
@@ -118,10 +118,10 @@ class MCPConnectionManager:
         """读取指定 MCP Server 的最新全局配置。
 
         Args:
-            server_id: MCP Server 的稳定标识。
+            server_id (str): MCP Server 的稳定标识。
 
         Returns:
-            与 ID 对应的只读 Pydantic 配置对象。
+            MCPServerConfig: 与 ID 对应的只读 Pydantic 配置对象。
 
         Raises:
             MCPConnectionError: 指定 Server 不存在。
@@ -132,10 +132,10 @@ class MCPConnectionManager:
         """建立或复用 MCP 连接并刷新工具目录。
 
         Args:
-            server_id: 要连接的 MCP Server ID。
+            server_id (str): 要连接的 MCP Server ID。
 
         Returns:
-            Server 当前暴露的工具描述符副本。
+            list[MCPToolDescriptor]: Server 当前暴露的工具描述符副本。
 
         Raises:
             MCPConnectionError: 连接、初始化或工具目录校验失败。
@@ -199,7 +199,7 @@ class MCPConnectionManager:
         """等待活动调用结束后断开指定 MCP Server。
 
         Args:
-            server_id: 要断开的 MCP Server ID。
+            server_id (str): 要断开的 MCP Server ID。
         """
         state = self._connections.get(server_id)
         if state is not None:
@@ -217,11 +217,12 @@ class MCPConnectionManager:
         """断开并重新连接指定 MCP Server。
 
         Args:
-            server_id: 要重连的 MCP Server ID。
+            server_id (str): 要重连的 MCP Server ID。
 
         Returns:
-            重连后获取的工具描述符。
+            list[MCPToolDescriptor]: 重连后获取的工具描述符。
         """
+        # 1. 重连前检查最新配置；已禁用则先断开旧连接，记录禁用状态后拒绝重连。
         config = self._find_config(server_id)
         if not config.enabled:
             await self.disconnect(server_id)
@@ -255,10 +256,10 @@ class MCPConnectionManager:
         """使用独立临时会话测试一份未持久化的 Server 配置。
 
         Args:
-            config: 待测试的 MCP Server 配置。
+            config (MCPServerConfig): 待测试的 MCP Server 配置。
 
         Returns:
-            包含状态、Server instructions 和工具目录的诊断结果。
+            dict[str, Any]: 包含状态、Server instructions 和工具目录的诊断结果。
 
         Raises:
             MCPConnectionError: 连接、初始化或工具目录读取失败。
@@ -294,10 +295,10 @@ class MCPConnectionManager:
         """获取已缓存的工具目录副本。
 
         Args:
-            server_id: MCP Server ID。
+            server_id (str): MCP Server ID。
 
         Returns:
-            当前缓存的工具描述符；尚未连接时返回空列表。
+            list[MCPToolDescriptor]: 当前缓存的工具描述符；尚未连接时返回空列表。
         """
         state = self._connections.get(server_id)
         return list(state.tools) if state else []
@@ -306,11 +307,11 @@ class MCPConnectionManager:
         """获取当前工具契约指纹。
 
         Args:
-            server_id: MCP Server ID。
-            tool_name: Server 中的原始工具名称。
+            server_id (str): MCP Server ID。
+            tool_name (str): Server 中的原始工具名称。
 
         Returns:
-            当前工具契约指纹；工具不存在时返回 ``None``。
+            str | None: 当前工具契约指纹；工具不存在时返回 ``None``。
         """
         descriptor = next(
             (tool for tool in self.get_tools(server_id) if tool.name == tool_name),
@@ -322,10 +323,10 @@ class MCPConnectionManager:
         """获取 MCP Server 的可展示运行状态。
 
         Args:
-            server_id: MCP Server ID。
+            server_id (str): MCP Server ID。
 
         Returns:
-            状态、工具数量、最近错误和 instructions。
+            dict[str, Any]: 状态、工具数量、最近错误和 instructions。
         """
         config = self._find_config(server_id)
         if not config.enabled:
@@ -354,10 +355,10 @@ class MCPConnectionManager:
         """计算指定 MCP Server 的最新身份指纹。
 
         Args:
-            server_id: MCP Server ID。
+            server_id (str): MCP Server ID。
 
         Returns:
-            最新配置对应的服务身份指纹。
+            str: 最新配置对应的服务身份指纹。
         """
         return server_identity_fingerprint(self._find_config(server_id))
 
@@ -365,10 +366,10 @@ class MCPConnectionManager:
         """获取当前可用连接绑定的服务身份。
 
         Args:
-            server_id: MCP Server ID。
+            server_id (str): MCP Server ID。
 
         Returns:
-            可用且配置未漂移时的身份指纹，否则返回 ``None``。
+            str | None: 可用且配置未漂移时的身份指纹，否则返回 ``None``。
         """
         state = self._connections.get(server_id)
         if state is None or state.status != "available" or state.generation is None:
@@ -389,17 +390,18 @@ class MCPConnectionManager:
         """在可用连接代上安全调用 MCP 工具。
 
         Args:
-            server_id: MCP Server ID。
-            tool_name: Server 中的原始工具名称。
-            arguments: 传递给 MCP 工具的参数。
-            execution_guard: 获得调用租约前执行的最终安全校验。
+            server_id (str): MCP Server ID。
+            tool_name (str): Server 中的原始工具名称。
+            arguments (dict): 传递给 MCP 工具的参数。
+            execution_guard (ExecutionGuard | None): 获得调用租约前执行的最终安全校验。
 
         Returns:
-            MCP SDK 返回的原始调用结果。
+            Any: MCP SDK 返回的原始调用结果。
 
         Raises:
             MCPConnectionError: Server 不可用、校验失败、调用超时或执行失败。
         """
+        # 1. 调用前读取当前配置并确认启用；需要连接时等待连接完成，关闭中的连接拒绝新调用。
         config = self._find_config(server_id)
         if not config.enabled:
             raise MCPConnectionError(f"MCP Server '{server_id}' 已禁用")
@@ -421,6 +423,7 @@ class MCPConnectionManager:
         generation = state.generation
         if generation is None:
             raise MCPConnectionError(f"MCP Server '{server_id}' 当前不可用")
+        # 2. 在连接调用登记锁内重新核对工具、身份和最终授权，然后登记进行中调用。
         async with generation.lease_lock:
             if (
                 state.generation is not generation
@@ -440,6 +443,7 @@ class MCPConnectionManager:
             generation.active_calls += 1
             generation.idle.clear()
 
+        # 3. 释放登记锁后等待真实服务结果，同一服务的其他已登记调用可以并行执行。
         failure: Exception | None = None
         failure_message: str | None = None
         retire_generation = False
@@ -452,6 +456,7 @@ class MCPConnectionManager:
             failure = exc
             failure_message = self._sanitize_error(generation.config, exc)
             retire_generation = self._should_retire_generation(exc)
+            # 3.1. 只有致命连接错误才停止接收新调用，参数错误和普通超时不会重放本次操作。
             if retire_generation:
                 async with generation.lease_lock:
                     generation.accepting_calls = False
@@ -459,6 +464,7 @@ class MCPConnectionManager:
                     state.status = "error"
                     state.last_error = failure_message
         finally:
+            # 4. 成功、失败或取消都减少进行中数量；最后一项结束后通知连接清理流程。
             async with generation.lease_lock:
                 generation.active_calls -= 1
                 if generation.active_calls == 0:
@@ -480,10 +486,10 @@ class MCPConnectionManager:
         数据流损坏或非超时传输错误才触发排空和回收。
 
         Args:
-            exc: ``session.call_tool()`` 或外层超时控制抛出的异常。
+            exc (Exception): ``session.call_tool()`` 或外层超时控制抛出的异常。
 
         Returns:
-            当前 generation 是否必须停止接收新调用并被回收。
+            bool: 当前 generation 是否必须停止接收新调用并被回收。
         """
         if isinstance(exc, BaseExceptionGroup):
             return any(
@@ -515,8 +521,8 @@ class MCPConnectionManager:
         """在生命周期锁内回收失败的连接代。
 
         Args:
-            state: Server 的连接状态。
-            generation: 发生失败的连接代。
+            state (_Connection): Server 的连接状态。
+            generation (_Generation): 发生失败的连接代。
         """
         async with state.lifecycle_lock:
             if state.generation is generation:
@@ -531,8 +537,8 @@ class MCPConnectionManager:
         """在持有生命周期锁时排空并关闭当前连接代。
 
         Args:
-            state: 要关闭的 Server 连接状态。
-            status: 关闭后覆盖写入的状态。
+            state (_Connection): 要关闭的 Server 连接状态。
+            status (str | None): 关闭后覆盖写入的状态。
         """
         generation = state.generation
         if generation is not None:
@@ -557,10 +563,10 @@ class MCPConnectionManager:
         """把 MCP SDK 工具对象转换为内部描述符。
 
         Args:
-            tool: MCP SDK 返回的工具对象。
+            tool (Any): MCP SDK 返回的工具对象。
 
         Returns:
-            与 SDK 类型解耦的不可变工具描述符。
+            MCPToolDescriptor: 与 SDK 类型解耦的不可变工具描述符。
         """
         annotations = getattr(tool, "annotations", None)
         if hasattr(annotations, "model_dump"):
@@ -577,10 +583,10 @@ class MCPConnectionManager:
         """把工具描述符转换为 API 可序列化字典。
 
         Args:
-            tool: 内部工具描述符。
+            tool (MCPToolDescriptor): 内部工具描述符。
 
         Returns:
-            面向 API 的工具信息字典。
+            dict[str, Any]: 面向 API 的工具信息字典。
         """
         return {
             "name": tool.name,
@@ -594,11 +600,11 @@ class MCPConnectionManager:
         """从错误消息中移除 MCP 凭据和 URL 敏感部分。
 
         Args:
-            config: 产生错误的 MCP Server 配置。
-            exc: 原始异常。
+            config (MCPServerConfig): 产生错误的 MCP Server 配置。
+            exc (Exception): 原始异常。
 
         Returns:
-            已脱敏并限制长度的错误文本。
+            str: 已脱敏并限制长度的错误文本。
         """
         value = str(exc)
         secrets = config.env.values() if isinstance(config, StdioMCPServerConfig) else config.headers.values()
@@ -621,7 +627,7 @@ class MCPConnectionManager:
         """创建与传输类型匹配的 MCP ClientSession 上下文。
 
         Args:
-            config: MCP Server 配置。
+            config (MCPServerConfig): MCP Server 配置。
 
         Yields:
             已进入但尚未执行 ``initialize`` 的 MCP ClientSession。

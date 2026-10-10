@@ -28,6 +28,19 @@ def _validate_args(
     wait_seconds: int | None,
     scroll_direction: str | None,
 ) -> tuple[str, Operation, str, bool, int, ScrollDirection] | str:
+    """请求截图定位前校验元素描述和动作配置，避免为无效操作启动定位与执行。
+
+    Args:
+        target (str | None): 用户希望操作的界面元素描述。
+        operation (str | None): 鼠标动作，支持 click、double、right 或 scroll。
+        text (str | None): 当前处理的文本。
+        press_enter (bool | None): 输入文本后是否按回车键。
+        wait_seconds (int | None): 动作完成后等待界面稳定的秒数。
+        scroll_direction (str | None): 滚轮方向，支持 up 或 down。
+
+    Returns:
+        tuple[str, Operation, str, bool, int, ScrollDirection] | str: 规范化动作参数元组，或错误说明文本。
+    """
     resolved_target = (target or "").strip()
     if not resolved_target:
         return "缺少要操作的元素描述。"
@@ -62,7 +75,13 @@ def restore_vlm_point(
     width: int,
     height: int,
 ) -> dict:
-    """把 VLM 的 1000x1000 bbox 中心点还原为截图坐标和比例坐标。"""
+    """把 VLM 的 1000x1000 bbox 中心点还原为截图坐标和比例坐标。
+
+    Args:
+        bbox (list[int]): 归一化画布中的 xyxy 边界框。
+        width (int): 截图宽度，用于坐标范围判断。
+        height (int): 截图高度，用于坐标范围判断。
+    """
     if width <= 0 or height <= 0:
         raise ValueError("截图尺寸无效。")
 
@@ -101,7 +120,17 @@ async def control_screen_with_vlm(
 
     调用此工具前，你需要知道屏幕上的情况，如不知道，可以通过截屏工具获取。
     注意：每轮工具调用中，只允许使用一次该工具；该工具传回操作后的截图后再判断下一步操作。
+
+    Args:
+        target (str): 操作时的光标位置描述，换句话说就是操作的时候把光标放在哪，例如'页面上方的搜索框'。必须输入。
+        operation (Operation): 操作方式：click 单击、double 双击、right 右键、scroll 滚动。
+        text (str): 操作后要在该位置输入的文字；为空则不输入。
+        press_enter (bool): 输入文字后是否按回车。
+        wait_seconds (int): 操作后的等待时长，单位秒，用于等待页面加载。
+        scroll_direction (ScrollDirection): 滚动方向：none、down 或 up。仅 scroll 操作使用，默认 down。
+        context (ToolContext | None): 执行管道提供的工具运行上下文。
     """
+    # 1. 先校验操作参数，再区分首次截图、定位后授权和动作完成三个处理阶段。
     normalized = _validate_args(target, operation, text, press_enter, wait_seconds, scroll_direction)
     if isinstance(normalized, str):
         return ToolResult(content=f"错误: {normalized}")
@@ -119,6 +148,7 @@ async def control_screen_with_vlm(
     if context is None:
         return ToolResult(content="错误: 缺少工具上下文。")
 
+    # 2. 首次调用只请求 Electron 截图，工具在截图回报后才调用视觉模型定位。
     if context.resume_data is None:
         return ToolResult.continuation(
             DesktopExecutionKind.CAPTURE_SCREEN,
@@ -131,6 +161,7 @@ async def control_screen_with_vlm(
 
     phase = (context.resume_state or {}).get("phase")
 
+    # 3. 动作执行回报只形成结果和新截图，不再次执行动作。
     if phase == "awaiting_execution":
         if not context.resume_data.get("executed", False):
             error_message = context.resume_data.get("error") or "前端未完成屏幕操作。"
@@ -145,6 +176,7 @@ async def control_screen_with_vlm(
             image_message_name=SCREENSHOT_MESSAGE_NAME,
         )
 
+    # 4. 定位后的准备动作通过统一授权检查后，才允许发出实际鼠标及文字输入请求。
     if phase == "awaiting_authorization":
         if context.resume_data.get("kind") != AUTHORIZATION_GRANTED_KIND:
             return ToolResult(content="错误: 屏幕操作授权恢复状态无效。")
@@ -163,6 +195,7 @@ async def control_screen_with_vlm(
             },
         )
 
+    # 5. 截图回报必须提供图片和尺寸，视觉模型定位成功后只返回准备动作，继续等待授权。
     screenshot_data = context.resume_data.get("screenshot_data")
     width = context.resume_data.get("width")
     height = context.resume_data.get("height")

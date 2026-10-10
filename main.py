@@ -83,6 +83,11 @@ app.mount("/images", StaticFiles(directory=IMAGES_DIR), name="images")
 @app.get("/")
 async def root():
     # 根路径用于快速确认服务是否启动
+    """提供根路径简单响应，便于确认后端 HTTP 服务可访问。
+
+    Returns:
+        dict[str, str]: 根路径响应中声明的服务信息。
+    """
     return {"message": "Ayaya server is running"}
 
 
@@ -94,7 +99,11 @@ async def internal_ready():
 
 @app.post("/internal/shutdown")
 async def internal_shutdown(request: Request):
-    """请求当前 Uvicorn 实例执行优雅关闭。"""
+    """请求当前 Uvicorn 实例执行优雅关闭。
+
+    Args:
+        request (Request): FastAPI 当前请求，提供应用运行时和受控服务器实例。
+    """
     server = getattr(request.app.state, "uvicorn_server", None)
     if server is None:
         raise HTTPException(status_code=503, detail="后端不由受控启动器管理")

@@ -32,8 +32,7 @@ class DesktopExecutionRequest:
     payload: dict[str, Any]
 
     def __post_init__(self) -> None:
-        """归一化已知执行类别，未知值仍由原有执行器返回错误。
-        """
+        """归一化已知执行类别，未知值仍由原有执行器返回错误。"""
         try:
             object.__setattr__(self, "kind", DesktopExecutionKind(self.kind))
         except (ValueError, TypeError):

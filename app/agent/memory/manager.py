@@ -38,6 +38,13 @@ class MemoryManager:
         config: MemoryConfig | None = None,
         chat_settings: ChatSettings | None = None,
     ):
+        """读取当前会话记忆配置，仅装配启用的日记、情景和语义记忆；全部禁用时不创建历史查询对象。
+
+        Args:
+            session_id (str): 当前操作所属的会话编号。
+            config (MemoryConfig | None): 调用方提供的配置。
+            chat_settings (ChatSettings | None): 当前会话的模型、角色及插件设置。
+        """
         self.session_id = session_id
         self.config = config or MemoryConfig.from_env()
         if chat_settings:
@@ -154,7 +161,11 @@ class MemoryManager:
         return await self.chat_history_store.get_latest_message_id(self.session_id)
 
     async def check_diary(self, *, max_history_id: int | None = None) -> None:
-        """检查并生成上一有效聊天日的日记。"""
+        """由记忆插件在真人输入提交前检查上一有效聊天日，日记禁用时不生成。
+
+        Args:
+            max_history_id (int | None): 本次提取开始前捕获的协议日志最大编号；排除之后到达的消息。
+        """
         now = datetime.now(self.config.timezone)
         today = self._get_effective_date(now)
 
@@ -165,7 +176,11 @@ class MemoryManager:
             )
 
     async def has_diary_for_effective_date(self, effective_date: str) -> bool:
-        """供上下文压缩通过窄端口检查日记覆盖。"""
+        """供上下文压缩查询当前会话某有效日期是否已有日记，不生成新的日记。
+
+        Args:
+            effective_date (str): 按日记规则划分的有效日期，格式为 YYYY-MM-DD。
+        """
         if self.diary_memory is None:
             return False
         return await self.diary_memory.has_diary(date.fromisoformat(effective_date))
@@ -186,10 +201,13 @@ class MemoryManager:
         3. 相关语义记忆
 
         Args:
-            query: 查询文本，用于检索相关情景记忆
+            query (str): 查询文本，用于检索相关情景记忆
+            include_diary (bool): 本次背景是否加入最近日记。
+            include_episodic (bool): 本次是否检索并加入情景记忆。
+            include_semantic (bool): 本次是否检索并加入语义记忆。
 
         Returns:
-            格式化的上下文字符串
+            str: 格式化的上下文字符串
         """
         parts = []
 
@@ -239,12 +257,12 @@ class MemoryManager:
         """搜索相关记忆
 
         Args:
-            query: 查询文本
-            memory_type: 记忆类型 (episodic/semantic/all)
-            top_k: 返回数量
+            query (str): 查询文本
+            memory_type (str): 记忆类型 (episodic/semantic/all)
+            top_k (int): 返回数量
 
         Returns:
-            格式化的记忆文本
+            str: 格式化的记忆文本
         """
         results = []
         memory_options = self._memory_options()
@@ -252,6 +270,11 @@ class MemoryManager:
         enable_semantic = bool(memory_options.get("enable_semantic", True))
 
         async def search_episodic():
+            """由本次并行检索调用，只在情景记忆启用且请求类型匹配时查询。
+
+            Returns:
+                list[MemoryEntry]: 匹配的情景记忆列表，禁用或类型不匹配时为空。
+            """
             if (
                 not enable_episodic
                 or self.episodic_memory is None
@@ -261,6 +284,11 @@ class MemoryManager:
             return await self.episodic_memory.search(query, top_k)
 
         async def search_semantic():
+            """由本次并行检索调用，语义检索异常时记录日志并返回空列表，不阻止其他结果。
+
+            Returns:
+                list[MemoryEntry]: 匹配的语义记忆列表，禁用、不匹配或检索失败时为空。
+            """
             if (
                 not enable_semantic
                 or self.semantic_memory is None
@@ -288,11 +316,11 @@ class MemoryManager:
         """搜索时间范围内的日记
 
         Args:
-            start: 开始日期
-            end: 结束日期（最多间隔5天）
+            start (date): 开始日期
+            end (date): 结束日期（最多间隔5天）
 
         Returns:
-            日记内容
+            str: 日记内容
 
         Raises:
             ValueError: 时间范围超过5天
@@ -318,12 +346,20 @@ class MemoryManager:
         """获取有效日期
 
         凌晨 N 点前算前一天，N 点后算当天
+
+        Args:
+            now (datetime): 按记忆配置时区表示的当前时间。
         """
         if now.hour < self.config.day_boundary_hour:
             return (now - timedelta(days=1)).date()
         return now.date()
 
     def _memory_options(self) -> dict[str, Any]:
+        """将记忆默认配置与会话插件配置合并，整个插件禁用时关闭三种记忆能力。
+
+        Returns:
+            dict[str, Any]: 本次使用的日记、情景和语义记忆开关及配置副本。
+        """
         memory = self.chat_settings.agent_plugins.get("memory")
         config = dict(MEMORY_DEFAULT_CONFIG)
         if memory:
@@ -338,7 +374,11 @@ class MemoryManager:
 
 @lru_cache(maxsize=32)
 def get_memory_manager(session_id: str) -> MemoryManager:
-    """获取或创建 MemoryManager 实例（带缓存）。"""
+    """获取或创建 MemoryManager 实例（带缓存）。
+
+    Args:
+        session_id (str): 当前操作所属的会话编号。
+    """
     config = MemoryConfig.from_env()
     chat_settings = ChatSettingsDao().get_chat_settings(session_id)
     return MemoryManager(session_id, config, chat_settings)

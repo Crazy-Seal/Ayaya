@@ -21,21 +21,29 @@ export class ToolApprovalDialog {
   private readonly steerInput = document.getElementById("tool-steer-input") as HTMLTextAreaElement;
   private pendingResolver: ((decision: ApprovalDecision) => void) | null = null;
 
-  /** 绑定批准、拒绝和引导入口，所有决定共用同一具名协议取值。 */
+  /**
+   *  绑定批准、拒绝和引导入口，所有决定共用同一具名协议取值。
+   */
   constructor() {
     // 1. 按钮只产生本地决定，实际审批的先到先得仍由后端仲裁。
-    this.denyBtn.addEventListener("click", /** 提交拒绝决定并关闭当前视图。 */
+    this.denyBtn.addEventListener("click", /**
+     * 用户点击拒绝时结束审批框等待，返回 reject 决定。
+     */
     () => this.close({ kind: ApprovalDecisionKind.REJECT }));
-    this.allowBtn.addEventListener("click", /** 提交批准决定并关闭当前视图。 */
+    this.allowBtn.addEventListener("click", /**
+     * 用户点击批准时结束审批框等待，返回 approve 决定。
+     */
     () => this.close({ kind: ApprovalDecisionKind.APPROVE }));
-    this.steerBtn.addEventListener("click", /** 打开引导输入或提交非空引导。 */
+    this.steerBtn.addEventListener("click", /**
+     * 用户点击引导按钮时读取新正文并提交 steer 决定。
+     */
     () => this.submitSteer());
     // 2. 保留 Enter 提交、Shift+Enter 换行，以及遮罩和 Escape 拒绝的既有行为。
     this.steerInput.addEventListener("keydown", /**
-     * 处理引导框的提交快捷键。
+     * 用户按 Enter 且未按 Shift 时阻止默认换行并提交引导正文。
      *
      * Args:
-     *     event (KeyboardEvent): 当前键盘事件。
+     *     event (KeyboardEvent): 调用方或浏览器触发的当前事件。
      */
     (event) => {
       if (event.key === "Enter" && !event.shiftKey) {
@@ -44,26 +52,28 @@ export class ToolApprovalDialog {
       }
     });
     this.dialog.addEventListener("click", /**
-     * 点击遮罩时拒绝，模态内容中的点击不影响决定。
+     * 用户点击审批框背景时返回拒绝决定，内部点击保持打开。
      *
      * Args:
-     *     event (MouseEvent): 当前点击事件。
+     *     event (PointerEvent): 调用方或浏览器触发的当前事件。
      */
     (event) => {
       if (event.target === this.dialog) this.close({ kind: ApprovalDecisionKind.REJECT });
     });
     this.dialog.addEventListener("keydown", /**
-     * Escape 拒绝当前请求，不触发其他页面操作。
+     * 用户按 Escape 时拒绝当前审批并结束选择等待。
      *
      * Args:
-     *     event (KeyboardEvent): 当前键盘事件。
+     *     event (KeyboardEvent): 调用方或浏览器触发的当前事件。
      */
     (event) => {
       if (event.key === "Escape") this.close({ kind: ApprovalDecisionKind.REJECT });
     });
   }
 
-  /** 展示引导输入框，已经展示时只提交有效文本。 */
+  /**
+   *  展示引导输入框，已经展示时只提交有效文本。
+   */
   private submitSteer(): void {
     if (this.steerInput.hidden) {
       this.steerInput.hidden = false;
@@ -118,10 +128,10 @@ export class ToolApprovalDialog {
     this.dialog.setAttribute("aria-hidden", "false");
     this.allowBtn.focus();
     return new Promise(/**
-     * 登记当前审批的完成函数，不在 Renderer 执行工具。
+     * Promise 创建时保存当前审批的完成函数，批准、拒绝、引导或关闭时结束等待。
      *
      * Args:
-     *     resolve ((decision: ApprovalDecision) => void): 当前等待者的完成函数。
+     *     resolve ((value: ApprovalDecision | PromiseLike<ApprovalDecision>) => void): 准备成功或等待结束时完成 Promise 的函数。
      */
     (resolve) => { this.pendingResolver = resolve; });
   }

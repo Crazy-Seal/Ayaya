@@ -29,24 +29,52 @@ export class McpPage implements ISettingsPage {
   /**
    * 初始化 MCP 设置页并绑定用户交互事件。
    *
-   * @param root - MCP 页面根容器。
-   * @param confirmDialog - 通用确认对话框。
-   * @param toast - 设置页消息提示器。
+   * Args:
+   *     root (HTMLDivElement): MCP 页面根容器。
+   *     confirmDialog (ConfirmDialog): 通用确认对话框。
+   *     toast (SettingsToast): 设置页消息提示器。
    */
   constructor(
     private readonly root: HTMLDivElement,
     private readonly confirmDialog: ConfirmDialog,
     private readonly toast: SettingsToast
   ) {
-    this.q<HTMLButtonElement>("#mcp-add-btn").addEventListener("click", () => this.openEditor());
-    this.q<HTMLButtonElement>("#mcp-policy-save-btn").addEventListener("click", () =>
+    this.q<HTMLButtonElement>("#mcp-add-btn").addEventListener("click", /**
+     * 用户点击新增服务时打开空配置编辑器。
+     */
+    () => this.openEditor());
+    this.q<HTMLButtonElement>("#mcp-policy-save-btn").addEventListener("click", /**
+     * 用户点击权限确认时通知主设置控制器保存本页服务启用策略。
+     */
+    () =>
       this.callback?.({ type: "submit", page: "mcp" }));
-    this.q<HTMLSelectElement>("#mcp-transport").addEventListener("change", () => this.updateTransportFields());
-    this.q<HTMLButtonElement>("#mcp-add-env").addEventListener("click", () => this.addSecretRow("env"));
-    this.q<HTMLButtonElement>("#mcp-add-header").addEventListener("click", () => this.addSecretRow("header"));
-    this.q<HTMLButtonElement>("#mcp-cancel-btn").addEventListener("click", () => this.closeEditor());
-    this.q<HTMLButtonElement>("#mcp-test-btn").addEventListener("click", () => void this.testCurrent());
-    this.q<HTMLFormElement>("#mcp-editor").addEventListener("submit", (event) => {
+    this.q<HTMLSelectElement>("#mcp-transport").addEventListener("change", /**
+     * 用户切换传输方式后显示该方式需要的地址、命令和凭据字段。
+     */
+    () => this.updateTransportFields());
+    this.q<HTMLButtonElement>("#mcp-add-env").addEventListener("click", /**
+     * 用户添加环境变量时创建新的敏感字段编辑行。
+     */
+    () => this.addSecretRow("env"));
+    this.q<HTMLButtonElement>("#mcp-add-header").addEventListener("click", /**
+     * 用户添加请求头时创建新的敏感字段编辑行。
+     */
+    () => this.addSecretRow("header"));
+    this.q<HTMLButtonElement>("#mcp-cancel-btn").addEventListener("click", /**
+     * 用户关闭服务编辑器时清理当前编辑与测试状态。
+     */
+    () => this.closeEditor());
+    this.q<HTMLButtonElement>("#mcp-test-btn").addEventListener("click", /**
+     * 用户点击测试时校验当前编辑配置并请求连接测试。
+     */
+    () => void this.testCurrent());
+    this.q<HTMLFormElement>("#mcp-editor").addEventListener("submit", /**
+     * 用户提交编辑表单时阻止默认刷新，校验后保存当前服务配置。
+     *
+     * Args:
+     *     event (SubmitEvent): 调用方或浏览器触发的当前事件。
+     */
+    (event) => {
       event.preventDefault();
       void this.saveCurrent();
     });
@@ -55,7 +83,8 @@ export class McpPage implements ISettingsPage {
   /**
    * 使用已保存权限和 MCP 依赖数据渲染页面。
    *
-   * @param data - 当前设置状态以及 Server、工具目录依赖。
+   * Args:
+   *     data (PageRenderData): 当前已保存设置和本页所需模型、插件及工具目录。
    */
   render(data: PageRenderData): void {
     this.servers = data.dependencies?.mcpServers ?? [];
@@ -67,7 +96,8 @@ export class McpPage implements ISettingsPage {
   /**
    * 获取当前页面编辑中的模型级 MCP 权限。
    *
-   * @returns 可提交给设置管理器的深拷贝数据。
+   * Returns:
+   *     PageEditingData: 可提交给设置管理器的深拷贝数据。
    */
   getEditingData(): PageEditingData {
     return { mcp: structuredClone(this.policies) };
@@ -76,7 +106,8 @@ export class McpPage implements ISettingsPage {
   /**
    * 注册设置页事件回调。
    *
-   * @param callback - 接收提交和失效通知的回调函数。
+   * Args:
+   *     callback (PageEventCallback): 设置页主控制器接收本页提交或编辑事件的回调。
    */
   onEvent(callback: PageEventCallback): void {
     this.callback = callback;
@@ -85,9 +116,13 @@ export class McpPage implements ISettingsPage {
   /**
    * 在 MCP 页面根节点内查询必需元素。
    *
-   * @param selector - CSS 选择器。
-   * @returns 匹配的页面元素。
    * @throws {Error} 页面结构中不存在指定元素时抛出。
+   *
+   * Args:
+   *     selector (string): CSS 选择器。
+   *
+   * Returns:
+   *     T: 匹配的页面元素。
    */
   private q<T extends HTMLElement>(selector: string): T {
     const value = this.root.querySelector<T>(selector);
@@ -118,8 +153,11 @@ export class McpPage implements ISettingsPage {
   /**
    * 创建包含状态、操作和权限面板的 Server 卡片。
    *
-   * @param server - 待展示的 MCP Server 视图。
-   * @returns 完整的 Server 卡片元素。
+   * Args:
+   *     server (MCPServerView): 待展示的 MCP Server 视图。
+   *
+   * Returns:
+   *     HTMLDivElement: 完整的 Server 卡片元素。
    */
   private createServerCard(server: MCPServerView): HTMLDivElement {
     const card = document.createElement("div");
@@ -151,15 +189,27 @@ export class McpPage implements ISettingsPage {
     const actions = document.createElement("div");
     actions.className = "mcp-card-actions";
     actions.append(
-      this.actionButton("编辑", () => this.openEditor(server)),
-      this.actionButton("测试", () => void this.testSaved(server))
+      this.actionButton("编辑", /**
+       * 用户点击已有服务的编辑入口时加载其配置。
+       */
+      () => this.openEditor(server)),
+      this.actionButton("测试", /**
+       * 用户测试已保存服务时使用该服务当前配置。
+       */
+      () => void this.testSaved(server))
     );
     if (server.config.enabled) {
-      actions.append(this.actionButton("重连", () => void this.reconnect(server.config.id)));
+      actions.append(this.actionButton("重连", /**
+       * 用户请求重连时刷新指定服务的连接。
+       */
+      () => void this.reconnect(server.config.id)));
     }
     actions.append(
       this.actionButton(
         "删除",
+        /**
+         * 用户删除服务时先确认目标名称，再请求后端删除并同步页面。
+         */
         () => void this.remove(server.config.id, server.config.name),
         "danger",
       ),
@@ -171,8 +221,11 @@ export class McpPage implements ISettingsPage {
   /**
    * 创建当前模型对指定 Server 的工具权限面板。
    *
-   * @param server - 权限面板对应的 MCP Server。
-   * @returns 包含启用开关和工具策略选择器的元素。
+   * Args:
+   *     server (MCPServerView): 权限面板对应的 MCP Server。
+   *
+   * Returns:
+   *     HTMLDivElement: 包含启用开关和工具策略选择器的元素。
    */
   private createPolicyPanel(server: MCPServerView): HTMLDivElement {
     const panel = document.createElement("div");
@@ -184,7 +237,10 @@ export class McpPage implements ISettingsPage {
     toggle.checked = Boolean(this.policies.servers[server.config.id]?.enabled);
     toggleLabel.append(toggle, document.createTextNode("当前模型启用此服务"));
     panel.append(toggleLabel);
-    toggle.addEventListener("change", () => {
+    toggle.addEventListener("change", /**
+     * 用户切换服务启用开关时保留已有身份绑定，只修改启用标记或创建默认策略。
+     */
+    () => {
       if (toggle.checked) {
         this.policies.servers[server.config.id] = buildEnabledServerPolicy(
           this.policies.servers[server.config.id]
@@ -203,9 +259,13 @@ export class McpPage implements ISettingsPage {
   /**
    * 创建统一样式和行为的操作按钮。
    *
-   * @param label - 按钮显示文本。
-   * @param action - 点击按钮时执行的操作。
-   * @returns 已绑定点击事件的按钮元素。
+   * Args:
+   *     label (string): 按钮显示文本。
+   *     action (() => void): 点击按钮时执行的操作。
+   *     variant ("secondary" | "danger"): 成功或失败提示的显示类型。
+   *
+   * Returns:
+   *     HTMLButtonElement: 已绑定点击事件的按钮元素。
    */
   private actionButton(
     label: string,
@@ -223,7 +283,8 @@ export class McpPage implements ISettingsPage {
   /**
    * 打开新增或编辑 MCP Server 的表单。
    *
-   * @param server - 可选的已有 Server；未提供时进入新增模式。
+   * Args:
+   *     server (MCPServerView): 可选的已有 Server；未提供时进入新增模式。
    */
   private openEditor(server?: MCPServerView): void {
     this.editingId = server?.config.id ?? null;
@@ -274,21 +335,29 @@ export class McpPage implements ISettingsPage {
   /**
    * 使用配置值重建环境变量或 Header 密钥行。
    *
-   * @param kind - 密钥行类型。
-   * @param values - 键值形式的配置内容。
+   * Args:
+   *     kind ("env" | "header"): 密钥行类型。
+   *     values (Record<string, string>): 键值形式的配置内容。
    */
   private replaceSecretRows(kind: "env" | "header", values: Record<string, string>): void {
     const rows = kind === "env" ? this.envRows : this.headerRows;
-    rows.splice(0).forEach((row) => row.element.remove());
+    rows.splice(0).forEach(/**
+     * 替换敏感字段集合前移除旧行的 DOM 元素。
+     *
+     * Args:
+     *     row (SecretRow): 当前服务配置的一行可编辑字段。
+     */
+    (row) => row.element.remove());
     for (const [key, value] of Object.entries(values)) this.addSecretRow(kind, key, value);
   }
 
   /**
    * 添加一行支持按住显示的密钥输入控件。
    *
-   * @param kind - 环境变量或 HTTP Header。
-   * @param initialKey - 初始键名。
-   * @param initialValue - 初始密钥值。
+   * Args:
+   *     kind ("env" | "header"): 环境变量或 HTTP Header。
+   *     initialKey (string): 初始键名。
+   *     initialValue (string): 初始密钥值。
    */
   private addSecretRow(kind: "env" | "header", initialKey = "", initialValue = ""): void {
     const element = document.createElement("div");
@@ -302,9 +371,17 @@ export class McpPage implements ISettingsPage {
     value.type = "password";
     value.placeholder = "值";
     value.value = initialValue;
-    const reveal = this.actionButton("按住显示", () => undefined);
-    reveal.addEventListener("pointerdown", () => { value.type = "text"; });
-    /** 在按住显示结束后重新遮蔽密钥值。 */
+    const reveal = this.actionButton("按住显示", /**
+     * 该字段行没有额外的更改回调，不对输入变化执行额外动作。
+     */
+    () => undefined);
+    reveal.addEventListener("pointerdown", /**
+     * 用户开始按住查看按钮时临时将敏感输入框改为明文。
+     */
+    () => { value.type = "text"; });
+    /**
+     *  在按住显示结束后重新遮蔽密钥值。
+     */
     const hide = (): void => { value.type = "password"; };
     reveal.addEventListener("pointerup", hide);
     reveal.addEventListener("pointerleave", hide);
@@ -312,7 +389,10 @@ export class McpPage implements ISettingsPage {
     reveal.addEventListener("blur", hide);
     const rows = kind === "env" ? this.envRows : this.headerRows;
     const row: SecretRow = { key, value, element };
-    const remove = this.actionButton("删除", () => {
+    const remove = this.actionButton("删除", /**
+     * 用户删除敏感字段行后同步移除内存记录，并让之前连接测试结果失效。
+     */
+    () => {
       element.remove();
       rows.splice(rows.indexOf(row), 1);
       this.testedFingerprint = null;
@@ -325,18 +405,41 @@ export class McpPage implements ISettingsPage {
   /**
    * 收集有效密钥输入行并转换为键值对象。
    *
-   * @param rows - 待收集的密钥输入行。
-   * @returns 已忽略空键名的配置对象。
+   * Args:
+   *     rows (SecretRow[]): 待收集的密钥输入行。
+   *
+   * Returns:
+   *     Record<string, string>: 已忽略空键名的配置对象。
    */
   private collectRows(rows: SecretRow[]): Record<string, string> {
-    return Object.fromEntries(rows.filter((row) => row.key.value.trim()).map((row) => [row.key.value.trim(), row.value.value]));
+    return Object.fromEntries(rows.filter(/**
+     * 收集敏感配置时跳过未填写字段名称的行。
+     *
+     * Args:
+     *     row (SecretRow): 当前服务配置的一行可编辑字段。
+     *
+     * Returns:
+     *     string: 字段名去掉空白后的文本，空名不会被保留。
+     */
+    (row) => row.key.value.trim()).map(/**
+     * 把已命名的环境变量或请求头行转成配置键值对。
+     *
+     * Args:
+     *     row (SecretRow): 当前服务配置的一行可编辑字段。
+     *
+     * Returns:
+     *     [string, string]: 去除名称空白后的字段名和原值。
+     */
+    (row) => [row.key.value.trim(), row.value.value]));
   }
 
   /**
    * 读取并执行前端基础校验后构造 Server 配置。
    *
-   * @returns 与所选传输类型匹配的 MCP Server 配置。
    * @throws {Error} ID、名称、Endpoint 或 stdio 命令不合法时抛出。
+   *
+   * Returns:
+   *     MCPServerConfig: 与所选传输类型匹配的 MCP Server 配置。
    */
   private readConfig(): MCPServerConfig {
     const common = {
@@ -359,7 +462,16 @@ export class McpPage implements ISettingsPage {
       ...common,
       transport: "stdio",
       command,
-      args: this.q<HTMLTextAreaElement>("#mcp-args").value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean),
+      args: this.q<HTMLTextAreaElement>("#mcp-args").value.split(/\r?\n/).map(/**
+       * 逐项清理命令参数开头和末尾空白。
+       *
+       * Args:
+       *     value (string): 当前待检查或转换的值。
+       *
+       * Returns:
+       *     string: 规范化后的参数文本。
+       */
+      (value) => value.trim()).filter(Boolean),
       cwd: this.q<HTMLInputElement>("#mcp-cwd").value.trim() || null,
       env: this.collectRows(this.envRows),
     };
@@ -368,17 +480,38 @@ export class McpPage implements ISettingsPage {
   /**
    * 在 HTTP Endpoint 变化时执行不安全连接确认。
    *
-   * @param config - 当前准备测试或保存的 Server 配置。
-   * @returns 用户是否允许继续使用该 Endpoint。
+   * Args:
+   *     config (MCPServerConfig): 当前准备测试或保存的 Server 配置。
+   *
+   * Returns:
+   *     Promise<boolean>: 用户是否允许继续使用该 Endpoint。
    */
   private async authorizeHttp(config: MCPServerConfig): Promise<boolean> {
     if (config.transport !== "streamable_http") return true;
     const fingerprint = fingerprintMcpConfig(config);
     if (this.authorizedInsecureFingerprint === fingerprint) return true;
-    const previous = this.servers.find((server) => server.config.id === this.editingId)?.config;
+    const previous = this.servers.find(/**
+     * 查找当前编辑的已保存服务，供比较配置是否变化。
+     *
+     * Args:
+     *     server (MCPServerView): 当前待校验 HTTP 地址的 MCP 服务配置。
+     *
+     * Returns:
+     *     boolean: 服务编号等于当前编辑编号时为 true。
+     */
+    (server) => server.config.id === this.editingId)?.config;
     const approved = await authorizeBaseUrlChange({
       previousUrl: previous?.transport === "streamable_http" ? previous.url : "",
       nextUrl: config.url,
+      /**
+       * 用户填写远程 HTTP 地址时显示风险确认提示，等待用户明确选择。
+       *
+       * Args:
+       *     url (string): 待检查或打开的地址。
+       *
+       * Returns:
+       *     Promise<boolean>: 用户允许该地址时为 true。
+       */
       confirmInsecure: (url) => this.confirmDialog.open({
         title: "未加密 MCP 连接警告",
         message: `MCP Headers 可能通过未加密 HTTP 发送到 ${url}。`,
@@ -404,7 +537,16 @@ export class McpPage implements ISettingsPage {
       this.testedFingerprint = fingerprintMcpConfig(config);
       const element = this.q<HTMLDivElement>("#mcp-test-result");
       element.hidden = false;
-      element.textContent = `连接成功，发现 ${result.tools.length} 个工具：${result.tools.map((tool) => tool.name).join("、") || "无"}`;
+      element.textContent = `连接成功，发现 ${result.tools.length} 个工具：${result.tools.map(/**
+       * 连接测试成功后提取工具名称，供权限目录同步。
+       *
+       * Args:
+       *     tool (MCPToolInfo): 当前服务返回的工具目录项。
+       *
+       * Returns:
+       *     string: 当前工具名称。
+       */
+      (tool) => tool.name).join("、") || "无"}`;
       this.toast.success("MCP 连接测试成功");
     } catch (error) {
       this.toast.error(appendErrorMessage("MCP 连接测试失败", error));
@@ -434,7 +576,8 @@ export class McpPage implements ISettingsPage {
   /**
    * 测试一个已保存的 MCP Server 配置。
    *
-   * @param server - 待测试的已保存 Server。
+   * Args:
+   *     server (MCPServerView): 待测试的已保存 Server。
    */
   private async testSaved(server: MCPServerView): Promise<void> {
     try {
@@ -448,7 +591,8 @@ export class McpPage implements ISettingsPage {
   /**
    * 请求后端重连指定 MCP Server 并刷新页面。
    *
-   * @param serverId - 待重连的 MCP Server ID。
+   * Args:
+   *     serverId (string): 待重连的 MCP Server ID。
    */
   private async reconnect(serverId: string): Promise<void> {
     try {
@@ -463,11 +607,21 @@ export class McpPage implements ISettingsPage {
   /**
    * 经用户确认后删除 MCP Server 及模型引用。
    *
-   * @param serverId - 待删除的 MCP Server ID。
-   * @param name - 用于确认对话框展示的 Server 名称。
+   * Args:
+   *     serverId (string): 待删除的 MCP Server ID。
+   *     name (string): 用于确认对话框展示的 Server 名称。
    */
   private async remove(serverId: string, name: string): Promise<void> {
-    const server = this.servers.find((item) => item.config.id === serverId);
+    const server = this.servers.find(/**
+     * 服务操作完成后按编号查找需要更新的目录记录。
+     *
+     * Args:
+     *     item (MCPServerView): 当前遍历的配置或目录条目。
+     *
+     * Returns:
+     *     boolean: 当前服务编号匹配时为 true。
+     */
+    (item) => item.config.id === serverId);
     const policyCount = server?.affected_model_count ?? 0;
     const confirmed = await this.confirmDialog.open({
       title: "删除 MCP 服务",
@@ -492,7 +646,16 @@ export class McpPage implements ISettingsPage {
    */
   private async refresh(): Promise<void> {
     this.servers = await window.desktopPetApi.getMcpServers();
-    const entries = await Promise.all(this.servers.map(async (server) => {
+    const entries = await Promise.all(this.servers.map(/**
+     * 并行读取每个服务的工具目录，单个失败返回该服务空目录，不阻断其他服务。
+     *
+     * Args:
+     *     server (MCPServerView): 当前待校验 HTTP 地址的 MCP 服务配置。
+     *
+     * Returns:
+     *     Promise<readonly [string, MCPToolInfo[]]>: 服务编号与工具列表组成的键值对。
+     */
+    async (server) => {
       try { return [server.config.id, await window.desktopPetApi.getMcpServerTools(server.config.id)] as const; }
       catch { return [server.config.id, [] as MCPToolInfo[]] as const; }
     }));

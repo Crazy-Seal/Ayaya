@@ -20,6 +20,14 @@ export class ToolsPage implements ISettingsPage {
 
   private eventCallback?: PageEventCallback;
 
+  /**
+   * 绑定工具权限表格和确认按钮，权限收集后交给设置控制器保存。
+   *
+   * Args:
+   *     toolsTableBody (HTMLTableSectionElement): 显示工具目录与权限的表格正文。
+   *     toolsEmpty (HTMLDivElement): 没有工具时显示的占位元素。
+   *     confirmBtn (HTMLButtonElement): 用户点击后提交本页修改的按钮。
+   */
   constructor(
     toolsTableBody: HTMLTableSectionElement,
     toolsEmpty: HTMLDivElement,
@@ -34,6 +42,9 @@ export class ToolsPage implements ISettingsPage {
 
   /**
    * 设置事件回调
+   *
+   * Args:
+   *     callback (PageEventCallback): 设置页主控制器接收本页提交或编辑事件的回调。
    */
   onEvent(callback: PageEventCallback): void {
     this.eventCallback = callback;
@@ -43,13 +54,19 @@ export class ToolsPage implements ISettingsPage {
    * 设置事件监听
    */
   private setupEventListeners(): void {
-    this.confirmBtn.addEventListener("click", () => {
+    this.confirmBtn.addEventListener("click", /**
+     * 用户点击权限确认后通知设置控制器保存当前工具策略。
+     */
+    () => {
       this.eventCallback?.({ type: "submit", page: "tools" });
     });
   }
 
   /**
    * 渲染页面
+   *
+   * Args:
+   *     data (PageRenderData): 当前已保存设置和本页所需模型、插件及工具目录。
    */
   render(data: PageRenderData): void {
     this.renderToolsTable(data.dependencies?.toolPolicies || []);
@@ -68,6 +85,9 @@ export class ToolsPage implements ISettingsPage {
 
   /**
    * 渲染工具表格
+   *
+   * Args:
+   *     tools (ToolPolicyView[]): 后端返回的本地与 MCP 工具权限目录。
    */
   private renderToolsTable(tools: ToolPolicyView[]): void {
     this.toolsTableBody.innerHTML = "";
@@ -141,7 +161,13 @@ export class ToolsPage implements ISettingsPage {
    */
   private collectPolicies(): Record<string, "deny" | "ask" | "allow"> {
     const policies: Record<string, "deny" | "ask" | "allow"> = {};
-    this.toolsTableBody.querySelectorAll<HTMLSelectElement>('select[data-stable-key]').forEach((select) => {
+    this.toolsTableBody.querySelectorAll<HTMLSelectElement>('select[data-stable-key]').forEach(/**
+     * 按每个下拉框的稳定工具标识收集 deny、ask 或 allow，缺少标识的控件不写入配置。
+     *
+     * Args:
+     *     select (HTMLSelectElement): 当前动作配置的下拉选择框。
+     */
+    (select) => {
       if (select.dataset.stableKey) {
         policies[select.dataset.stableKey] = select.value as "deny" | "ask" | "allow";
       }

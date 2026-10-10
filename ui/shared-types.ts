@@ -561,6 +561,9 @@ export interface DesktopSessionSubscriptionOptions {
   refreshSnapshot?: boolean;
 }
 
+/**
+ * 约定页面可通过 preload 调用的桌面接口，统一聊天、设置、模型、日志和事件订阅能力。
+ */
 export interface DesktopPetApi {
   /**
    * 读取会话任务记录。

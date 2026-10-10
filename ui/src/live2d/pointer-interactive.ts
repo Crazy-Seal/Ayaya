@@ -11,12 +11,22 @@ export class PointerInteractiveManager {
   private app: PIXI.Application;
   private lastPointerInteractive: boolean | null = null;
 
+  /**
+   * 保存模型交互依赖和参数，后续按鼠标位置切换窗口穿透状态。
+   *
+   * Args:
+   *     app (PIXI.Application): 渲染桌面模型的 Pixi 应用。
+   */
   constructor(app: PIXI.Application) {
     this.app = app;
   }
 
   /**
    * 采样 Canvas Alpha 值
+   *
+   * Args:
+   *     windowX (number): 鼠标在当前窗口中的横向位置。
+   *     windowY (number): 鼠标在当前窗口中的纵向位置。
    */
   sampleCanvasAlpha(windowX: number, windowY: number): number {
     const canvas = this.app.view as HTMLCanvasElement;

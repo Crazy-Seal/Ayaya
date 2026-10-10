@@ -21,7 +21,7 @@ def load_api_token() -> str:
     """读取并验证本地 API Token。
 
     Returns:
-        由统一启动器提供的临时 Token。
+        str: 由统一启动器提供的临时 Token。
 
     Raises:
         RuntimeError: Token 缺失或长度不足。
@@ -41,14 +41,20 @@ class LocalApiAuthMiddleware:
         """初始化本地 API 认证中间件。
 
         Args:
-            app: 下游 ASGI 应用。
-            token: 当前进程有效的 Bearer Token。
+            app (ASGIApp): 下游 ASGI 应用。
+            token (str): 当前进程有效的 Bearer Token。
         """
         self.app = app
         self._token = token
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        """验证 HTTP 请求并转发已授权流量。"""
+        """验证 HTTP 请求并转发已授权流量。
+
+        Args:
+            scope (Scope): 当前 ASGI 请求的路径、来源和认证头信息。
+            receive (Receive): ASGI 提供的请求数据读取函数。
+            send (Send): ASGI 提供的响应发送函数。
+        """
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
@@ -88,8 +94,8 @@ def install_local_api_security(app: FastAPI, token: str) -> None:
     """为 FastAPI 应用安装本地 API 安全边界。
 
     Args:
-        app: 待保护的 FastAPI 应用。
-        token: 当前启动周期的 Bearer Token。
+        app (FastAPI): 待保护的 FastAPI 应用。
+        token (str): 当前启动周期的 Bearer Token。
     """
     if len(token) < MIN_API_TOKEN_CHARS:
         raise ValueError("本地 API Token 长度不足")

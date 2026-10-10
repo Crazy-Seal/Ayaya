@@ -13,7 +13,13 @@ async def search_diary(
     end: Annotated[str, "结束日期，格式 YYYY-MM-DD"],
     context: ToolContext,
 ) -> str:
-    """搜索指定日期范围的日记。返回[start, end]范围内的日记内容(包括end那天的)，按日期排序。两个日期参数之间最多间隔5天。"""
+    """搜索指定日期范围的日记。返回[start, end]范围内的日记内容(包括end那天的)，按日期排序。两个日期参数之间最多间隔5天。
+
+    Args:
+        start (str): 开始日期，格式 YYYY-MM-DD
+        end (str): 结束日期，格式 YYYY-MM-DD
+        context (ToolContext): 执行管道提供的工具运行上下文。
+    """
     session_id = context.session_id
     try:
         if session_id is None:

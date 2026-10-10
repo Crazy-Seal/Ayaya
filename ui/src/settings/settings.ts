@@ -173,6 +173,12 @@ class SettingsApp {
     this.pages.set("mcp", this.mcpPage);
 
     // 设置事件回调
+    /**
+     * 接收各设置页面的提交事件，并交给主控制器按页面类型保存。
+     *
+     * Args:
+     *     event (PageEvent): 调用方或浏览器触发的当前事件。
+     */
     const eventCallback: PageEventCallback = async (event) => {
       await this.handlePageEvent(event);
     };
@@ -188,6 +194,9 @@ class SettingsApp {
 
   /**
    * 获取 DOM 元素
+   *
+   * Args:
+   *     selector (string): 必须存在的页面元素选择器。
    */
   private getElement<T extends HTMLElement>(selector: string): T {
     const element = document.querySelector<T>(selector);
@@ -202,17 +211,17 @@ class SettingsApp {
    */
   private setupEventListeners(): void {
     const unsubscribeSettingsPage = window.desktopPetApi.onOpenSettingsPage(/**
-     * 接收主进程的任务快捷入口导航，不重新加载整个设置窗口。
+     * 主进程请求打开指定设置页时交给页面切换流程。
      *
      * Args:
-     *     page ("tasks"): 已由主进程校验的目标页。
+     *     page ("tasks"): 需要打开的设置页面名称。
      */
     (page) => { this.switchPage(page); });
     const unsubscribeTasks = window.desktopPetApi.onInteractionEvent(/**
-     * 任务页可见时按状态事件刷新，其他会话或页面不参与更新。
+     * 只在任务页可见且事件属于当前会话时刷新任务状态，其他运行事件不触发任务查询。
      *
      * Args:
-     *     event (InteractionEvent): 主进程转发的共享会话可见事件。
+     *     event (InteractionEvent): 调用方或浏览器触发的当前事件。
      */
     (event) => {
       if (this.currentPage === "tasks" && event.session_id === this.savedState?.session_id
@@ -221,7 +230,13 @@ class SettingsApp {
       }
     });
     // 侧边栏导航
-    this.sidebar.addEventListener("click", (event) => {
+    this.sidebar.addEventListener("click", /**
+     * 用户点击侧栏页签时提取页面名称并切换，其他侧栏点击忽略。
+     *
+     * Args:
+     *     event (PointerEvent): 调用方或浏览器触发的当前事件。
+     */
+    (event) => {
       const target = event.target as HTMLElement | null;
       const tab = target?.closest<HTMLButtonElement>(".settings-tab");
       if (!tab) {
@@ -237,30 +252,50 @@ class SettingsApp {
     });
 
     // 最小化按钮
-    this.minBtn.addEventListener("click", () => {
+    this.minBtn.addEventListener("click", /**
+     * 用户点击标题栏最小化时请求主进程操作当前设置窗口。
+     */
+    () => {
       window.desktopPetApi.minimizeCurrentWindow();
     });
 
     // 关闭按钮
-    this.closeBtn.addEventListener("click", () => {
+    this.closeBtn.addEventListener("click", /**
+     * 用户点击标题栏关闭时请求主进程关闭设置窗口。
+     */
+    () => {
       window.desktopPetApi.closeCurrentWindow();
     });
-    this.logWindowBtn.addEventListener("click", () => {
+    this.logWindowBtn.addEventListener("click", /**
+     * 用户点击独立日志入口时请求主进程打开日志窗口。
+     */
+    () => {
       window.desktopPetApi.openLogWindow();
     });
 
     // 模型变化监听
-    const unsubscribeModelChanged = window.desktopPetApi.onModelChanged?.(() => {
+    const unsubscribeModelChanged = window.desktopPetApi.onModelChanged?.(/**
+     * 活动模型变化后重新读取当前会话配置和页面依赖。
+     */
+    () => {
       void this.refreshAfterModelChanged();
     });
 
     // 模型变换监听
-    const unsubscribeTransformChanged = window.desktopPetApi.onModelTransformChanged?.((payload) => {
+    const unsubscribeTransformChanged = window.desktopPetApi.onModelTransformChanged?.(/**
+     * 模型显示参数通知到达后更新模型设置页的缓存和控件。
+     *
+     * Args:
+     *     payload (ModelTransformData): 已经过入口校验的桌面动作参数。
+     */
+    (payload) => {
       this.modelPage.updateTransformData(payload);
     });
 
     // 页面卸载清理
-    window.addEventListener("beforeunload", /** 关闭设置窗口时移除实时监听及任务页计时器。 */
+    window.addEventListener("beforeunload", /**
+     * 设置页卸载时取消页面与任务订阅，并停止任务页轮询和模型参数监听。
+     */
     () => {
       unsubscribeSettingsPage();
       unsubscribeTasks();
@@ -287,11 +322,23 @@ class SettingsApp {
     this.tasksPage.setActive(newPage === "tasks");
 
     // 更新 UI
-    document.querySelectorAll<HTMLButtonElement>(".settings-tab").forEach((item) => {
+    document.querySelectorAll<HTMLButtonElement>(".settings-tab").forEach(/**
+     * 页面切换后按页面名称更新侧栏选中样式。
+     *
+     * Args:
+     *     item (HTMLButtonElement): 当前遍历的配置或目录条目。
+     */
+    (item) => {
       item.classList.toggle("active", item.dataset.page === newPage);
     });
 
-    document.querySelectorAll<HTMLDivElement>(".settings-page").forEach((item) => {
+    document.querySelectorAll<HTMLDivElement>(".settings-page").forEach(/**
+     * 页面切换后按页面名称更新内容区显示状态。
+     *
+     * Args:
+     *     item (HTMLDivElement): 当前遍历的配置或目录条目。
+     */
+    (item) => {
       item.classList.toggle("active", item.dataset.page === newPage);
     });
 
@@ -339,6 +386,9 @@ class SettingsApp {
 
   /**
    * 获取页面依赖数据
+   *
+   * Args:
+   *     pageName (string): 本次切换、加载或提交的设置页面名称。
    */
   private async getPageDependencies(pageName: string): Promise<PageRenderData["dependencies"]> {
     const deps: PageRenderData["dependencies"] = {};
@@ -351,6 +401,15 @@ class SettingsApp {
       deps.modelConfig = this.modelConfig || undefined;
       if (this.modelConfig) {
         const activeModel = this.modelConfig.models.find(
+          /**
+           * 加载页面依赖时查找当前活动模型。
+           *
+           * Args:
+           *     m ({ id: string; name: string; sessionId: string; source: "builtin" | "custom"; deletable: boolean; offsetX: number; offsetY: number; userScale: number; followCursor: boolean; motionConfig?: MotionConfig[] | undefined; entry?: string | undefined; modelUrl?: string | undefined; }): 当前模型动作的配置记录。
+           *
+           * Returns:
+           *     boolean: 模型编号等于活动编号时为 true。
+           */
           (m) => m.id === this.modelConfig!.activeModelId
         );
         if (activeModel) {
@@ -385,7 +444,16 @@ class SettingsApp {
     if (pageName === "mcp") {
       try {
         deps.mcpServers = await window.desktopPetApi.getMcpServers();
-        const toolEntries = await Promise.all(deps.mcpServers.map(async (server) => {
+        const toolEntries = await Promise.all(deps.mcpServers.map(/**
+         * 并行查询当前会话各服务工具，单个失败仅使用该服务空目录。
+         *
+         * Args:
+         *     server (MCPServerView): 当前待校验 HTTP 地址的 MCP 服务配置。
+         *
+         * Returns:
+         *     Promise<readonly [string, MCPToolInfo[]]>: 服务编号与工具列表的键值对。
+         */
+        async (server) => {
           try {
             return [server.config.id, await window.desktopPetApi.getMcpServerTools(server.config.id)] as const;
           } catch {
@@ -405,6 +473,9 @@ class SettingsApp {
 
   /**
    * 从模型加载动作列表
+   *
+   * Args:
+   *     modelUrl (string): 当前活动模型入口的资源地址。
    */
   private async loadMotionsFromModel(modelUrl: string): Promise<string[]> {
     if (!modelUrl) {
@@ -432,12 +503,39 @@ class SettingsApp {
   private getExpressionLabels(): string[] {
     if (this.modelConfig) {
       const activeModel = this.modelConfig.models.find(
+        /**
+         * 构造表情提示词前查找当前活动模型。
+         *
+         * Args:
+         *     m ({ id: string; name: string; sessionId: string; source: "builtin" | "custom"; deletable: boolean; offsetX: number; offsetY: number; userScale: number; followCursor: boolean; motionConfig?: MotionConfig[] | undefined; entry?: string | undefined; modelUrl?: string | undefined; }): 当前模型动作的配置记录。
+         *
+         * Returns:
+         *     boolean: 当前模型为活动模型时为 true。
+         */
         (m) => m.id === this.modelConfig!.activeModelId
       );
       if (activeModel?.motionConfig) {
         return activeModel.motionConfig
-          .filter((c) => c.setting === "expression" && c.label)
-          .map((c) => c.label!);
+          .filter(/**
+           * 仅保留带标签的表情规则，避免普通动作进入模型表情提示。
+           *
+           * Args:
+           *     c (MotionConfig): 当前动作的配置项。
+           *
+           * Returns:
+           *     string | false | undefined: 规则类型为表情且标签非空时为 true。
+           */
+          (c) => c.setting === "expression" && c.label)
+          .map(/**
+           * 提取已筛选表情规则的标签。
+           *
+           * Args:
+           *     c (MotionConfig): 当前动作的配置项。
+           *
+           * Returns:
+           *     string: 表情名称。
+           */
+          (c) => c.label!);
       }
     }
     return [];
@@ -445,6 +543,9 @@ class SettingsApp {
 
   /**
    * 处理页面事件
+   *
+   * Args:
+   *     event (PageEvent): 调用方或浏览器触发的当前事件。
    */
   private async handlePageEvent(event: PageEvent): Promise<void> {
     if (event.type === "submit") {
@@ -457,6 +558,9 @@ class SettingsApp {
 
   /**
    * 提交保存
+   *
+   * Args:
+   *     pageName (string): 本次切换、加载或提交的设置页面名称。
    */
   private async handleSubmit(pageName: string): Promise<void> {
     const page = this.pages.get(pageName);
@@ -501,6 +605,9 @@ class SettingsApp {
 
   /**
    * 保存 LLM 设置
+   *
+   * Args:
+   *     llmData (NonNullable<EditingState["llm"]>): 模型设置页正在编辑的模型参数和角色字段。
    */
   private async saveLlmSettings(llmData: NonNullable<EditingState["llm"]>): Promise<boolean> {
     if (!this.savedState) {
@@ -510,6 +617,15 @@ class SettingsApp {
     const shouldSave = await authorizeBaseUrlChange({
       previousUrl: this.savedState.openai_base_url,
       nextUrl: llmData.openai_base_url,
+      /**
+       * 模型服务地址改为远程 HTTP 时显示确认提示并等待用户选择。
+       *
+       * Args:
+       *     url (string): 待检查或打开的地址。
+       *
+       * Returns:
+       *     Promise<boolean>: 用户确认允许新地址时为 true。
+       */
       confirmInsecure: (url) => this.confirmDialog.open({
         title: "未加密连接警告",
         message: `API Key 将通过未加密 HTTP 发送到 ${url}。仅在你信任目标服务器和当前网络时继续。`,
@@ -547,6 +663,9 @@ class SettingsApp {
 
   /**
    * 保存动作设置
+   *
+   * Args:
+   *     motionData (NonNullable<EditingState["motion"]>): 动作设置页正在编辑的模型动作与表情规则。
    */
   private async saveMotionSettings(motionData: NonNullable<EditingState["motion"]>): Promise<void> {
     if (!this.modelConfig) {
@@ -581,6 +700,9 @@ class SettingsApp {
 
   /**
    * 保存工具设置
+   *
+   * Args:
+   *     toolsData (NonNullable<EditingState["tools"]>): 工具设置页正在编辑的权限策略。
    */
   private async saveToolsSettings(toolsData: NonNullable<EditingState["tools"]>): Promise<void> {
     if (!this.savedState) {
@@ -594,13 +716,25 @@ class SettingsApp {
     this.savedState = {
       ...this.savedState,
       tool_permissions: Object.fromEntries(
-        views.map((item) => [item.stable_key, item.policy])
+        views.map(/**
+         * 后端权限保存成功后按稳定键重建本页权限映射。
+         *
+         * Args:
+         *     item (ToolPolicyView): 当前遍历的配置或目录条目。
+         *
+         * Returns:
+         *     [string, ToolPolicy]: 工具稳定标识与最新权限组成的键值对。
+         */
+        (item) => [item.stable_key, item.policy])
       ),
     };
   }
 
   /**
    * 保存插件设置
+   *
+   * Args:
+   *     pluginsData (NonNullable<EditingState["plugins"]>): 插件设置页正在编辑的记忆能力开关和配置。
    */
   private async savePluginSettings(pluginsData: NonNullable<EditingState["plugins"]>): Promise<void> {
     if (!this.savedState) {
@@ -615,6 +749,15 @@ class SettingsApp {
     this.savedState = await window.desktopPetApi.updateChatSettings(newState);
   }
 
+  /**
+   * 校验并保存会话压缩和截图保留配置，成功后刷新保存数据并显示结果提示。
+   *
+   * Args:
+   *     contextData (NonNullable<EditingState["contextStrategy"]>): 用户当前编辑的压缩阈值和截图保留设置。
+   *
+   * Returns:
+   *     Promise<void>: 保存和页面提示处理完成后结束。
+   */
   private async saveContextStrategy(
     contextData: NonNullable<EditingState["contextStrategy"]>
   ): Promise<void> {
@@ -631,7 +774,8 @@ class SettingsApp {
   /**
    * 保存当前模型的 MCP Server 和工具权限。
    *
-   * @param mcp - MCP Server 启用状态和逐工具策略。
+   * Args:
+   *     mcp (NonNullable<EditingState["mcp"]>): MCP Server 启用状态和逐工具策略。
    */
   private async saveMcpSettings(mcp: NonNullable<EditingState["mcp"]>): Promise<boolean> {
     if (!this.savedState) return false;
@@ -644,6 +788,10 @@ class SettingsApp {
 
   /**
    * 构建系统提示词
+   *
+   * Args:
+   *     llmData (NonNullable<EditingState["llm"]>): 模型设置页正在编辑的模型参数和角色字段。
+   *     expressionLabels (string[]): 当前模型允许使用的表情标签名称。
    */
   private buildSystemPrompt(
     llmData: NonNullable<EditingState["llm"]>,
@@ -663,7 +811,16 @@ class SettingsApp {
     }
 
     if (expressionLabels.length > 0) {
-      const tagsList = expressionLabels.map((l) => `<${l}>`).join("");
+      const tagsList = expressionLabels.map(/**
+       * 将编辑中的表情名称转换为系统提示词使用的标签。
+       *
+       * Args:
+       *     l (string): 当前可用于提示词的表情名称。
+       *
+       * Returns:
+       *     string: 带尖括号的标签。
+       */
+      (l) => `<${l}>`).join("");
       prompt += `\n你可以在对话中使用以下表情标签:${tagsList}使用时必须像示例一样使用尖括号<>包裹`;
     }
 
@@ -672,6 +829,9 @@ class SettingsApp {
 
   /**
    * 从已保存状态构建系统提示词
+   *
+   * Args:
+   *     expressionLabels (string[]): 当前模型允许使用的表情标签名称。
    */
   private buildSystemPromptFromSaved(expressionLabels: string[]): string {
     if (!this.savedState) {
@@ -692,7 +852,16 @@ class SettingsApp {
     }
 
     if (expressionLabels.length > 0) {
-      const tagsList = expressionLabels.map((l) => `<${l}>`).join("");
+      const tagsList = expressionLabels.map(/**
+       * 将已保存的表情名称转换为系统提示词使用的标签。
+       *
+       * Args:
+       *     l (string): 当前可用于提示词的表情名称。
+       *
+       * Returns:
+       *     string: 带尖括号的标签。
+       */
+      (l) => `<${l}>`).join("");
       prompt += `\n你可以在对话中使用以下表情标签:${tagsList}使用时必须像示例一样使用尖括号<>包裹`;
     }
 
@@ -701,6 +870,9 @@ class SettingsApp {
 
   /**
    * 初始化聊天设置
+   *
+   * Args:
+   *     clearCurrent (boolean): 切换设置来源前是否清除现有页面数据。
    */
   private async initChatSettings(clearCurrent = false): Promise<boolean> {
     if (clearCurrent) {

@@ -14,9 +14,7 @@ def test_desktop_execution_claim_is_single_use_and_result_returns_to_runtime(tmp
     """
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：屏幕请求只能领取一次且结果交回后端运行时。
-
-        """
+        """在隔离异步环境中安排并验证：屏幕请求只能领取一次且结果交回后端运行时。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         db_path = str(tmp_path / "state.sqlite3")
         manager = StateManager("s", db_path)
@@ -36,9 +34,7 @@ def test_desktop_execution_claim_is_single_use_and_result_returns_to_runtime(tmp
         returned: list[tuple[str, str, dict]] = []
 
         class FakeAgent:
-            """提供隔离测试替身，用于验证：屏幕请求只能领取一次且结果交回后端运行时。
-
-            """
+            """提供隔离测试替身，用于验证：屏幕请求只能领取一次且结果交回后端运行时。"""
             async def validate_pending_continuation(self, _interrupt):
                 """执行该回归场景中的局部测试步骤。
 
@@ -48,9 +44,7 @@ def test_desktop_execution_claim_is_single_use_and_result_returns_to_runtime(tmp
                 return True
 
             async def close(self):
-                """完成替身清理而不访问真实服务。
-
-                """
+                """完成替身清理而不访问真实服务。"""
                 pass
 
         broker = DesktopExecutionBroker(
@@ -80,9 +74,7 @@ def test_revoked_screen_grant_fails_without_executing_and_unblocks_run(tmp_path)
     """
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：撤销授权后不执行屏幕动作并解除运行等待。
-
-        """
+        """在隔离异步环境中安排并验证：撤销授权后不执行屏幕动作并解除运行等待。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         db_path = str(tmp_path / "state.sqlite3")
         state = AgentState.create_new("s")
@@ -101,9 +93,7 @@ def test_revoked_screen_grant_fails_without_executing_and_unblocks_run(tmp_path)
         resumed: list[dict] = []
 
         class FakeAgent:
-            """提供隔离测试替身，用于验证：撤销授权后不执行屏幕动作并解除运行等待。
-
-            """
+            """提供隔离测试替身，用于验证：撤销授权后不执行屏幕动作并解除运行等待。"""
             async def validate_pending_continuation(self, _interrupt):
                 """执行该回归场景中的局部测试步骤。
 
@@ -113,9 +103,7 @@ def test_revoked_screen_grant_fails_without_executing_and_unblocks_run(tmp_path)
                 return False
 
             async def close(self):
-                """完成替身清理而不访问真实服务。
-
-                """
+                """完成替身清理而不访问真实服务。"""
                 pass
 
         broker = DesktopExecutionBroker(
@@ -139,14 +127,10 @@ def test_revoked_screen_grant_fails_without_executing_and_unblocks_run(tmp_path)
 
 
 def test_slow_desktop_executor_disconnects_and_reconnects_from_pending_requests() -> None:
-    """验证慢执行器重连可以恢复仍待领取的请求。
-
-    """
+    """验证慢执行器重连可以恢复仍待领取的请求。"""
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：慢执行器重连可以恢复仍待领取的请求。
-
-        """
+        """在隔离异步环境中安排并验证：慢执行器重连可以恢复仍待领取的请求。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         broker = DesktopExecutionBroker(
             state_manager_factory=lambda _session: None,

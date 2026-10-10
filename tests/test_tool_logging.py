@@ -6,6 +6,7 @@ from app.runtime import get_data_dir
 
 
 def test_tool_file_handler_uses_disposable_test_data_dir() -> None:
+    """验证工具日志文件只使用一次性测试目录。"""
     logger = logging.getLogger("tests.tool_log_isolation")
 
     _ensure_tool_file_handler(logger)

@@ -24,10 +24,11 @@ def save_image_to_disk(
     """保存单张图片到磁盘。
 
     Args:
-        image_data: 图片数据，可以是完整 data URL 或纯 base64
+        image_data (str): 图片数据，可以是完整 data URL 或纯 base64
+        category (ImageCategory | None): 区分真人附件、截图、本地工具及 MCP 图片的保存子目录。
 
     Returns:
-        文件名（相对路径），失败返回 None
+        str | None: 文件名（相对路径），失败返回 None
     """
     try:
         # 确保目录存在
@@ -44,7 +45,7 @@ def save_image_to_disk(
             mime_start = 5  # "data:" 之后
             mime_end = image_data.find(";")
             if mime_end > mime_start:
-                mime_type = image_data[mime_start:mime_end]  # "image/jpeg"
+                mime_type = image_data[mime_start:mime_end]  # 图片 MIME 类型，例如 image/jpeg。
                 mime_ext = mime_type.split("/")[1] if "/" in mime_type else "png"
                 # 标准化后缀名
                 if mime_ext == "jpeg":
@@ -92,10 +93,11 @@ def save_multiple_images(
     """保存多张图片到磁盘。
 
     Args:
-        images: 图片数据列表
+        images (list[str]): 图片数据列表
+        category (ImageCategory | None): 区分真人附件、截图、本地工具及 MCP 图片的保存子目录。
 
     Returns:
-        文件名列表（相对路径）
+        list[str]: 文件名列表（相对路径）
     """
     filenames: list[str] = []
     for image_data in images:

@@ -46,7 +46,17 @@ class CheckpointCallback(Protocol):
         state: AgentState,
         *,
         checkpoint_type: CheckpointType,
-    ) -> int: ...
+    ) -> int:
+        """执行管道在关键进度点调用，等待当前状态持久保存后才继续模型或工具操作。
+
+        Args:
+            state (AgentState): 当前会话的内存 AgentState；保存由调用方负责。
+            checkpoint_type (CheckpointType): 本次保存中间执行进度或完整轮次的类型。
+
+        Returns:
+            int: 已提交 checkpoint 的数据库编号。
+        """
+        ...
 
 
 class SystemPromptSource(Protocol):
@@ -62,7 +72,17 @@ class StreamingLLMClient(Protocol):
         self,
         messages: list[dict],
         tools: list[dict] | None = None,
-    ) -> AsyncIterator[StreamChunk]: ...
+    ) -> AsyncIterator[StreamChunk]:
+        """执行管道调用主模型时取得流式文字、工具调用和用量片段。
+
+        Args:
+            messages (list[dict]): 按对话顺序排列的消息集合。
+            tools (list[dict] | None): 当前向模型公开的工具定义。
+
+        Returns:
+            AsyncIterator[StreamChunk]: 按到达顺序产出 StreamChunk 的异步迭代器。
+        """
+        ...
 
 
 EventEmitter = Callable[[EventType, Any], Awaitable[None]]
@@ -266,7 +286,7 @@ class ExecutionPipeline:
             AgentEvent: 按执行顺序产生的 Agent 事件。
 
         Raises:
-            RuntimeError: 输入、持久状态或系统调用不满足当前执行约束。
+            RuntimeError: 模型未返回有效文本（finish_reason={reason}）。
         """
         while True:
             # 1. 模型调用前交付当前后台通知，然后设置 LLM 安全点和片段缓冲。
@@ -412,7 +432,12 @@ class ExecutionPipeline:
         state: AgentState,
         checkpoint: CheckpointCallback | None,
     ) -> None:
-        """在启用持久化的执行入口中保存工具进度。"""
+        """在启用持久化的执行入口中保存工具进度。
+
+        Args:
+            state (AgentState): 当前会话的内存 AgentState；保存由调用方负责。
+            checkpoint (CheckpointCallback | None): 执行管道在继续模型或工具之前调用的持久保存回调。
+        """
         if checkpoint is not None:
             await checkpoint(state, checkpoint_type="intermediate")
 
@@ -424,7 +449,13 @@ class ExecutionPipeline:
         runtime_context: RuntimeContext,
         checkpoint: CheckpointCallback | None = None,
     ) -> AsyncIterator[StreamChunk]:
-        """调用 LLM，保留文本、工具调用和终止原因。"""
+        """调用 LLM，保留文本、工具调用和终止原因。
+
+        Args:
+            state (AgentState): 当前会话的内存 AgentState；保存由调用方负责。
+            runtime_context (RuntimeContext): 本轮时间、来源、检索背景和停止信号组成的临时上下文。
+            checkpoint (CheckpointCallback | None): 执行管道在继续模型或工具之前调用的持久保存回调。
+        """
         tools = self._tool_manager.get_openai_tools()
         produced = False
         prepared = await self._model_input.prepare(
@@ -498,7 +529,7 @@ class ExecutionPipeline:
             origin_run_id (str): 发起进程任务的运行轮次标识。
 
         Returns:
-            ToolResult: 当前查询或执行结果。
+            ToolResult: 当前工具执行、授权等待或桌面继续请求的结果。
         """
         # 1. 查找当前工具，缺失时返回可闭合调用的错误结果。
         tool = self._tool_manager.get(tool_call.name)
@@ -704,7 +735,7 @@ class ExecutionPipeline:
             grant (dict | None): 绑定本次调用的授权快照。
 
         Returns:
-            ToolResult: 当前查询或执行结果。
+            ToolResult: 准备后授权通过的工具执行结果，或新的继续请求。
         """
         # 1. 使用已获准的具体动作和中间态重入工具，仍传入共享任务端口。
         context = ToolContext(
@@ -751,7 +782,11 @@ class ExecutionPipeline:
         }
 
     def validate_pending_continuation(self, interrupt_data: dict[str, Any]) -> bool:
-        """在前端执行 continuation 前复核当前策略、契约和单次授权。"""
+        """在前端执行 continuation 前复核当前策略、契约和单次授权。
+
+        Args:
+            interrupt_data (dict[str, Any]): 当前等待审批或桌面执行的恢复信息。
+        """
         if self._tool_authorization is None:
             return False
         tool = self._tool_manager.get(str(interrupt_data.get("tool_name") or ""))
@@ -789,10 +824,10 @@ class ExecutionPipeline:
         更新，避免持久化“工具批次已结束但图片尚未注入”的中间状态。
 
         Args:
-            state: 当前 Agent 状态。
-            tool_call: 已执行完成的工具调用。
-            result: 工具执行结果。
-            checkpoint: intermediate checkpoint 持久化回调。
+            state (AgentState): 当前 Agent 状态。
+            tool_call (ToolCall): 已执行完成的工具调用。
+            result (ToolResult): 工具执行结果。
+            checkpoint (CheckpointCallback | None): intermediate checkpoint 持久化回调。
         """
         image_urls = list(result.image_urls)
         if result.image_url and result.image_url not in image_urls:
@@ -823,6 +858,14 @@ class ExecutionPipeline:
 
         钩子的原地修改一并保存；保存失败时不产生中断事件。
         未配置持久化回调时仍支持独立执行 Pipeline。
+
+        Args:
+            state (AgentState): 当前会话的内存 AgentState；保存由调用方负责。
+            tool_call (ToolCall): 本次模型请求的工具调用，包含编号、名称和参数。
+            interrupt (InterruptEvent): 当前工具要求等待审批或桌面处理的中断事件。
+            resume_state (dict): 工具继续执行所需的私有恢复材料。
+            pending_actions (list[ToolCall]): 当前中断之后尚未执行的同批工具调用。
+            checkpoint (CheckpointCallback | None): 执行管道在继续模型或工具之前调用的持久保存回调。
         """
         interrupt.tool_name = tool_call.name
         interrupt.tool_call_id = tool_call.id

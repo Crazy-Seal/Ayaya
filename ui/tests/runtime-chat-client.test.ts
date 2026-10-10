@@ -6,9 +6,6 @@ import type { InteractionEvent } from "../shared-types.js";
 
 test("桌面 Adapter 接收其他渠道消息并用统一命令提交输入", /**
  * 验证桌面 Adapter 接收其他渠道消息并用统一命令提交输入。
- *
- * Returns:
- *     Promise<void>: 当前异步处理完成的等待结果。
  */
 async () => {
   // 1. 建立隔离 DOM、bridge 替身与事件监听，按场景安排输入和到达顺序。
@@ -36,12 +33,14 @@ async () => {
      *     callback ((event: InteractionEvent) => void): 当前定义执行的回调。
      *
      * Returns:
-     *     () => void: 当前查询、回调或视图操作的结果。
+     *     () => void: 移除本次运行事件监听的取消订阅函数。
      */
     onInteractionEvent: (callback: (event: InteractionEvent) => void) => {
       listener = callback;
       /**
-       * 提供测试占位回调，不产生额外副作用。
+       * 由外层操作在对应处理阶段调用；当前用例无需使用此通知内容。
+       *
+       * 此定义用于：保存事件注入回调，并返回测试清理占位函数。
        */
       return () => {};
     },
@@ -52,7 +51,7 @@ async () => {
      *     command ({ kind: string; origin_channel: string }): 带桌面来源的统一入站命令。
      *
      * Returns:
-     *     Promise<{ accepted: boolean; run_id: string; }>: 当前查询、回调或视图操作的结果。
+     *     Promise<{ accepted: boolean; run_id: string; }>: 后端对本次用户命令的受理回执。
      */
     submitInteractionCommand: async (command: { kind: string; origin_channel: string }) => {
       commands.push(command);
@@ -62,34 +61,37 @@ async () => {
      * 返回测试配置的任务列表，不查询真实存储。
      *
      * Returns:
-     *     Promise<any[]>: 当前查询、回调或视图操作的结果。
+     *     Promise<never[]>: 当前会话的后台任务记录列表。
      */
     getBackgroundTasks: async () => [],
     /**
      * 返回测试配置的任务输出页。
      *
      * Returns:
-     *     Promise<{ text: string; next_offset: number; has_more: boolean; }>: 当前查询、回调或视图操作的结果。
+     *     Promise<{ text: string; next_offset: number; has_more: boolean; }>: 任务输出内容及后续读取位置。
      */
     getBackgroundTaskOutput: async () => ({ text: "", next_offset: 0, has_more: false }),
   };
   const oldDocument = globalThis.document;
   globalThis.document = { /**
-   * 提供测试指定的 DOM 元素。
+   * 返回当前用例预设的聊天控件。
    *
-   * Returns:
-   *     any: 当前查询、回调或视图操作的结果。
+   * 此定义用于：验证桌面 Adapter 接收其他渠道消息并用统一命令提交输入。
    */
   getElementById: () => null } as unknown as Document;
   try {
     const input = { value: "桌面消息", style: { height: "40px" }, /**
-     * 提供测试占位回调，不产生额外副作用。
+     * 记录输入框焦点恢复。
+     *
+     * 此定义用于：验证桌面 Adapter 接收其他渠道消息并用统一命令提交输入。
      */
     focus: () => {} };
     const client = new RuntimeChatClient({
       sessionId: "s", bridge,
       bubble: { /**
-       * 提供测试占位回调，不产生额外副作用。
+       * 记录气泡正文更新，供检查流式和历史显示顺序。
+       *
+       * 此定义用于：验证桌面 Adapter 接收其他渠道消息并用统一命令提交输入。
        */
       setText: () => {} },
       chatHistory: {
@@ -104,38 +106,45 @@ async () => {
          * 提供测试占位回调，不产生额外副作用。
          */
         showTypingIndicator: () => {}, /**
-         * 提供测试占位回调，不产生额外副作用。
+         * 记录正在输入提示被隐藏。
+         *
+         * 此定义用于：验证桌面 Adapter 接收其他渠道消息并用统一命令提交输入。
          */
         hideTypingIndicator: () => {},
         /**
          * 提供测试流式展示入口，不创建真实界面。
          */
         startStreaming: () => {}, /**
-         * 记录测试正文更新，供历史与增量顺序断言。
+         * 记录最新助手消息显示。
+         *
+         * 此定义用于：验证桌面 Adapter 接收其他渠道消息并用统一命令提交输入。
          */
         updateLastAiMessage: () => {},
         /**
          * 提供测试流式收尾替身，不持久保存真实回复。
          */
         finalizeStreamingMessage: () => {}, /**
-         * 提供测试占位回调，不产生额外副作用。
+         * 记录流式显示中止，供检查轮次切换。
+         *
+         * 此定义用于：验证桌面 Adapter 接收其他渠道消息并用统一命令提交输入。
          */
         abortStreaming: () => {},
         /**
          * 提供测试占位回调，不产生额外副作用。
          */
         showToolCallMessage: () => {}, /**
-         * 提供测试占位回调，不产生额外副作用。
+         * 记录工具提示完成，供检查轮次收尾。
+         *
+         * 此定义用于：验证桌面 Adapter 接收其他渠道消息并用统一命令提交输入。
          */
         finalizeToolCallIndicator: () => {},
         /**
          * 提供测试占位回调，不产生额外副作用。
          */
         showErrorMessage: () => {}, /**
-         * 模拟历史加载及场景所需的完成屏障。
+         * 按脚本返回历史同步结果，并记录历史读取时机。
          *
-         * Returns:
-         *     Promise<ChatHistoryItem[]>: 已应用的隔离历史列表。
+         * 此定义用于：验证桌面 Adapter 接收其他渠道消息并用统一命令提交输入。
          */
         loadHistory: async () => [],
       },
@@ -152,17 +161,16 @@ async () => {
          * 按场景返回人工审批决定。
          *
          * Returns:
-         *     Promise<{ kind: "approve"; }>: 当前查询、回调或视图操作的结果。
+         *     Promise<{ kind: "approve"; }>: 用户选择后的审批决定，或当前用例准备的决定。
          */
         open: async () => ({ kind: "approve" as const }),
         /**
          * 关闭已由其他入口处理的审批视图，调用方核对 request_id 后不再提交决定。
          */
         dismiss: () => {}, /**
-         * 提供当前测试场景使用的 isOpen 替身结果。
+         * 返回测试审批框当前是否打开。
          *
-         * Returns:
-         *     boolean: 当前查询、回调或视图操作的结果。
+         * 此定义用于：验证桌面 Adapter 接收其他渠道消息并用统一命令提交输入。
          */
         isOpen: () => false,
       } as RuntimeChatClientOptions["confirmDialog"],
@@ -172,13 +180,12 @@ async () => {
     listener({ session_id: "s", kind: "human_message", payload: { message: "QQ 消息" },
       origin_channel: "qq", stream_epoch: "epoch", event_sequence: 1 });
     await new Promise<void>(/**
-     * 提供当前测试场景使用的 callback 替身结果。
+     * 由 Promise 构造器立即调用，取得本用例指定的条目或响应，供外层断言处理结果。
+     *
+     * 此定义用于：验证桌面 Adapter 接收其他渠道消息并用统一命令提交输入。
      *
      * Args:
-     *     resolve ((value: void | PromiseLike<void>) => void): 完成当前 Promise 的函数。
-     *
-     * Returns:
-     *     Immediate: 当前查询、回调或视图操作的结果。
+     *     resolve ((value: void | PromiseLike<void>) => void): 准备成功或等待结束时完成 Promise 的函数。
      */
     (resolve) => setImmediate(resolve));
     assert.equal(added.length, 1);
@@ -196,9 +203,6 @@ async () => {
 
 test("重连快照已无审批时关闭过期审批框", /**
  * 验证重连快照已无审批时关闭过期审批框。
- *
- * Returns:
- *     Promise<void>: 当前异步处理完成的等待结果。
  */
 async () => {
   // 1. 建立隔离 DOM、bridge 替身与事件监听，按场景安排输入和到达顺序。
@@ -209,10 +213,9 @@ async () => {
   let dismissed = 0;
   const oldDocument = globalThis.document;
   globalThis.document = { /**
-   * 提供测试指定的 DOM 元素。
+   * 返回当前用例预设的聊天控件。
    *
-   * Returns:
-   *     any: 当前查询、回调或视图操作的结果。
+   * 此定义用于：验证重连快照已无审批时关闭过期审批框。
    */
   getElementById: () => null } as unknown as Document;
   try {
@@ -233,36 +236,40 @@ async () => {
          *     callback ((event: InteractionEvent) => void): 当前定义执行的回调。
          *
          * Returns:
-         *     () => void: 当前查询、回调或视图操作的结果。
+         *     () => void: 移除本次运行事件监听的取消订阅函数。
          */
         onInteractionEvent: (callback) => { listener = callback; /**
-         * 提供测试占位回调，不产生额外副作用。
+         * 由外层操作在对应处理阶段调用；当前用例无需使用此通知内容。
+         *
+         * 此定义用于：保存事件注入回调，并返回测试清理占位函数。
          */
         return () => {}; },
         /**
          * 记录测试命令并按场景返回预设受理回执。
          *
          * Returns:
-         *     Promise<{ accepted: true; }>: 当前查询、回调或视图操作的结果。
+         *     Promise<{ accepted: true; }>: 后端对本次用户命令的受理回执。
          */
         submitInteractionCommand: async () => ({ accepted: true }),
         /**
          * 返回测试配置的任务列表，不查询真实存储。
          *
          * Returns:
-         *     Promise<any[]>: 当前查询、回调或视图操作的结果。
+         *     Promise<never[]>: 当前会话的后台任务记录列表。
          */
         getBackgroundTasks: async () => [],
         /**
          * 返回测试配置的任务输出页。
          *
          * Returns:
-         *     Promise<{ text: string; next_offset: number; has_more: false; }>: 当前查询、回调或视图操作的结果。
+         *     Promise<{ text: string; next_offset: number; has_more: false; }>: 任务输出内容及后续读取位置。
          */
         getBackgroundTaskOutput: async () => ({ text: "", next_offset: 0, has_more: false }),
       },
       bubble: { /**
-       * 提供测试占位回调，不产生额外副作用。
+       * 记录气泡正文更新，供检查流式和历史显示顺序。
+       *
+       * 此定义用于：验证重连快照已无审批时关闭过期审批框。
        */
       setText: () => {} },
       chatHistory: {
@@ -270,50 +277,63 @@ async () => {
          * 记录测试收到的真人消息内容和来源。
          */
         addMessage: () => {}, /**
-         * 提供测试占位回调，不产生额外副作用。
+         * 记录正在输入提示被显示。
+         *
+         * 此定义用于：验证重连快照已无审批时关闭过期审批框。
          */
         showTypingIndicator: () => {}, /**
-         * 提供测试占位回调，不产生额外副作用。
+         * 记录正在输入提示被隐藏。
+         *
+         * 此定义用于：验证重连快照已无审批时关闭过期审批框。
          */
         hideTypingIndicator: () => {},
         /**
          * 提供测试流式展示入口，不创建真实界面。
          */
         startStreaming: () => {}, /**
-         * 记录测试正文更新，供历史与增量顺序断言。
+         * 记录最新助手消息显示。
+         *
+         * 此定义用于：验证重连快照已无审批时关闭过期审批框。
          */
         updateLastAiMessage: () => {},
         /**
          * 提供测试流式收尾替身，不持久保存真实回复。
          */
         finalizeStreamingMessage: () => {}, /**
-         * 提供测试占位回调，不产生额外副作用。
+         * 记录流式显示中止，供检查轮次切换。
+         *
+         * 此定义用于：验证重连快照已无审批时关闭过期审批框。
          */
         abortStreaming: () => {},
         /**
          * 提供测试占位回调，不产生额外副作用。
          */
         showToolCallMessage: () => {}, /**
-         * 提供测试占位回调，不产生额外副作用。
+         * 记录工具提示完成，供检查轮次收尾。
+         *
+         * 此定义用于：验证重连快照已无审批时关闭过期审批框。
          */
         finalizeToolCallIndicator: () => {},
         /**
          * 提供测试占位回调，不产生额外副作用。
          */
         showErrorMessage: () => {}, /**
-         * 模拟历史加载及场景所需的完成屏障。
+         * 按脚本返回历史同步结果，并记录历史读取时机。
          *
-         * Returns:
-         *     Promise<ChatHistoryItem[]>: 已应用的隔离历史列表。
+         * 此定义用于：验证重连快照已无审批时关闭过期审批框。
          */
         loadHistory: async () => [],
       },
       sendBtn: { innerHTML: "send", /**
-       * 提供测试占位回调，不产生额外副作用。
+       * 记录页面属性写入，供检查组件状态。
+       *
+       * 此定义用于：验证重连快照已无审批时关闭过期审批框。
        */
       setAttribute: () => {} } as unknown as HTMLButtonElement,
       input: { value: "", style: {}, /**
-       * 提供测试占位回调，不产生额外副作用。
+       * 记录输入框焦点恢复。
+       *
+       * 此定义用于：验证重连快照已无审批时关闭过期审批框。
        */
       focus: () => {} } as unknown as HTMLTextAreaElement,
       confirmDialog: {
@@ -321,10 +341,12 @@ async () => {
          * 按场景返回人工审批决定。
          *
          * Returns:
-         *     Promise<ApprovalDecision>: 当前查询、回调或视图操作的结果。
+         *     Promise<ApprovalDecision>: 用户选择后的审批决定，或当前用例准备的决定。
          */
         open: async () => await new Promise(/**
-         * 提供测试占位回调，不产生额外副作用。
+         * 由 Promise 构造器立即调用；当前用例无需使用此通知内容。
+         *
+         * 此定义用于：按场景返回人工审批决定。
          */
         () => {}),
         /**
@@ -341,13 +363,12 @@ async () => {
       phase: "idle", interrupt: null,
     }, stream_epoch: "epoch", event_sequence: 2 });
     await new Promise<void>(/**
-     * 提供当前测试场景使用的 callback 替身结果。
+     * 由 Promise 构造器立即调用，取得本用例指定的条目或响应，供外层断言处理结果。
+     *
+     * 此定义用于：验证重连快照已无审批时关闭过期审批框。
      *
      * Args:
-     *     resolve ((value: void | PromiseLike<void>) => void): 完成当前 Promise 的函数。
-     *
-     * Returns:
-     *     Immediate: 当前查询、回调或视图操作的结果。
+     *     resolve ((value: void | PromiseLike<void>) => void): 准备成功或等待结束时完成 Promise 的函数。
      */
     (resolve) => setImmediate(resolve));
     assert.equal(dismissed, 1);
@@ -358,9 +379,6 @@ async () => {
 
 test("历史刷新期间积压的下一轮正文等待完成后显示", /**
  * 验证历史刷新期间积压的下一轮正文等待完成后显示。
- *
- * Returns:
- *     Promise<void>: 当前异步处理完成的等待结果。
  */
 async () => {
   // 1. 建立隔离 DOM、bridge 替身与事件监听，按场景安排输入和到达顺序。
@@ -376,10 +394,9 @@ async () => {
   let historyCalls = 0;
   const oldDocument = globalThis.document;
   globalThis.document = { /**
-   * 提供测试指定的 DOM 元素。
+   * 返回当前用例预设的聊天控件。
    *
-   * Returns:
-   *     any: 当前查询、回调或视图操作的结果。
+   * 此定义用于：验证历史刷新期间积压的下一轮正文等待完成后显示。
    */
   getElementById: () => null } as unknown as Document;
   try {
@@ -400,36 +417,40 @@ async () => {
          *     callback ((event: InteractionEvent) => void): 当前定义执行的回调。
          *
          * Returns:
-         *     () => void: 当前查询、回调或视图操作的结果。
+         *     () => void: 移除本次运行事件监听的取消订阅函数。
          */
         onInteractionEvent: (callback) => { listener = callback; /**
-         * 提供测试占位回调，不产生额外副作用。
+         * 由外层操作在对应处理阶段调用；当前用例无需使用此通知内容。
+         *
+         * 此定义用于：保存事件注入回调，并返回测试清理占位函数。
          */
         return () => {}; },
         /**
          * 记录测试命令并按场景返回预设受理回执。
          *
          * Returns:
-         *     Promise<{ accepted: true; }>: 当前查询、回调或视图操作的结果。
+         *     Promise<{ accepted: true; }>: 后端对本次用户命令的受理回执。
          */
         submitInteractionCommand: async () => ({ accepted: true }),
         /**
          * 返回测试配置的任务列表，不查询真实存储。
          *
          * Returns:
-         *     Promise<any[]>: 当前查询、回调或视图操作的结果。
+         *     Promise<never[]>: 当前会话的后台任务记录列表。
          */
         getBackgroundTasks: async () => [],
         /**
          * 返回测试配置的任务输出页。
          *
          * Returns:
-         *     Promise<{ text: string; next_offset: number; has_more: false; }>: 当前查询、回调或视图操作的结果。
+         *     Promise<{ text: string; next_offset: number; has_more: false; }>: 任务输出内容及后续读取位置。
          */
         getBackgroundTaskOutput: async () => ({ text: "", next_offset: 0, has_more: false }),
       },
       bubble: { /**
-       * 提供测试占位回调，不产生额外副作用。
+       * 记录气泡正文更新，供检查流式和历史显示顺序。
+       *
+       * 此定义用于：验证历史刷新期间积压的下一轮正文等待完成后显示。
        */
       setText: () => {} },
       chatHistory: {
@@ -437,31 +458,41 @@ async () => {
          * 记录测试收到的真人消息内容和来源。
          */
         addMessage: () => {}, /**
-         * 提供测试占位回调，不产生额外副作用。
+         * 记录正在输入提示被显示。
+         *
+         * 此定义用于：验证历史刷新期间积压的下一轮正文等待完成后显示。
          */
         showTypingIndicator: () => {}, /**
-         * 提供测试占位回调，不产生额外副作用。
+         * 记录正在输入提示被隐藏。
+         *
+         * 此定义用于：验证历史刷新期间积压的下一轮正文等待完成后显示。
          */
         hideTypingIndicator: () => {},
         /**
          * 提供测试流式展示入口，不创建真实界面。
          */
         startStreaming: () => {}, /**
-         * 记录测试正文更新，供历史与增量顺序断言。
+         * 记录最新助手消息显示。
+         *
+         * 此定义用于：验证历史刷新期间积压的下一轮正文等待完成后显示。
          */
         updateLastAiMessage: () => { chunks += 1; },
         /**
          * 提供测试流式收尾替身，不持久保存真实回复。
          */
         finalizeStreamingMessage: () => {}, /**
-         * 提供测试占位回调，不产生额外副作用。
+         * 记录流式显示中止，供检查轮次切换。
+         *
+         * 此定义用于：验证历史刷新期间积压的下一轮正文等待完成后显示。
          */
         abortStreaming: () => {},
         /**
          * 提供测试占位回调，不产生额外副作用。
          */
         showToolCallMessage: () => {}, /**
-         * 提供测试占位回调，不产生额外副作用。
+         * 记录工具提示完成，供检查轮次收尾。
+         *
+         * 此定义用于：验证历史刷新期间积压的下一轮正文等待完成后显示。
          */
         finalizeToolCallIndicator: () => {},
         /**
@@ -472,16 +503,18 @@ async () => {
          * 模拟历史加载及场景所需的完成屏障。
          *
          * Returns:
-         *     Promise<ChatHistoryItem[]>: 已应用的隔离历史列表。
+         *     Promise<never[]>: 已应用的隔离历史列表。
          */
         loadHistory: async () => {
           historyCalls += 1;
           if (historyCalls > 1) {
             await new Promise<void>(/**
-             * 提供当前测试场景使用的 callback 替身结果。
+             * 由 Promise 构造器立即调用，取得本用例指定的条目或响应，供外层断言处理结果。
+             *
+             * 此定义用于：模拟历史加载及场景所需的完成屏障。
              *
              * Args:
-             *     resolve ((value: void | PromiseLike<void>) => void): 完成当前 Promise 的函数。
+             *     resolve ((value: void | PromiseLike<void>) => void): 准备成功或等待结束时完成 Promise 的函数。
              */
             (resolve) => { releaseHistory = resolve; });
           }
@@ -489,21 +522,26 @@ async () => {
         },
       },
       sendBtn: { innerHTML: "send", /**
-       * 提供测试占位回调，不产生额外副作用。
+       * 记录页面属性写入，供检查组件状态。
+       *
+       * 此定义用于：验证历史刷新期间积压的下一轮正文等待完成后显示。
        */
       setAttribute: () => {} } as unknown as HTMLButtonElement,
       input: { value: "", style: {}, /**
-       * 提供测试占位回调，不产生额外副作用。
+       * 记录输入框焦点恢复。
+       *
+       * 此定义用于：验证历史刷新期间积压的下一轮正文等待完成后显示。
        */
       focus: () => {} } as unknown as HTMLTextAreaElement,
       confirmDialog: { /**
-       * 按场景返回人工审批决定。
+       * 记录审批框打开并按脚本等待选择。
        *
-       * Returns:
-       *     Promise<{ kind: "approve"; }>: 当前查询、回调或视图操作的结果。
+       * 此定义用于：验证历史刷新期间积压的下一轮正文等待完成后显示。
        */
       open: async () => ({ kind: "approve" }), /**
-       * 关闭已由其他入口处理的审批视图，调用方核对 request_id 后不再提交决定。
+       * 记录过期审批框关闭。
+       *
+       * 此定义用于：验证历史刷新期间积压的下一轮正文等待完成后显示。
        */
       dismiss: () => {} },
     });
@@ -516,25 +554,23 @@ async () => {
     listener({ session_id: "s", kind: "text_chunk", payload: { value: "新回复" },
       run_id: "next", stream_epoch: "epoch", event_sequence: 3 });
     await new Promise<void>(/**
-     * 提供当前测试场景使用的 callback 替身结果。
+     * 由 Promise 构造器立即调用，取得本用例指定的条目或响应，供外层断言处理结果。
+     *
+     * 此定义用于：验证历史刷新期间积压的下一轮正文等待完成后显示。
      *
      * Args:
-     *     resolve ((value: void | PromiseLike<void>) => void): 完成当前 Promise 的函数。
-     *
-     * Returns:
-     *     Immediate: 当前查询、回调或视图操作的结果。
+     *     resolve ((value: void | PromiseLike<void>) => void): 准备成功或等待结束时完成 Promise 的函数。
      */
     (resolve) => setImmediate(resolve));
     assert.equal(chunks, 0);
     releaseHistory();
     await new Promise<void>(/**
-     * 提供当前测试场景使用的 callback 替身结果。
+     * 由 Promise 构造器立即调用，取得本用例指定的条目或响应，供外层断言处理结果。
+     *
+     * 此定义用于：验证历史刷新期间积压的下一轮正文等待完成后显示。
      *
      * Args:
-     *     resolve ((value: void | PromiseLike<void>) => void): 完成当前 Promise 的函数。
-     *
-     * Returns:
-     *     Immediate: 当前查询、回调或视图操作的结果。
+     *     resolve ((value: void | PromiseLike<void>) => void): 准备成功或等待结束时完成 Promise 的函数。
      */
     (resolve) => setImmediate(resolve));
     assert.equal(chunks, 0);
@@ -545,9 +581,6 @@ async () => {
 
 test("纯图片草稿可引导并显示排队入口，IME 组合期间不改发送按钮", /**
  * 验证纯图片草稿可引导并显示排队入口，IME 组合期间不改发送按钮。
- *
- * Returns:
- *     Promise<void>: 当前异步处理完成的等待结果。
  */
 async () => {
   // 1. 建立隔离 DOM、bridge 替身与事件监听，按场景安排输入和到达顺序。
@@ -574,17 +607,16 @@ async () => {
      *     id (string): 当前测试查询的 DOM 元素标识。
      *
      * Returns:
-     *     { hidden: boolean; disabled: boolean; }: 当前查询、回调或视图操作的结果。
+     *     { hidden: boolean; disabled: boolean; } | null: 当前用例为该编号准备的页面控件。
      */
     getElementById: (id: string) => id === "queue-btn" ? queueButton : null,
   } as unknown as Document;
   try {
     const client = new RuntimeChatClient({
       sessionId: "s", /**
-       * 检查图片附件是否构成有效草稿。
+       * 返回当前测试草稿是否包含图片。
        *
-       * Returns:
-       *     boolean: 当前查询、回调或视图操作的结果。
+       * 此定义用于：验证纯图片草稿可引导并显示排队入口，IME 组合期间不改发送按钮。
        */
       hasAttachments: () => hasAttachments,
       bridge: {
@@ -602,10 +634,12 @@ async () => {
          *     callback ((event: InteractionEvent) => void): 当前定义执行的回调。
          *
          * Returns:
-         *     () => void: 当前查询、回调或视图操作的结果。
+         *     () => void: 移除本次运行事件监听的取消订阅函数。
          */
         onInteractionEvent: (callback) => { listener = callback; /**
-         * 提供测试占位回调，不产生额外副作用。
+         * 由外层操作在对应处理阶段调用；当前用例无需使用此通知内容。
+         *
+         * 此定义用于：保存事件注入回调，并返回测试清理占位函数。
          */
         return () => {}; },
         /**
@@ -615,7 +649,7 @@ async () => {
          *     command (ChannelCommand): 带桌面来源的统一入站命令。
          *
          * Returns:
-         *     Promise<{ accepted: true; }>: 当前查询、回调或视图操作的结果。
+         *     Promise<{ accepted: true; }>: 后端对本次用户命令的受理回执。
          */
         submitInteractionCommand: async (command) => {
           commandKind = command.kind;
@@ -625,19 +659,21 @@ async () => {
          * 返回测试配置的任务列表，不查询真实存储。
          *
          * Returns:
-         *     Promise<any[]>: 当前查询、回调或视图操作的结果。
+         *     Promise<never[]>: 当前会话的后台任务记录列表。
          */
         getBackgroundTasks: async () => [],
         /**
          * 返回测试配置的任务输出页。
          *
          * Returns:
-         *     Promise<{ text: string; next_offset: number; has_more: false; }>: 当前查询、回调或视图操作的结果。
+         *     Promise<{ text: string; next_offset: number; has_more: false; }>: 任务输出内容及后续读取位置。
          */
         getBackgroundTaskOutput: async () => ({ text: "", next_offset: 0, has_more: false }),
       },
       bubble: { /**
-       * 提供测试占位回调，不产生额外副作用。
+       * 记录气泡正文更新，供检查流式和历史显示顺序。
+       *
+       * 此定义用于：验证纯图片草稿可引导并显示排队入口，IME 组合期间不改发送按钮。
        */
       setText: () => {} },
       chatHistory: {
@@ -645,70 +681,81 @@ async () => {
          * 记录测试收到的真人消息内容和来源。
          */
         addMessage: () => {}, /**
-         * 提供测试占位回调，不产生额外副作用。
+         * 记录正在输入提示被显示。
+         *
+         * 此定义用于：验证纯图片草稿可引导并显示排队入口，IME 组合期间不改发送按钮。
          */
         showTypingIndicator: () => {}, /**
-         * 提供测试占位回调，不产生额外副作用。
+         * 记录正在输入提示被隐藏。
+         *
+         * 此定义用于：验证纯图片草稿可引导并显示排队入口，IME 组合期间不改发送按钮。
          */
         hideTypingIndicator: () => {},
         /**
          * 提供测试流式展示入口，不创建真实界面。
          */
         startStreaming: () => {}, /**
-         * 记录测试正文更新，供历史与增量顺序断言。
+         * 记录最新助手消息显示。
+         *
+         * 此定义用于：验证纯图片草稿可引导并显示排队入口，IME 组合期间不改发送按钮。
          */
         updateLastAiMessage: () => {},
         /**
          * 提供测试流式收尾替身，不持久保存真实回复。
          */
         finalizeStreamingMessage: () => {}, /**
-         * 提供测试占位回调，不产生额外副作用。
+         * 记录流式显示中止，供检查轮次切换。
+         *
+         * 此定义用于：验证纯图片草稿可引导并显示排队入口，IME 组合期间不改发送按钮。
          */
         abortStreaming: () => {},
         /**
          * 提供测试占位回调，不产生额外副作用。
          */
         showToolCallMessage: () => {}, /**
-         * 提供测试占位回调，不产生额外副作用。
+         * 记录工具提示完成，供检查轮次收尾。
+         *
+         * 此定义用于：验证纯图片草稿可引导并显示排队入口，IME 组合期间不改发送按钮。
          */
         finalizeToolCallIndicator: () => {},
         /**
          * 提供测试占位回调，不产生额外副作用。
          */
         showErrorMessage: () => {}, /**
-         * 模拟历史加载及场景所需的完成屏障。
+         * 按脚本返回历史同步结果，并记录历史读取时机。
          *
-         * Returns:
-         *     Promise<ChatHistoryItem[]>: 已应用的隔离历史列表。
+         * 此定义用于：验证纯图片草稿可引导并显示排队入口，IME 组合期间不改发送按钮。
          */
         loadHistory: async () => [],
       },
       sendBtn: sendButton as unknown as HTMLButtonElement,
       input: { value: "", style: {}, /**
-       * 提供测试占位回调，不产生额外副作用。
+       * 记录输入框焦点恢复。
+       *
+       * 此定义用于：验证纯图片草稿可引导并显示排队入口，IME 组合期间不改发送按钮。
        */
       focus: () => {} } as unknown as HTMLTextAreaElement,
       confirmDialog: { /**
-       * 按场景返回人工审批决定。
+       * 记录审批框打开并按脚本等待选择。
        *
-       * Returns:
-       *     Promise<{ kind: "approve"; }>: 当前查询、回调或视图操作的结果。
+       * 此定义用于：验证纯图片草稿可引导并显示排队入口，IME 组合期间不改发送按钮。
        */
       open: async () => ({ kind: "approve" }), /**
-       * 关闭已由其他入口处理的审批视图，调用方核对 request_id 后不再提交决定。
+       * 记录过期审批框关闭。
+       *
+       * 此定义用于：验证纯图片草稿可引导并显示排队入口，IME 组合期间不改发送按钮。
        */
       dismiss: () => {} },
     });
     listener({ session_id: "s", kind: "session_snapshot", payload: { phase: "running", run_id: "r" },
       stream_epoch: "epoch", event_sequence: 0 });
     await new Promise<void>(/**
-     * 提供当前测试场景使用的 callback 替身结果。
+     * 由 Promise 构造器立即调用，取得本用例指定的条目或响应，供外层断言处理结果。
+     *
+     * 此定义用于：验证纯图片草稿可引导并显示排队入口，IME 组合期间不改发送按钮。
      *
      * Args:
-     *     resolve ((value: void | PromiseLike<void>) => void): 完成当前 Promise 的函数。
-     *
-     * Returns:
-     *     Immediate: 当前查询、回调或视图操作的结果。
+     *     resolve ((value: void | PromiseLike<void>) => void): 准备成功或等待结束时完成 Promise 的函数。
      */
     (resolve) => setImmediate(resolve));
     assert.equal(sendButton.title, "停止当前回答");
@@ -732,9 +779,6 @@ async () => {
 
 test("引导的 SSE 增量先于命令回执到达时清除等待提示", /**
  * 验证引导的 SSE 增量先于命令回执到达时清除等待提示。
- *
- * Returns:
- *     Promise<void>: 当前异步处理完成的等待结果。
  */
 async () => {
   // 1. 建立隔离 DOM、bridge 替身与事件监听，按场景安排输入和到达顺序。
@@ -746,10 +790,9 @@ async () => {
   let cleared = 0;
   const oldDocument = globalThis.document;
   globalThis.document = { /**
-   * 提供测试指定的 DOM 元素。
+   * 返回当前用例预设的聊天控件。
    *
-   * Returns:
-   *     any: 当前查询、回调或视图操作的结果。
+   * 此定义用于：验证引导的 SSE 增量先于命令回执到达时清除等待提示。
    */
   getElementById: () => null } as unknown as Document;
   try {
@@ -770,29 +813,30 @@ async () => {
          *     callback ((event: InteractionEvent) => void): 当前定义执行的回调。
          *
          * Returns:
-         *     () => void: 当前查询、回调或视图操作的结果。
+         *     () => void: 移除本次运行事件监听的取消订阅函数。
          */
         onInteractionEvent: (callback) => { listener = callback; /**
-         * 提供测试占位回调，不产生额外副作用。
+         * 由外层操作在对应处理阶段调用；当前用例无需使用此通知内容。
+         *
+         * 此定义用于：保存事件注入回调，并返回测试清理占位函数。
          */
         return () => {}; },
         /**
          * 记录测试命令并按场景返回预设受理回执。
          *
          * Returns:
-         *     Promise<{ accepted: true; }>: 当前查询、回调或视图操作的结果。
+         *     Promise<{ accepted: true; }>: 后端对本次用户命令的受理回执。
          */
         submitInteractionCommand: async () => {
           listener({ session_id: "s", kind: "human_message", payload: { message: "改做这个" },
             origin_channel: "desktop", stream_epoch: "epoch", event_sequence: 1 });
           await new Promise<void>(/**
-           * 提供当前测试场景使用的 callback 替身结果。
+           * 由 Promise 构造器立即调用，取得本用例指定的条目或响应，供外层断言处理结果。
+           *
+           * 此定义用于：记录测试命令并按场景返回预设受理回执。
            *
            * Args:
-           *     resolve ((value: void | PromiseLike<void>) => void): 完成当前 Promise 的函数。
-           *
-           * Returns:
-           *     Immediate: 当前查询、回调或视图操作的结果。
+           *     resolve ((value: void | PromiseLike<void>) => void): 准备成功或等待结束时完成 Promise 的函数。
            */
           (resolve) => setImmediate(resolve));
           return { accepted: true };
@@ -801,19 +845,21 @@ async () => {
          * 返回测试配置的任务列表，不查询真实存储。
          *
          * Returns:
-         *     Promise<any[]>: 当前查询、回调或视图操作的结果。
+         *     Promise<never[]>: 当前会话的后台任务记录列表。
          */
         getBackgroundTasks: async () => [],
         /**
          * 返回测试配置的任务输出页。
          *
          * Returns:
-         *     Promise<{ text: string; next_offset: number; has_more: false; }>: 当前查询、回调或视图操作的结果。
+         *     Promise<{ text: string; next_offset: number; has_more: false; }>: 任务输出内容及后续读取位置。
          */
         getBackgroundTaskOutput: async () => ({ text: "", next_offset: 0, has_more: false }),
       },
       bubble: { /**
-       * 提供测试占位回调，不产生额外副作用。
+       * 记录气泡正文更新，供检查流式和历史显示顺序。
+       *
+       * 此定义用于：验证引导的 SSE 增量先于命令回执到达时清除等待提示。
        */
       setText: () => {} },
       chatHistory: {
@@ -821,41 +867,50 @@ async () => {
          * 记录测试收到的真人消息内容和来源。
          */
         addMessage: () => {}, /**
-         * 提供测试占位回调，不产生额外副作用。
+         * 记录正在输入提示被显示。
+         *
+         * 此定义用于：验证引导的 SSE 增量先于命令回执到达时清除等待提示。
          */
         showTypingIndicator: () => {}, /**
-         * 提供测试占位回调，不产生额外副作用。
+         * 记录正在输入提示被隐藏。
+         *
+         * 此定义用于：验证引导的 SSE 增量先于命令回执到达时清除等待提示。
          */
         hideTypingIndicator: () => {},
         /**
          * 提供测试流式展示入口，不创建真实界面。
          */
         startStreaming: () => {}, /**
-         * 记录测试正文更新，供历史与增量顺序断言。
+         * 记录最新助手消息显示。
+         *
+         * 此定义用于：验证引导的 SSE 增量先于命令回执到达时清除等待提示。
          */
         updateLastAiMessage: () => {},
         /**
          * 提供测试流式收尾替身，不持久保存真实回复。
          */
         finalizeStreamingMessage: () => {}, /**
-         * 提供测试占位回调，不产生额外副作用。
+         * 记录流式显示中止，供检查轮次切换。
+         *
+         * 此定义用于：验证引导的 SSE 增量先于命令回执到达时清除等待提示。
          */
         abortStreaming: () => {},
         /**
          * 提供测试占位回调，不产生额外副作用。
          */
         showToolCallMessage: () => {}, /**
-         * 提供测试占位回调，不产生额外副作用。
+         * 记录工具提示完成，供检查轮次收尾。
+         *
+         * 此定义用于：验证引导的 SSE 增量先于命令回执到达时清除等待提示。
          */
         finalizeToolCallIndicator: () => {},
         /**
          * 提供测试占位回调，不产生额外副作用。
          */
         showErrorMessage: () => {}, /**
-         * 模拟历史加载及场景所需的完成屏障。
+         * 按脚本返回历史同步结果，并记录历史读取时机。
          *
-         * Returns:
-         *     Promise<ChatHistoryItem[]>: 已应用的隔离历史列表。
+         * 此定义用于：验证引导的 SSE 增量先于命令回执到达时清除等待提示。
          */
         loadHistory: async () => [],
         /**
@@ -868,34 +923,38 @@ async () => {
         clearPendingSteer: () => { cleared += 1; },
       },
       sendBtn: { innerHTML: "send", /**
-       * 提供测试占位回调，不产生额外副作用。
+       * 记录页面属性写入，供检查组件状态。
+       *
+       * 此定义用于：验证引导的 SSE 增量先于命令回执到达时清除等待提示。
        */
       setAttribute: () => {} } as unknown as HTMLButtonElement,
       input: { value: "改做这个", style: {}, /**
-       * 提供测试占位回调，不产生额外副作用。
+       * 记录输入框焦点恢复。
+       *
+       * 此定义用于：验证引导的 SSE 增量先于命令回执到达时清除等待提示。
        */
       focus: () => {} } as unknown as HTMLTextAreaElement,
       confirmDialog: { /**
-       * 按场景返回人工审批决定。
+       * 记录审批框打开并按脚本等待选择。
        *
-       * Returns:
-       *     Promise<{ kind: "approve"; }>: 当前查询、回调或视图操作的结果。
+       * 此定义用于：验证引导的 SSE 增量先于命令回执到达时清除等待提示。
        */
       open: async () => ({ kind: "approve" }), /**
-       * 关闭已由其他入口处理的审批视图，调用方核对 request_id 后不再提交决定。
+       * 记录过期审批框关闭。
+       *
+       * 此定义用于：验证引导的 SSE 增量先于命令回执到达时清除等待提示。
        */
       dismiss: () => {} },
     });
     listener({ session_id: "s", kind: "session_snapshot", payload: { phase: "running", run_id: "r" },
       stream_epoch: "epoch", event_sequence: 0 });
     await new Promise<void>(/**
-     * 提供当前测试场景使用的 callback 替身结果。
+     * 由 Promise 构造器立即调用，取得本用例指定的条目或响应，供外层断言处理结果。
+     *
+     * 此定义用于：验证引导的 SSE 增量先于命令回执到达时清除等待提示。
      *
      * Args:
-     *     resolve ((value: void | PromiseLike<void>) => void): 完成当前 Promise 的函数。
-     *
-     * Returns:
-     *     Immediate: 当前查询、回调或视图操作的结果。
+     *     resolve ((value: void | PromiseLike<void>) => void): 准备成功或等待结束时完成 Promise 的函数。
      */
     (resolve) => setImmediate(resolve));
     await client.sendMessage();

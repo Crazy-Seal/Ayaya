@@ -6,14 +6,20 @@ import {
   classifyHttpEndpoint,
 } from "../src/settings/url-security.js";
 
-test("HTTPS 地址可直接保存", () => {
+test("HTTPS 地址可直接保存", /**
+ * 验证HTTPS 地址可直接保存。
+ */
+() => {
   assert.deepEqual(classifyHttpEndpoint("https://api.example.com/v1"), {
     kind: "safe",
     normalizedUrl: "https://api.example.com/v1",
   });
 });
 
-test("HTTP 环回地址可直接保存", () => {
+test("HTTP 环回地址可直接保存", /**
+ * 验证HTTP 环回地址可直接保存。
+ */
+() => {
   for (const url of [
     "http://localhost:8000/v1",
     "http://127.0.0.1:8000/v1",
@@ -24,7 +30,10 @@ test("HTTP 环回地址可直接保存", () => {
   }
 });
 
-test("非环回 HTTP 地址需要风险确认", () => {
+test("非环回 HTTP 地址需要风险确认", /**
+ * 验证非环回 HTTP 地址需要风险确认。
+ */
+() => {
   for (const url of [
     "http://192.168.1.20:8000/v1",
     "http://api.example.com/v1",
@@ -35,7 +44,10 @@ test("非环回 HTTP 地址需要风险确认", () => {
   }
 });
 
-test("非法地址、用户信息伪装和非 HTTP 协议被拒绝", () => {
+test("非法地址、用户信息伪装和非 HTTP 协议被拒绝", /**
+ * 验证非法地址、用户信息伪装和非 HTTP 协议被拒绝。
+ */
+() => {
   for (const url of [
     "not-a-url",
     "http://localhost@evil.example/v1",
@@ -46,11 +58,22 @@ test("非法地址、用户信息伪装和非 HTTP 协议被拒绝", () => {
   }
 });
 
-test("地址变更为非环回 HTTP 时由用户确认后继续", async () => {
+test("地址变更为非环回 HTTP 时由用户确认后继续", /**
+ * 验证地址变更为非环回 HTTP 时由用户确认后继续。
+ */
+async () => {
   const prompted: string[] = [];
   const allowed = await authorizeBaseUrlChange({
     previousUrl: "https://api.example.com/v1",
     nextUrl: "http://192.168.1.20:8000/v1",
+    /**
+     * 返回测试指定的远程 HTTP 地址确认选择。
+     *
+     * 此定义用于：验证地址变更为非环回 HTTP 时由用户确认后继续。
+     *
+     * Args:
+     *     url (string): 待检查或打开的地址。
+     */
     confirmInsecure: async (url) => {
       prompted.push(url);
       return true;
@@ -61,21 +84,37 @@ test("地址变更为非环回 HTTP 时由用户确认后继续", async () => {
   assert.deepEqual(prompted, ["http://192.168.1.20:8000/v1"]);
 });
 
-test("用户取消风险确认时终止保存", async () => {
+test("用户取消风险确认时终止保存", /**
+ * 验证用户取消风险确认时终止保存。
+ */
+async () => {
   const allowed = await authorizeBaseUrlChange({
     previousUrl: "https://api.example.com/v1",
     nextUrl: "http://api.example.com/v1",
+    /**
+     * 返回测试指定的远程 HTTP 地址确认选择。
+     *
+     * 此定义用于：验证用户取消风险确认时终止保存。
+     */
     confirmInsecure: async () => false,
   });
 
   assert.equal(allowed, false);
 });
 
-test("已保存的不安全地址未变化时不重复确认", async () => {
+test("已保存的不安全地址未变化时不重复确认", /**
+ * 验证已保存的不安全地址未变化时不重复确认。
+ */
+async () => {
   let promptCount = 0;
   const allowed = await authorizeBaseUrlChange({
     previousUrl: "http://api.example.com/v1",
     nextUrl: "http://api.example.com/v1",
+    /**
+     * 返回测试指定的远程 HTTP 地址确认选择。
+     *
+     * 此定义用于：验证已保存的不安全地址未变化时不重复确认。
+     */
     confirmInsecure: async () => {
       promptCount += 1;
       return false;
@@ -86,11 +125,19 @@ test("已保存的不安全地址未变化时不重复确认", async () => {
   assert.equal(promptCount, 0);
 });
 
-test("空 Base URL 可直接保存", async () => {
+test("空 Base URL 可直接保存", /**
+ * 验证空 Base URL 可直接保存。
+ */
+async () => {
   let promptCount = 0;
   const allowed = await authorizeBaseUrlChange({
     previousUrl: "https://api.example.com/v1",
     nextUrl: "",
+    /**
+     * 返回测试指定的远程 HTTP 地址确认选择。
+     *
+     * 此定义用于：验证空 Base URL 可直接保存。
+     */
     confirmInsecure: async () => {
       promptCount += 1;
       return false;
@@ -101,11 +148,19 @@ test("空 Base URL 可直接保存", async () => {
   assert.equal(promptCount, 0);
 });
 
-test("非法新地址在保存前抛出可读错误", async () => {
+test("非法新地址在保存前抛出可读错误", /**
+ * 验证非法新地址在保存前抛出可读错误。
+ */
+async () => {
   await assert.rejects(
     authorizeBaseUrlChange({
       previousUrl: "https://api.example.com/v1",
       nextUrl: "invalid",
+      /**
+       * 返回测试指定的远程 HTTP 地址确认选择。
+       *
+       * 此定义用于：验证非法新地址在保存前抛出可读错误。
+       */
       confirmInsecure: async () => true,
     }),
     /有效的 HTTP 或 HTTPS 地址/

@@ -299,9 +299,7 @@ class TaskRecordDao:
         return TaskRecord(*values, background=bool(row[-1]))
 
     async def close(self) -> None:
-        """关闭 DAO 持有的 SQLite 连接。
-
-        """
+        """关闭 DAO 持有的 SQLite 连接。"""
         if self._db is not None:
             await self._db.close()
             self._db = None

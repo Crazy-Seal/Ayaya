@@ -45,8 +45,8 @@ class WindowsProcessWaiter:
         """初始化 Windows 进程等待器。
 
         Args:
-            kernel32: 可选的 Kernel32 API 对象，主要用于测试。
-            get_last_error: 返回最近一个 Windows 错误码的函数。
+            kernel32 (Any | None): 可选的 Kernel32 API 对象，主要用于测试。
+            get_last_error (Callable[[], int] | None): 返回最近一个 Windows 错误码的函数。
 
         Raises:
             ParentProcessMonitorError: 非 Windows 平台无法创建默认等待器。
@@ -74,10 +74,10 @@ class WindowsProcessWaiter:
         """同步打开目标进程句柄。
 
         Args:
-            process_id: 生命周期所有者的进程 ID。
+            process_id (int): 生命周期所有者的进程 ID。
 
         Returns:
-            持有已打开句柄的进程等待对象。
+            _OpenedWindowsProcess: 持有已打开句柄的进程等待对象。
 
         Raises:
             ParentProcessMonitorError: 无法打开目标进程句柄。
@@ -95,7 +95,11 @@ class WindowsProcessWaiter:
         )
 
     def wait(self, process_id: int) -> None:
-        """同步打开句柄并阻塞等待目标进程退出。"""
+        """同步打开句柄并阻塞等待目标进程退出。
+
+        Args:
+            process_id (int): 需要打开或等待退出的桌面所有者进程编号。
+        """
         opened_process = self.open(process_id)
         try:
             opened_process.wait()
@@ -113,6 +117,13 @@ class _OpenedWindowsProcess:
         handle: Any,
         get_last_error: Callable[[], int],
     ) -> None:
+        """接管已打开的 Windows 进程句柄，保存等待与关闭所需的系统接口。
+
+        Args:
+            kernel32 (Any): 已配置 Windows 进程接口的系统 DLL 对象。
+            handle (Any): 已经打开且由本对象负责关闭的进程句柄。
+            get_last_error (Callable[[], int]): 读取最近一次 Windows 系统调用错误编号的函数。
+        """
         self._kernel32 = kernel32
         self._handle = handle
         self._get_last_error = get_last_error
@@ -144,7 +155,12 @@ def _parse_parent_pid(
     *,
     current_pid: int,
 ) -> int | None:
-    """解析并验证可选的生命周期所有者 PID。"""
+    """解析并验证可选的生命周期所有者 PID。
+
+    Args:
+        environment (Mapping[str, str]): 父进程监控读取的进程环境变量集合。
+        current_pid (int): 后端自身进程编号，防止错误地监控自己。
+    """
     value = environment.get(PARENT_PID_ENV)
     if value is None:
         return None
@@ -172,20 +188,21 @@ def start_parent_process_monitor(
     """按需启动生命周期所有者监控线程。
 
     Args:
-        on_parent_exit: 所有者退出或监控失效时调用的关闭回调。
-        environment: 后端进程环境，默认读取 ``os.environ``。
-        current_pid: 后端自身 PID，默认读取 ``os.getpid()``。
-        platform: 当前平台，默认读取 ``sys.platform``。
-        waiter: 阻塞等待目标 PID 退出的函数。
-        process_waiter: 可同步打开 Windows 句柄的等待器。
-        thread_factory: 创建 daemon 线程的工厂。
+        on_parent_exit (Callable[[], None]): 所有者退出或监控失效时调用的关闭回调。
+        environment (Mapping[str, str] | None): 后端进程环境，默认读取 ``os.environ``。
+        current_pid (int | None): 后端自身 PID，默认读取 ``os.getpid()``。
+        platform (str | None): 当前平台，默认读取 ``sys.platform``。
+        waiter (Callable[[int], None] | None): 阻塞等待目标 PID 退出的函数。
+        process_waiter (WindowsProcessWaiter | None): 可同步打开 Windows 句柄的等待器。
+        thread_factory (Callable[..., _ThreadLike]): 创建 daemon 线程的工厂。
 
     Returns:
-        已启动的监控线程；未绑定所有者时返回 ``None``。
+        _ThreadLike | None: 已启动的监控线程；未绑定所有者时返回 ``None``。
 
     Raises:
         ParentProcessMonitorError: PID 非法或目标平台不支持监控。
     """
+    # 1. 先验证桌面所有者编号；未配置时不启动线程，错误编号不能成为等待目标。
     resolved_environment = os.environ if environment is None else environment
     resolved_pid = os.getpid() if current_pid is None else current_pid
     owner_pid = _parse_parent_pid(resolved_environment, current_pid=resolved_pid)
@@ -197,6 +214,7 @@ def start_parent_process_monitor(
         raise ParentProcessMonitorError(
             f"{PARENT_PID_ENV} 当前仅支持 Windows 受管后端"
         )
+    # 2. 在调用线程中先打开父进程句柄，后台线程等待同一进程对象，避免编号被复用。
     opened_process: _OpenedWindowsProcess | None = None
     if waiter is None:
         resolved_waiter = process_waiter or WindowsProcessWaiter()
@@ -206,15 +224,18 @@ def start_parent_process_monitor(
         wait_for_exit = waiter
 
     def monitor() -> None:
+        """由监控线程等待桌面所有者退出；等待失败也关闭句柄并调用后端退出回调。"""
         try:
             wait_for_exit(owner_pid)
         except Exception:
             logger.exception("生命周期所有者监控失效，后端将安全退出")
         finally:
+            # 3. 所有者退出或等待失败都释放句柄，再通知后端关闭。
             if opened_process is not None:
                 opened_process.close()
             on_parent_exit()
 
+    # 4. 线程启动失败时由调用线程关闭已打开句柄，异常交给后端启动入口。
     try:
         thread = thread_factory(
             target=monitor,

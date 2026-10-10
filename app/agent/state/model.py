@@ -48,6 +48,7 @@ class TokenBaseline(BaseModel):
 
 @dataclass(frozen=True, slots=True)
 class _DeferredToolMedia:
+    """保存工具返回的图片，等同批文本结果全部配对后再追加，避免图片打断工具协议。"""
     tool_call_id: str
     tool_name: str
     associated_message_id: str
@@ -55,6 +56,11 @@ class _DeferredToolMedia:
     image_urls: tuple[str, ...]
 
     def to_storage_format(self) -> dict[str, Any]:
+        """把尚未追加的工具图片及其结果关联转为 checkpoint 恢复材料。
+
+        Returns:
+            dict[str, Any]: 包含调用编号、结果消息编号、类别和图片地址的字典。
+        """
         return {
             "tool_call_id": self.tool_call_id,
             "tool_name": self.tool_name,
@@ -65,6 +71,17 @@ class _DeferredToolMedia:
 
     @classmethod
     def from_storage_format(cls, data: Mapping[str, Any]) -> "_DeferredToolMedia":
+        """从 checkpoint 恢复等待同批工具结果结束后追加的图片。
+
+        Args:
+            data (Mapping[str, Any]): 需要解析或保存的结构化数据。
+
+        Returns:
+            _DeferredToolMedia: 可供后续追加的工具图片记录。
+
+        Raises:
+            ValueError: 图片地址不是字符串列表。
+        """
         urls = data.get("image_urls") or []
         if not isinstance(urls, list) or not all(isinstance(url, str) for url in urls):
             raise ValueError("_deferred_tool_media.image_urls 必须是字符串数组")
@@ -93,7 +110,7 @@ class AgentState(BaseModel):
         extra (dict[str, Any]): 插件与工具的领域附加状态。
         created_at (datetime): 原消息 UTC 创建时间。
         updated_at (datetime): 状态最近修改的 UTC 时间。
-        _messages (list[BaseMessage]): 需要转换或交付的领域消息集合。
+        _messages (list[BaseMessage]): 当前会话的内存消息序列，只能经追加、结果记录或压缩替换方法修改。
         _deferred_tool_media (list[_DeferredToolMedia]): 等整批工具调用闭合后再追加的媒体消息。
     """
 
@@ -114,14 +131,28 @@ class AgentState(BaseModel):
 
     @property
     def messages(self) -> tuple[BaseMessage, ...]:
-        """返回当前可恢复协议的不可变快照。"""
+        """提供不可变消息序列快照，外部代码不能直接增删内部消息列表。"""
         return tuple(self._messages)
 
     @property
     def deferred_tool_media_count(self) -> int:
+        """读取等待整批工具结果结束后追加的图片记录数量。
+
+        Returns:
+            int: 当前内存中的延迟图片记录数。
+        """
         return len(self._deferred_tool_media)
 
     def append_input(self, message: HumanMessage | RuntimeInputMessage) -> None:
+        """把真人消息或运行时通知追加到内存消息序列，不保存数据库。
+
+        Args:
+            message (HumanMessage | RuntimeInputMessage): 当前需要读取或追加的消息。
+
+        Raises:
+            TypeError: 输入不是真人消息或运行时通知。
+            ValueError: 消息编号已存在。
+        """
         if not isinstance(message, (HumanMessage, RuntimeInputMessage)):
             raise TypeError("Agent 输入必须是 HumanMessage 或 RuntimeInputMessage")
         self._append(message)
@@ -143,7 +174,7 @@ class AgentState(BaseModel):
             origin_channel (str): 输入或本轮回复所属的渠道。
 
         Returns:
-            HumanMessage: 当前查询或执行结果。
+            HumanMessage: 已追加到内存的真人消息，尚未保存 checkpoint。
         """
         message = HumanMessage(
             text=text,
@@ -169,7 +200,7 @@ class AgentState(BaseModel):
             origin_channel (str): 输入或本轮回复所属的渠道。
 
         Returns:
-            AssistantMessage: 当前查询或执行结果。
+            AssistantMessage: 已追加的助手消息，工具请求同时登记到未完成批次。
 
         Raises:
             ValueError: 上一批工具调用尚未闭合，不能记录新的 assistant step。
@@ -190,7 +221,7 @@ class AgentState(BaseModel):
             origin_channel (str): 输入或本轮回复所属的渠道。
 
         Returns:
-            AssistantMessage: 当前查询或执行结果。
+            AssistantMessage: 通过统一入口追加的纯文本助手消息。
         """
         return self.record_assistant_step(content, origin_channel=origin_channel)
 
@@ -203,6 +234,24 @@ class AgentState(BaseModel):
         image_urls: Sequence[str] = (),
         image_message_name: str = TOOL_IMAGE_MESSAGE_NAME,
     ) -> ToolMessage:
+        """记录待处理调用的文本结果，最后一项结果完成后再追加本批图片。
+
+        这里只修改内存；执行管道随后保存 checkpoint 和协议日志。
+
+        Args:
+            tool_call (ToolCall): 本次模型请求的工具调用，包含编号、名称和参数。
+            content (str): 当前处理的正文。
+            compressible (bool): 是否允许后续上下文压缩缩短这条工具结果。
+            image_urls (Sequence[str]): 供模型读取的图片地址。
+            image_message_name (str): 区分截图、本地工具图片和 MCP 图片的消息名称。
+
+        Returns:
+            ToolMessage: 新追加的工具文本结果消息。
+
+        Raises:
+            ValueError: 调用编号不在待处理批次中，或工具名称不匹配。
+        """
+        # 1. 结果必须属于当前未完成批次，且工具名称与模型请求一致，避免闭合错误调用。
         pending_call = next(
             (candidate for candidate in self.pending_tool_calls if candidate.id == tool_call.id),
             None,
@@ -217,12 +266,14 @@ class AgentState(BaseModel):
             tool_call_id=pending_call.id,
             compressible=compressible,
         )
+        # 2. 先追加文本结果，再移除该调用的待处理标记；此时尚未保存 checkpoint。
         self._append(message)
         self.pending_tool_calls = tuple(
             candidate
             for candidate in self.pending_tool_calls
             if candidate.id != pending_call.id
         )
+        # 3. 图片暂存到恢复材料中，整批文本结果结束后再追加，避免打断工具协议。
         urls = tuple(image_urls)
         if urls:
             self._deferred_tool_media.append(_DeferredToolMedia(
@@ -244,7 +295,14 @@ class AgentState(BaseModel):
         *,
         compressible: bool = False,
     ) -> ToolMessage:
-        """仅剩持久化路由时记录合成或取消结果。"""
+        """恢复或取消流程按已保存调用编号登记合成结果，仍必须属于未闭合批次。
+
+        Args:
+            content (str): 当前处理的正文。
+            tool_name (str): 注册表中使用的工具名称。
+            tool_call_id (str): 用于配对工具请求和结果的调用编号。
+            compressible (bool): 是否允许后续上下文压缩缩短这条工具结果。
+        """
         call = next(
             (
                 candidate for candidate in self.pending_tool_calls
@@ -257,10 +315,16 @@ class AgentState(BaseModel):
         return self.record_tool_result(call, content, compressible=compressible)
 
     def set_pending_tool_calls(self, tool_calls: Sequence[ToolCall]) -> None:
+        """在内存中登记同批未取得结果的工具调用，并更新状态修改时间。
+
+        Args:
+            tool_calls (Sequence[ToolCall]): 同一模型步骤中请求的工具调用。
+        """
         self.pending_tool_calls = tuple(tool_calls)
         self.updated_at = utc_now()
 
     def clear_pending_tool_calls(self) -> None:
+        """清除内存中的未完成工具调用列表，保存数据库仍由调用方负责。"""
         self.pending_tool_calls = ()
         self.updated_at = utc_now()
 
@@ -310,10 +374,19 @@ class AgentState(BaseModel):
         return had_pending
 
     def get_pending_tool_calls(self) -> list[ToolCall]:
+        """给调用方提供尚未取得结果的工具调用列表副本。
+
+        Returns:
+            list[ToolCall]: 当前 pending_tool_calls 的列表副本。
+        """
         return list(self.pending_tool_calls)
 
     def commit_compaction(self, candidate: Sequence[BaseMessage]) -> None:
-        """通过协议校验后原子替换消息序列。"""
+        """先检查工具协议和允许的压缩替换，再一次替换内存消息序列；不写数据库。
+
+        Args:
+            candidate (Sequence[BaseMessage]): 待检查的候选文本或消息集合。
+        """
         replacement = list(candidate)
         self._validate_messages(replacement)
         self._validate_compaction_transition(replacement)
@@ -321,7 +394,11 @@ class AgentState(BaseModel):
         self.updated_at = utc_now()
 
     def replace_message(self, replacement: BaseMessage) -> None:
-        """保留身份和协议顺序，原子替换一个消息值。"""
+        """保留身份和协议顺序，原子替换一个消息值。
+
+        Args:
+            replacement (BaseMessage): 与原消息编号和时间一致的新消息值。
+        """
         index = next(
             (index for index, item in enumerate(self._messages) if item.message_id == replacement.message_id),
             None,
@@ -333,6 +410,11 @@ class AgentState(BaseModel):
         self.commit_compaction(candidate)
 
     def get_openai_messages(self) -> list[dict[str, Any]]:
+        """转换当前领域消息为模型格式，不包含系统提示词和本轮临时检索背景。
+
+        Returns:
+            list[dict[str, Any]]: 按对话顺序排列的模型消息列表。
+        """
         return messages_to_openai_format(self.messages)
 
     def set_interrupt(
@@ -340,6 +422,12 @@ class AgentState(BaseModel):
         interrupt_data: dict[str, Any],
         pending_actions: Sequence[ToolCall | Mapping[str, Any]] | None = None,
     ) -> None:
+        """在内存中记录审批或桌面执行的等待信息，以及本批后续尚未执行的调用。
+
+        Args:
+            interrupt_data (dict[str, Any]): 当前等待审批或桌面执行的恢复信息。
+            pending_actions (Sequence[ToolCall | Mapping[str, Any]] | None): 当前中断之后尚未执行的同批工具调用。
+        """
         self.interrupt_data = interrupt_data
         self.pending_actions = tuple(
             item if isinstance(item, ToolCall) else ToolCall.from_dict(item)
@@ -419,34 +507,78 @@ class AgentState(BaseModel):
         return True
 
     def clear_interrupt(self) -> None:
+        """在内存中清除当前等待信息和后续工具调用，不自动执行或保存任何结果。"""
         self.interrupt_data = None
         self.pending_actions = ()
         self.updated_at = utc_now()
 
     def is_interrupted(self) -> bool:
+        """检查内存状态是否仍包含待处理的审批或桌面执行信息。
+
+        Returns:
+            bool: interrupt_data 不为空时为 True。
+        """
         return self.interrupt_data is not None
 
     def increment_long_term_memory_turn_counter(self, count: int = 1) -> int:
+        """增加已提交真人输入的计数，供记忆插件判断是否达到长期记忆提取间隔。
+
+        Args:
+            count (int): 本次已提交的真人输入数量。
+
+        Returns:
+            int: 增加后的内存计数；持久保存由调用方完成。
+        """
         self.long_term_memory_turn_counter += count
         self.updated_at = utc_now()
         return self.long_term_memory_turn_counter
 
     def reset_long_term_memory_turn_counter(self) -> None:
+        """长期记忆提取完成后清零内存计数，后续 checkpoint 保存该结果。"""
         self.long_term_memory_turn_counter = 0
         self.updated_at = utc_now()
 
     def set_extra(self, key: str, value: Any) -> None:
+        """在内存中保存一个插件或工具的附加状态字段，并更新修改时间。
+
+        Args:
+            key (str): 要查找或保存的字段名。
+            value (Any): 当前需要校验或转换的值。
+        """
         self.extra[key] = value
         self.updated_at = utc_now()
 
     def get_extra(self, key: str, default: Any = None) -> Any:
+        """读取插件或工具的附加状态字段，不存在时返回调用方默认值。
+
+        Args:
+            key (str): 要查找或保存的字段名。
+            default (Any): 字段不存在时返回的默认值。
+
+        Returns:
+            Any: 字段值或 default。
+        """
         return self.extra.get(key, default)
 
     def update_extra(self, data: Mapping[str, Any]) -> None:
+        """将插件或工具的附加状态合并到内存字段，并更新修改时间。
+
+        Args:
+            data (Mapping[str, Any]): 需要解析或保存的结构化数据。
+        """
         self.extra.update(data)
         self.updated_at = utc_now()
 
     def to_checkpoint(self) -> dict[str, Any]:
+        """检查消息协议后导出完整恢复材料，导出本身不写数据库。
+
+        Returns:
+            dict[str, Any]: 包含消息、工具等待、延迟图片、计数和附加状态的 checkpoint 字典。
+
+        Raises:
+            ValueError: 工具请求/结果顺序或恢复状态不合法。
+            TypeError: 消息集合包含非领域消息对象。
+        """
         self._validate_messages(self._messages)
         return {
             "schema_version": CHECKPOINT_SCHEMA_VERSION,
@@ -469,6 +601,18 @@ class AgentState(BaseModel):
 
     @classmethod
     def from_checkpoint(cls, data: Mapping[str, Any]) -> "AgentState":
+        """校验 checkpoint 版本并恢复领域消息和未完成工具状态，拒绝不兼容或不完整记录。
+
+        Args:
+            data (Mapping[str, Any]): 需要解析或保存的结构化数据。
+
+        Returns:
+            AgentState: 已完成消息与恢复状态一致性检查的 AgentState。
+
+        Raises:
+            ValueError: 版本、消息结构或工具恢复状态不合法。
+        """
+        # 1. 先检查版本与列表结构，不猜测旧 checkpoint 的消息契约。
         version = data.get("schema_version")
         if version != CHECKPOINT_SCHEMA_VERSION:
             raise ValueError(
@@ -482,6 +626,7 @@ class AgentState(BaseModel):
         raw_deferred = data.get("_deferred_tool_media") or []
         if not all(isinstance(items, list) for items in (raw_pending, raw_actions, raw_deferred)):
             raise ValueError("checkpoint 工具状态格式无效")
+        # 2. 恢复状态字段、消息和延迟图片，再确认未闭合调用都有唯一恢复记录。
         state = cls(
             session_id=str(data.get("session_id") or ""),
             token_baseline=data.get("token_baseline"),
@@ -502,15 +647,36 @@ class AgentState(BaseModel):
 
     @classmethod
     def create_new(cls, session_id: str) -> "AgentState":
+        """为尚无历史的会话创建空状态，不建表、不保存 checkpoint。
+
+        Args:
+            session_id (str): 当前操作所属的会话编号。
+
+        Returns:
+            AgentState: 绑定 session_id 的新 AgentState。
+        """
         return cls(session_id=session_id)
 
     def _append(self, message: BaseMessage) -> None:
+        """检查稳定编号未重复后，把消息追加到内存并更新修改时间。
+
+        Args:
+            message (BaseMessage): 当前需要读取或追加的消息。
+
+        Raises:
+            ValueError: 消息编号已存在。
+        """
         if any(item.message_id == message.message_id for item in self._messages):
             raise ValueError(f"消息 ID 重复: {message.message_id}")
         self._messages.append(message)
         self.updated_at = message.created_at
 
     def _flush_deferred_tool_media(self) -> None:
+        """整批工具文本结果结束后，按记录顺序追加与结果关联的图片消息。
+
+        Raises:
+            ValueError: 延迟记录的图片消息名称不对应任何已知媒体类别。
+        """
         deferred = list(self._deferred_tool_media)
         self._deferred_tool_media.clear()
         for item in deferred:
@@ -530,11 +696,21 @@ class AgentState(BaseModel):
             ))
 
     def _validate_messages(self, messages: Sequence[BaseMessage]) -> None:
+        """保存或替换消息前检查工具请求、结果及未完成恢复记录是否逐项一致。
+
+        Args:
+            messages (Sequence[BaseMessage]): 按对话顺序排列的消息集合。
+
+        Raises:
+            TypeError: 消息集合包含非领域消息。
+            ValueError: 编号重复、工具协议被打断，或未闭合调用与恢复记录不一致。
+        """
         if not all(isinstance(message, BaseMessage) for message in messages):
             raise TypeError("消息序列只能包含 BaseMessage")
         ids = [message.message_id for message in messages]
         if len(ids) != len(set(ids)):
             raise ValueError("消息序列包含重复 message_id")
+        # 1. 沿消息顺序登记请求和结果；一批结果未结束时，真人消息或图片不能插入其间。
         known_calls: dict[str, ToolCall] = {}
         open_calls: dict[str, ToolCall] = {}
         for message in messages:
@@ -563,10 +739,21 @@ class AgentState(BaseModel):
                     raise ValueError(f"工具调用名称不匹配: {message.tool_call_id}")
                 del open_calls[message.tool_call_id]
 
+        # 2. 未闭合请求必须逐项出现在普通待处理列表，或中断工具及其后续调用中。
         unresolved = set(open_calls)
         recoverable: dict[str, str] = {}
 
         def add_recovery(call_id: str, tool_name: str, source: str) -> None:
+            """校验恢复材料时登记每个未完成调用，拒绝同一调用同时出现在两个恢复位置。
+
+            Args:
+                call_id (str): 恢复材料中的工具调用编号。
+                tool_name (str): 注册表中使用的工具名称。
+                source (str): 当前记录来自 pending_tool_calls、interrupt 或 pending_actions。
+
+            Raises:
+                ValueError: 该调用编号已在另一处恢复材料中登记。
+            """
             if call_id in recoverable:
                 raise ValueError(f"工具恢复状态重复引用调用: {call_id} ({source})")
             recoverable[call_id] = tool_name
@@ -589,6 +776,7 @@ class AgentState(BaseModel):
             for call in self.pending_actions:
                 add_recovery(call.id, call.name, "pending_actions")
 
+        # 3. 两边编号和工具名称必须完全对应，既不允许漏记，也不允许恢复已完成调用。
         recoverable_ids = set(recoverable)
         if recoverable_ids - unresolved:
             raise ValueError(
@@ -605,7 +793,11 @@ class AgentState(BaseModel):
         self,
         candidate: Sequence[BaseMessage],
     ) -> None:
-        """只允许删除、同身份替换，以及插入上下文摘要。"""
+        """只允许删除、同身份替换，以及插入上下文摘要。
+
+        Args:
+            candidate (Sequence[BaseMessage]): 待检查的候选文本或消息集合。
+        """
         previous_by_id = {message.message_id: message for message in self._messages}
         previous_order = {
             message.message_id: index for index, message in enumerate(self._messages)

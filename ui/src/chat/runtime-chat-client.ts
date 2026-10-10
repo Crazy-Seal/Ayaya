@@ -131,35 +131,32 @@ export class RuntimeChatClient {
     const taskNotice = document.getElementById("background-task-notice");
     this.taskEntry = taskRoot && taskButton && taskNotice
       ? new BackgroundTaskEntry(taskRoot, taskButton, taskNotice, this.bridge, /**
-        * 打开已有设置窗口的任务页面，不在桌宠窗口铺开输出。
-        */
+       * 用户点击后台任务入口时请求主进程打开任务设置页。
+       */
         () => window.desktopPetApi.openSettingsWindow("tasks"))
       : null;
     // 1. 事件通过 Promise 尾链串行处理，快照加载历史结束前不能应用下一增量。
     this.bridge.onInteractionEvent(/**
-     * 把事件加入串行 Promise 链，等待前一快照或历史刷新完成。
+     * 运行事件到达时记录所属会话版本，历史刷新期间先暂存回复，再按顺序加入事件处理链。
      *
      * Args:
-     *     event (InteractionEvent): 渠道事件或 DOM 事件，由所属定义决定。
+     *     event (InteractionEvent): 调用方或浏览器触发的当前事件。
      */
     (event) => {
       const revision = this.sessionRevision;
       this.pendingEvents.set(event, revision);
       if (this.refreshingRevision === revision) this.deferReceivedReply(event);
       this.eventTail = this.eventTail.then(/**
-       * 应用已经完成的异步结果，继续当前事件或页面更新。
-       *
-       * Returns:
-       *     Promise<void>: 当前异步处理完成的等待结果。
+       * 前一事件处理结束后移除待处理标记，仅当会话版本仍匹配时应用当前事件。
        */
       () => {
         this.pendingEvents.delete(event);
         return revision === this.sessionRevision ? this.handleEvent(event) : undefined;
       }).catch(/**
-       * 处理异步失败并更新对应错误提示，不取消后端运行。
+       * 事件处理链失败后在聊天列表显示错误，后续事件仍可继续进入处理链。
        *
        * Args:
-       *     error (unknown): 当前异步查询或提交失败原因。
+       *     error (unknown): 本次捕获的异常。
        */
       (error: unknown) => {
         this.options.chatHistory.showErrorMessage(`处理运行事件失败: ${String(error)}`);
@@ -207,10 +204,10 @@ export class RuntimeChatClient {
     this.updateSendButton();
     const revision = this.sessionRevision;
     void this.bridge.subscribeDesktopSession(sessionId, { refreshSnapshot: true }).catch(/**
-     * 处理异步失败并更新对应错误提示，不取消后端运行。
+     * 会话订阅失败时只向仍属于该版本的页面显示错误，旧会话失败不污染新会话。
      *
      * Args:
-     *     error (unknown): 当前异步查询或提交失败原因。
+     *     error (unknown): 本次捕获的异常。
      */
     (error: unknown) => {
       if (revision === this.sessionRevision) {
@@ -223,7 +220,7 @@ export class RuntimeChatClient {
    * 返回当前桌面交互会话标识。
    *
    * Returns:
-   *     string: 当前查询、回调或视图操作的结果。
+   *     string: 当前聊天页所显示的会话编号。
    */
   getSessionId(): string { return this.sessionId; }
   /**
@@ -446,7 +443,7 @@ export class RuntimeChatClient {
       cancel.textContent = "撤销";
       cancel.setAttribute("aria-label", `撤销排队消息 ${message || sequence}`);
       cancel.addEventListener("click", /**
-       * 响应当前控件事件，调用所属视图的刷新、输出或命令入口。
+       * 用户点击排队项撤销按钮后提交指定输入编号的撤销命令。
        */
       () => { void this.cancelQueued(sequence); });
       row.append(label, cancel);

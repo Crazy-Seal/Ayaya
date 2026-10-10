@@ -14,18 +14,27 @@ ASSISTANT_TIME_PREFIX_PATTERN = re.compile(
 
 
 class AssistantTimePrefixFilter:
-    """从流式助手回复开头删除系统时间投影格式。"""
+    """在流式回复开始时识别并去掉模型复述的发送时间标签，保留表情标签和正常正文。"""
 
     MAX_TIME_PREFIX_LENGTH = 96
     MAX_EXPRESSION_TAG_LENGTH = 256
 
     def __init__(self) -> None:
+        """创建当前回复独享的前缀缓冲和分隔符处理状态，不能在两轮回复之间复用。"""
         self._buffer = ""
         self._resolved = False
         self._strip_separator = False
         self._strip_optional_lf = False
 
     def feed(self, content: str) -> str:
+        """执行管道收到文字片段时检查开头时间标签，暂存可能尚未完整到达的前缀。
+
+        Args:
+            content (str): 当前处理的正文。
+
+        Returns:
+            str: 本次可以发送给界面的文字；仍需等待后续片段确认时可能为空。
+        """
         if self._resolved:
             return self._after_prefix(content)
 
@@ -83,6 +92,14 @@ class AssistantTimePrefixFilter:
             index = closing + 1
 
     def _is_possible_prefix(self, candidate: str) -> bool:
+        """判断已收到的开头是否仍可能构成发送时间标签，并限制等待确认的长度。
+
+        Args:
+            candidate (str): 尚未匹配完整时间标签的开头文本。
+
+        Returns:
+            bool: 尚需等待后续文字才能确认标签时为 True。
+        """
         if len(candidate) > self.MAX_TIME_PREFIX_LENGTH:
             return False
         if ASSISTANT_TIME_PREFIX_START.startswith(candidate):
@@ -94,6 +111,14 @@ class AssistantTimePrefixFilter:
 
     @staticmethod
     def _is_valid_prefix(match: re.Match[str]) -> bool:
+        """核对时间前缀中的日期和星期，避免删除仅在格式上相似的正常正文。
+
+        Args:
+            match (re.Match[str]): 正则匹配得到的发送时间前缀。
+
+        Returns:
+            bool: 日期可解析且星期一致时为 True。
+        """
         try:
             timestamp = datetime.strptime(
                 match.group("datetime"),
@@ -104,6 +129,14 @@ class AssistantTimePrefixFilter:
         return WEEKDAYS[timestamp.weekday()] == match.group("weekday")
 
     def _after_prefix(self, content: str) -> str:
+        """时间标签删除后最多移除一个分隔符，跨片段到达的 CRLF 作为一个换行处理。
+
+        Args:
+            content (str): 当前处理的正文。
+
+        Returns:
+            str: 去除标签后分隔符的正文，其余格式保留。
+        """
         if self._strip_optional_lf:
             self._strip_optional_lf = False
             return content[1:] if content.startswith("\n") else content

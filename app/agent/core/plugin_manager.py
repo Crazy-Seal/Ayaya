@@ -18,6 +18,7 @@ class PluginManager:
 
     def __init__(self):
         # 按钩子点组织的插件列表
+        """建立插件名称和执行时机的内存索引，注册插件时再填充。"""
         self._hooks: dict[PluginHook, list[BasePlugin]] = defaultdict(list)
         # 所有已注册的插件
         self._plugins: dict[str, BasePlugin] = {}
@@ -26,7 +27,7 @@ class PluginManager:
         """注册插件
 
         Args:
-            plugin: 插件实例
+            plugin (BasePlugin): 插件实例
         """
         if plugin.name in self._plugins:
             logger.warning(f"插件 '{plugin.name}' 已存在，将被覆盖")
@@ -54,6 +55,9 @@ class PluginManager:
 
     async def unregister(self, name: str) -> bool:
         """注销插件
+
+        Args:
+            name (str): 当前对象的名称。
 
         Returns:
             bool: 是否成功注销
@@ -86,10 +90,10 @@ class PluginManager:
         """在同一上下文上运行插件，只允许原地修改状态和钩子数据。
 
         Args:
-            hook: 钩子类型
-            state: Agent 状态
-            data: 钩子相关数据
-            metadata: 元数据
+            hook (PluginHook): 钩子类型
+            state (Any): Agent 状态
+            data (Any): 钩子相关数据
+            metadata (dict | None): 元数据
 
         插件异常会记录并继续执行；异常前的原地修改不会回滚。
         """
@@ -107,22 +111,30 @@ class PluginManager:
                 # 继续执行其他插件
 
     def get_plugin(self, name: str) -> BasePlugin | None:
-        """获取插件"""
+        """按名称读取当前登记的插件实例，不创建新的插件。
+
+        Args:
+            name (str): 当前对象的名称。
+        """
         return self._plugins.get(name)
 
     def list_plugins(self) -> list[str]:
-        """列出所有插件名称"""
+        """返回当前管理器的插件名称，供 Agent 查询装配结果。"""
         return list(self._plugins.keys())
 
     def get_hooks_for_plugin(self, name: str) -> list[PluginHook]:
-        """获取插件订阅的钩子列表"""
+        """读取指定插件已经登记的执行时机，便于检查钩子分发。
+
+        Args:
+            name (str): 当前对象的名称。
+        """
         plugin = self._plugins.get(name)
         if plugin:
             return list(plugin.hooks)
         return []
 
     def clear(self) -> None:
-        """清空所有插件"""
+        """卸载已登记插件，并清空名称与执行时机索引。"""
         self._hooks.clear()
         self._plugins.clear()
         logger.info("已清空所有插件")
@@ -136,7 +148,20 @@ class PluginManager:
                 logger.exception("插件 '%s' 清理失败", name)
 
     def __len__(self) -> int:
+        """读取当前已注册的插件数量。
+
+        Returns:
+            int: 插件名称索引的条目数。
+        """
         return len(self._plugins)
 
     def __contains__(self, name: str) -> bool:
+        """按名称检查当前管理器是否已经注册该插件。
+
+        Args:
+            name (str): 当前对象的名称。
+
+        Returns:
+            bool: 名称在插件索引中时为 True。
+        """
         return name in self._plugins

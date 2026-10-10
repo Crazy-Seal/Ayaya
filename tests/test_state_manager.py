@@ -23,6 +23,14 @@ from app.runtime import get_agent_state_db, get_chat_history_db, get_checkpoint_
 
 
 async def checkpoint_rows(manager: StateManager) -> list[tuple[int, str, str]]:
+    """只读查询临时数据库中的 checkpoint 行，供验证清理和保留规则。
+
+    Args:
+        manager (StateManager): 本用例的临时数据库状态管理器。
+
+    Returns:
+        list[tuple[int, str, str]]: 供外层用例断言使用的预设结果。
+    """
     db = await manager._get_db()
     async with db.execute(
         """
@@ -35,7 +43,17 @@ async def checkpoint_rows(manager: StateManager) -> list[tuple[int, str, str]]:
 
 
 def test_latest_checkpoint_query_does_not_require_temp_sort(tmp_path: Path) -> None:
+    """验证最新 checkpoint 查询不使用临时排序。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     async def scenario() -> list[str]:
+        """由外层测试调用，完成“最新 checkpoint 查询不使用临时排序”的异步步骤。
+
+        Returns:
+            list[str]: 供外层用例断言使用的预设结果。
+        """
         manager = StateManager(
             "test-session",
             db_path=str(tmp_path / "checkpoints.sqlite3"),
@@ -56,7 +74,13 @@ def test_latest_checkpoint_query_does_not_require_temp_sort(tmp_path: Path) -> N
 
 
 def test_intermediate_checkpoint_replaces_previous_one_atomically(tmp_path: Path) -> None:
+    """验证中间 checkpoint 在事务中替换上一份中间记录。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     async def scenario() -> None:
+        """由外层测试调用，完成“中间 checkpoint 在事务中替换上一份中间记录”的异步步骤。"""
         manager = StateManager("test-session", db_path=str(tmp_path / "checkpoints.sqlite3"))
         try:
             first = AgentState.create_new("test-session")
@@ -98,7 +122,13 @@ def test_intermediate_checkpoint_replaces_previous_one_atomically(tmp_path: Path
 def test_completed_checkpoint_removes_intermediate_and_keeps_latest_thirty(
     tmp_path: Path,
 ) -> None:
+    """验证完成保存删除中间记录并保留最近三十份完成记录。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     async def scenario() -> None:
+        """由外层测试调用，完成“完成保存删除中间记录并保留最近三十份完成记录”的异步步骤。"""
         manager = StateManager("test-session", db_path=str(tmp_path / "checkpoints.sqlite3"))
         try:
             state = AgentState.create_new("test-session")
@@ -130,12 +160,19 @@ def test_completed_checkpoint_removes_intermediate_and_keeps_latest_thirty(
 
 
 def test_runtime_uses_one_database_for_checkpoint_and_chat_history() -> None:
+    """验证checkpoint 和聊天历史使用同一数据库。"""
     assert get_checkpoint_db() == get_agent_state_db()
     assert get_chat_history_db() == get_agent_state_db()
 
 
 def test_token_baseline_is_persisted_in_checkpoint(tmp_path: Path) -> None:
+    """验证真实 token 基线保存到 checkpoint。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     async def scenario() -> None:
+        """由外层测试调用，完成“真实 token 基线保存到 checkpoint”的异步步骤。"""
         manager = StateManager("test-session", db_path=str(tmp_path / "agent.sqlite3"))
         try:
             state = AgentState.create_new("test-session")
@@ -158,7 +195,13 @@ def test_token_baseline_is_persisted_in_checkpoint(tmp_path: Path) -> None:
 
 
 def test_checkpoint_and_visible_history_are_saved_atomically(tmp_path: Path) -> None:
+    """验证checkpoint 与可见历史原子保存。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     async def scenario() -> None:
+        """由外层测试调用，完成“checkpoint 与可见历史原子保存”的异步步骤。"""
         manager = StateManager("test-session", db_path=str(tmp_path / "agent.sqlite3"))
         try:
             state = AgentState.create_new("test-session")
@@ -211,7 +254,13 @@ def test_checkpoint_and_visible_history_are_saved_atomically(tmp_path: Path) -> 
 
 
 def test_mcp_tool_image_is_not_persisted_as_human_history(tmp_path: Path) -> None:
+    """验证MCP 工具图片不会保存为真人历史。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     async def scenario() -> None:
+        """由外层测试调用，完成“MCP 工具图片不会保存为真人历史”的异步步骤。"""
         manager = StateManager("test-session", db_path=str(tmp_path / "agent.sqlite3"))
         try:
             state = AgentState.create_new("test-session")
@@ -246,7 +295,17 @@ def test_mcp_tool_image_is_not_persisted_as_human_history(tmp_path: Path) -> Non
 def test_fresh_state_database_creates_checkpoint_and_protocol_log_tables(
     tmp_path: Path,
 ) -> None:
+    """验证新数据库建立 checkpoint 和协议日志表。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     async def scenario() -> set[str]:
+        """由外层测试调用，完成“新数据库建立 checkpoint 和协议日志表”的异步步骤。
+
+        Returns:
+            set[str]: 供外层用例断言使用的预设结果。
+        """
         manager = StateManager(
             "test-session",
             db_path=str(tmp_path / "agent.sqlite3"),
@@ -267,7 +326,17 @@ def test_fresh_state_database_creates_checkpoint_and_protocol_log_tables(
 def test_fresh_database_message_type_check_uses_shared_protocol_types(
     tmp_path: Path,
 ) -> None:
+    """验证消息类型约束使用共用协议类型集合。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     async def scenario() -> str:
+        """由外层测试调用，完成“消息类型约束使用共用协议类型集合”的异步步骤。
+
+        Returns:
+            str: 供外层用例断言使用的预设结果。
+        """
         manager = StateManager(
             "test-session",
             db_path=str(tmp_path / "agent.sqlite3"),
@@ -294,11 +363,22 @@ def test_fresh_database_message_type_check_uses_shared_protocol_types(
 
 
 def test_chat_history_store_has_no_independent_write_api() -> None:
+    """验证历史存储没有独立写入接口。"""
     assert not hasattr(ChatHistoryStore, "save_chat_message")
 
 
 def test_chat_history_store_honors_previous_input_high_watermark(tmp_path: Path) -> None:
+    """验证历史读取遵守上一次输入捕获的编号边界。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     async def scenario() -> tuple[int, list[str]]:
+        """由外层测试调用，完成“历史读取遵守上一次输入捕获的编号边界”的异步步骤。
+
+        Returns:
+            tuple[int, list[str]]: 供外层用例断言使用的预设结果。
+        """
         db_path = tmp_path / "agent.sqlite3"
         manager = StateManager("test-session", db_path=str(db_path))
         store = ChatHistoryStore(db_path=db_path)
@@ -329,7 +409,17 @@ def test_chat_history_store_honors_previous_input_high_watermark(tmp_path: Path)
 
 
 def test_latest_protocol_id_uses_session_scoped_monotonic_high_watermark(tmp_path: Path) -> None:
+    """验证最新协议编号按会话查询且单调递增。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     async def scenario() -> tuple[int, int]:
+        """由外层测试调用，完成“最新协议编号按会话查询且单调递增”的异步步骤。
+
+        Returns:
+            tuple[int, int]: 供外层用例断言使用的预设结果。
+        """
         db_path = tmp_path / "agent.sqlite3"
         first = StateManager("first", db_path=str(db_path))
         second = StateManager("second", db_path=str(db_path))
@@ -360,7 +450,17 @@ def test_latest_protocol_id_uses_session_scoped_monotonic_high_watermark(tmp_pat
 
 
 def test_narrow_history_queries_do_not_use_full_row_loader(tmp_path: Path) -> None:
+    """验证有限历史查询不调用全量记录读取。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     async def scenario() -> tuple[int, int, int]:
+        """由外层测试调用，完成“有限历史查询不调用全量记录读取”的异步步骤。
+
+        Returns:
+            tuple[int, int, int]: 供外层用例断言使用的预设结果。
+        """
         db_path = tmp_path / "agent.sqlite3"
         manager = StateManager("session", db_path=str(db_path))
         try:
@@ -373,6 +473,14 @@ def test_narrow_history_queries_do_not_use_full_row_loader(tmp_path: Path) -> No
             store = ChatHistoryStore(db_path=db_path)
 
             async def reject_full_row_loader(*_args, **_kwargs):
+                """全量行读取被调用时主动失败，验证有限查询没有绕过范围。
+
+                该定义仅用于外层用例：验证有限历史查询不调用全量记录读取。
+
+                Args:
+                    _args (dict[str, Any]): 当前工具调用或被包装函数的参数。
+                    _kwargs (dict[str, Any]): 传递给被调用函数的其他关键字参数。
+                """
                 raise AssertionError("窄查询不应加载整个会话的 message_json")
 
             store._rows = reject_full_row_loader  # type: ignore[method-assign]
@@ -396,6 +504,11 @@ def test_narrow_history_queries_do_not_use_full_row_loader(tmp_path: Path) -> No
 
 
 def test_chat_history_store_constructor_does_not_initialize_schema(tmp_path: Path) -> None:
+    """验证历史存储构造时不初始化表结构。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     db_path = tmp_path / "agent_checkpoints.sqlite3"
 
     ChatHistoryStore(db_path=db_path)

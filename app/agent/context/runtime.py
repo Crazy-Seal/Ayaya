@@ -36,4 +36,9 @@ class RuntimeContext:
 
     @classmethod
     def capture(cls) -> "RuntimeContext":
+        """在新轮次开始时记录当前 UTC 时间，其他临时输入信息由调用方随后填写。
+
+        Returns:
+            RuntimeContext: 尚未绑定真人消息、来源和停止信号的本轮上下文。
+        """
         return cls(captured_at=utc_now())

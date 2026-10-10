@@ -30,9 +30,22 @@ class Mem0FactExtractionLLMAdapter:
     """在 Mem0 自带 LLM 外围规范化事实提取响应。"""
 
     def __init__(self, delegate: Any) -> None:
+        """保存原模型客户端，仅在识别到 Mem0 事实提取请求时规范化其响应结构。
+
+        Args:
+            delegate (Any): 原有模型客户端，非事实提取请求原样交给它。
+        """
         self._delegate = delegate
 
     def __getattr__(self, name: str) -> Any:
+        """将未覆盖的属性访问交回原模型客户端，保留它的其他能力。
+
+        Args:
+            name (str): 当前对象的名称。
+
+        Returns:
+            Any: 原客户端的对应属性。
+        """
         return getattr(self._delegate, name)
 
     def generate_response(
@@ -43,7 +56,15 @@ class Mem0FactExtractionLLMAdapter:
         tool_choice: str = "auto",
         **kwargs: Any,
     ) -> Any:
-        """委托模型调用，仅在事实提取阶段校验并规范化 JSON。"""
+        """委托模型调用，仅在事实提取阶段校验并规范化 JSON。
+
+        Args:
+            messages (list[dict[str, Any]]): 按对话顺序排列的消息集合。
+            response_format (Any): 原 Mem0 客户端请求的模型输出格式。
+            tools (list[dict[str, Any]] | None): 当前向模型公开的工具定义。
+            tool_choice (str): 原模型请求规定的工具选择方式。
+            kwargs (Any): 传递给被调用函数的其他关键字参数。
+        """
         response = self._delegate.generate_response(
             messages=messages,
             response_format=response_format,
@@ -82,6 +103,14 @@ class Mem0FactExtractionLLMAdapter:
 
     @staticmethod
     def _is_fact_extraction(messages: list[dict[str, Any]]) -> bool:
+        """通过 system 消息中的已知提取标记识别 Mem0 事实提取，避免误改普通响应。
+
+        Args:
+            messages (list[dict[str, Any]]): 按对话顺序排列的消息集合。
+
+        Returns:
+            bool: 消息包含事实提取标记时为 True。
+        """
         return any(
             message.get("role") == "system"
             and MEM0_FACT_EXTRACTION_MARKER in str(message.get("content", ""))
@@ -90,6 +119,17 @@ class Mem0FactExtractionLLMAdapter:
 
     @staticmethod
     def _normalize_fact_response(response: Any) -> str:
+        """校验事实提取 JSON，并兼容把 memories 列表改名为 facts；无法识别的结构明确报错。
+
+        Args:
+            response (Any): 模型返回的事实提取文本。
+
+        Returns:
+            str: 仅包含经校验 facts 列表的 JSON 字符串。
+
+        Raises:
+            Mem0FactSchemaError: 响应不是对象 JSON，缺少事实列表或列表项格式无效。
+        """
         if not isinstance(response, str):
             raise Mem0FactSchemaError(
                 f"响应类型不是字符串: {type(response).__name__}"

@@ -87,9 +87,7 @@ class TaskSupervisor:
         self._stopping: set[str] = set()
 
     async def recover_orphaned(self) -> None:
-        """将重启前仍 running 的任务标记为状态未知并创建一次终态通知。
-
-        """
+        """将重启前仍 running 的任务标记为状态未知并创建一次终态通知。"""
         for task_id in await self.records.running_ids():
             await self.finish_once(task_id, TaskStatus.ORPHANED, None)
 
@@ -318,7 +316,7 @@ class TaskSupervisor:
             dict: 解码正文、下一字节游标和当前是否还有内容。
 
         Raises:
-            KeyError: 输入、持久状态或系统调用不满足当前执行约束。
+
             ValueError: 无效的输出分页参数。
         """
         # 1. 校验任务和分页预算，以字节偏移读取追加式完整输出。
@@ -355,9 +353,6 @@ class TaskSupervisor:
 
         Returns:
             str: 有限尾部正文，文件不可用时为展示说明。
-
-        Raises:
-            KeyError: 输入、持久状态或系统调用不满足当前执行约束。
         """
         record = await self.get(task_id)
         if record is None:
@@ -403,9 +398,7 @@ class TaskSupervisor:
             pass
 
         async def force_if_running() -> None:
-            """宽限两秒后终止仍未结束的受管进程树，包括持有输出管道的子进程。
-
-            """
+            """宽限两秒后终止仍未结束的受管进程树，包括持有输出管道的子进程。"""
             await asyncio.sleep(TASK_STOP_GRACE_SECONDS)
             watcher = self._watchers.get(task_id)
             if watcher is not None and not watcher.done():
@@ -419,9 +412,7 @@ class TaskSupervisor:
         return True
 
     async def close(self) -> None:
-        """停止受管任务并等待输出收尾，最后关闭持久连接。
-
-        """
+        """停止受管任务并等待输出收尾，最后关闭持久连接。"""
         # 1. 对仍持有的任务请求停止，等待输出收尾后再关闭任务数据库。
         for task_id in tuple(self._jobs):
             await self.stop(task_id)

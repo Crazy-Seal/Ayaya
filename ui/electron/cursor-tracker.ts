@@ -20,7 +20,10 @@ export const startCursorTracking = (): void => {
     return;
   }
 
-  cursorSyncTimer = setInterval(() => {
+  cursorSyncTimer = setInterval(/**
+   * 鼠标采样定时器到期后读取桌面鼠标、窗口及显示器位置，主窗口存活时发送给模型页面。
+   */
+  () => {
     const mainWindow = getMainWindow();
     if (!mainWindow || mainWindow.isDestroyed()) {
       return;

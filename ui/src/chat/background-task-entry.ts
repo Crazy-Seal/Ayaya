@@ -78,13 +78,13 @@ export class BackgroundTaskEntry {
     // 1. 先更新已知任务，完成事件到达后不能继续显示旧运行数量。
     this.revision += 1;
     this.records = this.records.map(/**
-     * 将本次任务的状态合入计数快照。
+     * 状态事件到达后只替换对应任务的状态，保留其他任务记录。
      *
      * Args:
-     *     record (BackgroundTaskRecord): 当前任务记录。
+     *     record (BackgroundTaskRecord): 当前后台任务记录，包含编号、执行状态及结果信息。
      *
      * Returns:
-     *     BackgroundTaskRecord: 更新后的记录或无关任务原记录。
+     *     BackgroundTaskRecord: 更新后的任务记录。
      */
     (record) => record.task_id === taskId
       ? { ...record, status: status as BackgroundTaskRecord["status"] } : record);
@@ -133,20 +133,24 @@ export class BackgroundTaskEntry {
     if (this.noticeTimer) clearTimeout(this.noticeTimer);
     this.notice.textContent = text;
     this.render();
-    this.noticeTimer = setTimeout(/** 清除短提示并恢复只显示运行任务的标题栏。 */
+    this.noticeTimer = setTimeout(/**
+     * 任务结束提示到期后清空通知和计时标记，再刷新任务入口。
+     */
     () => { this.notice.textContent = ""; this.noticeTimer = null; this.render(); }, TASK_NOTICE_DURATION_MS);
   }
 
-  /** 根据正在运行的数量和短提示控制标题栏，不展示历史任务总数。 */
+  /**
+   *  根据正在运行的数量和短提示控制标题栏，不展示历史任务总数。
+   */
   private render(): void {
     const running = this.records.filter(/**
-     * 只将仍在运行的后台任务计入徽标。
+     * 筛选仍在运行的任务，入口计数不包含完成或未知任务。
      *
      * Args:
-     *     record (BackgroundTaskRecord): 当前任务记录。
+     *     record (BackgroundTaskRecord): 当前后台任务记录，包含编号、执行状态及结果信息。
      *
      * Returns:
-     *     boolean: 是否应计入运行数量。
+     *     boolean: 状态为 running 时为 true。
      */
     (record) => record.status === TaskStatus.RUNNING).length;
     this.button.textContent = `任务 · ${running}`;

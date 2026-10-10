@@ -14,4 +14,9 @@ class ContextStrategyConfig(BaseModel):
 
     @property
     def compression_trigger_tokens(self) -> int:
+        """把会话配置中的千 token 单位转换为预算判断使用的整数 token 数。
+
+        Returns:
+            int: 压缩触发阈值对应的 token 数。
+        """
         return self.compression_trigger_tokens_k * 1_000

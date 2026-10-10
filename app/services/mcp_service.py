@@ -27,10 +27,10 @@ class MCPService:
         """初始化 MCP 应用服务。
 
         Args:
-            settings_dao: MCP Server 配置数据访问对象。
-            chat_settings_dao: 模型配置数据访问对象。
-            connection_manager: 进程级 MCP 连接管理器。
-            mutation_coordinator: 可选的跨配置写入协调器。
+            settings_dao (MCPSettingsDao): MCP Server 配置数据访问对象。
+            chat_settings_dao (ChatSettingsDao): 模型配置数据访问对象。
+            connection_manager (MCPConnectionManager): 进程级 MCP 连接管理器。
+            mutation_coordinator (SettingsMutationCoordinator | None): 可选的跨配置写入协调器。
         """
         self.settings_dao = settings_dao
         self.chat_settings_dao = chat_settings_dao
@@ -41,7 +41,7 @@ class MCPService:
         """列出全部 MCP Server 及其运行状态。
 
         Returns:
-            面向设置页的 Server 视图列表。
+            list[dict[str, Any]]: 面向设置页的 Server 视图列表。
         """
         return [self._server_view(server) for server in self.settings_dao.load().servers]
 
@@ -49,10 +49,10 @@ class MCPService:
         """测试一份 MCP Server 配置但不持久化。
 
         Args:
-            server: 待测试的 Server 配置。
+            server (MCPServerConfig): 待测试的 Server 配置。
 
         Returns:
-            连接状态、instructions 和工具目录。
+            dict[str, Any]: 连接状态、instructions 和工具目录。
         """
         return await self.connection_manager.test_config(server)
 
@@ -60,10 +60,10 @@ class MCPService:
         """创建 MCP Server，并在启用时尝试连接和同步权限。
 
         Args:
-            server: 待创建的 Server 配置。
+            server (MCPServerConfig): 待创建的 Server 配置。
 
         Returns:
-            新 Server 的设置页视图。
+            dict[str, Any]: 新 Server 的设置页视图。
 
         Raises:
             ValueError: Server ID 已存在。
@@ -86,11 +86,11 @@ class MCPService:
         """更新 MCP Server 并处理连接和身份变化。
 
         Args:
-            server_id: 路径中的原 Server ID。
-            server: 更新后的完整 Server 配置。
+            server_id (str): 路径中的原 Server ID。
+            server (MCPServerConfig): 更新后的完整 Server 配置。
 
         Returns:
-            更新后的设置页视图。
+            dict[str, Any]: 更新后的设置页视图。
 
         Raises:
             ValueError: 请求尝试修改 Server ID。
@@ -126,10 +126,10 @@ class MCPService:
         """删除 MCP Server 及全部模型引用。
 
         Args:
-            server_id: 待删除的 MCP Server ID。
+            server_id (str): 待删除的 MCP Server ID。
 
         Returns:
-            权限引用受到清理的会话 ID 列表。
+            list[str]: 权限引用受到清理的会话 ID 列表。
 
         Raises:
             KeyError: 指定 Server 不存在。
@@ -149,10 +149,10 @@ class MCPService:
         """重连 MCP Server 并按最新工具目录同步权限。
 
         Args:
-            server_id: 待重连的 MCP Server ID。
+            server_id (str): 待重连的 MCP Server ID。
 
         Returns:
-            重连后的设置页视图。
+            dict[str, Any]: 重连后的设置页视图。
 
         Raises:
             KeyError: 指定 Server 不存在。
@@ -174,8 +174,8 @@ class MCPService:
         """按服务身份和最新工具目录同步所有模型权限。
 
         Args:
-            server: 已成功连接的 Server 配置。
-            tools: Server 当前暴露的工具描述符。
+            server (MCPServerConfig): 已成功连接的 Server 配置。
+            tools (list[Any]): Server 当前暴露的工具描述符。
         """
         self.chat_settings_dao.reconcile_mcp_server_tools(
             server.id,
@@ -187,10 +187,10 @@ class MCPService:
         """列出指定 MCP Server 的已缓存工具目录。
 
         Args:
-            server_id: MCP Server ID。
+            server_id (str): MCP Server ID。
 
         Returns:
-            面向 API 的工具信息列表。
+            list[dict[str, Any]]: 面向 API 的工具信息列表。
 
         Raises:
             KeyError: 指定 Server 不存在。
@@ -211,10 +211,10 @@ class MCPService:
         """构造设置页使用的 MCP Server 视图。
 
         Args:
-            server: MCP Server 配置。
+            server (MCPServerConfig): MCP Server 配置。
 
         Returns:
-            包含配置、运行状态和模型引用数量的字典。
+            dict[str, Any]: 包含配置、运行状态和模型引用数量的字典。
         """
         return {
             "config": server.model_dump(mode="json"),

@@ -28,6 +28,17 @@ __all__ = [
 
 
 def __getattr__(name: str):
+    """首次访问包导出的 Agent 时才导入实现，减少包初始化时的循环依赖。
+
+    Args:
+        name (str): 当前对象的名称。
+
+    Returns:
+        type[Agent]: Agent 类。
+
+    Raises:
+        AttributeError: 访问名称不是 Agent。
+    """
     if name == "Agent":
         from app.agent.agent import Agent
 

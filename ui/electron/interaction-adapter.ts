@@ -59,7 +59,7 @@ export const submitInteractionCommand = async (command: ChannelCommand): Promise
  *
  * Args:
  *     sessionId (string): 共享 Ayaya 会话标识。
- *     options (DesktopSessionSubscriptionOptions | undefined): 新页面的刷新要求，普通发送可省略。
+ *     options (DesktopSessionSubscriptionOptions): 新页面的刷新要求，普通发送可省略。
  *
  * Returns:
  *     Promise<void>: 当前连接首次快照已转发，或旧连接被取消。
@@ -68,5 +68,7 @@ export const subscribeDesktopSession = (
   sessionId: string, options?: DesktopSessionSubscriptionOptions,
 ): Promise<void> => desktopSession.subscribe(sessionId, options);
 
-/** 停止当前展示连接，释放快照和重试等待，不停止 Agent。 */
+/**
+ *  停止当前展示连接，释放快照和重试等待，不停止 Agent。
+ */
 export const stopDesktopSession = (): void => desktopSession.stop();

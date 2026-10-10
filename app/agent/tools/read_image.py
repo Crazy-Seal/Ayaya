@@ -25,7 +25,11 @@ _MIME_BY_SUFFIX = {
 async def read_image(
     paths: Annotated[list[str], "要读取的工作区图片路径列表。"],
 ) -> ToolResult:
-    """读取 PNG、JPEG 或 WebP 图片，并以 system_tool_image 类别提供给模型。"""
+    """读取 PNG、JPEG 或 WebP 图片，并以 system_tool_image 类别提供给模型。
+
+    Args:
+        paths (list[str]): 要读取的工作区图片路径列表。
+    """
     if not paths:
         return ToolResult(content="错误: paths 不能为空")
 

@@ -8,13 +8,22 @@ from app.schemas.tool_permissions import TOOL_PERMISSIONS_SCHEMA_VERSION
 
 
 def _known_local_tool_names() -> list[str]:
+    """读取已发现的本地工具名称，供配置加载时补齐新工具的默认审批权限。
+
+    Returns:
+        list[str]: 工具注册表公开的本地工具名称列表。
+    """
     from app.agent.tools.registry import ToolRegistry
 
     return ToolRegistry.list_tools()
 
 
 def _reconcile_local_tool_permissions(item: dict) -> bool:
-    """新发现的本地工具默认 ASK，不改变已保存的权限。"""
+    """新发现的本地工具默认 ASK，不改变已保存的权限。
+
+    Args:
+        item (dict): 从会话配置文件读取的单项模型配置。
+    """
     changed = False
     permissions = dict(item.get("tool_permissions") or {})
     for name in _known_local_tool_names():
@@ -32,16 +41,31 @@ def _reconcile_local_tool_permissions(item: dict) -> bool:
 
 
 class ChatSettingsDao:
+    """按会话读写模型设置 YAML，并管理本对象的设置缓存。"""
     def __init__(self, config_file: Path | None = None):
+        """选择当前环境的设置文件，创建空缓存；此时不读取文件。
+
+        Args:
+            config_file (Path | None): 会话设置 YAML 路径；省略时根据当前运行环境选择。
+        """
         self.config_file = config_file or get_chat_settings_file()
         self._cache: dict[str, ChatSettings] = {}
 
     def _load_chat_settings_file(self) -> dict:
+        """读取 YAML，为新本地工具补上 ask 权限；发生补齐时将配置写回文件。
+
+        Returns:
+            dict: 已补齐权限的配置字典。
+
+        Raises:
+            RuntimeError: 设置文件不存在。
+        """
         if not self.config_file.exists():
             raise RuntimeError(f"Config file not found: {self.config_file}")
 
         with self.config_file.open("r", encoding="utf-8") as file:
             data = yaml.safe_load(file) or {"chat_models": []}
+        # 1. 加载时补齐新工具的默认审批权限，不覆盖用户已经保存的许可。
         migrated = False
         for item in data.get("chat_models", []):
             migrated = _reconcile_local_tool_permissions(item) or migrated
@@ -50,14 +74,20 @@ class ChatSettingsDao:
         return data
 
     def _save_chat_settings_file(self, data: dict) -> None:
+        """先将 YAML 写入同目录临时文件，再替换目标文件，避免直接覆盖时留下半份配置。
+
+        Args:
+            data (dict): 需要解析或保存的结构化数据。
+        """
         self.config_file.parent.mkdir(parents=True, exist_ok=True)
+        # 1. 临时文件写完才替换目标；写失败时原设置文件仍保留。
         temp_file = self.config_file.with_suffix(f"{self.config_file.suffix}.tmp")
         with temp_file.open("w", encoding="utf-8") as file:
             yaml.safe_dump(data, file, allow_unicode=True, sort_keys=False)
         temp_file.replace(self.config_file)
 
     def _clear_caches(self) -> None:
-        """清除所有相关缓存"""
+        """设置文件保存成功后清除本对象设置缓存和记忆管理器工厂缓存，后续装配读取新配置。"""
         self._cache.clear()
         # 清除 MemoryManager 工厂缓存
         from app.agent.memory import get_memory_manager
@@ -65,6 +95,14 @@ class ChatSettingsDao:
 
     @staticmethod
     def _to_chat_settings(item: dict) -> ChatSettings:
+        """把单项 YAML 配置转换为经过字段和插件配置校验的会话设置。
+
+        Args:
+            item (dict): 从会话配置文件读取的单项模型配置。
+
+        Returns:
+            ChatSettings: 规范化的 ChatSettings。
+        """
         return ChatSettings(
             session_id=item["session_id"],
             model_name=item["model_name"],
@@ -90,6 +128,17 @@ class ChatSettingsDao:
         )
 
     def add_chat_settings(self, chat_settings: ChatSettings) -> ChatSettings:
+        """确认会话编号未重复后保存新配置，文件保存成功后清除设置及记忆管理器缓存。
+
+        Args:
+            chat_settings (ChatSettings): 当前会话的模型、角色及插件设置。
+
+        Returns:
+            ChatSettings: 已保存的会话设置。
+
+        Raises:
+            ValueError: 会话编号已经存在。
+        """
         data = self._load_chat_settings_file()
         chat_models = data["chat_models"]
         session_id = chat_settings.session_id
@@ -103,6 +152,17 @@ class ChatSettingsDao:
         return chat_settings
 
     def get_chat_settings(self, session_id: str) -> ChatSettings:
+        """优先读取缓存；未缓存时从 YAML 查找并校验会话设置。
+
+        Args:
+            session_id (str): 当前操作所属的会话编号。
+
+        Returns:
+            ChatSettings: 当前会话设置，并缓存该结果。
+
+        Raises:
+            KeyError: 指定会话不存在。
+        """
         if session_id in self._cache:
             return self._cache[session_id]
 
@@ -116,6 +176,14 @@ class ChatSettingsDao:
         raise KeyError(f"session_id not found: {session_id}")
 
     def delete_chat_settings(self, session_id: str) -> None:
+        """删除指定会话配置，保存成功后清除关联缓存。
+
+        Args:
+            session_id (str): 当前操作所属的会话编号。
+
+        Raises:
+            KeyError: 指定会话不存在。
+        """
         data = self._load_chat_settings_file()
         chat_models = data["chat_models"]
 
@@ -129,6 +197,18 @@ class ChatSettingsDao:
         raise KeyError(f"session_id not found: {session_id}")
 
     def update_chat_settings(self, session_id: str, chat_settings: ChatSettings) -> ChatSettings:
+        """替换已存在会话的整项设置，保存成功后清除关联缓存。
+
+        Args:
+            session_id (str): 当前操作所属的会话编号。
+            chat_settings (ChatSettings): 当前会话的模型、角色及插件设置。
+
+        Returns:
+            ChatSettings: 已保存的新设置。
+
+        Raises:
+            KeyError: 指定会话不存在。
+        """
         data = self._load_chat_settings_file()
         chat_models = data["chat_models"]
 
@@ -145,10 +225,10 @@ class ChatSettingsDao:
         """移除全部模型对指定 MCP Server 的授权。
 
         Args:
-            server_id: 待移除引用的 MCP Server ID。
+            server_id (str): 待移除引用的 MCP Server ID。
 
         Returns:
-            权限配置受到修改的会话 ID 列表。
+            list[str]: 权限配置受到修改的会话 ID 列表。
         """
         data = self._load_chat_settings_file()
         affected: list[str] = []
@@ -179,12 +259,12 @@ class ChatSettingsDao:
         """按当前服务身份和工具目录安全重绑定全部模型权限。
 
         Args:
-            server_id: MCP Server ID。
-            identity_fingerprint: 当前 Server 身份指纹。
-            tool_names: 当前 Server 暴露的工具名称。
+            server_id (str): MCP Server ID。
+            identity_fingerprint (str): 当前 Server 身份指纹。
+            tool_names (list[str]): 当前 Server 暴露的工具名称。
 
         Returns:
-            权限配置受到同步的会话 ID 列表。
+            list[str]: 权限配置受到同步的会话 ID 列表。
         """
         data = self._load_chat_settings_file()
         affected: list[str] = []
@@ -217,10 +297,10 @@ class ChatSettingsDao:
         """在服务身份变化但尚未验证时降级工具权限。
 
         Args:
-            server_id: 身份发生变化的 MCP Server ID。
+            server_id (str): 身份发生变化的 MCP Server ID。
 
         Returns:
-            工具权限被降级为 ``ask`` 的会话 ID 列表。
+            list[str]: 工具权限被降级为 ``ask`` 的会话 ID 列表。
         """
         data = self._load_chat_settings_file()
         affected: list[str] = []
@@ -244,10 +324,10 @@ class ChatSettingsDao:
         """统计引用指定 MCP Server 的模型数量。
 
         Args:
-            server_id: MCP Server ID。
+            server_id (str): MCP Server ID。
 
         Returns:
-            包含该 Server 权限配置的模型数量。
+            int: 包含该 Server 权限配置的模型数量。
         """
         data = self._load_chat_settings_file()
         return sum(

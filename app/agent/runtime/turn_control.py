@@ -13,9 +13,7 @@ T = TypeVar("T")
 
 
 class TurnInterrupted(Exception):
-    """通知 Agent 在模型或工具安全点结束当前轮并持久化收尾。
-
-    """
+    """通知 Agent 在模型或工具安全点结束当前轮并持久化收尾。"""
 
 
 @dataclass
@@ -81,7 +79,7 @@ class TurnControl:
             """在独立可取消任务中等待模型迭代器的下一项。
 
             Returns:
-                T: 当前查询或执行结果。
+                T: 当前等待返回的下一条模型片段，停止或引导信号到达时会中断等待。
             """
             return await anext(stream)
 
@@ -116,9 +114,7 @@ class TurnControl:
             raise TurnInterrupted(reason)
 
     def start_llm(self) -> None:
-        """检查打断信号并重置当前模型步骤的可见片段。
-
-        """
+        """检查打断信号并重置当前模型步骤的可见片段。"""
         self.check()
         self.phase = TurnPhase.LLM
         self.partial = ""
@@ -126,16 +122,12 @@ class TurnControl:
         self.partial_message_id = None
 
     def start_tool(self) -> None:
-        """在工具产生副作用前检查打断并进入工具阶段。
-
-        """
+        """在工具产生副作用前检查打断并进入工具阶段。"""
         self.check()
         self.phase = TurnPhase.TOOL
 
     def begin_commit(self) -> None:
-        """检查最后一个打断安全点并封住最终提交阶段。
-
-        """
+        """检查最后一个打断安全点并封住最终提交阶段。"""
         self.check()
         self.phase = TurnPhase.COMMITTING
 

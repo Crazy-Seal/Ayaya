@@ -30,7 +30,11 @@ RESERVED_ENV_NAMES = {
 
 
 def _get_environment_value(name: str) -> tuple[str, str] | None:
-    """按平台规则读取一个允许继承的环境变量。"""
+    """按平台规则读取一个允许继承的环境变量。
+
+    Args:
+        name (str): 当前对象的名称。
+    """
     if os.name != "nt":
         value = os.environ.get(name)
         return (name, value) if value is not None else None
@@ -45,10 +49,10 @@ def build_mcp_process_env(explicit_env: Mapping[str, str]) -> dict[str, str]:
     """构造只包含启动必需项和显式配置项的子进程环境。
 
     Args:
-        explicit_env: 用户在单个 MCP Server 上明确配置的环境变量。
+        explicit_env (Mapping[str, str]): 用户在单个 MCP Server 上明确配置的环境变量。
 
     Returns:
-        可直接传给子进程的独立环境字典。
+        dict[str, str]: 可直接传给子进程的独立环境字典。
     """
     allowlist = WINDOWS_ENV_ALLOWLIST if os.name == "nt" else POSIX_ENV_ALLOWLIST
     child_env: dict[str, str] = {}

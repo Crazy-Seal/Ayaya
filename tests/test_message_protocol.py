@@ -22,6 +22,7 @@ from app.agent.tools.screenshot import screenshot
 
 
 def test_message_identity_predicates() -> None:
+    """验证消息身份判断正确区分领域类型。"""
     human = HumanMessage(text="你好")
     screenshot_message = ToolMediaMessage(
         tool_name="screenshot",
@@ -51,6 +52,7 @@ def test_message_identity_predicates() -> None:
 
 
 def test_non_human_media_is_system_injected() -> None:
+    """验证非真人图片属于内部注入信息。"""
     for media_kind in ("mcp", "tool"):
         message = ToolMediaMessage(
             tool_name="image_tool",
@@ -109,6 +111,7 @@ def test_deferred_tool_media_survives_checkpoint() -> None:
 
 
 def test_tool_media_defaults_to_generic_type() -> None:
+    """验证工具图片默认使用普通媒体类型。"""
     state = AgentState.create_new("generic-tool-image")
     call = ToolCall(id="call-image", name="image_tool", args={})
     state.record_assistant_step("", (call,))
@@ -124,6 +127,7 @@ def test_tool_media_defaults_to_generic_type() -> None:
 
 
 def test_screen_tools_explicitly_classify_returned_images_as_screenshots() -> None:
+    """验证屏幕工具明确将返回图片标记为截图。"""
     image = "data:image/png;base64,QQ=="
     screenshot_context = SimpleNamespace(
         resume_data={"approved": True, "screenshot_data": image},
@@ -134,6 +138,7 @@ def test_screen_tools_explicitly_classify_returned_images_as_screenshots() -> No
     )
 
     async def scenario():
+        """由外层测试调用，完成“屏幕工具明确将返回图片标记为截图”的异步步骤。"""
         return (
             await screenshot._tool_func(context=screenshot_context),
             await control_screen._tool_func(

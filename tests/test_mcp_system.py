@@ -41,6 +41,14 @@ from app.schemas.mcp import (
 
 
 def _chat_settings(**overrides) -> ChatSettings:
+    """构造当前 MCP 或记忆测试所需的会话配置。
+
+    Args:
+        overrides (Any): 覆盖当前测试配置或工具参数默认值的字段。
+
+    Returns:
+        ChatSettings: 供外层用例断言使用的预设结果。
+    """
     values = {
         "session_id": "session-a",
         "model_name": "model",
@@ -55,6 +63,7 @@ def _chat_settings(**overrides) -> ChatSettings:
 
 
 def test_mcp_server_config_supports_stdio_and_streamable_http() -> None:
+    """验证MCP 服务配置支持 stdio 和流式 HTTP。"""
     config = MCPServersConfig(
         servers=[
             {
@@ -86,6 +95,11 @@ def test_mcp_server_config_supports_stdio_and_streamable_http() -> None:
 
 @pytest.mark.parametrize("server_id", ["", "contains space", "a" * 33])
 def test_mcp_server_id_is_stable_model_tool_name_component(server_id: str) -> None:
+    """验证服务编号作为模型工具名称的稳定组成部分。
+
+    Args:
+        server_id (str): MCP 服务的稳定编号。
+    """
     with pytest.raises(ValidationError):
         StdioMCPServerConfig(
             id=server_id,
@@ -96,6 +110,11 @@ def test_mcp_server_id_is_stable_model_tool_name_component(server_id: str) -> No
 
 
 def test_mcp_settings_dao_round_trips_plaintext_credentials(tmp_path: Path) -> None:
+    """验证MCP 配置保存读取保留声明的凭据。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     config_file = tmp_path / "config" / "mcp_servers.yaml"
     dao = MCPSettingsDao(config_file=config_file)
     saved = MCPServersConfig(
@@ -119,6 +138,7 @@ def test_mcp_settings_dao_round_trips_plaintext_credentials(tmp_path: Path) -> N
 
 
 def test_mcp_error_sanitization_removes_headers_and_url_query() -> None:
+    """验证MCP 错误清理移除请求头和 URL 查询敏感值。"""
     config = StreamableHttpMCPServerConfig(
         id="remote",
         name="Remote",
@@ -138,6 +158,7 @@ def test_mcp_error_sanitization_removes_headers_and_url_query() -> None:
 
 
 def test_chat_settings_defaults_to_no_mcp_access() -> None:
+    """验证新会话默认无 MCP 服务访问权限。"""
     settings = _chat_settings()
 
     assert settings.mcp == MCPModelSettings()
@@ -145,6 +166,11 @@ def test_chat_settings_defaults_to_no_mcp_access() -> None:
 
 
 def test_chat_settings_yaml_without_mcp_uses_default(tmp_path: Path) -> None:
+    """验证旧 YAML 缺少 MCP 字段时使用默认值。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     config_file = tmp_path / "chat_settings.yaml"
     settings = _chat_settings().model_dump(mode="json")
     settings.pop("mcp")
@@ -161,6 +187,7 @@ def test_chat_settings_yaml_without_mcp_uses_default(tmp_path: Path) -> None:
 
 
 def test_chat_settings_round_trips_stable_key_mcp_policies() -> None:
+    """验证稳定键形式的 MCP 权限经保存读取仍完整。"""
     settings = _chat_settings(
         tool_permissions={
             "mcp:filesystem:read_file": ToolPolicy.ALLOW,
@@ -189,6 +216,7 @@ def test_chat_settings_round_trips_stable_key_mcp_policies() -> None:
 
 
 def test_mcp_tool_alias_is_namespaced_stable_and_model_safe() -> None:
+    """验证MCP 工具别名稳定且符合模型命名规则。"""
     short = build_exposed_tool_name("filesystem", "read_file")
     long = build_exposed_tool_name("remote", "包含空格/" + "x" * 100)
 
@@ -199,15 +227,19 @@ def test_mcp_tool_alias_is_namespaced_stable_and_model_safe() -> None:
 
 
 class _FakeSession:
+    """提供当前用例所需的 _FakeSession 测试替身，执行记录仅供外层断言使用。"""
     def __init__(self) -> None:
+        """保存本用例的脚本输入和依赖，初始化测试对象的执行记录。"""
         self.initialize_count = 0
         self.calls: list[tuple[str, dict]] = []
 
     async def initialize(self):
+        """模拟 MCP 会话初始化，避免连接真实服务。"""
         self.initialize_count += 1
         return SimpleNamespace(instructions="仅用于诊断")
 
     async def list_tools(self):
+        """返回当前测试服务的工具目录。"""
         return SimpleNamespace(
             tools=[
                 SimpleNamespace(
@@ -232,6 +264,12 @@ class _FakeSession:
         )
 
     async def call_tool(self, name: str, arguments: dict):
+        """记录 MCP 调用并按用例返回结果或制造异常。
+
+        Args:
+            name (str): 当前对象的名称。
+            arguments (dict): 模型工具调用的参数文本或字典。
+        """
         self.calls.append((name, arguments))
         return SimpleNamespace(
             isError=False,
@@ -245,11 +283,19 @@ class _FakeSession:
 
 @pytest.mark.asyncio
 async def test_connection_manager_reuses_connection_and_returns_raw_tool_catalog() -> None:
+    """验证连接管理器复用连接并返回原始工具目录。"""
     session = _FakeSession()
     closed = 0
 
     @asynccontextmanager
     async def session_factory(_config):
+        """为连接管理器创建用例控制的 MCP 会话，记录连接及资源释放。
+
+        该定义仅用于外层用例：验证连接管理器复用连接并返回原始工具目录。
+
+        Args:
+            _config (Any): 调用方提供的配置。
+        """
         nonlocal closed
         try:
             yield session
@@ -280,13 +326,26 @@ async def test_connection_manager_reuses_connection_and_returns_raw_tool_catalog
 
 @pytest.mark.asyncio
 async def test_connection_manager_allows_concurrent_calls_per_server() -> None:
+    """验证同一服务允许并发工具调用。"""
     import asyncio
 
     class _SerialSession(_FakeSession):
+        """提供当前用例所需的 _SerialSession 测试替身，执行记录仅供外层断言使用。
+
+        该定义仅用于外层用例：验证同一服务允许并发工具调用。
+        """
         active = 0
         max_active = 0
 
         async def call_tool(self, name: str, arguments: dict):
+            """记录 MCP 调用并按用例返回结果或制造异常。
+
+            该定义仅用于外层用例：验证同一服务允许并发工具调用。
+
+            Args:
+                name (str): 当前对象的名称。
+                arguments (dict): 模型工具调用的参数文本或字典。
+            """
             self.active += 1
             self.max_active = max(self.max_active, self.active)
             try:
@@ -299,6 +358,13 @@ async def test_connection_manager_allows_concurrent_calls_per_server() -> None:
 
     @asynccontextmanager
     async def session_factory(_config):
+        """为连接管理器创建用例控制的 MCP 会话，记录连接及资源释放。
+
+        该定义仅用于外层用例：验证同一服务允许并发工具调用。
+
+        Args:
+            _config (Any): 调用方提供的配置。
+        """
         yield session
 
     config = MCPServersConfig(servers=[StdioMCPServerConfig(
@@ -318,12 +384,21 @@ async def test_connection_manager_allows_concurrent_calls_per_server() -> None:
 
 @pytest.mark.asyncio
 async def test_unknown_call_error_keeps_generation_for_next_call() -> None:
+    """验证未知调用错误不更换后续调用连接。"""
     close_order: list[int] = []
     session = _FakeSession()
     original_call = session.call_tool
     failed = False
 
     async def fail_once(name: str, arguments: dict):
+        """首次调用主动失败，随后恢复脚本响应，用于验证失败边界和重试。
+
+        该定义仅用于外层用例：验证未知调用错误不更换后续调用连接。
+
+        Args:
+            name (str): 当前对象的名称。
+            arguments (dict): 模型工具调用的参数文本或字典。
+        """
         nonlocal failed
         if not failed:
             failed = True
@@ -336,6 +411,13 @@ async def test_unknown_call_error_keeps_generation_for_next_call() -> None:
 
     @asynccontextmanager
     async def session_factory(_config):
+        """为连接管理器创建用例控制的 MCP 会话，记录连接及资源释放。
+
+        该定义仅用于外层用例：验证未知调用错误不更换后续调用连接。
+
+        Args:
+            _config (Any): 调用方提供的配置。
+        """
         nonlocal created
         current = created
         created += 1
@@ -368,10 +450,16 @@ async def test_unknown_call_error_keeps_generation_for_next_call() -> None:
 
 
 class _InvalidCallResult(BaseModel):
+    """提供当前用例所需的 _InvalidCallResult 测试替身，执行记录仅供外层断言使用。"""
     value: int
 
 
 def _validation_error() -> ValidationError:
+    """构造本用例需要的 MCP 参数校验异常。
+
+    Returns:
+        ValidationError: 供外层用例断言使用的预设结果。
+    """
     with pytest.raises(ValidationError) as raised:
         _InvalidCallResult(value="invalid")
     return raised.value
@@ -398,12 +486,25 @@ def _validation_error() -> ValidationError:
     ],
 )
 async def test_nonfatal_call_errors_keep_generation(failure: Exception) -> None:
+    """验证非致命调用错误保留连接。
+
+    Args:
+        failure (Exception): 当前用例要求抛出的调用异常。
+    """
     session = _FakeSession()
     original_call = session.call_tool
     failed = False
     closed = 0
 
     async def fail_once(name: str, arguments: dict):
+        """首次调用主动失败，随后恢复脚本响应，用于验证失败边界和重试。
+
+        该定义仅用于外层用例：验证非致命调用错误保留连接。
+
+        Args:
+            name (str): 当前对象的名称。
+            arguments (dict): 模型工具调用的参数文本或字典。
+        """
         nonlocal failed
         if not failed:
             failed = True
@@ -414,6 +515,13 @@ async def test_nonfatal_call_errors_keep_generation(failure: Exception) -> None:
 
     @asynccontextmanager
     async def session_factory(_config):
+        """为连接管理器创建用例控制的 MCP 会话，记录连接及资源释放。
+
+        该定义仅用于外层用例：验证非致命调用错误保留连接。
+
+        Args:
+            _config (Any): 调用方提供的配置。
+        """
         nonlocal closed
         try:
             yield session
@@ -461,6 +569,11 @@ async def test_nonfatal_call_errors_keep_generation(failure: Exception) -> None:
     ],
 )
 async def test_fatal_call_errors_retire_generation(failure: Exception) -> None:
+    """验证致命调用错误移除失效连接。
+
+    Args:
+        failure (Exception): 当前用例要求抛出的调用异常。
+    """
     sessions = [_FakeSession(), _FakeSession()]
     original_call = sessions[0].call_tool
     closed: list[int] = []
@@ -468,6 +581,14 @@ async def test_fatal_call_errors_retire_generation(failure: Exception) -> None:
     failed = False
 
     async def fail_once(name: str, arguments: dict):
+        """首次调用主动失败，随后恢复脚本响应，用于验证失败边界和重试。
+
+        该定义仅用于外层用例：验证致命调用错误移除失效连接。
+
+        Args:
+            name (str): 当前对象的名称。
+            arguments (dict): 模型工具调用的参数文本或字典。
+        """
         nonlocal failed
         if not failed:
             failed = True
@@ -478,6 +599,13 @@ async def test_fatal_call_errors_retire_generation(failure: Exception) -> None:
 
     @asynccontextmanager
     async def session_factory(_config):
+        """为连接管理器创建用例控制的 MCP 会话，记录连接及资源释放。
+
+        该定义仅用于外层用例：验证致命调用错误移除失效连接。
+
+        Args:
+            _config (Any): 调用方提供的配置。
+        """
         nonlocal created
         index = created
         created += 1
@@ -504,6 +632,7 @@ async def test_fatal_call_errors_retire_generation(failure: Exception) -> None:
 
 @pytest.mark.asyncio
 async def test_one_failed_concurrent_call_does_not_cancel_other_inflight_call() -> None:
+    """验证一项并发调用失败不取消其他进行中调用。"""
     import asyncio
 
     release_success = asyncio.Event()
@@ -511,7 +640,19 @@ async def test_one_failed_concurrent_call_does_not_cancel_other_inflight_call() 
     closed = 0
 
     class _ConcurrentSession(_FakeSession):
+        """提供当前用例所需的 _ConcurrentSession 测试替身，执行记录仅供外层断言使用。
+
+        该定义仅用于外层用例：验证一项并发调用失败不取消其他进行中调用。
+        """
         async def call_tool(self, name: str, arguments: dict):
+            """记录 MCP 调用并按用例返回结果或制造异常。
+
+            该定义仅用于外层用例：验证一项并发调用失败不取消其他进行中调用。
+
+            Args:
+                name (str): 当前对象的名称。
+                arguments (dict): 模型工具调用的参数文本或字典。
+            """
             if arguments["kind"] == "fail":
                 await success_started.wait()
                 raise ConnectionResetError("transport failed")
@@ -523,6 +664,13 @@ async def test_one_failed_concurrent_call_does_not_cancel_other_inflight_call() 
 
     @asynccontextmanager
     async def session_factory(_config):
+        """为连接管理器创建用例控制的 MCP 会话，记录连接及资源释放。
+
+        该定义仅用于外层用例：验证一项并发调用失败不取消其他进行中调用。
+
+        Args:
+            _config (Any): 调用方提供的配置。
+        """
         nonlocal closed
         try:
             yield session
@@ -557,6 +705,15 @@ def _tool_context(
     resume_data: dict | None = None,
     resume_state: dict | None = None,
 ) -> ToolContext:
+    """为 MCP 调用构造工具上下文和事件回调。
+
+    Args:
+        resume_data (dict | None): 本次模拟审批或桌面回报的数据。
+        resume_state (dict | None): 工具中断时保存的恢复材料。
+
+    Returns:
+        ToolContext: 供外层用例断言使用的预设结果。
+    """
     return ToolContext(
         session_id="session-a",
         state=SimpleNamespace(),
@@ -572,28 +729,89 @@ class _MutablePolicyResolver:
     """为 Adapter 安全测试提供可变的实时权限与身份。"""
 
     def __init__(self, policy: ToolPolicy, identity: str | None) -> None:
+        """保存本用例的脚本输入和依赖，初始化测试对象的执行记录。
+
+        该定义仅用于外层用例：为 Adapter 安全测试提供可变的实时权限与身份。
+
+        Args:
+            policy (ToolPolicy): 本用例指定的权限或压缩策略。
+            identity (str | None): 当前服务或工具的测试身份摘要。
+        """
         self.policy = policy
         self.identity = identity
 
     def get_policy(self, _session_id: str, _server_id: str, _tool_name: str) -> ToolPolicy:
+        """读取用例提供的实时工具权限，验证执行前会重新检查。
+
+        该定义仅用于外层用例：为 Adapter 安全测试提供可变的实时权限与身份。
+
+        Args:
+            _session_id (str): 当前操作所属的会话编号。
+            _server_id (str): MCP 服务的稳定编号。
+            _tool_name (str): 注册表中使用的工具名称。
+
+        Returns:
+            ToolPolicy: 供外层用例断言使用的预设结果。
+        """
         return self.policy
 
     def get_bound_identity(self, _session_id: str, _server_id: str) -> str | None:
+        """返回当前 MCP 权限绑定的服务身份。
+
+        该定义仅用于外层用例：为 Adapter 安全测试提供可变的实时权限与身份。
+
+        Args:
+            _session_id (str): 当前操作所属的会话编号。
+            _server_id (str): MCP 服务的稳定编号。
+
+        Returns:
+            str | None: 供外层用例断言使用的预设结果。
+        """
         return self.identity
 
     def is_exposed(self, _session_id: str, _tool: BaseTool) -> bool:
+        """按用例权限判断工具是否应出现在模型工具列表中。
+
+        该定义仅用于外层用例：为 Adapter 安全测试提供可变的实时权限与身份。
+
+        Args:
+            _session_id (str): 当前操作所属的会话编号。
+            _tool (BaseTool): 需要注册或执行的工具对象。
+
+        Returns:
+            bool: 供外层用例断言使用的预设结果。
+        """
         return self.policy != ToolPolicy.DENY
 
     def get_bound_mcp_identity(self, _session_id: str, _server_id: str) -> str | None:
+        """返回当前会话绑定的 MCP 服务身份，供最终执行检查。
+
+        该定义仅用于外层用例：为 Adapter 安全测试提供可变的实时权限与身份。
+
+        Args:
+            _session_id (str): 当前操作所属的会话编号。
+            _server_id (str): MCP 服务的稳定编号。
+
+        Returns:
+            str | None: 供外层用例断言使用的预设结果。
+        """
         return self.identity
 
 
 @pytest.mark.asyncio
 async def test_adapter_executes_authorized_call_and_converts_results() -> None:
+    """验证适配器执行已授权调用并转换结果。"""
     session = _FakeSession()
 
     @asynccontextmanager
     async def session_factory(_config):
+        """为连接管理器创建用例控制的 MCP 会话，记录连接及资源释放。
+
+        该定义仅用于外层用例：验证适配器执行已授权调用并转换结果。
+
+        Args:
+            _config (Any): 调用方提供的配置。
+        """
         yield session
 
     config = MCPServersConfig(
@@ -635,11 +853,19 @@ async def test_adapter_executes_authorized_call_and_converts_results() -> None:
 
 @pytest.mark.asyncio
 async def test_adapter_does_not_own_user_approval_interrupts() -> None:
+    """验证适配器不自行拥有用户审批中断。"""
     session = _FakeSession()
     resolver = _MutablePolicyResolver(ToolPolicy.ASK, None)
 
     @asynccontextmanager
     async def session_factory(_config):
+        """为连接管理器创建用例控制的 MCP 会话，记录连接及资源释放。
+
+        该定义仅用于外层用例：验证适配器不自行拥有用户审批中断。
+
+        Args:
+            _config (Any): 调用方提供的配置。
+        """
         yield session
 
     config = MCPServersConfig(servers=[StdioMCPServerConfig(
@@ -666,10 +892,18 @@ async def test_adapter_does_not_own_user_approval_interrupts() -> None:
 
 @pytest.mark.asyncio
 async def test_adapter_rejects_changed_tool_contract_at_final_guard() -> None:
+    """验证最后权限检查拒绝变化后的工具定义。"""
     session = _FakeSession()
 
     @asynccontextmanager
     async def session_factory(_config):
+        """为连接管理器创建用例控制的 MCP 会话，记录连接及资源释放。
+
+        该定义仅用于外层用例：验证最后权限检查拒绝变化后的工具定义。
+
+        Args:
+            _config (Any): 调用方提供的配置。
+        """
         yield session
 
     config = MCPServersConfig(servers=[StdioMCPServerConfig(
@@ -700,10 +934,18 @@ async def test_adapter_rejects_changed_tool_contract_at_final_guard() -> None:
 
 @pytest.mark.asyncio
 async def test_adapter_rejects_server_identity_changed_after_construction() -> None:
+    """验证适配器构造后服务身份变化会被拒绝。"""
     session = _FakeSession()
 
     @asynccontextmanager
     async def session_factory(_config):
+        """为连接管理器创建用例控制的 MCP 会话，记录连接及资源释放。
+
+        该定义仅用于外层用例：验证适配器构造后服务身份变化会被拒绝。
+
+        Args:
+            _config (Any): 调用方提供的配置。
+        """
         yield session
 
     config = MCPServersConfig(servers=[StdioMCPServerConfig(
@@ -732,6 +974,7 @@ async def test_adapter_rejects_server_identity_changed_after_construction() -> N
 
 
 def test_identity_fingerprints_only_cover_identity_and_tool_contract() -> None:
+    """验证身份摘要只覆盖服务身份与工具定义。"""
     base = StdioMCPServerConfig(
         id="filesystem",
         name="Filesystem",
@@ -768,11 +1011,19 @@ def test_identity_fingerprints_only_cover_identity_and_tool_contract() -> None:
 
 @pytest.mark.asyncio
 async def test_adapter_rechecks_current_policy_before_execution() -> None:
+    """验证执行前重新读取当前权限。"""
     session = _FakeSession()
     resolver = _MutablePolicyResolver(ToolPolicy.ALLOW, None)
 
     @asynccontextmanager
     async def session_factory(_config):
+        """为连接管理器创建用例控制的 MCP 会话，记录连接及资源释放。
+
+        该定义仅用于外层用例：验证执行前重新读取当前权限。
+
+        Args:
+            _config (Any): 调用方提供的配置。
+        """
         yield session
 
     config = MCPServersConfig(servers=[StdioMCPServerConfig(
@@ -800,11 +1051,19 @@ async def test_adapter_rechecks_current_policy_before_execution() -> None:
 
 @pytest.mark.asyncio
 async def test_adapter_rechecks_policy_inside_connection_lease() -> None:
+    """验证取得连接使用权后仍重新核对权限。"""
     session = _FakeSession()
     resolver = _MutablePolicyResolver(ToolPolicy.ALLOW, None)
 
     @asynccontextmanager
     async def session_factory(_config):
+        """为连接管理器创建用例控制的 MCP 会话，记录连接及资源释放。
+
+        该定义仅用于外层用例：验证取得连接使用权后仍重新核对权限。
+
+        Args:
+            _config (Any): 调用方提供的配置。
+        """
         yield session
 
     config = MCPServersConfig(servers=[StdioMCPServerConfig(
@@ -812,7 +1071,19 @@ async def test_adapter_rechecks_policy_inside_connection_lease() -> None:
     )])
 
     class _PolicyChangingManager(MCPConnectionManager):
+        """提供当前用例所需的 _PolicyChangingManager 测试替身，执行记录仅供外层断言使用。
+
+        该定义仅用于外层用例：验证取得连接使用权后仍重新核对权限。
+        """
         async def call_tool(self, *args, **kwargs):
+            """记录 MCP 调用并按用例返回结果或制造异常。
+
+            该定义仅用于外层用例：验证取得连接使用权后仍重新核对权限。
+
+            Args:
+                args (dict[str, Any]): 当前工具调用或被包装函数的参数。
+                kwargs (dict[str, Any]): 传递给被调用函数的其他关键字参数。
+            """
             resolver.policy = ToolPolicy.DENY
             return await super().call_tool(*args, **kwargs)
 
@@ -838,10 +1109,18 @@ async def test_adapter_rechecks_policy_inside_connection_lease() -> None:
 
 @pytest.mark.asyncio
 async def test_adapter_rejects_changed_policy_binding_identity() -> None:
+    """验证权限绑定身份变化后拒绝调用。"""
     session = _FakeSession()
 
     @asynccontextmanager
     async def session_factory(_config):
+        """为连接管理器创建用例控制的 MCP 会话，记录连接及资源释放。
+
+        该定义仅用于外层用例：验证权限绑定身份变化后拒绝调用。
+
+        Args:
+            _config (Any): 调用方提供的配置。
+        """
         yield session
 
     config = MCPServersConfig(servers=[StdioMCPServerConfig(
@@ -868,10 +1147,23 @@ async def test_adapter_rejects_changed_policy_binding_identity() -> None:
 
 @pytest.mark.asyncio
 async def test_call_timeout_is_not_replayed_keeps_generation_and_redacts_secret() -> None:
+    """验证调用超时不重放且保留连接并清理敏感值。"""
     class _SlowSession(_FakeSession):
+        """提供当前用例所需的 _SlowSession 测试替身，执行记录仅供外层断言使用。
+
+        该定义仅用于外层用例：验证调用超时不重放且保留连接并清理敏感值。
+        """
         timed_out = False
 
         async def call_tool(self, name: str, arguments: dict):
+            """记录 MCP 调用并按用例返回结果或制造异常。
+
+            该定义仅用于外层用例：验证调用超时不重放且保留连接并清理敏感值。
+
+            Args:
+                name (str): 当前对象的名称。
+                arguments (dict): 模型工具调用的参数文本或字典。
+            """
             self.calls.append((name, arguments))
             if not self.timed_out:
                 self.timed_out = True
@@ -883,6 +1175,13 @@ async def test_call_timeout_is_not_replayed_keeps_generation_and_redacts_secret(
 
     @asynccontextmanager
     async def session_factory(_config):
+        """为连接管理器创建用例控制的 MCP 会话，记录连接及资源释放。
+
+        该定义仅用于外层用例：验证调用超时不重放且保留连接并清理敏感值。
+
+        Args:
+            _config (Any): 调用方提供的配置。
+        """
         nonlocal closed
         try:
             yield session
@@ -916,6 +1215,7 @@ async def test_call_timeout_is_not_replayed_keeps_generation_and_redacts_secret(
 
 
 def test_adapter_converts_errors_multiple_images_and_unsupported_content() -> None:
+    """验证适配器转换错误、多图片和不支持的内容。"""
     error = MCPToolAdapter._convert_result(SimpleNamespace(
         isError=True,
         content=[SimpleNamespace(type="text", text="remote failed")],
@@ -943,6 +1243,7 @@ def test_adapter_converts_errors_multiple_images_and_unsupported_content() -> No
 
 
 def test_adapter_preserves_large_error_for_unified_normalization() -> None:
+    """验证较大错误正文保留给统一结果规范化。"""
     huge_error = MCPToolAdapter._convert_result(SimpleNamespace(
         isError=True,
         content=[SimpleNamespace(type="text", text="x" * 100_000)],
@@ -969,6 +1270,7 @@ def test_adapter_applies_image_quotas() -> None:
 
 
 def test_adapter_deduplicates_exact_structured_serialization() -> None:
+    """验证结构化内容已有完全一致正文时不重复追加。"""
     structured = {"items": [1, 2], "message": "你好"}
     serialized = '{"items":[1,2],"message":"你好"}'
 
@@ -982,6 +1284,7 @@ def test_adapter_deduplicates_exact_structured_serialization() -> None:
 
 
 def test_adapter_appends_structured_content_when_exact_serialization_is_absent() -> None:
+    """验证缺少完全一致正文时追加结构化内容。"""
     converted = MCPToolAdapter._convert_result(SimpleNamespace(
         isError=False,
         content=[SimpleNamespace(type="text", text='结果如下： {"value": 1}')],
@@ -994,6 +1297,7 @@ def test_adapter_appends_structured_content_when_exact_serialization_is_absent()
 
 
 def test_adapter_accepts_structured_result_larger_than_schema_limit() -> None:
+    """验证结构化结果不受工具 Schema 大小限制误截断。"""
     converted = MCPToolAdapter._convert_result(SimpleNamespace(
         isError=False,
         content=[],
@@ -1005,12 +1309,31 @@ def test_adapter_accepts_structured_result_larger_than_schema_limit() -> None:
 
 
 def test_adapter_and_normalizer_limit_content_parts_and_summarize_images(monkeypatch) -> None:
-    """无效图片不得造成无界解码、原因列表或二次遍历。"""
+    """无效图片不得造成无界解码、原因列表或二次遍历。
+
+    Args:
+        monkeypatch (Any): Pytest 的依赖替换工具，用例结束后自动恢复。
+    """
     class _RepeatedInvalidImages:
+        """提供当前用例所需的 _RepeatedInvalidImages 测试替身，执行记录仅供外层断言使用。
+
+        该定义仅用于外层用例：无效图片不得造成无界解码、原因列表或二次遍历。
+        """
         def __len__(self) -> int:
+            """返回测试载荷的模拟长度，供检查结果大小限制。
+
+            该定义仅用于外层用例：无效图片不得造成无界解码、原因列表或二次遍历。
+
+            Returns:
+                int: 供外层用例断言使用的预设结果。
+            """
             return 100_000
 
         def __iter__(self):
+            """按用例提供测试载荷的迭代结果，供检查内容转换。
+
+            该定义仅用于外层用例：无效图片不得造成无界解码、原因列表或二次遍历。
+            """
             for _ in range(100_000):
                 yield SimpleNamespace(type="image", data="%%%", mimeType="image/png")
 
@@ -1020,6 +1343,14 @@ def test_adapter_and_normalizer_limit_content_parts_and_summarize_images(monkeyp
     ).base64.b64decode
 
     def counted_decode(*args, **kwargs):
+        """记录 Base64 解码次数后使用原解码器，验证不会重复解码图片。
+
+        该定义仅用于外层用例：无效图片不得造成无界解码、原因列表或二次遍历。
+
+        Args:
+            args (dict[str, Any]): 当前工具调用或被包装函数的参数。
+            kwargs (dict[str, Any]): 传递给被调用函数的其他关键字参数。
+        """
         nonlocal decode_calls
         decode_calls += 1
         return original_decode(*args, **kwargs)
@@ -1056,12 +1387,31 @@ def test_adapter_does_not_preserve_untrusted_content_type_or_mime_values() -> No
 
 @pytest.mark.parametrize("part_type", ["text", "audio", "resource", "unknown"])
 def test_adapter_applies_content_part_limit_to_every_part_type(part_type: str) -> None:
-    """文本、音频、资源和未知类型均必须受同一总数量限制。"""
+    """文本、音频、资源和未知类型均必须受同一总数量限制。
+
+    Args:
+        part_type (str): 当前参数化用例要验证的 MCP 内容类别。
+    """
     class _RepeatedParts:
+        """提供当前用例所需的 _RepeatedParts 测试替身，执行记录仅供外层断言使用。
+
+        该定义仅用于外层用例：文本、音频、资源和未知类型均必须受同一总数量限制。
+        """
         def __len__(self) -> int:
+            """返回测试载荷的模拟长度，供检查结果大小限制。
+
+            该定义仅用于外层用例：文本、音频、资源和未知类型均必须受同一总数量限制。
+
+            Returns:
+                int: 供外层用例断言使用的预设结果。
+            """
             return 100_000
 
         def __iter__(self):
+            """按用例提供测试载荷的迭代结果，供检查内容转换。
+
+            该定义仅用于外层用例：文本、音频、资源和未知类型均必须受同一总数量限制。
+            """
             for _ in range(100_000):
                 yield SimpleNamespace(type=part_type, text="x")
 
@@ -1076,18 +1426,48 @@ def test_adapter_applies_content_part_limit_to_every_part_type(part_type: str) -
 
 
 def test_unified_image_normalizer_stops_at_mcp_content_part_limit(monkeypatch) -> None:
-    """达到 content parts 上限后不得继续执行图片签名校验。"""
+    """达到 content parts 上限后不得继续执行图片签名校验。
+
+    Args:
+        monkeypatch (Any): Pytest 的依赖替换工具，用例结束后自动恢复。
+    """
     class _RepeatedImages:
+        """提供当前用例所需的 _RepeatedImages 测试替身，执行记录仅供外层断言使用。
+
+        该定义仅用于外层用例：达到 content parts 上限后不得继续执行图片签名校验。
+        """
         def __len__(self) -> int:
+            """返回测试载荷的模拟长度，供检查结果大小限制。
+
+            该定义仅用于外层用例：达到 content parts 上限后不得继续执行图片签名校验。
+
+            Returns:
+                int: 供外层用例断言使用的预设结果。
+            """
             return 100_000
 
         def __iter__(self):
+            """按用例提供测试载荷的迭代结果，供检查内容转换。
+
+            该定义仅用于外层用例：达到 content parts 上限后不得继续执行图片签名校验。
+            """
             for _ in range(100_000):
                 yield SimpleNamespace(type="image", data="AA==", mimeType="image/png")
 
     signature_calls = 0
 
     def counted_signature(_mime_type: str, _data: bytes) -> bool:
+        """记录图片文件头检查次数后调用原校验器。
+
+        该定义仅用于外层用例：达到 content parts 上限后不得继续执行图片签名校验。
+
+        Args:
+            _mime_type (str): 图片载荷声明的媒体类型。
+            _data (bytes): 需要解析或保存的结构化数据。
+
+        Returns:
+            bool: 供外层用例断言使用的预设结果。
+        """
         nonlocal signature_calls
         signature_calls += 1
         return False
@@ -1142,6 +1522,13 @@ async def test_disabled_server_never_creates_session_on_connect_or_reconnect() -
 
     @asynccontextmanager
     async def session_factory(server):
+        """为连接管理器创建用例控制的 MCP 会话，记录连接及资源释放。
+
+        该定义仅用于外层用例：disabled 是 Manager 底层硬门禁，不得触发 session factory。
+
+        Args:
+            server (Any): 用例提供的 MCP 服务配置。
+        """
         calls.append(server.id)
         yield _FakeSession()
 
@@ -1156,32 +1543,79 @@ async def test_disabled_server_never_creates_session_on_connect_or_reconnect() -
 
 
 class _BoundTool(BaseTool):
+    """提供用例指定的工具响应、中断或异常，验证执行管道的结果保存与恢复。"""
     name = "mcp__filesystem__read_file"
     description = "bound"
     parameters_schema = {"type": "object", "properties": {}}
 
     async def execute(self, args: dict, context: ToolContext) -> ToolResult:
+        """管道或插件管理器调用时执行本用例预设的结果、状态修改或异常分支。
+
+        Args:
+            args (dict): 当前工具调用或被包装函数的参数。
+            context (ToolContext): 执行管道提供的工具运行上下文。
+
+        Returns:
+            ToolResult: 供外层用例断言使用的预设结果。
+        """
         return ToolResult.success("ok")
 
 
 @pytest.mark.asyncio
 async def test_agent_builds_adapters_without_owning_connections(tmp_path: Path) -> None:
+    """验证Agent 创建适配器但不接管连接生命周期。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     class _Manager:
+        """提供当前用例所需的 _Manager 测试替身，执行记录仅供外层断言使用。
+
+        该定义仅用于外层用例：验证Agent 创建适配器但不接管连接生命周期。
+        """
         def __init__(self) -> None:
+            """保存本用例的脚本输入和依赖，初始化测试对象的执行记录。
+
+            该定义仅用于外层用例：验证Agent 创建适配器但不接管连接生命周期。
+            """
             self.calls: list[str] = []
             self.config = StdioMCPServerConfig(
                 id="filesystem", name="Filesystem", enabled=True, command="python"
             )
 
         def get_server_config(self, server_id: str):
+            """读取测试目录中的 MCP 服务配置。
+
+            该定义仅用于外层用例：验证Agent 创建适配器但不接管连接生命周期。
+
+            Args:
+                server_id (str): MCP 服务的稳定编号。
+            """
             assert server_id == "filesystem"
             return self.config
 
         def get_server_identity(self, server_id: str) -> str:
+            """返回测试指定的服务身份摘要。
+
+            该定义仅用于外层用例：验证Agent 创建适配器但不接管连接生命周期。
+
+            Args:
+                server_id (str): MCP 服务的稳定编号。
+
+            Returns:
+                str: 供外层用例断言使用的预设结果。
+            """
             assert server_id == "filesystem"
             return server_identity_fingerprint(self.config)
 
         async def connect(self, server_id: str):
+            """记录服务连接请求，并提供用例指定的工具目录或失败。
+
+            该定义仅用于外层用例：验证Agent 创建适配器但不接管连接生命周期。
+
+            Args:
+                server_id (str): MCP 服务的稳定编号。
+            """
             self.calls.append(server_id)
             return [MCPToolDescriptor("read_file", "读取", {"type": "object"})]
 
@@ -1217,6 +1651,11 @@ async def test_agent_builds_adapters_without_owning_connections(tmp_path: Path) 
 
 @pytest.mark.asyncio
 async def test_mcp_service_crud_exposes_runtime_status_and_cascades_policies(tmp_path: Path) -> None:
+    """验证MCP 服务增删改查暴露运行状态并同步权限。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     mcp_file = tmp_path / "mcp_servers.yaml"
     chat_file = tmp_path / "chat_settings.yaml"
     chat_file.write_text("chat_models: []\n", encoding="utf-8")
@@ -1235,22 +1674,65 @@ async def test_mcp_service_crud_exposes_runtime_status_and_cascades_policies(tmp
     )
 
     class _Manager:
+        """提供当前用例所需的 _Manager 测试替身，执行记录仅供外层断言使用。
+
+        该定义仅用于外层用例：验证MCP 服务增删改查暴露运行状态并同步权限。
+        """
         def __init__(self) -> None:
+            """保存本用例的脚本输入和依赖，初始化测试对象的执行记录。
+
+            该定义仅用于外层用例：验证MCP 服务增删改查暴露运行状态并同步权限。
+            """
             self.disconnected: list[str] = []
 
         def get_status(self, _server_id: str):
+            """返回脚本连接状态，替代真实 MCP 连接管理器。
+
+            该定义仅用于外层用例：验证MCP 服务增删改查暴露运行状态并同步权限。
+
+            Args:
+                _server_id (str): MCP 服务的稳定编号。
+            """
             return {"status": "available", "tool_count": 1, "last_error": None, "instructions": None}
 
         async def connect(self, _server_id: str):
+            """记录服务连接请求，并提供用例指定的工具目录或失败。
+
+            该定义仅用于外层用例：验证MCP 服务增删改查暴露运行状态并同步权限。
+
+            Args:
+                _server_id (str): MCP 服务的稳定编号。
+            """
             return []
 
         async def disconnect(self, server_id: str):
+            """记录服务断开和资源释放，用于检查连接生命周期。
+
+            该定义仅用于外层用例：验证MCP 服务增删改查暴露运行状态并同步权限。
+
+            Args:
+                server_id (str): MCP 服务的稳定编号。
+            """
             self.disconnected.append(server_id)
 
         async def test_config(self, _config):
+            """返回用例指定的服务配置测试结果，避免连接真实 MCP 服务。
+
+            该定义仅用于外层用例：验证MCP 服务增删改查暴露运行状态并同步权限。
+
+            Args:
+                _config (Any): 调用方提供的配置。
+            """
             return {"status": "available", "tools": []}
 
         def get_tools(self, _server_id: str):
+            """返回本次连接的测试工具目录。
+
+            该定义仅用于外层用例：验证MCP 服务增删改查暴露运行状态并同步权限。
+
+            Args:
+                _server_id (str): MCP 服务的稳定编号。
+            """
             return []
 
     manager = _Manager()
@@ -1279,6 +1761,11 @@ async def test_mcp_service_crud_exposes_runtime_status_and_cascades_policies(tmp
 
 @pytest.mark.asyncio
 async def test_identity_change_rebinds_all_current_tools_to_ask(tmp_path: Path) -> None:
+    """验证服务身份变化将当前工具权限重新绑定为 ask。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     mcp_file = tmp_path / "mcp_servers.yaml"
     chat_file = tmp_path / "chat_settings.yaml"
     old_server = StdioMCPServerConfig(
@@ -1297,16 +1784,41 @@ async def test_identity_change_rebinds_all_current_tools_to_ask(tmp_path: Path) 
     }}))
 
     class _Manager:
+        """提供当前用例所需的 _Manager 测试替身，执行记录仅供外层断言使用。
+
+        该定义仅用于外层用例：验证服务身份变化将当前工具权限重新绑定为 ask。
+        """
         async def reconnect(self, _server_id: str):
+            """模拟服务重新连接，供检查路由是否调用正确服务。
+
+            该定义仅用于外层用例：验证服务身份变化将当前工具权限重新绑定为 ask。
+
+            Args:
+                _server_id (str): MCP 服务的稳定编号。
+            """
             return [
                 MCPToolDescriptor("read_file", "read", {"type": "object"}),
                 MCPToolDescriptor("new_tool", "new", {"type": "object"}),
             ]
 
         def get_status(self, _server_id: str):
+            """返回脚本连接状态，替代真实 MCP 连接管理器。
+
+            该定义仅用于外层用例：验证服务身份变化将当前工具权限重新绑定为 ask。
+
+            Args:
+                _server_id (str): MCP 服务的稳定编号。
+            """
             return {"status": "available", "tool_count": 2, "last_error": None, "instructions": None}
 
         async def disconnect(self, _server_id: str):
+            """记录服务断开和资源释放，用于检查连接生命周期。
+
+            该定义仅用于外层用例：验证服务身份变化将当前工具权限重新绑定为 ask。
+
+            Args:
+                _server_id (str): MCP 服务的稳定编号。
+            """
             pass
 
     service = MCPService(MCPSettingsDao(mcp_file), chat_dao, _Manager())
@@ -1332,6 +1844,11 @@ async def test_identity_change_rebinds_all_current_tools_to_ask(tmp_path: Path) 
 async def test_chat_settings_save_filters_deleted_servers_and_downgrades_unbound_allow(
     tmp_path: Path,
 ) -> None:
+    """验证保存会话设置时过滤已删除服务并降级未绑定许可。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     mcp_file = tmp_path / "mcp_servers.yaml"
     chat_file = tmp_path / "chat_settings.yaml"
     server = StdioMCPServerConfig(
@@ -1343,12 +1860,30 @@ async def test_chat_settings_save_filters_deleted_servers_and_downgrades_unbound
     chat_dao.add_chat_settings(_chat_settings())
 
     class _Manager:
+        """提供当前用例所需的 _Manager 测试替身，执行记录仅供外层断言使用。
+
+        该定义仅用于外层用例：验证保存会话设置时过滤已删除服务并降级未绑定许可。
+        """
         tool_names = ["read_file"]
 
         def get_available_identity(self, _server_id: str):
+            """返回测试连接当前可用的服务身份。
+
+            该定义仅用于外层用例：验证保存会话设置时过滤已删除服务并降级未绑定许可。
+
+            Args:
+                _server_id (str): MCP 服务的稳定编号。
+            """
             return server_identity_fingerprint(server)
 
         def get_tools(self, _server_id: str):
+            """返回本次连接的测试工具目录。
+
+            该定义仅用于外层用例：验证保存会话设置时过滤已删除服务并降级未绑定许可。
+
+            Args:
+                _server_id (str): MCP 服务的稳定编号。
+            """
             return [
                 MCPToolDescriptor(name, name, {"type": "object"})
                 for name in self.tool_names
@@ -1404,6 +1939,11 @@ async def test_chat_settings_save_filters_deleted_servers_and_downgrades_unbound
 async def test_concurrent_server_delete_and_stale_chat_settings_put_cannot_restore_policy(
     tmp_path: Path,
 ) -> None:
+    """验证并发删除服务与旧设置保存不能恢复已删除权限。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     import asyncio
 
     mcp_file = tmp_path / "mcp_servers.yaml"
@@ -1421,13 +1961,38 @@ async def test_concurrent_server_delete_and_stale_chat_settings_put_cannot_resto
     chat_dao.add_chat_settings(original)
 
     class _Manager:
+        """提供当前用例所需的 _Manager 测试替身，执行记录仅供外层断言使用。
+
+        该定义仅用于外层用例：验证并发删除服务与旧设置保存不能恢复已删除权限。
+        """
         async def disconnect(self, _server_id: str):
+            """记录服务断开和资源释放，用于检查连接生命周期。
+
+            该定义仅用于外层用例：验证并发删除服务与旧设置保存不能恢复已删除权限。
+
+            Args:
+                _server_id (str): MCP 服务的稳定编号。
+            """
             await asyncio.sleep(0)
 
         def get_available_identity(self, _server_id: str):
+            """返回测试连接当前可用的服务身份。
+
+            该定义仅用于外层用例：验证并发删除服务与旧设置保存不能恢复已删除权限。
+
+            Args:
+                _server_id (str): MCP 服务的稳定编号。
+            """
             return server_identity_fingerprint(server)
 
         def get_tools(self, _server_id: str):
+            """返回本次连接的测试工具目录。
+
+            该定义仅用于外层用例：验证并发删除服务与旧设置保存不能恢复已删除权限。
+
+            Args:
+                _server_id (str): MCP 服务的稳定编号。
+            """
             return [MCPToolDescriptor("read_file", "read", {"type": "object"})]
 
     coordinator = SettingsMutationCoordinator()

@@ -12,8 +12,7 @@ from app.crud.chat_history_dao import ChatHistoryDao
 
 
 def test_string_turn_reason_keeps_original_interrupt_text() -> None:
-    """验证既有字符串初始化仍能打断，异常不泄漏枚举名称或属性错误。
-    """
+    """验证既有字符串初始化仍能打断，异常不泄漏枚举名称或属性错误。"""
     # 保留原始字符串作为旧调用样例，不让测试随实现一起改成枚举。
     control = TurnControl("run", reason="stop")
     with pytest.raises(TurnInterrupted, match="^stop$"):
@@ -28,9 +27,7 @@ def test_stopping_pure_tool_turn_closes_call_without_fake_text(tmp_path) -> None
     """
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：停止纯工具轮次闭合协议且不伪造文本回复。
-
-        """
+        """在隔离异步环境中安排并验证：停止纯工具轮次闭合协议且不伪造文本回复。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         agent = Agent.__new__(Agent)
         agent.state_manager = StateManager("s", str(tmp_path / "state.sqlite3"))
@@ -73,9 +70,7 @@ def test_stopping_after_text_and_tool_keeps_one_assistant_history_message(tmp_pa
     """
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：工具前文本被打断后仍只保留一个 Assistant 历史项。
-
-        """
+        """在隔离异步环境中安排并验证：工具前文本被打断后仍只保留一个 Assistant 历史项。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         db_path = str(tmp_path / "state.sqlite3")
         agent = Agent.__new__(Agent)

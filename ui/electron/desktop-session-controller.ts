@@ -69,10 +69,10 @@ export class DesktopSessionController {
     const controller = new AbortController();
     this.controller = controller;
     this.firstSnapshot = new Promise<void>(/**
-     * 保存当前连接首次快照等待的完成函数。
+     * Promise 创建时保存当前订阅首次快照的完成函数，快照转发或订阅作废后结束等待。
      *
      * Args:
-     *     resolve (() => void): 快照转发后，或连接作废时结束等待。
+     *     resolve ((value: void | PromiseLike<void>) => void): 准备成功或等待结束时完成 Promise 的函数。
      */
     (resolve) => { this.completeSnapshot = resolve; });
     // 2. 捕获代次；即使旧 fetch 忽略取消信号，其结果也不能进入当前页面。
@@ -80,7 +80,9 @@ export class DesktopSessionController {
     return this.firstSnapshot;
   }
 
-  /** 取消展示连接、结束重试等待并释放旧快照等待，不发送 Agent 停止命令。 */
+  /**
+   *  取消展示连接、结束重试等待并释放旧快照等待，不发送 Agent 停止命令。
+   */
   stop(): void {
     this.generation += 1;
     this.controller?.abort();
@@ -161,13 +163,15 @@ export class DesktopSessionController {
    */
   private waitToReconnect(signal: AbortSignal): Promise<void> {
     return new Promise<void>(/**
-     * 安排可取消的重连等待，不让旧连接的计时器继续存活。
+     * Promise 创建时登记重连间隔与取消监听，任一到达都清理定时器后结束等待。
      *
      * Args:
-     *     resolve (() => void): 计时或取消发生时结束当前等待。
+     *     resolve ((value: void | PromiseLike<void>) => void): 准备成功或等待结束时完成 Promise 的函数。
      */
     (resolve) => {
-      /** 清理重连计时器及取消监听，然后结束等待。 */
+      /**
+       *  清理重连计时器及取消监听，然后结束等待。
+       */
       const finish = (): void => {
         clearTimeout(timer);
         signal.removeEventListener("abort", finish);

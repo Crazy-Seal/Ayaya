@@ -4,6 +4,12 @@ from app.services import agent_factory
 
 
 def _settings(agent_plugins=None, context_strategy=None):
+    """构造当前用例需要的最小会话设置。
+
+    Args:
+        agent_plugins (Any): 用例指定的插件开关和配置。
+        context_strategy (Any): 用例指定的上下文压缩配置。
+    """
     return ChatSettings(
         session_id="test-session",
         model_name="test-model",
@@ -23,6 +29,11 @@ def _settings(agent_plugins=None, context_strategy=None):
 
 
 def test_memory_plugin_owns_image_processing(monkeypatch) -> None:
+    """验证图片处理由记忆插件负责。
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
+    """
     manager = object()
     captured = {}
     monkeypatch.setattr(agent_factory, "get_memory_manager", lambda session_id: manager)
@@ -46,6 +57,11 @@ def test_memory_plugin_owns_image_processing(monkeypatch) -> None:
 
 
 def test_agent_factory_uses_top_level_context_strategy(monkeypatch) -> None:
+    """验证Agent 工厂使用会话顶层上下文策略。
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
+    """
     manager = object()
     monkeypatch.setattr(agent_factory, "get_memory_manager", lambda session_id: manager)
     monkeypatch.setattr(agent_factory, "Agent", lambda config, **kwargs: config)
@@ -77,6 +93,11 @@ def test_agent_factory_uses_top_level_context_strategy(monkeypatch) -> None:
 
 
 def test_agent_factory_loads_memory_when_all_memory_types_are_disabled(monkeypatch) -> None:
+    """验证所有记忆类型禁用时仍装配固有记忆插件。
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
+    """
     manager = object()
     monkeypatch.setattr(agent_factory, "get_memory_manager", lambda session_id: manager)
     monkeypatch.setattr(agent_factory, "Agent", lambda config, **kwargs: config)
@@ -105,6 +126,7 @@ def test_agent_factory_loads_memory_when_all_memory_types_are_disabled(monkeypat
 
 
 def test_image_is_not_registered_as_standalone_plugin() -> None:
+    """验证图片处理不会注册为独立插件。"""
     from app.agent.plugins.registry import PluginRegistry
 
     assert not PluginRegistry.has("image")

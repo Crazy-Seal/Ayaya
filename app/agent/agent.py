@@ -59,7 +59,7 @@ APPLICATION_EXIT_UNKNOWN_RESULT = "应用退出，本轮已终止；工具执行
 
 @dataclass
 class AgentConfig:
-    """Agent 配置"""
+    """保存一次 Agent 装配所需的会话、模型、提示词、上下文策略和工具/插件选择。"""
     session_id: str
     model_name: str
     api_key: str
@@ -106,10 +106,10 @@ class Agent:
         Args:
             config (AgentConfig): 当前会话的 Agent 配置。
             db_path (str | None): 共享 SQLite 路径，省略时使用当前环境的隔离存储。
-            mcp_connection_manager ('MCPConnectionManager | None'): 共享 MCP 连接管理器。
+            mcp_connection_manager (MCPConnectionManager | None): 共享 MCP 连接管理器。
             llm_client (LLMClient | None): 可替换的流式模型客户端。
             diary_coverage (DiaryCoverage | None): 查询已生成日记覆盖范围的端口。
-            chat_settings ('ChatSettings | None'): 会话模型和插件配置。
+            chat_settings (ChatSettings | None): 会话模型和插件配置。
             tool_authorization (ToolAuthorization | None): 工具单次授权验证器。
             task_launcher (TaskLauncher | None): 工具使用的共享进程启动端口。
         """
@@ -168,7 +168,7 @@ class Agent:
 
 
     async def initialize(self) -> None:
-        """初始化 Agent（异步）"""
+        """首次运行前装配工具和插件，完成后登记已初始化；重复调用复用现有装配结果。"""
         if self._initialized:
             return
 
@@ -188,7 +188,7 @@ class Agent:
         logger.info(f"Agent 初始化完成: {self.config.session_id}")
 
     async def _setup_tools(self) -> None:
-        """根据配置加载工具"""
+        """按会话设置创建本地及 MCP 工具适配器，并装配技能提供的工具。"""
         # 从工具注册表加载
         from app.agent.tools.registry import ToolRegistry
 
@@ -209,7 +209,7 @@ class Agent:
                 logger.warning(f"工具 '{tool_name}' 不存在于注册表中")
 
     async def _setup_plugins(self) -> None:
-        """根据配置加载插件"""
+        """按会话配置创建插件并向管理器登记执行钩子。"""
         # 从插件注册表加载
         from app.agent.plugins.registry import PluginRegistry
 
@@ -395,7 +395,11 @@ class Agent:
             yield event
 
     async def validate_pending_continuation(self, interrupt_data: dict) -> bool:
-        """初始化当前工具目录，并在前端副作用发生前复核 continuation。"""
+        """初始化当前工具目录，并在前端副作用发生前复核 continuation。
+
+        Args:
+            interrupt_data (dict): 当前等待审批或桌面执行的恢复信息。
+        """
         await self.initialize()
         return self.pipeline.validate_pending_continuation({
             **interrupt_data,
@@ -688,9 +692,6 @@ class Agent:
 
         Yields:
             AgentEvent: 按执行顺序产生的 Agent 事件。
-
-        Raises:
-            TurnInterrupted: 输入、持久状态或系统调用不满足当前执行约束。
         """
         # 1. 管道错误保留最近进度，中断先保存来源后返回，二者都不伪造正常完成。
         try:
@@ -869,52 +870,78 @@ class Agent:
         return True
 
     def register_tool(self, tool: BaseTool) -> None:
-        """运行时注册工具"""
+        """将工具加入当前 Agent 的内存注册表，后续模型请求可按权限公开它。
+
+        Args:
+            tool (BaseTool): 需要注册或执行的工具对象。
+        """
         self.tool_manager.register(tool)
 
     def unregister_tool(self, name: str) -> bool:
-        """运行时移除工具"""
+        """从当前 Agent 的工具索引移除指定名称，后续模型请求不再公开该项。
+
+        Args:
+            name (str): 当前对象的名称。
+        """
         return self.tool_manager.unregister(name)
 
     async def register_plugin(self, plugin: BasePlugin) -> None:
-        """运行时注册插件"""
+        """登记插件实例及其执行时机，让后续输入、模型或工具步骤调用对应钩子。
+
+        Args:
+            plugin (BasePlugin): 需要注册或调用的插件对象。
+        """
         await self.plugin_manager.register(plugin)
 
     async def unregister_plugin(self, name: str) -> bool:
-        """运行时移除插件"""
+        """移除插件及其钩子登记，避免后续步骤继续调用已卸载插件。
+
+        Args:
+            name (str): 当前对象的名称。
+        """
         return await self.plugin_manager.unregister(name)
 
     def get_tools(self) -> list[str]:
-        """获取所有工具名称"""
+        """读取当前 Agent 已注册的工具名称，实际向模型公开时仍需检查权限。"""
         return self.tool_manager.list_tools()
 
     def get_plugins(self) -> list[str]:
-        """获取所有插件名称"""
+        """读取当前 Agent 已注册的插件名称。"""
         return self.plugin_manager.list_plugins()
 
     # ==================== 状态操作 ====================
 
     async def get_state(self) -> AgentState:
-        """获取当前状态"""
+        """从会话共享数据库读取最新 checkpoint，尚无记录时返回空状态。"""
         await self.initialize()
         return await self.state_manager.load()
 
     async def clear_state(self) -> int:
-        """清空状态"""
+        """清除当前会话 checkpoint，历史协议日志由存储实现继续保留。"""
         return await self.state_manager.clear_session()
 
     # ==================== 生命周期 ====================
 
     async def close(self) -> None:
-        """关闭 Agent"""
+        """卸载插件、关闭模型客户端和状态连接，释放本次 Agent 实例持有的资源。"""
         await self.plugin_manager.close()
         await self.llm_client.close()
         await self.state_manager.close()
         logger.info(f"Agent 已关闭: {self.config.session_id}")
 
     async def __aenter__(self) -> "Agent":
+        """调用方进入异步上下文时初始化工具和插件。
+
+        Returns:
+            Agent: 已初始化的当前 Agent。
+        """
         await self.initialize()
         return self
 
     async def __aexit__(self, *args) -> None:
+        """调用方退出异步上下文时关闭 Agent 资源，不吞掉执行异常。
+
+        Args:
+            args (Any): 当前工具调用或被包装函数的参数。
+        """
         await self.close()

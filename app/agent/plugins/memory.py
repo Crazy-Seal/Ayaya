@@ -19,6 +19,7 @@ MEMORY_HISTORY_HUMAN_MESSAGES = 5
 
 
 class MemoryPluginConfig(BaseModel):
+    """描述记忆插件的检索开关、图片处理及长期记忆提取间隔，供设置页校验和展示。"""
     model_config = ConfigDict(extra="forbid")
 
     enable_diary: bool = Field(default=True, description="是否启用日记记忆。")

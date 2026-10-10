@@ -23,11 +23,20 @@ class ChatHistoryDao:
     READ_CHUNK_SIZE = 256
 
     def __init__(self, db_path: Path | None = None):
+        """绑定共享协议数据库路径，构造时不读写数据库。
+
+        Args:
+            db_path (Path | None): 当前环境使用的 SQLite 数据库路径。
+        """
         self.db_path = db_path or get_chat_history_db()
 
     @staticmethod
     def _to_local_time_text(utc_timestamp_value: object) -> str:
-        """把多种 UTC 时间格式转换为系统本地时区文本。"""
+        """把多种 UTC 时间格式转换为系统本地时区文本。
+
+        Args:
+            utc_timestamp_value (object): 协议日志保存的 UTC 时间值。
+        """
         try:
             utc_dt: datetime
             if isinstance(utc_timestamp_value, datetime):
@@ -76,7 +85,7 @@ class ChatHistoryDao:
             list[dict]: 一条协议行对应的零个或多个可见历史项。
 
         Raises:
-            MessageContractError: 输入、持久状态或系统调用不满足当前执行约束。
+            MessageContractError: 协议消息 id={row_id} 的 message_json 必须是对象；协议消息 id={row_id} 缺少 message_type；数据库与当前消息契约不兼容；协议消息 id={row_id} 的 message_json 无效；协议消息 id={row_id} 的 attachments_json 无效；协议消息 id={row_id} 不符合当前消息契约。
         """
         (
             row_id,
@@ -90,6 +99,7 @@ class ChatHistoryDao:
             raw_domain,
             associated_message_id,
         ) = row
+        # 1. 解析协议正文和附件，格式损坏明确报告消息契约错误，不能显示成空白历史。
         try:
             message = json.loads(raw_json)
         except (TypeError, json.JSONDecodeError) as exc:
@@ -117,6 +127,7 @@ class ChatHistoryDao:
                 f"协议消息 id={row_id} 的 attachments_json 无效"
             ) from exc
         base = {"id": message_id or str(row_id), "timestamp": timestamp, "images": images}
+        # 2. 旧工具提示保留专用兼容分支；其他记录必须有合法领域类型，不能按 role 猜测。
         if record_kind == "legacy_tool_notice":
             return [{**base, "role": "AI_Tool_Calling", "content": content}]
         if not message_type:
@@ -138,6 +149,7 @@ class ChatHistoryDao:
             raise MessageContractError(
                 f"协议消息 id={row_id} 不符合当前消息契约"
             ) from exc
+        # 3. 真人和工具图片各按本身类型展示；后台通知与工具文本结果不直接进入聊天气泡。
         if isinstance(domain_message, ToolMediaMessage):
             image_urls = [
                 part.get("image_url", {}).get("url")
@@ -150,6 +162,7 @@ class ChatHistoryDao:
                      "origin_channel": domain_message.origin_channel}]
         if not isinstance(domain_message, AssistantMessage):
             return []
+        # 4. 一条助手协议记录可同时显示回复正文和工具提示，工具提示使用派生编号避免气泡去重冲突。
         projected: list[dict] = []
         if domain_message.text:
             projected.append({**base, "role": "AI", "content": domain_message.text,
@@ -167,6 +180,14 @@ class ChatHistoryDao:
 
     @staticmethod
     async def _protocol_table_exists(conn: aiosqlite.Connection) -> bool:
+        """检查协议日志表是否存在，让新环境的历史查询返回空结果。
+
+        Args:
+            conn (aiosqlite.Connection): 本次查询使用的 SQLite 连接。
+
+        Returns:
+            bool: conversation_messages 表存在时为 True。
+        """
         rows = await conn.execute_fetchall(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='conversation_messages'"
         )
@@ -182,6 +203,19 @@ class ChatHistoryDao:
         descending: bool = False,
         limit: int,
     ) -> list[tuple]:
+        """按会话和数据库编号范围查询一块协议记录，可见消息的筛选由调用方继续处理。
+
+        Args:
+            conn (aiosqlite.Connection): 本次查询使用的 SQLite 连接。
+            session_id (str): 当前操作所属的会话编号。
+            after_id (int | None): 只查询数据库编号大于该值的协议行。
+            before_id (int | None): 只查询数据库编号小于该值的协议行。
+            descending (bool): 是否从最新记录向前查询。
+            limit (int): 最多返回的记录数量。
+
+        Returns:
+            list[tuple]: 按指定方向排列的协议行。
+        """
         clauses = ["session_id = ?"]
         params: list[object] = [session_id]
         if after_id is not None:
@@ -206,7 +240,13 @@ class ChatHistoryDao:
         )
 
     async def list_chat_history_async(self, session_id: str, start: int = 0, limit: int = 200) -> list[dict[str, str]]:
-        """从协议日志投影可见历史，再执行 UI 分页。"""
+        """从协议日志投影可见历史，再执行 UI 分页。
+
+        Args:
+            session_id (str): 当前操作所属的会话编号。
+            start (int): 查询范围的起始日期或时间。
+            limit (int): 最多返回的记录数量。
+        """
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         start = max(start, 0)
         limit = max(limit, 0)
@@ -245,7 +285,12 @@ class ChatHistoryDao:
             return []
 
     async def list_chat_history_last_n_async(self, session_id: str, n: int = 100) -> list[dict[str, str]]:
-        """查询会话最后 N 条历史记录，按时间升序返回。"""
+        """查询会话最后 N 条历史记录，按时间升序返回。
+
+        Args:
+            session_id (str): 当前操作所属的会话编号。
+            n (int): 最多返回的日记条数。
+        """
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         n = max(n, 0)
         if n == 0:

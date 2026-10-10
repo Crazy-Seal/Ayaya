@@ -32,6 +32,15 @@ def list_tool_permissions(
     session_id: str,
     service: ToolPermissionService = Depends(get_tool_permission_service),
 ) -> Result:
+    """设置页读取本地和 MCP 工具目录、权限及不可用原因。
+
+    Args:
+        session_id (str): 当前操作所属的会话编号。
+        service (ToolPermissionService): FastAPI 注入的工具权限应用服务。
+
+    Returns:
+        Result: 包含 tools 列表的统一接口结果。
+    """
     return Result(
         data={"tools": [item.model_dump(mode="json") for item in service.list_policies(session_id)]},
         msg="success",
@@ -45,6 +54,19 @@ async def update_tool_permissions(
     payload: ToolPermissionsUpdate,
     service: ToolPermissionService = Depends(get_tool_permission_service),
 ) -> Result:
+    """设置页提交权限时校验并保存，然后返回最新工具目录。
+
+    Args:
+        session_id (str): 当前操作所属的会话编号。
+        payload (ToolPermissionsUpdate): 已经通过请求模型校验的工具权限更新。
+        service (ToolPermissionService): FastAPI 注入的工具权限应用服务。
+
+    Returns:
+        Result: 包含保存后 tools 列表的统一接口结果。
+
+    Raises:
+        HTTPException: 会话不存在返回 404，权限更新无效返回 400。
+    """
     try:
         tools = await service.set_policies(session_id, payload.tool_permissions)
     except KeyError as exc:

@@ -40,13 +40,10 @@ interface ExecutionRequest {
  *     Promise<void>: 当前异步处理完成的等待结果。
  */
 const pause = (ms: number): Promise<void> => new Promise(/**
- * 保存 Promise 完成函数，由订阅快照或计时器触发完成。
+ * Promise 创建时安排动作等待定时器，到期后继续桌面执行结果处理。
  *
  * Args:
- *     resolve ((value: void | PromiseLike<void>) => void): 完成当前 Promise 的函数。
- *
- * Returns:
- *     Timeout: 当前查询、回调或视图操作的结果。
+ *     resolve ((value: void | PromiseLike<void>) => void): 准备成功或等待结束时完成 Promise 的函数。
  */
 (resolve) => setTimeout(resolve, ms));
 
@@ -58,7 +55,7 @@ const pause = (ms: number): Promise<void> => new Promise(/**
  *     body (object): 需要 JSON 序列化的请求对象。
  *
  * Returns:
- *     Promise<Record<string, unknown>>: 当前查询、回调或视图操作的结果。
+ *     Promise<Record<string, unknown>>: 后端确认桌面领取或结果请求的 JSON 回执。
  */
 const post = async (path: string, body: object): Promise<Record<string, unknown>> => {
   const response = await backendFetch(path, {
@@ -74,7 +71,7 @@ const post = async (path: string, body: object): Promise<Record<string, unknown>
  * 选择主显示器截图，返回 data URL 和实际缩略图尺寸。
  *
  * Returns:
- *     Promise<{ dataUrl: string; width: number; height: number }>: 当前查询、回调或视图操作的结果。
+ *     Promise<{ dataUrl: string; width: number; height: number }>: 主显示器截图地址及实际图片宽高。
  */
 const captureScreen = async (): Promise<{ dataUrl: string; width: number; height: number }> => {
   const sources = await desktopCapturer.getSources({
@@ -167,7 +164,7 @@ const execute = async (request: ExecutionRequest, signal: AbortSignal): Promise<
  * 在 Electron 主进程持续订阅独立执行流，返回应用关闭时的停止函数。
  *
  * Returns:
- *     (() => void): 当前查询、回调或视图操作的结果。
+ *     (() => void): 取消独立桌面执行订阅的函数，应用关闭时调用。
  */
 export const startDesktopExecutor = (): (() => void) => {
   const controller = new AbortController();
@@ -206,7 +203,7 @@ export const startDesktopExecutor = (): (() => void) => {
   };
   void run();
   /**
-   * 终止本次执行流订阅，供应用关闭协调器调用。
+   * 调用方停止桌面执行器时取消当前领取轮询和等待。
    */
   return () => controller.abort();
 };

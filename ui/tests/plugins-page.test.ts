@@ -18,13 +18,19 @@ const memoryPlugin: PluginItem = {
   },
 };
 
-test("插件数字字段最小值来自后端 JSON schema", () => {
+test("插件数字字段最小值来自后端 JSON schema", /**
+ * 验证插件数字字段最小值来自后端 JSON schema。
+ */
+() => {
   assert.equal(
     getNumberFieldMinimum(memoryPlugin, "long_term_memory_every_human_messages"),
     1
   );
 });
 
-test("插件数字字段缺少 schema minimum 时回退到 0", () => {
+test("插件数字字段缺少 schema minimum 时回退到 0", /**
+ * 验证插件数字字段缺少 schema minimum 时回退到 0。
+ */
+() => {
   assert.equal(getNumberFieldMinimum(memoryPlugin, "unknown_number"), 0);
 });

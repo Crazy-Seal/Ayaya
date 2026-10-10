@@ -35,14 +35,25 @@ const savedSettings: ChatSettingsData = {
 
 configureBackendClient("t".repeat(43));
 
-afterEach(() => {
+afterEach(/**
+ * 由外层操作在对应处理阶段调用，取得本用例指定的条目或响应，供外层断言处理结果。
+ */
+() => {
   globalThis.fetch = originalFetch;
   clearChatSettingsCache();
 });
 
-test("PUT 失败时保留最后一次成功的 ChatSettings 缓存", async () => {
+test("PUT 失败时保留最后一次成功的 ChatSettings 缓存", /**
+ * 验证PUT 失败时保留最后一次成功的 ChatSettings 缓存。
+ */
+async () => {
   updateChatSettingsCache(savedSettings);
-  globalThis.fetch = async () => new Response("backend unavailable", { status: 503 });
+  globalThis.fetch = /**
+   * 由浏览器在fetch时调用，取得本用例指定的条目或响应，供外层断言处理结果。
+   *
+   * 此定义用于：验证PUT 失败时保留最后一次成功的 ChatSettings 缓存。
+   */
+  async () => new Response("backend unavailable", { status: 503 });
 
   const attemptedSettings: ChatSettingsData = {
     ...savedSettings,
@@ -53,9 +64,17 @@ test("PUT 失败时保留最后一次成功的 ChatSettings 缓存", async () =>
   assert.deepEqual(getChatSettingsCache(), savedSettings);
 });
 
-test("PUT 成功后更新 ChatSettings 缓存", async () => {
+test("PUT 成功后更新 ChatSettings 缓存", /**
+ * 验证PUT 成功后更新 ChatSettings 缓存。
+ */
+async () => {
   updateChatSettingsCache(savedSettings);
-  globalThis.fetch = async () =>
+  globalThis.fetch = /**
+   * 由浏览器在fetch时调用，取得本用例指定的条目或响应，供外层断言处理结果。
+   *
+   * 此定义用于：验证PUT 成功后更新 ChatSettings 缓存。
+   */
+  async () =>
     new Response(JSON.stringify({ code: 200, msg: "success", data: updatedSettings }), {
       status: 200,
       headers: { "Content-Type": "application/json" },
@@ -70,15 +89,30 @@ test("PUT 成功后更新 ChatSettings 缓存", async () => {
   assert.deepEqual(getChatSettingsCache(), updatedSettings);
 });
 
-test("前端默认 memory 插件为固有启用", () => {
+test("前端默认 memory 插件为固有启用", /**
+ * 验证前端默认 memory 插件为固有启用。
+ */
+() => {
   const defaults = getDefaultAgentPluginsForTest();
 
   assert.equal(defaults.memory.enabled, true);
 });
 
-test("新建模型默认使用 100K token 阈值与 2/2 截图策略", async () => {
+test("新建模型默认使用 100K token 阈值与 2/2 截图策略", /**
+ * 验证新建模型默认使用 100K token 阈值与 2/2 截图策略。
+ */
+async () => {
   const requestBodies: ChatSettingsData[] = [];
-  globalThis.fetch = async (_input, init) => {
+  globalThis.fetch = /**
+   * 由浏览器在fetch时调用，追加当前记录。
+   *
+   * 此定义用于：验证新建模型默认使用 100K token 阈值与 2/2 截图策略。
+   *
+   * Args:
+   *     _input (URL | RequestInfo): 当前日志输入或配置输入框。
+   *     init (RequestInit | undefined): 本次后端 HTTP 请求选项。
+   */
+  async (_input, init) => {
     const requestBody = JSON.parse(String(init?.body)) as ChatSettingsData;
     requestBodies.push(requestBody);
     return new Response(JSON.stringify({ code: 200, msg: "success", data: requestBody }), {
@@ -94,8 +128,16 @@ test("新建模型默认使用 100K token 阈值与 2/2 截图策略", async () 
   assert.equal(requestBodies[0]?.context_strategy.screenshot_ttl_human_messages, 2);
 });
 
-test("读取旧配置时补齐 2/2 截图策略", async () => {
-  globalThis.fetch = async () =>
+test("读取旧配置时补齐 2/2 截图策略", /**
+ * 验证读取旧配置时补齐 2/2 截图策略。
+ */
+async () => {
+  globalThis.fetch = /**
+   * 由浏览器在fetch时调用，取得本用例指定的条目或响应，供外层断言处理结果。
+   *
+   * 此定义用于：验证读取旧配置时补齐 2/2 截图策略。
+   */
+  async () =>
     new Response(JSON.stringify({
       code: 200,
       msg: "success",
@@ -114,9 +156,21 @@ test("读取旧配置时补齐 2/2 截图策略", async () => {
   assert.equal(settings.context_strategy.screenshot_ttl_human_messages, 2);
 });
 
-test("更新 ChatSettings 时不再发送旧记忆插件字段", async () => {
+test("更新 ChatSettings 时不再发送旧记忆插件字段", /**
+ * 验证更新 ChatSettings 时不再发送旧记忆插件字段。
+ */
+async () => {
   let requestBody: Record<string, unknown> | null = null;
-  globalThis.fetch = async (_input, init) => {
+  globalThis.fetch = /**
+   * 由浏览器在fetch时调用，取得本用例指定的条目或响应，供外层断言处理结果。
+   *
+   * 此定义用于：验证更新 ChatSettings 时不再发送旧记忆插件字段。
+   *
+   * Args:
+   *     _input (URL | RequestInfo): 当前日志输入或配置输入框。
+   *     init (RequestInit | undefined): 本次后端 HTTP 请求选项。
+   */
+  async (_input, init) => {
     requestBody = JSON.parse(String(init?.body));
     return new Response(JSON.stringify({ code: 200, msg: "success", data: savedSettings }), {
       status: 200,
@@ -130,9 +184,21 @@ test("更新 ChatSettings 时不再发送旧记忆插件字段", async () => {
   assert.equal(Object.hasOwn(requestBody, "memory" + "_plugins"), false);
 });
 
-test("更新 ChatSettings 时完整往返统一工具权限", async () => {
+test("更新 ChatSettings 时完整往返统一工具权限", /**
+ * 验证更新 ChatSettings 时完整往返统一工具权限。
+ */
+async () => {
   let requestBody: Record<string, unknown> | null = null;
-  globalThis.fetch = async (_input, init) => {
+  globalThis.fetch = /**
+   * 由浏览器在fetch时调用，取得本用例指定的条目或响应，供外层断言处理结果。
+   *
+   * 此定义用于：验证更新 ChatSettings 时完整往返统一工具权限。
+   *
+   * Args:
+   *     _input (URL | RequestInfo): 当前日志输入或配置输入框。
+   *     init (RequestInit | undefined): 本次后端 HTTP 请求选项。
+   */
+  async (_input, init) => {
     requestBody = JSON.parse(String(init?.body));
     const normalized = {
       ...settings,
@@ -165,20 +231,36 @@ test("更新 ChatSettings 时完整往返统一工具权限", async () => {
   assert.equal(getChatSettingsCache()?.tool_permissions["mcp:filesystem:read_file"], "ask");
 });
 
-test("MCP 更新或删除成功后清除 ChatSettings 缓存", async () => {
+test("MCP 更新或删除成功后清除 ChatSettings 缓存", /**
+ * 验证MCP 更新或删除成功后清除 ChatSettings 缓存。
+ */
+async () => {
   updateChatSettingsCache(savedSettings);
 
-  const result = await runMcpMutationWithCacheInvalidation(async () => "done");
+  const result = await runMcpMutationWithCacheInvalidation(/**
+   * 由外层操作在对应处理阶段调用，返回本步骤预先指定的值。
+   *
+   * 此定义用于：验证MCP 更新或删除成功后清除 ChatSettings 缓存。
+   */
+  async () => "done");
 
   assert.equal(result, "done");
   assert.equal(getChatSettingsCache(), null);
 });
 
-test("MCP 更新或删除失败时保留 ChatSettings 缓存", async () => {
+test("MCP 更新或删除失败时保留 ChatSettings 缓存", /**
+ * 验证MCP 更新或删除失败时保留 ChatSettings 缓存。
+ */
+async () => {
   updateChatSettingsCache(savedSettings);
 
   await assert.rejects(
-    runMcpMutationWithCacheInvalidation(async () => {
+    runMcpMutationWithCacheInvalidation(/**
+     * 由外层操作在对应处理阶段调用，取得本用例指定的条目或响应，供外层断言处理结果。
+     *
+     * 此定义用于：验证MCP 更新或删除失败时保留 ChatSettings 缓存。
+     */
+    async () => {
       throw new Error("failed");
     })
   );

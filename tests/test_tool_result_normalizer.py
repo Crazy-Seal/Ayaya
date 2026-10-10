@@ -13,10 +13,12 @@ from app.agent.tools.result_normalizer import (
 
 
 def test_tool_result_has_no_fake_error_constructor() -> None:
+    """验证工具结果不暴露与字段冲突的错误构造方法。"""
     assert not hasattr(ToolResult, "error")
 
 
 def test_weighted_text_limit_treats_ascii_as_quarter_character() -> None:
+    """验证ASCII 按四分之一加权字符计数。"""
     assert weighted_char_count("a" * 20_000) == 5_000
     assert weighted_char_count("汉" * 5_000) == 5_000
     assert truncate_weighted_text("a" * 40_000) == "a" * 40_000
@@ -24,6 +26,7 @@ def test_weighted_text_limit_treats_ascii_as_quarter_character() -> None:
 
 
 def test_weighted_text_truncation_preserves_head_and_tail_budgets() -> None:
+    """验证加权截断分别保留首尾预算。"""
     value = "头" * 8_001 + "middle" + "尾" * 2_001
 
     normalized = truncate_weighted_text(value)
@@ -34,6 +37,7 @@ def test_weighted_text_truncation_preserves_head_and_tail_budgets() -> None:
 
 
 def test_memory_copy_can_use_800_plus_200_weighted_limit() -> None:
+    """验证记忆副本支持八百加二百加权字符预算。"""
     value = "前" * 900 + "middle" + "后" * 300
 
     normalized = truncate_weighted_text(
@@ -49,6 +53,7 @@ def test_memory_copy_can_use_800_plus_200_weighted_limit() -> None:
 
 
 def test_builtin_images_share_strict_mcp_validation() -> None:
+    """验证内置图片与 MCP 图片使用相同严格校验。"""
     png = b"\x89PNG\r\n\x1a\n" + b"payload"
     valid = "data:image/png;base64," + base64.b64encode(png).decode()
     invalid_signature = "data:image/png;base64," + base64.b64encode(b"not-png").decode()
@@ -66,6 +71,11 @@ def test_builtin_images_share_strict_mcp_validation() -> None:
 
 
 def test_oversized_result_is_saved_and_preview_references_artifact(tmp_path: Path) -> None:
+    """验证超长结果保存全文并在预览中给出引用。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     store = ToolResultArtifactStore(tmp_path / "tool_results")
     normalizer = ToolResultNormalizer(artifact_store=store)
     original = "头" * 8_001 + "中间" * 2_000 + "尾" * 2_001
@@ -85,6 +95,11 @@ def test_oversized_result_is_saved_and_preview_references_artifact(tmp_path: Pat
 
 
 def test_read_result_preview_does_not_create_another_artifact(tmp_path: Path) -> None:
+    """验证读取结果预览不生成新的外置结果。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     store = ToolResultArtifactStore(tmp_path / "tool_results")
     normalizer = ToolResultNormalizer(artifact_store=store)
 
@@ -99,6 +114,11 @@ def test_read_result_preview_does_not_create_another_artifact(tmp_path: Path) ->
 
 
 def test_result_over_10_mib_is_not_saved(tmp_path: Path) -> None:
+    """验证超过十 MiB 的结果不保存全文。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     store = ToolResultArtifactStore(tmp_path / "tool_results")
     normalizer = ToolResultNormalizer(artifact_store=store)
 
@@ -113,6 +133,11 @@ def test_result_over_10_mib_is_not_saved(tmp_path: Path) -> None:
 
 
 def test_artifact_uri_is_scoped_to_current_session(tmp_path: Path) -> None:
+    """验证工具结果引用只允许当前会话读取。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     store = ToolResultArtifactStore(tmp_path / "tool_results")
     reference = store.save("session-a", "secret")
 
@@ -128,6 +153,11 @@ def test_artifact_uri_is_scoped_to_current_session(tmp_path: Path) -> None:
 
 
 def test_image_diagnostics_are_included_before_text_budgeting(tmp_path: Path) -> None:
+    """验证忽略图片的原因先加入正文再计算文本预算。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     store = ToolResultArtifactStore(tmp_path / "tool_results")
     normalizer = ToolResultNormalizer(artifact_store=store)
 

@@ -22,6 +22,11 @@ export class GazeTracker {
 
   /**
    * 根据屏幕坐标更新注视目标
+   *
+   * Args:
+   *     cursorData (CursorSyncData): 主进程转发的鼠标位置和显示器信息。
+   *     stageHost (HTMLDivElement): 模型绘制和交互所在的页面容器。
+   *     followCursor (boolean): 当前模型是否启用目光跟随鼠标。
    */
   updateTarget(
     cursorData: CursorSyncData,
@@ -72,6 +77,9 @@ export class GazeTracker {
 
   /**
    * 应用平滑注视（每帧调用）
+   *
+   * Args:
+   *     model (unknown): 需要展示的后端恢复对话框信息。
    */
   applySmoothGaze(model: unknown): void {
     this.smoothGazeX += (this.targetGazeX - this.smoothGazeX) * 0.2;
@@ -83,6 +91,13 @@ export class GazeTracker {
 
   /**
    * 设置模型参数值
+   *
+   * Args:
+   *     model (unknown): 需要展示的后端恢复对话框信息。
+   *     eyeX (number): 归一化的横向眼部目标。
+   *     eyeY (number): 归一化的纵向眼部目标。
+   *     headX (number): 归一化的横向头部目标。
+   *     headY (number): 归一化的纵向头部目标。
    */
   private applyFocusByParams(
     model: unknown,
@@ -105,6 +120,14 @@ export class GazeTracker {
       return;
     }
 
+    /**
+     * 当前模型支持该参数时写入目光跟随值，并使用指定混合权重。
+     *
+     * Args:
+     *     id (string): 当前模型参数或日志记录的编号。
+     *     value (number): 当前待检查或转换的值。
+     *     weight (number): 本次修改 Live2D 参数时使用的混合权重。
+     */
     const setParam = (id: string, value: number, weight = 1) => {
       if (typeof coreModel.setParameterValueById === "function") {
         coreModel.setParameterValueById(id, value, weight);
@@ -126,6 +149,9 @@ export class GazeTracker {
 
   /**
    * 注册到 PIXI ticker
+   *
+   * Args:
+   *     app (PIXI.Application): 渲染桌面模型的 Pixi 应用。
    */
   registerToTicker(app: PIXI.Application): void {
     // 需要绑定 model，这里只是占位
@@ -133,6 +159,9 @@ export class GazeTracker {
 
   /**
    * 从 PIXI ticker 移除
+   *
+   * Args:
+   *     app (PIXI.Application): 渲染桌面模型的 Pixi 应用。
    */
   removeFromTicker(app: PIXI.Application): void {
     // 需要绑定 model，这里只是占位
@@ -141,11 +170,18 @@ export class GazeTracker {
 
 /**
  * 创建视线跟随的帧更新函数
+ *
+ * Args:
+ *     model (unknown): 需要展示的后端恢复对话框信息。
+ *     tracker (GazeTracker): 维护目标和平滑后的模型目光位置的对象。
  */
 export const createGazeUpdateFunction = (
   model: unknown,
   tracker: GazeTracker
 ): (() => void) => {
+  /**
+   * 模型每帧更新时应用平滑后的目光目标，避免鼠标位置变化让目光跳动。
+   */
   return () => {
     tracker.applySmoothGaze(model);
   };

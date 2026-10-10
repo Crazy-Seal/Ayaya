@@ -14,16 +14,24 @@ def normalize_tool_schema_for_model(schema: dict[str, Any]) -> dict[str, Any]:
     ``required`` 决定。
 
     Args:
-        schema: 工具注册时保存的原始 JSON Schema。
+        schema (dict[str, Any]): 工具注册时保存的原始 JSON Schema。
 
     Returns:
-        递归复制并收窄可空联合后的 Schema，不修改输入对象。
+        dict[str, Any]: 递归复制并收窄可空联合后的 Schema，不修改输入对象。
     """
     normalized = _normalize_node(schema)
     return normalized if isinstance(normalized, dict) else {}
 
 
 def _normalize_node(node: Any) -> Any:
+    """递归复制工具 Schema，逐层规范化可空联合，不修改注册表原定义。
+
+    Args:
+        node (Any): 当前递归处理的 JSON Schema 节点。
+
+    Returns:
+        Any: 经过规范化的独立节点，标量保持原值。
+    """
     if isinstance(node, dict):
         normalized = {key: _normalize_node(value) for key, value in node.items()}
         return _collapse_nullable_union(normalized)
@@ -33,6 +41,14 @@ def _normalize_node(node: Any) -> Any:
 
 
 def _collapse_nullable_union(schema: dict[str, Any]) -> dict[str, Any]:
+    """将唯一具体类型与 null 的联合改为 nullable 标记，保留真正的多类型联合。
+
+    Args:
+        schema (dict[str, Any]): 当前要检查或转换的 JSON Schema。
+
+    Returns:
+        dict[str, Any]: 供兼容模型网关使用的字段定义。
+    """
     any_of = schema.get("anyOf")
     if isinstance(any_of, list):
         concrete = [branch for branch in any_of if not _is_null_schema(branch)]
@@ -57,4 +73,12 @@ def _collapse_nullable_union(schema: dict[str, Any]) -> dict[str, Any]:
 
 
 def _is_null_schema(schema: Any) -> bool:
+    """识别 Schema 分支是否只声明 null 类型。
+
+    Args:
+        schema (Any): 当前要检查或转换的 JSON Schema。
+
+    Returns:
+        bool: 节点为对象且 type 为 null 时为 True。
+    """
     return isinstance(schema, dict) and schema.get("type") == "null"

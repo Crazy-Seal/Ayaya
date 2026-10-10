@@ -38,6 +38,15 @@ import {
 } from "./logging/app-logger.js";
 import { registerLogIpcHandlers } from "./logging/log-ipc.js";
 
+/**
+ * 主进程显示后端退出或重连失败提示，等待用户决定重连还是退出。
+ *
+ * Args:
+ *     model (BackendRecoveryDialogModel): 需要展示的后端恢复对话框信息。
+ *
+ * Returns:
+ *     Promise<BackendRecoveryChoice>: 用户选择的恢复动作。
+ */
 const showBackendRecoveryDialog = async (
   model: BackendRecoveryDialogModel,
 ): Promise<BackendRecoveryChoice> => {
@@ -62,20 +71,49 @@ const backendRecoveryCoordinator = createBackendRecoveryCoordinator({
   startBackend,
   showDialog: showBackendRecoveryDialog,
   clearSettingsCache: clearChatSettingsCache,
+  /**
+   * 协调器完成其处理后调用 Electron 的应用退出入口。
+   */
   quit: () => app.quit(),
+  /**
+   * 将应用退出或后端恢复错误记录到前端日志。
+   *
+   * Args:
+   *     message (string): 当前需要显示或记录的文本。
+   *     error (unknown): 本次捕获的异常。
+   */
   logError: (message, error) => appendFrontendLog("error", "backend-recovery", message, error),
 });
 
 const applicationShutdownCoordinator = createApplicationShutdownCoordinator({
+  /**
+   * 应用开始关闭时停止新的后端恢复操作。
+   */
   beginBackendRecoveryShutdown: () => backendRecoveryCoordinator.beginShutdown(),
   stopCursorTracking,
   stopBackend,
   closeLogs: closeLogFiles,
+  /**
+   * 协调器完成其处理后调用 Electron 的应用退出入口。
+   */
   quit: () => app.quit(),
+  /**
+   * 将应用退出或后端恢复错误记录到前端日志。
+   *
+   * Args:
+   *     message (string): 当前需要显示或记录的文本。
+   *     error (unknown): 本次捕获的异常。
+   */
   logError: (message, error) => appendFrontendLog("error", "shutdown", message, error),
 });
 
-onBackendUnexpectedExit((event) => {
+onBackendUnexpectedExit(/**
+ * 后端成功就绪后意外退出时，把事件交给恢复协调器提示用户选择。
+ *
+ * Args:
+ *     event (BackendUnexpectedExit): 调用方或浏览器触发的当前事件。
+ */
+(event) => {
   backendRecoveryCoordinator.handleUnexpectedExit(event);
 });
 
@@ -92,12 +130,24 @@ let stopDesktopExecutor: (() => void) | undefined;
 
 process.on("SIGINT", requestApplicationShutdown);
 process.on("SIGTERM", requestApplicationShutdown);
-process.on("uncaughtException", (error) => {
+process.on("uncaughtException", /**
+ * 主进程未捕获异常到达时记录原因、设置失败退出码并启动应用资源关闭。
+ *
+ * Args:
+ *     error (Error): 本次捕获的异常。
+ */
+(error) => {
   appendFrontendLog("error", "process", "Electron 主进程发生未捕获异常", error);
   process.exitCode = 1;
   requestApplicationShutdown();
 });
-process.on("unhandledRejection", (reason) => {
+process.on("unhandledRejection", /**
+ * 主进程收到未处理 Promise 拒绝时记录原因，便于定位异步失败。
+ *
+ * Args:
+ *     reason (unknown): 当前捕获的 Promise 拒绝原因。
+ */
+(reason) => {
   appendFrontendLog("error", "process", "Electron 主进程发生未处理 Promise 拒绝", reason);
 });
 
@@ -106,10 +156,7 @@ registerLive2DProtocol();
 
 // 应用就绪后初始化
 app.whenReady().then(/**
- * 应用已经完成的异步结果，继续当前事件或页面更新。
- *
- * Returns:
- *     Promise<void>: 当前异步处理完成的等待结果。
+ * Electron 就绪后初始化日志、IPC 和窗口，等待后端启动再连接桌面运行事件。
  */
 async () => {
   initializeLogFiles(app.getPath("logs"));
@@ -127,7 +174,16 @@ async () => {
   } catch (error) {
     if (applicationShutdownCoordinator.isShuttingDown()) return;
     const recent = getRecentLogs("backend", 50)
-      .map((record) => `${record.timestamp} ${record.level.toUpperCase()} ${record.message}`)
+      .map(/**
+       * 启动失败展示最近日志时，将记录整理为带时间和级别的诊断行。
+       *
+       * Args:
+       *     record (LogRecord): 当前需要显示或筛选的日志记录。
+       *
+       * Returns:
+       *     string: 错误提示使用的单行日志。
+       */
+      (record) => `${record.timestamp} ${record.level.toUpperCase()} ${record.message}`)
       .join("\n");
     const detail = error instanceof Error ? error.message : String(error);
     dialog.showErrorBox(
@@ -154,14 +210,23 @@ async () => {
   initWindowEventListeners();
 });
 
-app.on("before-quit", (event) => {
+app.on("before-quit", /**
+ * Electron 即将退出但资源未清理完成时阻止默认退出，交给关闭协调器统一停止资源。
+ *
+ * Args:
+ *     event ({ preventDefault: () => void; readonly defaultPrevented: boolean; }): 调用方或浏览器触发的当前事件。
+ */
+(event) => {
   if (applicationShutdownCoordinator.isComplete()) return;
   event.preventDefault();
   requestApplicationShutdown();
 });
 
 // 所有窗口关闭时退出（macOS 除外）
-app.on("window-all-closed", () => {
+app.on("window-all-closed", /**
+ * 全部窗口关闭后按平台决定退出应用或停止光标跟踪。
+ */
+() => {
   if (process.platform !== "darwin") {
     app.quit();
   } else {

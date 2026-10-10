@@ -38,6 +38,11 @@ from app.services.tool_permission_service import ToolPermissionService
 
 
 def _configured_model() -> dict:
+    """构造带本用例工具权限的会话设置。
+
+    Returns:
+        dict: 供外层用例断言使用的预设结果。
+    """
     return {
         "session_id": "configured-session",
         "model_name": "test-model",
@@ -64,6 +69,7 @@ def _configured_model() -> dict:
 
 
 def test_tool_identity_uses_source_specific_stable_keys() -> None:
+    """验证工具身份按本地和 MCP 来源使用独立稳定键。"""
     assert ToolIdentity.local("read_file").stable_key == "local:read_file"
     assert (
         ToolIdentity.mcp("filesystem", "read").stable_key
@@ -74,6 +80,12 @@ def test_tool_identity_uses_source_specific_stable_keys() -> None:
 def test_new_local_tool_defaults_to_ask_without_overwriting_saved_permissions(
     tmp_path: Path, monkeypatch,
 ) -> None:
+    """验证新工具默认 ask 且不覆盖已有权限。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
+    """
     from app.crud import chat_settings_dao as dao_module
 
     monkeypatch.setattr(
@@ -102,6 +114,7 @@ def test_new_local_tool_defaults_to_ask_without_overwriting_saved_permissions(
 
 
 def test_sample_permissions_preserve_only_the_four_enabled_tools() -> None:
+    """验证示例权限只预先允许声明的四个工具。"""
     sample_path = Path(__file__).parents[1] / "config" / "chat_settings.sample.yaml"
     model = yaml.safe_load(sample_path.read_text(encoding="utf-8"))["chat_models"][0]
     permissions = model["tool_permissions"]
@@ -118,9 +131,15 @@ def test_sample_permissions_preserve_only_the_four_enabled_tools() -> None:
 def test_permission_service_groups_local_and_mcp_tools_and_marks_unavailable(
     tmp_path: Path,
 ) -> None:
+    """验证权限服务合并本地和 MCP 目录并显示不可用原因。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     import asyncio
 
     async def scenario() -> None:
+        """由外层测试调用，完成“权限服务合并本地和 MCP 目录并显示不可用原因”的异步步骤。"""
         chat_file = tmp_path / "chat_settings.yaml"
         chat_file.write_text("chat_models: []\n", encoding="utf-8")
         mcp_file = tmp_path / "mcp_servers.yaml"
@@ -156,12 +175,36 @@ def test_permission_service_groups_local_and_mcp_tools_and_marks_unavailable(
         ))
 
         class Manager:
+            """提供当前用例所需的 Manager 测试替身，执行记录仅供外层断言使用。
+
+            该定义仅用于外层用例：验证权限服务合并本地和 MCP 目录并显示不可用原因。
+            """
             available = True
 
             def get_available_identity(self, _server_id: str) -> str | None:
+                """返回测试连接当前可用的服务身份。
+
+                该定义仅用于外层用例：验证权限服务合并本地和 MCP 目录并显示不可用原因。
+
+                Args:
+                    _server_id (str): MCP 服务的稳定编号。
+
+                Returns:
+                    str | None: 供外层用例断言使用的预设结果。
+                """
                 return server_identity_fingerprint(server) if self.available else None
 
             def get_tools(self, _server_id: str) -> list[MCPToolDescriptor]:
+                """返回本次连接的测试工具目录。
+
+                该定义仅用于外层用例：验证权限服务合并本地和 MCP 目录并显示不可用原因。
+
+                Args:
+                    _server_id (str): MCP 服务的稳定编号。
+
+                Returns:
+                    list[MCPToolDescriptor]: 当前用例预设的回调时机或工具目录。
+                """
                 return [MCPToolDescriptor("read", "读取远端文件", {"type": "object"})]
 
         manager = Manager()
@@ -211,6 +254,14 @@ def test_permission_service_groups_local_and_mcp_tools_and_marks_unavailable(
 
 
 def _descriptor(name: str = "read_file") -> ToolDescriptor:
+    """构造用于批准绑定检查的工具身份及定义。
+
+    Args:
+        name (str): 当前对象的名称。
+
+    Returns:
+        ToolDescriptor: 供外层用例断言使用的预设结果。
+    """
     return ToolDescriptor(
         identity=ToolIdentity.local(name),
         exposed_name=name,
@@ -222,7 +273,16 @@ def _descriptor(name: str = "read_file") -> ToolDescriptor:
 
 
 def _authorization(policy: ToolPolicy) -> ToolAuthorization:
+    """装配使用测试设置读取函数的工具授权对象。
+
+    Args:
+        policy (ToolPolicy): 本用例指定的权限或压缩策略。
+
+    Returns:
+        ToolAuthorization: 供外层用例断言使用的预设结果。
+    """
     class Settings:
+        """提供当前用例所需的 Settings 测试替身，执行记录仅供外层断言使用。"""
         tool_permissions = {"local:read_file": policy}
         mcp = type("Mcp", (), {"servers": {}})()
 
@@ -230,6 +290,7 @@ def _authorization(policy: ToolPolicy) -> ToolAuthorization:
 
 
 def test_ask_policy_returns_one_generic_authorization_request() -> None:
+    """验证ask 权限生成一份通用审批请求。"""
     authorization = _authorization(ToolPolicy.ASK)
     invocation = ToolInvocation(
         session_id="session",
@@ -249,6 +310,7 @@ def test_ask_policy_returns_one_generic_authorization_request() -> None:
 
 
 def test_approval_is_bound_to_the_original_arguments() -> None:
+    """验证批准绑定原调用参数不能用于变化后的参数。"""
     authorization = _authorization(ToolPolicy.ASK)
     invocation = ToolInvocation(
         session_id="session",
@@ -276,8 +338,17 @@ def test_approval_is_bound_to_the_original_arguments() -> None:
 
 
 def test_explicit_rejection_wins_if_policy_changes_to_allow() -> None:
+    """验证明确拒绝不因权限改为 allow 被覆盖。"""
     class Settings:
+        """提供当前用例所需的 Settings 测试替身，执行记录仅供外层断言使用。
+
+        该定义仅用于外层用例：验证明确拒绝不因权限改为 allow 被覆盖。
+        """
         def __init__(self) -> None:
+            """保存本用例的脚本输入和依赖，初始化测试对象的执行记录。
+
+            该定义仅用于外层用例：验证明确拒绝不因权限改为 allow 被覆盖。
+            """
             self.tool_permissions = {"local:read_file": ToolPolicy.ASK}
             self.mcp = type("Mcp", (), {"servers": {}})()
 
@@ -304,7 +375,12 @@ def test_explicit_rejection_wins_if_policy_changes_to_allow() -> None:
 
 
 def test_local_description_and_authorization_timing_are_part_of_approval_contract() -> None:
+    """验证本地工具说明和授权时机纳入审批约束。"""
     class Tool:
+        """提供当前用例所需的 Tool 测试替身，执行记录仅供外层断言使用。
+
+        该定义仅用于外层用例：验证本地工具说明和授权时机纳入审批约束。
+        """
         name = "read_file"
         display_name = "读取文件"
         description = "读取一个文件"
@@ -323,6 +399,7 @@ def test_local_description_and_authorization_timing_are_part_of_approval_contrac
 
 
 def test_allow_and_valid_approval_produce_granted_outcomes() -> None:
+    """验证allow 或有效批准产生可执行结果。"""
     invocation = ToolInvocation(
         session_id="session",
         tool_call_id="call-1",
@@ -344,6 +421,7 @@ def test_allow_and_valid_approval_produce_granted_outcomes() -> None:
 
 
 def test_mcp_policy_reads_live_unified_settings_and_fails_closed() -> None:
+    """验证MCP 权限读取实时设置且缺失时拒绝执行。"""
     identity = ToolIdentity.mcp("filesystem", "read")
     settings = ChatSettings(
         session_id="session",
@@ -363,18 +441,37 @@ def test_mcp_policy_reads_live_unified_settings_and_fails_closed() -> None:
     assert authorization.get_policy("session", identity) == ToolPolicy.DENY
 
     def broken_loader(_session_id: str):
+        """主动制造设置读取失败，验证授权无法确认时拒绝执行。
+
+        该定义仅用于外层用例：验证MCP 权限读取实时设置且缺失时拒绝执行。
+
+        Args:
+            _session_id (str): 当前操作所属的会话编号。
+        """
         raise RuntimeError("配置损坏")
 
     assert ToolAuthorization(broken_loader).get_policy("session", identity) == ToolPolicy.DENY
 
 
 def test_denied_tools_are_filtered_from_model_projection() -> None:
+    """验证deny 工具不公开给模型。"""
     class Tool:
+        """提供当前用例所需的 Tool 测试替身，执行记录仅供外层断言使用。
+
+        该定义仅用于外层用例：验证deny 工具不公开给模型。
+        """
         name = "read_file"
         description = "读取文件"
         parameters_schema = {"type": "object", "properties": {}}
 
         def to_openai_tool(self) -> dict:
+            """提供用例使用的模型工具定义。
+
+            该定义仅用于外层用例：验证deny 工具不公开给模型。
+
+            Returns:
+                dict: 供外层用例断言使用的预设结果。
+            """
             return {"type": "function", "function": {"name": self.name}}
 
     manager = ToolManager(
@@ -387,22 +484,43 @@ def test_denied_tools_are_filtered_from_model_projection() -> None:
 
 
 class _CountingTool(BaseTool):
+    """提供用例指定的工具响应、中断或异常，验证执行管道的结果保存与恢复。"""
     name = "read_file"
     description = "读取文件"
     parameters_schema = {"type": "object", "properties": {}}
 
     def __init__(self) -> None:
+        """保存本用例的脚本输入和依赖，初始化测试对象的执行记录。"""
         self.calls = 0
 
     async def execute(self, args: dict, context: ToolContext) -> ToolResult:
+        """管道或插件管理器调用时执行本用例预设的结果、状态修改或异常分支。
+
+        Args:
+            args (dict): 当前工具调用或被包装函数的参数。
+            context (ToolContext): 执行管道提供的工具运行上下文。
+
+        Returns:
+            ToolResult: 供外层用例断言使用的预设结果。
+        """
         self.calls += 1
         return ToolResult.success("ok")
 
 
 class _UnsafePrepareTool(_CountingTool):
+    """提供用例指定的工具响应、中断或异常，验证执行管道的结果保存与恢复。"""
     authorization_timing = "after_prepare"
 
     async def execute(self, args: dict, context: ToolContext) -> ToolResult:
+        """管道或插件管理器调用时执行本用例预设的结果、状态修改或异常分支。
+
+        Args:
+            args (dict): 当前工具调用或被包装函数的参数。
+            context (ToolContext): 执行管道提供的工具运行上下文。
+
+        Returns:
+            ToolResult: 供外层用例断言使用的预设结果。
+        """
         self.calls += 1
         return ToolResult.continuation(
             "perform_screen_action",
@@ -412,9 +530,19 @@ class _UnsafePrepareTool(_CountingTool):
 
 
 class _PreparedTool(_CountingTool):
+    """提供用例指定的工具响应、中断或异常，验证执行管道的结果保存与恢复。"""
     authorization_timing = "after_prepare"
 
     async def execute(self, args: dict, context: ToolContext) -> ToolResult:
+        """管道或插件管理器调用时执行本用例预设的结果、状态修改或异常分支。
+
+        Args:
+            args (dict): 当前工具调用或被包装函数的参数。
+            context (ToolContext): 执行管道提供的工具运行上下文。
+
+        Returns:
+            ToolResult: 供外层用例断言使用的预设结果。
+        """
         self.calls += 1
         if context.resume_data == {"kind": "authorization_granted"}:
             return ToolResult.success("performed")
@@ -425,26 +553,51 @@ class _PreparedTool(_CountingTool):
 
 
 class _RecordingPlugins:
+    """提供当前用例所需的 _RecordingPlugins 测试替身，执行记录仅供外层断言使用。"""
     def __init__(self) -> None:
+        """保存本用例的脚本输入和依赖，初始化测试对象的执行记录。"""
         self.hooks: list[PluginHook] = []
 
     async def run_hooks(self, hook: PluginHook, *_args, **_kwargs) -> None:
+        """记录工具执行前后钩子触发，供检查审批等待与拒绝边界。
+
+        Args:
+            hook (PluginHook): 当前触发的插件执行时机。
+            _args (dict[str, Any]): 当前工具调用或被包装函数的参数。
+            _kwargs (dict[str, Any]): 传递给被调用函数的其他关键字参数。
+        """
         self.hooks.append(hook)
 
 
 class _ScriptedLlm:
+    """提供按用例脚本输出的模型响应，验证流式处理、摘要或失败恢复，不调用真实模型。"""
     def __init__(self) -> None:
+        """保存本用例的脚本输入和依赖，初始化测试对象的执行记录。"""
         self.scripts = [
             [StreamChunk(tool_call=ToolCall(id="call-1", name="read_file", args={}))],
             [StreamChunk(content="done")],
         ]
 
     async def astream(self, messages, tools=None):
+        """模型管道调用时按测试脚本顺序产出片段或异常，供外层检查消息和用量处理。
+
+        Args:
+            messages (list[dict]): 按对话顺序排列的消息集合。
+            tools (list[dict] | None): 当前向模型公开的工具定义。
+        """
         for chunk in self.scripts.pop(0):
             yield chunk
 
 
 def _pipeline(policy: ToolPolicy) -> tuple[ExecutionPipeline, _CountingTool]:
+    """装配显式测试依赖的执行管道，不调用真实模型。
+
+    Args:
+        policy (ToolPolicy): 本用例指定的权限或压缩策略。
+
+    Returns:
+        tuple[ExecutionPipeline, _CountingTool]: 供外层用例断言使用的预设结果。
+    """
     llm = _ScriptedLlm()
     authorization = _authorization(policy)
     manager = ToolManager(session_id="session", authorization=authorization)
@@ -467,13 +620,23 @@ def _pipeline(policy: ToolPolicy) -> tuple[ExecutionPipeline, _CountingTool]:
 
 
 async def _events(stream) -> list:
+    """完整消费模型工具管道事件，供检查审批和结果顺序。
+
+    Args:
+        stream (Any): 需要消费的 Agent 或模型事件流。
+
+    Returns:
+        list: 供外层用例断言使用的预设结果。
+    """
     return [event async for event in stream]
 
 
 def test_pipeline_waits_for_approval_before_executing_ask_tool() -> None:
+    """验证ask 工具先等待批准再执行。"""
     import asyncio
 
     async def scenario() -> None:
+        """由外层测试调用，完成“ask 工具先等待批准再执行”的异步步骤。"""
         pipeline, tool = _pipeline(ToolPolicy.ASK)
         state = AgentState(session_id="session")
         state.add_user_message("read")
@@ -491,9 +654,11 @@ def test_pipeline_waits_for_approval_before_executing_ask_tool() -> None:
 
 
 def test_pipeline_rechecks_deny_for_a_stale_model_tool_call() -> None:
+    """验证旧模型调用执行前重新核对 deny 权限。"""
     import asyncio
 
     async def scenario() -> None:
+        """由外层测试调用，完成“旧模型调用执行前重新核对 deny 权限”的异步步骤。"""
         pipeline, tool = _pipeline(ToolPolicy.DENY)
         state = AgentState(session_id="session")
         state.add_user_message("read")
@@ -508,9 +673,11 @@ def test_pipeline_rechecks_deny_for_a_stale_model_tool_call() -> None:
 
 
 def test_after_prepare_tool_cannot_request_protected_effect_before_authorization() -> None:
+    """验证准备后授权工具不能在批准前请求受保护动作。"""
     import asyncio
 
     async def scenario() -> None:
+        """由外层测试调用，完成“准备后授权工具不能在批准前请求受保护动作”的异步步骤。"""
         llm = _ScriptedLlm()
         authorization = _authorization(ToolPolicy.ASK)
         manager = ToolManager(session_id="session", authorization=authorization)
@@ -543,9 +710,14 @@ def test_after_prepare_tool_cannot_request_protected_effect_before_authorization
 
 
 def test_after_prepare_hooks_span_the_logical_call_and_rejection_has_no_after_hook() -> None:
+    """验证准备后授权钩子围绕完整调用且拒绝无执行后钩子。"""
     import asyncio
 
     async def build_case():
+        """装配当前授权测试所需的工具、插件和调用参数。
+
+        该定义仅用于外层用例：验证准备后授权钩子围绕完整调用且拒绝无执行后钩子。
+        """
         llm = _ScriptedLlm()
         authorization = _authorization(ToolPolicy.ASK)
         manager = ToolManager(session_id="session", authorization=authorization)
@@ -571,6 +743,7 @@ def test_after_prepare_hooks_span_the_logical_call_and_rejection_has_no_after_ho
         return pipeline, state, call, pending, plugins
 
     async def scenario() -> None:
+        """由外层测试调用，完成“准备后授权钩子围绕完整调用且拒绝无执行后钩子”的异步步骤。"""
         rejected_pipeline, rejected_state, rejected_call, pending, rejected_plugins = (
             await build_case()
         )

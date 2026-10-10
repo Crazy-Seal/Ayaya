@@ -49,7 +49,14 @@ class HookContext:
         data: Any = None,
         metadata: dict | None = None,
     ) -> "HookContext":
-        """创建钩子上下文。"""
+        """创建钩子上下文。
+
+        Args:
+            hook (PluginHook): 当前插件登记或执行的时机。
+            state (Any): 当前会话的内存 AgentState；保存由调用方负责。
+            data (Any): 需要解析或保存的结构化数据。
+            metadata (dict | None): 本次插件执行的附加调用信息。
+        """
         return cls(
             hook=hook,
             agent_state=state,
@@ -76,7 +83,11 @@ class BasePlugin(ABC):
 
     @abstractmethod
     async def execute(self, context: HookContext) -> None:
-        """原地修改状态或钩子数据，不返回替代上下文。"""
+        """原地修改状态或钩子数据，不返回替代上下文。
+
+        Args:
+            context (HookContext): 执行管道提供的工具运行上下文。
+        """
         pass
 
     async def on_register(self) -> None:

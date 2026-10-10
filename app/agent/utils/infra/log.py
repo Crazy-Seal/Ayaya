@@ -11,7 +11,12 @@ from app.runtime import get_data_dir, is_test_environment
 
 
 def shorten_for_log(text: str, max_len: int = 200) -> str:
-    """限制日志长度，避免控制台被超长内容刷屏。"""
+    """限制日志长度，避免控制台被超长内容刷屏。
+
+    Args:
+        text (str): 当前处理的文本。
+        max_len (int): 日志预览最多保留的字符数。
+    """
     if len(text) <= max_len:
         return text
     return f"{text[:max_len]}..."
@@ -31,7 +36,11 @@ def _get_tool_log_file() -> Path:
 
 
 def _ensure_tool_file_handler(logger: logging.Logger) -> None:
-    """为工具日志器附加文件输出，避免重复添加 handler。"""
+    """为工具日志器附加文件输出，避免重复添加 handler。
+
+    Args:
+        logger (logging.Logger): 记录当前工具调用的日志对象。
+    """
     tool_log_file = _get_tool_log_file()
     target = str(tool_log_file.resolve())
     with _TOOL_LOGGER_LOCK:
@@ -49,7 +58,11 @@ def _ensure_tool_file_handler(logger: logging.Logger) -> None:
 
 
 def _sanitize_value(value: Any) -> Any:
-    """将参数/输出转换为可读且安全的日志片段。"""
+    """将参数/输出转换为可读且安全的日志片段。
+
+    Args:
+        value (Any): 当前需要校验或转换的值。
+    """
     if isinstance(value, str):
         return shorten_for_log(value, max_len=500)
     if isinstance(value, (int, float, bool)) or value is None:
@@ -69,6 +82,14 @@ def _sanitize_value(value: Any) -> Any:
 
 
 def _sanitize_params(params: dict[str, Any]) -> dict[str, Any]:
+    """按参数名遮蔽凭据类字段，再递归清理其他值，供工具调用日志使用。
+
+    Args:
+        params (dict[str, Any]): 经过敏感字段过滤的调用参数。
+
+    Returns:
+        dict[str, Any]: 可写日志的参数副本，敏感字段显示为星号。
+    """
     safe: dict[str, Any] = {}
     for key, value in params.items():
         key_lower = key.lower()
@@ -91,6 +112,12 @@ async def log_tool_call_result(
     适用于调用点已取得工具名、参数字典和结果的场景，写入前统一脱敏。
 
     返回原始 result，方便链式书写：return await log_tool_call_result(...)
+
+    Args:
+        tool_name (str): 注册表中使用的工具名称。
+        params (dict[str, Any]): 经过敏感字段过滤的调用参数。
+        result (Any): 当前工具或被包装函数返回的结果。
+        logger_name (str): 当前工具日志使用的 logger 名称。
     """
     logger = logging.getLogger(logger_name)
     _ensure_tool_file_handler(logger)
@@ -114,12 +141,34 @@ async def log_tool_call_result(
 
 
 def log_tool_call(logger_name: str = "app.agent.tools"):
-    """为普通同步或异步函数记录调用时间、参数、输出和异常。"""
+    """为普通同步或异步函数记录调用时间、参数、输出和异常。
+
+    Args:
+        logger_name (str): 当前工具日志使用的 logger 名称。
+    """
 
     def decorator(func):
+        """绑定原工具函数签名，按同步或异步类型返回带日志的包装函数。
+
+        Args:
+            func (Any): 需要包装或检查签名的函数。
+
+        Returns:
+            Callable: 保持原返回结果及异常行为的工具包装函数。
+        """
+        # 1. 装饰时只读取签名；真实执行前再绑定参数、遮蔽敏感值并记录开始时间。
         signature = inspect.signature(func)
 
         def _prepare_log_context(args, kwargs):
+            """包装函数执行前绑定并过滤参数，记录开始时间并确保工具文件日志已初始化。
+
+            Args:
+                args (Any): 当前工具调用或被包装函数的参数。
+                kwargs (Any): 传递给被调用函数的其他关键字参数。
+
+            Returns:
+                tuple[Logger, str, float, dict]: 日志对象、调用时间、计时起点和过滤后的参数。
+            """
             logger = logging.getLogger(logger_name)
             _ensure_tool_file_handler(logger)
             call_time = dt.datetime.now(dt.UTC).isoformat()
@@ -133,6 +182,15 @@ def log_tool_call(logger_name: str = "app.agent.tools"):
             return logger, call_time, start, params
 
         def _log_success_or_error(logger, call_time, start, params, result):
+            """原函数正常返回后记录耗时，返回文本以错误前缀开头时使用错误级别。
+
+            Args:
+                logger (Any): 记录当前工具调用的日志对象。
+                call_time (Any): 当前工具开始执行时的 ISO 时间。
+                start (Any): 工具开始执行时的 perf_counter 值。
+                params (Any): 经过敏感字段过滤的调用参数。
+                result (Any): 当前工具或被包装函数返回的结果。
+            """
             duration_ms = int((time.perf_counter() - start) * 1000)
             result_preview = _sanitize_value(result)
             if isinstance(result, str) and result.lstrip().startswith("错误:"):
@@ -155,6 +213,15 @@ def log_tool_call(logger_name: str = "app.agent.tools"):
                 )
 
         def _log_exception(logger, call_time, start, params, exc: Exception):
+            """原函数抛异常时记录耗时及异常追踪，包装函数随后重新抛出原异常。
+
+            Args:
+                logger (Any): 记录当前工具调用的日志对象。
+                call_time (Any): 当前工具开始执行时的 ISO 时间。
+                start (Any): 工具开始执行时的 perf_counter 值。
+                params (Any): 经过敏感字段过滤的调用参数。
+                exc (Exception): 退出上下文时的异常对象。
+            """
             duration_ms = int((time.perf_counter() - start) * 1000)
             logger.exception(
                 "tool=%s event=exception call_time=%s duration_ms=%s params=%s error=%s",
@@ -165,9 +232,19 @@ def log_tool_call(logger_name: str = "app.agent.tools"):
                 shorten_for_log(str(exc), max_len=500),
             )
 
+        # 2. 异步函数必须等待原调用结束后再记录结果；同步函数沿用同步异常和返回行为。
         if inspect.iscoroutinefunction(func):
             @functools.wraps(func)
             async def async_wrapper(*args, **kwargs):
+                """调用异步工具前记录开始，等待完成后记录结果，异常记日志后继续向调用方抛出。
+
+                Args:
+                    args (Any): 当前工具调用或被包装函数的参数。
+                    kwargs (Any): 传递给被调用函数的其他关键字参数。
+
+                Returns:
+                    Any: 原异步工具的返回值。
+                """
                 logger, call_time, start, params = _prepare_log_context(args, kwargs)
                 try:
                     result = await func(*args, **kwargs)
@@ -181,6 +258,15 @@ def log_tool_call(logger_name: str = "app.agent.tools"):
 
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
+            """调用同步工具前记录开始，结束后记录结果，异常记日志后继续向调用方抛出。
+
+            Args:
+                args (Any): 当前工具调用或被包装函数的参数。
+                kwargs (Any): 传递给被调用函数的其他关键字参数。
+
+            Returns:
+                Any: 原同步工具的返回值。
+            """
             logger, call_time, start, params = _prepare_log_context(args, kwargs)
             try:
                 result = func(*args, **kwargs)

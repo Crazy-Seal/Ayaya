@@ -9,7 +9,22 @@ from app.agent.tools.registry import ToolRegistry
 
 
 def _context(resume_data=None, resume_state=None) -> ToolContext:
+    """为桌面或文件工具构造当前用例的运行上下文。
+
+    Args:
+        resume_data (Any): 本次模拟审批或桌面回报的数据。
+        resume_state (Any): 工具中断时保存的恢复材料。
+
+    Returns:
+        ToolContext: 供外层用例断言使用的预设结果。
+    """
     async def emit_event(_event_type, _data):
+        """接收本次工具发布的事件；该用例不依赖事件内容。
+
+        Args:
+            _event_type (Any): 工具回调发布的事件类型。
+            _data (Any): 需要解析或保存的结构化数据。
+        """
         return None
 
     return ToolContext(
@@ -24,6 +39,7 @@ def _context(resume_data=None, resume_state=None) -> ToolContext:
 
 
 def test_vlm_tool_is_discovered_by_registry() -> None:
+    """验证截图定位工具由注册表自动发现。"""
     tool_class = ToolRegistry.get("control_screen_with_vlm")
 
     assert tool_class is not None
@@ -31,6 +47,7 @@ def test_vlm_tool_is_discovered_by_registry() -> None:
 
 
 def test_restore_vlm_point_keeps_original_coordinate_payload() -> None:
+    """验证恢复定位点时保留原坐标载荷。"""
     result = restore_vlm_point([400, 200, 600, 400], 1920, 1080)
 
     assert result == {
@@ -45,7 +62,9 @@ def test_restore_vlm_point_keeps_original_coordinate_payload() -> None:
 
 
 def test_vlm_tool_initial_interrupt_requests_capture() -> None:
+    """验证定位工具首次中断请求截图。"""
     async def run():
+        """由外层测试调用，完成“定位工具首次中断请求截图”的异步步骤。"""
         return await control_screen_with_vlm().execute(
             {"target": "search box"},
             _context(),
@@ -61,7 +80,21 @@ def test_vlm_tool_initial_interrupt_requests_capture() -> None:
 
 
 def test_vlm_tool_capture_resume_locates_and_requests_execution(monkeypatch) -> None:
+    """验证截图恢复后定位并请求动作执行。
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
+    """
     async def fake_locate(_self, intent, image_data_url):
+        """返回用例指定的截图定位结果，替代真实视觉模型。
+
+        该定义仅用于外层用例：验证截图恢复后定位并请求动作执行。
+
+        Args:
+            _self (Any): 被替换方法原本接收的测试对象。
+            intent (Any): 当前桌面动作的准备信息。
+            image_data_url (Any): 用例提供的内存图片 data URL。
+        """
         assert intent == "search box"
         assert image_data_url == "data:image/png;base64,AAA"
         return [400, 200, 600, 400]
@@ -69,6 +102,7 @@ def test_vlm_tool_capture_resume_locates_and_requests_execution(monkeypatch) -> 
     monkeypatch.setattr("app.agent.models.vlm.VLMService.locate", fake_locate)
 
     async def run():
+        """由外层测试调用，完成“截图恢复后定位并请求动作执行”的异步步骤。"""
         return await control_screen_with_vlm().execute(
             {
                 "target": "search box",
@@ -98,7 +132,9 @@ def test_vlm_tool_capture_resume_locates_and_requests_execution(monkeypatch) -> 
 
 
 def test_vlm_tool_emits_execution_continuation_only_after_authorization() -> None:
+    """验证动作继续请求只在授权后发布。"""
     async def run():
+        """由外层测试调用，完成“动作继续请求只在授权后发布”的异步步骤。"""
         return await control_screen_with_vlm().execute(
             {"target": "search box", "operation": "click"},
             _context(
@@ -123,7 +159,9 @@ def test_vlm_tool_emits_execution_continuation_only_after_authorization() -> Non
 
 
 def test_vlm_tool_execution_resume_injects_post_action_screenshot() -> None:
+    """验证动作恢复后注入执行后的截图。"""
     async def run():
+        """由外层测试调用，完成“动作恢复后注入执行后的截图”的异步步骤。"""
         return await control_screen_with_vlm().execute(
             {"target": "search box"},
             _context(

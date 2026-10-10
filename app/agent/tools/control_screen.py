@@ -20,7 +20,11 @@ NORMALIZED_CANVAS_SIZE = 1000
 
 
 def normalize_bbox(bbox: object) -> list[int]:
-    """校验并返回 canonical ``[x1, y1, x2, y2]``。"""
+    """校验并返回 canonical ``[x1, y1, x2, y2]``。
+
+    Args:
+        bbox (object): 归一化画布中的 xyxy 边界框。
+    """
     if not isinstance(bbox, list) or len(bbox) != 4:
         raise ValueError("bbox 必须是包含四个整数的数组。")
     if any(type(value) is not int for value in bbox):
@@ -36,6 +40,14 @@ def normalize_bbox(bbox: object) -> list[int]:
 
 
 def _coordinates_from_bbox(bbox: list[int]) -> dict:
+    """保留模型提供的 xyxy 框，并计算 Electron 执行动作需要的框中心比例。
+
+    Args:
+        bbox (list[int]): 归一化画布中的 xyxy 边界框。
+
+    Returns:
+        dict: 原 bbox 及中心点相对归一化画布的 x/y 比例。
+    """
     x1, y1, x2, y2 = bbox
     return {
         "bbox": bbox,
@@ -53,6 +65,20 @@ def _validate_args(
     wait_seconds: int | None,
     scroll_direction: str | None,
 ) -> tuple[str, list[int], Operation, str, bool, int, ScrollDirection] | str:
+    """请求桌面动作前校验元素、xyxy 框、操作和等待参数，校验失败不创建执行请求。
+
+    Args:
+        target (str | None): 用户希望操作的界面元素描述。
+        bbox (object): 归一化画布中的 xyxy 边界框。
+        operation (str | None): 鼠标动作，支持 click、double、right 或 scroll。
+        text (str | None): 当前处理的文本。
+        press_enter (bool | None): 输入文本后是否按回车键。
+        wait_seconds (int | None): 动作完成后等待界面稳定的秒数。
+        scroll_direction (str | None): 滚轮方向，支持 up 或 down。
+
+    Returns:
+        tuple[str, list[int], Operation, str, bool, int, ScrollDirection] | str: 规范化的动作参数元组，或可直接返回给模型的错误文本。
+    """
     resolved_target = (target or "").strip()
     if not resolved_target:
         return "缺少要操作的元素描述。"
@@ -103,10 +129,21 @@ async def control_screen(
 
     调用此工具前，你需要知道屏幕上的情况；如不知道，可先通过截屏工具获取。
     每轮工具调用中只允许使用一次该工具；收到操作后的截图后再判断下一步操作。
+
+    Args:
+        bbox (list[int]): 目标元素边界框 [x1, y1, x2, y2]，坐标相对于当前屏幕归一化到 0 至 1000。必须输入。
+        target (str): 操作时的光标位置描述，例如‘页面上方的搜索框’。必须输入。
+        operation (Operation): 操作方式：click 单击、double 双击、right 右键、scroll 滚动。
+        text (str): 操作后要在该位置输入的文字；为空则不输入。
+        press_enter (bool): 输入文字后是否按回车。
+        wait_seconds (int): 操作后的等待时长，单位秒，用于等待页面加载。
+        scroll_direction (ScrollDirection): 滚动方向：none、down 或 up。仅 scroll 操作使用，默认 down。
+        context (ToolContext | None): 执行管道提供的工具运行上下文。
     """
     if context is None:
         return ToolResult(content="错误: 缺少工具上下文。")
 
+    # 1. 创建任何桌面请求前先校验参数，xyxy 框按原坐标顺序解释。
     normalized = _validate_args(
         target,
         bbox,
@@ -139,6 +176,7 @@ async def control_screen(
         "coordinates": coordinates,
     }
 
+    # 2. 恢复阶段只消费 Electron 已返回的执行结果，不再发起同一鼠标动作。
     if context.resume_data is not None:
         phase = (context.resume_state or {}).get("phase")
         if phase != "awaiting_execution":
@@ -147,6 +185,7 @@ async def control_screen(
             error_message = context.resume_data.get("error") or "前端未完成屏幕操作。"
             return ToolResult.success(f"屏幕操作失败: {error_message}")
 
+        # 2.1. 动作完成与截图返回分开判断，缺少截图不能伪造视觉结果。
         screenshot_data = context.resume_data.get("screenshot_data")
         if not screenshot_data:
             return ToolResult.success("屏幕操作完成，但未收到操作后的截图。")
@@ -156,6 +195,7 @@ async def control_screen(
             image_message_name=SCREENSHOT_MESSAGE_NAME,
         )
 
+    # 3. 首次执行只返回桌面请求；审批、领取及持久保存由管道和桌面请求管理器继续处理。
     return ToolResult.continuation(
         DesktopExecutionKind.PERFORM_SCREEN_ACTION,
         f"正在对“{resolved_target}”执行 {resolved_operation} 操作。",

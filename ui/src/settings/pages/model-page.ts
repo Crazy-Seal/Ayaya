@@ -32,6 +32,26 @@ export class ModelPage {
   private pendingImport: ImportPreview | null = null;
   private syncingSliders = false;
 
+  /**
+   * 绑定模型列表、导入预览和显示参数控件，接入提示与删除确认依赖。
+   *
+   * Args:
+   *     modelList (HTMLDivElement): 显示已导入模型的列表容器。
+   *     importPreview (HTMLDivElement): 导入前显示模型信息的容器。
+   *     previewName (HTMLDivElement): 显示待导入模型名称的元素。
+   *     previewType (HTMLDivElement): 显示待导入模型类型的元素。
+   *     previewEntry (HTMLDivElement): 显示模型入口文件的元素。
+   *     confirmImportBtn (HTMLButtonElement): 确认保存待导入模型的按钮。
+   *     cancelImportBtn (HTMLButtonElement): 取消当前导入预览的按钮。
+   *     importModelBtn (HTMLButtonElement): 选择待导入模型的按钮。
+   *     offsetXSlider (HTMLInputElement): 调整模型水平偏移的滑块。
+   *     offsetYSlider (HTMLInputElement): 调整模型垂直偏移的滑块。
+   *     offsetXValue (HTMLSpanElement): 显示水平偏移数值的元素。
+   *     offsetYValue (HTMLSpanElement): 显示垂直偏移数值的元素。
+   *     followCursorCheckbox (HTMLInputElement): 启用模型目光跟随鼠标的选项。
+   *     confirmDialog (ConfirmDialog): 删除或切换模型前显示确认提示的对象。
+   *     notifier (SettingsNotifier): 设置保存成功或失败时显示提示的对象。
+   */
   constructor(
     modelList: HTMLDivElement,
     importPreview: HTMLDivElement,
@@ -72,7 +92,10 @@ export class ModelPage {
    */
   private setupEventListeners(): void {
     // 导入模型按钮
-    this.importModelBtn.addEventListener("click", async () => {
+    this.importModelBtn.addEventListener("click", /**
+     * 用户选择导入目录后展示名称、类别和入口预览；取消选择则不改变当前模型。
+     */
+    async () => {
       const preview = await window.desktopPetApi.previewLive2DImport();
       if (!preview) {
         return;
@@ -86,7 +109,10 @@ export class ModelPage {
     });
 
     // 确认导入
-    this.confirmImportBtn.addEventListener("click", async () => {
+    this.confirmImportBtn.addEventListener("click", /**
+     * 用户确认导入预览后请求保存资源，完成后刷新模型目录并清理预览。
+     */
+    async () => {
       if (!this.pendingImport) {
         return;
       }
@@ -100,12 +126,21 @@ export class ModelPage {
     });
 
     // 取消导入
-    this.cancelImportBtn.addEventListener("click", () => {
+    this.cancelImportBtn.addEventListener("click", /**
+     * 用户取消导入时清除尚未保存的预览信息。
+     */
+    () => {
       this.clearImportPreview();
     });
 
     // 模型列表点击
-    this.modelList.addEventListener("click", async (event) => {
+    this.modelList.addEventListener("click", /**
+     * 模型列表点击时区分删除按钮与模型切换，删除先等待确认，切换交给主进程保存。
+     *
+     * Args:
+     *     event (PointerEvent): 调用方或浏览器触发的当前事件。
+     */
+    async (event) => {
       const target = event.target as HTMLElement | null;
       const deleteBtn = target?.closest<HTMLButtonElement>(".delete-model-btn");
       if (deleteBtn) {
@@ -144,15 +179,24 @@ export class ModelPage {
     });
 
     // 滑块变化
-    this.offsetXSlider.addEventListener("input", () => {
+    this.offsetXSlider.addEventListener("input", /**
+     * 用户拖动显示参数滑块时提交当前缩放及偏移。
+     */
+    () => {
       void this.updateActiveModelTransform();
     });
 
-    this.offsetYSlider.addEventListener("input", () => {
+    this.offsetYSlider.addEventListener("input", /**
+     * 用户改变另一显示参数滑块时同步当前模型显示设置。
+     */
+    () => {
       void this.updateActiveModelTransform();
     });
 
-    this.followCursorCheckbox.addEventListener("change", () => {
+    this.followCursorCheckbox.addEventListener("change", /**
+     * 用户切换目光跟随开关时保存当前模型显示设置。
+     */
+    () => {
       void this.updateActiveModelTransform();
     });
   }
@@ -189,7 +233,16 @@ export class ModelPage {
       followCursor: this.followCursorCheckbox.checked,
     });
 
-    const target = this.currentConfig.models.find((item) => item.id === modelId);
+    const target = this.currentConfig.models.find(/**
+     * 按当前活动编号查找需要保存显示参数的模型。
+     *
+     * Args:
+     *     item ({ id: string; name: string; sessionId: string; source: "builtin" | "custom"; deletable: boolean; offsetX: number; offsetY: number; userScale: number; followCursor: boolean; motionConfig?: MotionConfig[] | undefined; entry?: string | undefined; modelUrl?: string | undefined; }): 当前遍历的配置或目录条目。
+     *
+     * Returns:
+     *     boolean: 模型编号匹配时为 true。
+     */
+    (item) => item.id === modelId);
     if (target) {
       target.offsetX = offsetX;
       target.offsetY = offsetY;
@@ -199,6 +252,9 @@ export class ModelPage {
 
   /**
    * 渲染模型列表
+   *
+   * Args:
+   *     config (ModelConfig): 当前服务、模型或动作配置。
    */
   renderModelList(config: ModelConfig): void {
     this.modelList.innerHTML = "";
@@ -228,9 +284,21 @@ export class ModelPage {
 
   /**
    * 渲染变换滑块
+   *
+   * Args:
+   *     config (ModelConfig): 当前服务、模型或动作配置。
    */
   renderTransformSliders(config: ModelConfig): void {
-    const active = config.models.find((item) => item.id === config.activeModelId);
+    const active = config.models.find(/**
+     * 渲染显示参数控件前查找配置中的活动模型。
+     *
+     * Args:
+     *     item ({ id: string; name: string; sessionId: string; source: "builtin" | "custom"; deletable: boolean; offsetX: number; offsetY: number; userScale: number; followCursor: boolean; motionConfig?: MotionConfig[] | undefined; entry?: string | undefined; modelUrl?: string | undefined; }): 当前遍历的配置或目录条目。
+     *
+     * Returns:
+     *     boolean: 当前模型为活动模型时为 true。
+     */
+    (item) => item.id === config.activeModelId);
     const offsetX = active?.offsetX ?? 0;
     const offsetY = active?.offsetY ?? 0;
     const followCursor = active?.followCursor ?? true;
@@ -271,13 +339,25 @@ export class ModelPage {
 
   /**
    * 更新配置中的变换数据
+   *
+   * Args:
+   *     data ({ id: string; offsetX: number; offsetY: number; userScale: number; followCursor: boolean }): 调用方提供的接口或页面数据。
    */
   updateTransformData(data: { id: string; offsetX: number; offsetY: number; userScale: number; followCursor: boolean }): void {
     if (!this.currentConfig || data.id !== this.currentConfig.activeModelId) {
       return;
     }
 
-    const target = this.currentConfig.models.find((item) => item.id === data.id);
+    const target = this.currentConfig.models.find(/**
+     * 显示参数通知到达后查找对应模型记录并更新页面缓存。
+     *
+     * Args:
+     *     item ({ id: string; name: string; sessionId: string; source: "builtin" | "custom"; deletable: boolean; offsetX: number; offsetY: number; userScale: number; followCursor: boolean; motionConfig?: MotionConfig[] | undefined; entry?: string | undefined; modelUrl?: string | undefined; }): 当前遍历的配置或目录条目。
+     *
+     * Returns:
+     *     boolean: 当前模型编号等于通知编号时为 true。
+     */
+    (item) => item.id === data.id);
     if (!target) {
       return;
     }

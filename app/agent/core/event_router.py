@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class EventType(str, Enum):
-    """事件类型"""
+    """定义 Agent 对外产出的文字、工具、中断、错误和轮次结束事件类别。"""
     TEXT_CHUNK = "text_chunk"       # 文本分片
     TOOL_CALL = "tool_call"         # 工具调用
     INTERRUPT = "interrupt"         # 中断
@@ -37,19 +37,33 @@ class EventRouter:
     """事件路由器 - 管理 Agent 内部事件通知"""
 
     def __init__(self):
+        """创建空事件订阅列表，订阅者由 Agent 或调用方随后注册。"""
         self._subscribers: list[Callable[[AgentEvent], Awaitable[None]]] = []
 
     def subscribe(self, callback: Callable[[AgentEvent], Awaitable[None]]) -> None:
-        """订阅事件"""
+        """登记异步事件接收函数，后续 Agent 事件按订阅列表交付。
+
+        Args:
+            callback (Callable[[AgentEvent], Awaitable[None]]): Agent 事件到达时接收该事件的异步回调。
+        """
         self._subscribers.append(callback)
 
     def unsubscribe(self, callback: Callable[[AgentEvent], Awaitable[None]]) -> None:
-        """取消订阅"""
+        """移除指定接收函数，后续事件不再交给该订阅者。
+
+        Args:
+            callback (Callable[[AgentEvent], Awaitable[None]]): Agent 事件到达时接收该事件的异步回调。
+        """
         if callback in self._subscribers:
             self._subscribers.remove(callback)
 
     async def emit(self, event_type: EventType, data: Any) -> None:
-        """发送事件给所有订阅者"""
+        """把当前 Agent 事件交给已登记订阅者，并记录单个订阅者的处理失败。
+
+        Args:
+            event_type (EventType): 当前发布的 Agent 事件类别。
+            data (Any): 需要解析或保存的结构化数据。
+        """
         event = AgentEvent(type=event_type, data=data)
         for callback in self._subscribers:
             try:
@@ -58,21 +72,37 @@ class EventRouter:
                 logger.error(f"事件订阅者回调失败: {e}")
 
     async def emit_text(self, text: str) -> None:
-        """发送文本事件"""
+        """将模型刚生成的文字片段包装为文字事件并交给订阅者。
+
+        Args:
+            text (str): 当前处理的文本。
+        """
         await self.emit(EventType.TEXT_CHUNK, text)
 
     async def emit_tool_call(self, tool_name: str) -> None:
-        """发送工具调用事件"""
+        """将本次模型请求的工具名称和参数包装为工具提示事件。
+
+        Args:
+            tool_name (str): 注册表中使用的工具名称。
+        """
         await self.emit(EventType.TOOL_CALL, tool_name)
 
     async def emit_interrupt(self, interrupt_data: dict) -> None:
-        """发送中断事件"""
+        """向订阅者交付等待审批或桌面执行的中断信息。
+
+        Args:
+            interrupt_data (dict): 当前等待审批或桌面执行的恢复信息。
+        """
         await self.emit(EventType.INTERRUPT, interrupt_data)
 
     async def emit_error(self, error: str | Exception) -> None:
-        """发送错误事件"""
+        """将当前执行失败转换为错误事件，交给会话调度器或界面处理。
+
+        Args:
+            error (str | Exception): 当前捕获的异常。
+        """
         await self.emit(EventType.ERROR, str(error))
 
     async def emit_done(self) -> None:
-        """发送完成事件"""
+        """告知订阅者当前 Agent 轮次已经结束，不表示整个会话被关闭。"""
         await self.emit(EventType.DONE, None)

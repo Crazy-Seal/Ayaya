@@ -21,10 +21,10 @@ class ChatSettingsService:
         """初始化模型配置服务。
 
         Args:
-            chat_settings_dao: 模型配置数据访问对象。
-            mcp_settings_dao: 可选的 MCP Server 配置数据访问对象。
-            connection_manager: 可选的 MCP 连接管理器。
-            mutation_coordinator: 可选的跨配置写入协调器。
+            chat_settings_dao (ChatSettingsDao): 模型配置数据访问对象。
+            mcp_settings_dao (MCPSettingsDao | None): 可选的 MCP Server 配置数据访问对象。
+            connection_manager (MCPConnectionManager | None): 可选的 MCP 连接管理器。
+            mutation_coordinator (SettingsMutationCoordinator | None): 可选的跨配置写入协调器。
         """
         self.chat_settings_dao = chat_settings_dao
         self.mcp_settings_dao = mcp_settings_dao
@@ -35,10 +35,10 @@ class ChatSettingsService:
         """新增模型配置并正规化 MCP 权限。
 
         Args:
-            chat_settings: 待新增的模型配置。
+            chat_settings (ChatSettings): 待新增的模型配置。
 
         Returns:
-            已保存的模型配置。
+            ChatSettings: 已保存的模型配置。
         """
         async with self.mutation_coordinator.lock:
             return self.chat_settings_dao.add_chat_settings(self._sanitize_mcp(chat_settings, None))
@@ -47,22 +47,33 @@ class ChatSettingsService:
         """删除指定会话对应的模型配置。
 
         Args:
-            session_id: 待删除配置的会话 ID。
+            session_id (str): 待删除配置的会话 ID。
         """
         async with self.mutation_coordinator.lock:
             self.chat_settings_dao.delete_chat_settings(session_id)
 
     def get_chat_settings_by_session(self, session_id: str) -> ChatSettings:
+        """按会话读取 DAO 中经过校验和规范化的模型设置。
+
+        Args:
+            session_id (str): 当前操作所属的会话编号。
+
+        Returns:
+            ChatSettings: 指定会话的配置。
+
+        Raises:
+            KeyError: 指定会话不存在。
+        """
         return self.chat_settings_dao.get_chat_settings(session_id)
 
     async def update_chat_settings(self, chat_settings: ChatSettings) -> ChatSettings:
         """更新模型配置并安全合并 MCP 权限。
 
         Args:
-            chat_settings: 更新后的完整模型配置。
+            chat_settings (ChatSettings): 更新后的完整模型配置。
 
         Returns:
-            已保存的模型配置。
+            ChatSettings: 已保存的模型配置。
         """
         async with self.mutation_coordinator.lock:
             try:
@@ -80,11 +91,11 @@ class ChatSettingsService:
         """依据服务身份和可用工具目录正规化 MCP 权限。
 
         Args:
-            chat_settings: 前端提交的模型配置。
-            existing: 当前已保存的模型配置；新建时为 ``None``。
+            chat_settings (ChatSettings): 前端提交的模型配置。
+            existing (ChatSettings | None): 当前已保存的模型配置；新建时为 ``None``。
 
         Returns:
-            已移除无效引用并安全降级新权限的配置副本。
+            ChatSettings: 已移除无效引用并安全降级新权限的配置副本。
         """
         if self.mcp_settings_dao is None:
             return chat_settings
@@ -95,6 +106,7 @@ class ChatSettingsService:
             for key, value in chat_settings.tool_permissions.items()
             if not key.startswith("mcp:")
         }
+        # 1. 保存设置时按当前服务目录过滤已删除服务，并重新核对权限绑定的真实身份。
         for server_id, incoming in chat_settings.mcp.servers.items():
             config = configs.get(server_id)
             if config is None:
@@ -114,6 +126,7 @@ class ChatSettingsService:
                 else None
             )
 
+            # 2. 新旧配置都绑定当前身份时才保留已有工具权限，新出现工具仍默认要求审批。
             if previous_is_bound and incoming_is_bound:
                 tool_names = (
                     available_tools
@@ -136,6 +149,7 @@ class ChatSettingsService:
                     )
                 continue
 
+            # 3. 身份不一致时重建工具列表并全部降为 ask，旧 allow 不能自动授权变化后的服务。
             if available_tools is not None:
                 tool_names = available_tools
                 fingerprint = identity
@@ -160,6 +174,15 @@ class ChatSettingsService:
 
     @staticmethod
     def _mcp_tool_names(settings: ChatSettings | None, server_id: str) -> list[str]:
+        """从权限键中取出指定 MCP 服务已保存的工具名称，供配置重绑定使用。
+
+        Args:
+            settings (ChatSettings | None): 当前会话保存的模型和工具权限设置。
+            server_id (str): MCP 服务的稳定编号。
+
+        Returns:
+            list[str]: 该服务的工具名称列表，没有设置时为空。
+        """
         if settings is None:
             return []
         prefix = f"mcp:{server_id}:"

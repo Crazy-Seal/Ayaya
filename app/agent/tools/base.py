@@ -34,8 +34,7 @@ class InterruptEvent:
     resume_state: dict = field(default_factory=dict)  # 工具中间态（如 VLM 坐标）
 
     def __post_init__(self) -> None:
-        """已知中断归一化为枚举，扩展值继续沿既有工具恢复路径处理。
-        """
+        """已知中断归一化为枚举，扩展值继续沿既有工具恢复路径处理。"""
         try:
             self.type = InterruptKind(self.type)
         except (ValueError, TypeError):
@@ -61,9 +60,7 @@ class InterruptEvent:
         )
 
     def to_client(self) -> dict:
-        """
-        发给前端的最小字段（SSE value）。
-        """
+        """发给前端的最小字段（SSE value）。"""
         payload = {
             "type": self.type,
             "request_id": self.request_id,
@@ -88,6 +85,11 @@ class InterruptEvent:
 
     # 默认序列化为客户端字段，避免持久化路由信息进入 SSE。
     def to_dict(self) -> dict:
+        """提供现有调用方使用的中断字典接口，沿用界面安全字段筛选。
+
+        Returns:
+            dict: 与 to_client 相同的界面中断载荷，不含私有恢复材料。
+        """
         return self.to_client()
 
 
@@ -124,9 +126,7 @@ class ToolContext:
 
 
 class TaskLauncher(Protocol):
-    """定义工具依赖的进程启动端口，具体进程和输出管理由 Supervisor 实现。
-
-    """
+    """定义工具依赖的进程启动端口，具体进程和输出管理由 Supervisor 实现。"""
     async def launch(
         self, session_id: str, command: str, argv: list[str], *,
         cwd: str, background: bool, timeout_sec: int,
@@ -146,14 +146,14 @@ class TaskLauncher(Protocol):
             origin_tool_call_id (str | None): 发起任务的工具调用标识。
 
         Returns:
-            Any: 当前查询或执行结果。
+            Any: 任务编号、是否后台运行和当前可读输出等启动结果。
         """
         ...
 
 
 @dataclass
 class ToolResult:
-    """工具执行结果"""
+    """承载工具正文、图片、状态更新，以及需要等待审批或桌面的继续执行材料。"""
     content: str                                         # 返回给 LLM 的内容
     interrupt: InterruptEvent | None = None              # 如果需要中断
     state_updates: dict = field(default_factory=dict)    # 状态更新（写入 state.extra）
@@ -168,7 +168,15 @@ class ToolResult:
                 image_url: str | None = None,
                 image_urls: list[str] | None = None,
                 image_message_name: str | None = None) -> "ToolResult":
-        """创建成功结果"""
+        """创建普通成功工具结果，按需携带图片和待应用状态更新。
+
+        Args:
+            content (str): 当前处理的正文。
+            state_updates (dict | None): 工具成功后交给管道合并到 AgentState.extra 的更新字段。
+            image_url (str | None): 工具返回的一张图片地址。
+            image_urls (list[str] | None): 供模型读取的图片地址。
+            image_message_name (str | None): 区分截图、本地工具图片和 MCP 图片的消息名称。
+        """
         return cls(
             content=content,
             state_updates=state_updates or {},
@@ -179,7 +187,11 @@ class ToolResult:
 
     @classmethod
     def interrupt_result(cls, interrupt: InterruptEvent) -> "ToolResult":
-        """创建中断结果"""
+        """创建等待用户或运行时处理的工具结果，携带中断信息和恢复状态。
+
+        Args:
+            interrupt (InterruptEvent): 当前工具要求等待审批或桌面处理的中断事件。
+        """
         return cls(content="", interrupt=interrupt)
 
     @classmethod
@@ -241,7 +253,12 @@ class ToolResult:
         *,
         resume_state: dict | None = None,
     ) -> "ToolResult":
-        """返回 after_prepare 工具已经解析完成、尚待授权的动作。"""
+        """返回 after_prepare 工具已经解析完成、尚待授权的动作。
+
+        Args:
+            prepared_action (dict): 只读准备完成后的具体动作，执行前仍需授权。
+            resume_state (dict | None): 工具继续执行所需的私有恢复材料。
+        """
         return cls(
             content="",
             prepared_action=prepared_action,
@@ -252,7 +269,7 @@ class ToolResult:
 # ==================== 工具基类 ====================
 
 class BaseTool(ABC):
-    """工具基类"""
+    """约定模型工具定义与执行接口，具体工具由执行管道注入上下文后调用。"""
 
     name: str                    # 工具名称
     description: str             # 工具描述（给 LLM 看）
@@ -268,11 +285,16 @@ class BaseTool(ABC):
         args: dict,
         context: ToolContext
     ) -> ToolResult:
-        """执行工具"""
+        """由执行管道调用的工具正文接口，具体子类负责执行本工具并返回结果。
+
+        Args:
+            args (dict): 当前工具调用或被包装函数的参数。
+            context (ToolContext): 执行管道提供的工具运行上下文。
+        """
         pass
 
     def to_openai_tool(self) -> dict:
-        """转换为 OpenAI Tool 格式"""
+        """把工具名称、说明和参数 Schema 转换为兼容模型请求的工具定义。"""
         return {
             "type": "function",
             "function": {

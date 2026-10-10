@@ -34,9 +34,24 @@ const DEFAULT_CONTEXT_STRATEGY: ChatSettingsData["context_strategy"] = {
   screenshot_ttl_human_messages: 2,
 };
 
+/**
+ * 向测试提供默认记忆插件设置副本。
+ *
+ * Returns:
+ *     NonNullable<ChatSettingsData["agent_plugins"]>: 默认插件配置，不与调用方共享可修改对象。
+ */
 export const getDefaultAgentPluginsForTest = (): NonNullable<ChatSettingsData["agent_plugins"]> =>
   JSON.parse(JSON.stringify(DEFAULT_AGENT_PLUGINS)) as NonNullable<ChatSettingsData["agent_plugins"]>;
 
+/**
+ * 合并已保存插件配置与默认值，保持固有记忆插件配置完整。
+ *
+ * Args:
+ *     value (Partial<ChatSettingsData>["agent_plugins"]): 当前待检查或转换的值。
+ *
+ * Returns:
+ *     NonNullable<ChatSettingsData["agent_plugins"]>: 供界面编辑和保存使用的插件设置。
+ */
 const normalizeAgentPlugins = (
   value: Partial<ChatSettingsData>["agent_plugins"]
 ): NonNullable<ChatSettingsData["agent_plugins"]> => {
@@ -67,6 +82,9 @@ const normalizeAgentPlugins = (
 
 /**
  * 安全解析 JSON
+ *
+ * Args:
+ *     res (Response): 后端 HTTP 响应，正文解析失败时返回空值。
  */
 const parseJsonSafe = async <T>(res: Response): Promise<T | null> => {
   try {
@@ -78,6 +96,9 @@ const parseJsonSafe = async <T>(res: Response): Promise<T | null> => {
 
 /**
  * 根据会话 ID 获取聊天设置
+ *
+ * Args:
+ *     sessionId (string): 当前操作所属的会话编号。
  */
 export const fetchChatSettingsBySessionId = async (
   sessionId: string
@@ -128,6 +149,11 @@ export const fetchChatSettingsBySessionId = async (
 
 /**
  * 获取聊天历史分页
+ *
+ * Args:
+ *     sessionId (string): 当前操作所属的会话编号。
+ *     start (number): 可见聊天历史的起始位置，从零开始。
+ *     limit (number): 最多保留或读取的记录数量。
  */
 export const fetchChatHistoryPageBySessionId = async (
   sessionId: string,
@@ -150,7 +176,16 @@ export const fetchChatHistoryPageBySessionId = async (
     throw new Error(result?.msg || "读取 chat_history 失败：返回格式错误");
   }
 
-  return result.data.map((item) => ({
+  return result.data.map(/**
+   * 分页历史响应到达后统一正文、角色、时间及图片字段，交给聊天页展示。
+   *
+   * Args:
+   *     item (Partial<ChatHistoryItem>): 当前遍历的配置或目录条目。
+   *
+   * Returns:
+   *     { role: string; content: string; timestamp: string; images: string[] | undefined; }: 规范化的单条可见历史消息。
+   */
+  (item) => ({
     role: String(item.role ?? ""),
     content: String(item.content ?? ""),
     timestamp: String(item.timestamp ?? ""),
@@ -160,6 +195,10 @@ export const fetchChatHistoryPageBySessionId = async (
 
 /**
  * 获取最后 N 条聊天历史
+ *
+ * Args:
+ *     sessionId (string): 当前操作所属的会话编号。
+ *     n (number): 最多读取的历史消息数量。
  */
 export const fetchChatHistoryLastN = async (
   sessionId: string,
@@ -181,7 +220,16 @@ export const fetchChatHistoryLastN = async (
     throw new Error(result?.msg || "读取 chat_history_last_n 失败：返回格式错误");
   }
 
-  return result.data.map((item) => ({
+  return result.data.map(/**
+   * 最近历史响应到达后统一字段类型，缺少图片列表时保留为空。
+   *
+   * Args:
+   *     item (Partial<ChatHistoryItem>): 当前遍历的配置或目录条目。
+   *
+   * Returns:
+   *     { role: string; content: string; timestamp: string; images: string[] | undefined; }: 规范化的单条最近历史消息。
+   */
+  (item) => ({
     role: String(item.role ?? ""),
     content: String(item.content ?? ""),
     timestamp: String(item.timestamp ?? ""),
@@ -191,6 +239,9 @@ export const fetchChatHistoryLastN = async (
 
 /**
  * 从历史记录中获取最新的 AI 消息
+ *
+ * Args:
+ *     history (ChatHistoryItem[]): 按原对话顺序排列的可见聊天历史。
  */
 const getLatestAiMessageFromHistory = (history: ChatHistoryItem[]): string | null => {
   for (let index = history.length - 1; index >= 0; index -= 1) {
@@ -208,6 +259,9 @@ const getLatestAiMessageFromHistory = (history: ChatHistoryItem[]): string | nul
 
 /**
  * 获取最新 AI 消息
+ *
+ * Args:
+ *     sessionId (string): 当前操作所属的会话编号。
  */
 export const fetchLatestAiMessageBySessionId = async (
   sessionId: string
@@ -219,6 +273,9 @@ export const fetchLatestAiMessageBySessionId = async (
 
 /**
  * 创建空的聊天设置
+ *
+ * Args:
+ *     sessionId (string): 当前操作所属的会话编号。
  */
 export const createEmptyChatSettings = async (sessionId: string): Promise<ChatSettingsData> => {
   const payload: ChatSettingsData = {
@@ -264,6 +321,9 @@ export const createEmptyChatSettings = async (sessionId: string): Promise<ChatSe
 
 /**
  * 删除聊天设置
+ *
+ * Args:
+ *     sessionId (string): 当前操作所属的会话编号。
  */
 export const deleteChatSettingsBySessionId = async (sessionId: string): Promise<void> => {
   const url = `/chat_settings/${encodeURIComponent(sessionId)}`;
@@ -298,6 +358,9 @@ export const ensureChatSettingsLoaded = async (): Promise<ChatSettingsData> => {
 
 /**
  * 更新聊天设置缓存
+ *
+ * Args:
+ *     settings (ChatSettingsData): 当前会话或桌面界面的设置。
  */
 export const updateChatSettingsCache = (settings: ChatSettingsData): void => {
   chatSettingsCache = settings;
@@ -320,9 +383,13 @@ export const clearChatSettingsCache = (): void => {
 /**
  * 执行 MCP 配置变更，并仅在成功后清理模型配置缓存。
  *
- * @param mutation - 创建、更新、删除或重连 MCP Server 的异步操作。
- * @returns 配置变更操作的原始结果。
  * @throws {Error} 配置变更失败时原样向上抛出，且保留当前缓存。
+ *
+ * Args:
+ *     mutation (() => Promise<T>): 创建、更新、删除或重连 MCP Server 的异步操作。
+ *
+ * Returns:
+ *     Promise<T>: 配置变更操作的原始结果。
  */
 export const runMcpMutationWithCacheInvalidation = async <T>(
   mutation: () => Promise<T>
@@ -334,6 +401,9 @@ export const runMcpMutationWithCacheInvalidation = async <T>(
 
 /**
  * 更新聊天设置到后端
+ *
+ * Args:
+ *     payload (ChatSettingsData): 已经过入口校验的桌面动作参数。
  */
 export const updateChatSettings = async (
   payload: ChatSettingsData
@@ -377,12 +447,30 @@ export const fetchAvailableTools = async (): Promise<ToolItem[]> => {
     throw new Error(result?.msg || "获取工具列表失败：返回格式错误");
   }
 
-  return result.data.tools.map((item) => ({
+  return result.data.tools.map(/**
+   * 把后端本地工具目录项转换为页面使用的名称和说明。
+   *
+   * Args:
+   *     item (ToolItem): 当前遍历的配置或目录条目。
+   *
+   * Returns:
+   *     { name: string; description: string; }: 单个本地工具的信息。
+   */
+  (item) => ({
     name: String(item.name ?? ""),
     description: String(item.description ?? ""),
   }));
 };
 
+/**
+ * 按会话请求最新工具权限目录，包含本地和 MCP 工具状态。
+ *
+ * Args:
+ *     sessionId (string): 当前操作所属的会话编号。
+ *
+ * Returns:
+ *     Promise<ToolPolicyView[]>: 后端返回的工具权限列表。
+ */
 export const fetchToolPermissions = async (sessionId: string): Promise<ToolPolicyView[]> => {
   const res = await backendFetch(`/tool-permissions/${encodeURIComponent(sessionId)}`);
   const result = await parseJsonSafe<ApiResponse<{ tools: ToolPolicyView[] }>>(res);
@@ -390,6 +478,16 @@ export const fetchToolPermissions = async (sessionId: string): Promise<ToolPolic
   return result.data.tools;
 };
 
+/**
+ * 把用户编辑的会话工具权限保存到后端，再读取返回的规范化结果。
+ *
+ * Args:
+ *     sessionId (string): 当前操作所属的会话编号。
+ *     toolPermissions (Record<string, ToolPolicy>): 按稳定工具标识保存的新权限。
+ *
+ * Returns:
+ *     Promise<ToolPolicyView[]>: 保存后的工具权限目录。
+ */
 export const saveToolPermissions = async (
   sessionId: string,
   toolPermissions: Record<string, ToolPolicy>
@@ -422,7 +520,16 @@ export const fetchAvailablePlugins = async (): Promise<PluginItem[]> => {
     throw new Error(result?.msg || "获取插件列表失败：返回格式错误");
   }
 
-  return result.data.plugins.map((item) => ({
+  return result.data.plugins.map(/**
+   * 把插件目录项转换为页面模型，补齐固有标记、默认值和配置结构。
+   *
+   * Args:
+   *     item (PluginItem): 当前遍历的配置或目录条目。
+   *
+   * Returns:
+   *     { name: string; description: string; inherent: boolean; default_config: Record<string, unknown>; config_schema: Record<string, unknown>; }: 单个插件的页面编辑信息。
+   */
+  (item) => ({
     name: String(item.name ?? ""),
     description: String(item.description ?? ""),
     inherent: Boolean(item.inherent),

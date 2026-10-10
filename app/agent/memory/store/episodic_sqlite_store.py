@@ -26,6 +26,12 @@ class EpisodicSqliteStore:
     TABLE_NAME = "episodic_memories"
 
     def __init__(self, db_path: str, embedding_model: str):
+        """绑定情景记忆正文数据库及向量模型名称，同步创建事实存储表。
+
+        Args:
+            db_path (str): 当前环境使用的 SQLite 数据库路径。
+            embedding_model (str): 该记录使用的向量模型名称。
+        """
         self.db_path = db_path
         self.embedding_model = embedding_model
         self._ensure_table()
@@ -73,7 +79,15 @@ class EpisodicSqliteStore:
         event_date: str,
         importance: float,
     ) -> None:
-        """添加情景记忆"""
+        """添加情景记忆
+
+        Args:
+            record_id (str): 当前情景记忆正文的稳定编号。
+            session_id (str): 当前操作所属的会话编号。
+            content (str): 当前处理的正文。
+            event_date (str): 记忆描述的事件日期。
+            importance (float): 模型评估的记忆重要度。
+        """
         async with aiosqlite.connect(self.db_path) as conn:
             await conn.execute("PRAGMA busy_timeout=5000")
             await conn.execute(
@@ -93,7 +107,13 @@ class EpisodicSqliteStore:
         content: str | None = None,
         importance: float | None = None,
     ) -> bool:
-        """更新情景记忆"""
+        """更新情景记忆
+
+        Args:
+            record_id (str): 当前情景记忆正文的稳定编号。
+            content (str | None): 当前处理的正文。
+            importance (float | None): 模型评估的记忆重要度。
+        """
         updates = []
         params = []
 
@@ -124,7 +144,11 @@ class EpisodicSqliteStore:
             return cursor.rowcount > 0
 
     async def delete(self, record_id: str) -> bool:
-        """删除情景记忆"""
+        """删除情景记忆
+
+        Args:
+            record_id (str): 当前情景记忆正文的稳定编号。
+        """
         async with aiosqlite.connect(self.db_path) as conn:
             await conn.execute("PRAGMA busy_timeout=5000")
             cursor = await conn.execute(
@@ -140,7 +164,13 @@ class EpisodicSqliteStore:
         event_date_before: str | None = None,
         importance_below: float | None = None,
     ) -> int:
-        """按条件批量删除"""
+        """按条件批量删除
+
+        Args:
+            session_id (str | None): 当前操作所属的会话编号。
+            event_date_before (str | None): 只匹配事件日期早于此值的记忆。
+            importance_below (float | None): 只删除重要度低于该数值的情景记忆。
+        """
         conditions = []
         params = []
 
@@ -171,7 +201,11 @@ class EpisodicSqliteStore:
     # ==================== 查询方法 ====================
 
     async def get(self, record_id: str) -> dict[str, Any] | None:
-        """获取单条记忆"""
+        """获取单条记忆
+
+        Args:
+            record_id (str): 当前情景记忆正文的稳定编号。
+        """
         async with aiosqlite.connect(self.db_path) as conn:
             await conn.execute("PRAGMA busy_timeout=5000")
             conn.row_factory = aiosqlite.Row
@@ -193,7 +227,12 @@ class EpisodicSqliteStore:
         session_id: str | None = None,
         limit: int = 1000,
     ) -> list[dict[str, Any]]:
-        """获取所有记忆（用于重建向量索引）"""
+        """获取所有记忆（用于重建向量索引）
+
+        Args:
+            session_id (str | None): 当前操作所属的会话编号。
+            limit (int): 最多返回的记录数量。
+        """
         async with aiosqlite.connect(self.db_path) as conn:
             await conn.execute("PRAGMA busy_timeout=5000")
             conn.row_factory = aiosqlite.Row
@@ -229,7 +268,13 @@ class EpisodicSqliteStore:
         start_date: str,
         end_date: str,
     ) -> list[dict[str, Any]]:
-        """获取时间范围内的记忆"""
+        """获取时间范围内的记忆
+
+        Args:
+            session_id (str): 当前操作所属的会话编号。
+            start_date (str): 包含在内的查询起始日期。
+            end_date (str): 包含在内的查询结束日期。
+        """
         async with aiosqlite.connect(self.db_path) as conn:
             await conn.execute("PRAGMA busy_timeout=5000")
             conn.row_factory = aiosqlite.Row
@@ -251,7 +296,13 @@ class EpisodicSqliteStore:
         importance_below: float,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
-        """获取重要性低于指定值的记忆"""
+        """获取重要性低于指定值的记忆
+
+        Args:
+            session_id (str): 当前操作所属的会话编号。
+            importance_below (float): 只删除重要度低于该数值的情景记忆。
+            limit (int): 最多返回的记录数量。
+        """
         async with aiosqlite.connect(self.db_path) as conn:
             await conn.execute("PRAGMA busy_timeout=5000")
             conn.row_factory = aiosqlite.Row
@@ -271,7 +322,11 @@ class EpisodicSqliteStore:
     # ==================== 统计方法 ====================
 
     async def count(self, session_id: str | None = None) -> int:
-        """统计记忆数量"""
+        """统计记忆数量
+
+        Args:
+            session_id (str | None): 当前操作所属的会话编号。
+        """
         async with aiosqlite.connect(self.db_path) as conn:
             await conn.execute("PRAGMA busy_timeout=5000")
             if session_id:
@@ -287,7 +342,11 @@ class EpisodicSqliteStore:
             return row[0] if row else 0
 
     async def get_stats(self, session_id: str | None = None) -> dict[str, Any]:
-        """获取统计信息"""
+        """获取统计信息
+
+        Args:
+            session_id (str | None): 当前操作所属的会话编号。
+        """
         async with aiosqlite.connect(self.db_path) as conn:
             await conn.execute("PRAGMA busy_timeout=5000")
             conn.row_factory = aiosqlite.Row

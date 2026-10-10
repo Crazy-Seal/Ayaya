@@ -30,8 +30,7 @@ class ChannelCommand:
     task_id: str | None = None
 
     def __post_init__(self) -> None:
-        """归一化已知命令，保留未知字符串的业务拒绝路径而不新增请求校验。
-        """
+        """归一化已知命令，保留未知字符串的业务拒绝路径而不新增请求校验。"""
         try:
             object.__setattr__(self, "kind", CommandKind(self.kind))
         except (ValueError, TypeError):
@@ -80,8 +79,7 @@ class InteractionEvent:
     timestamp: datetime = field(default_factory=utc_now)
 
     def __post_init__(self) -> None:
-        """归一化已知事件，保留 EventHub 既有扩展事件的投递行为。
-        """
+        """归一化已知事件，保留 EventHub 既有扩展事件的投递行为。"""
         try:
             object.__setattr__(self, "kind", InteractionEventKind(self.kind))
         except (ValueError, TypeError):

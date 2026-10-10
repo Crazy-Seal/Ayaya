@@ -7,14 +7,10 @@ from app.services.interaction_contract import ChannelCommand, CommandReceipt
 
 
 def test_event_hub_routes_only_to_desktop_and_origin() -> None:
-    """验证事件只投递桌面及来源渠道。
-
-    """
+    """验证事件只投递桌面及来源渠道。"""
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：事件只投递桌面及来源渠道。
-
-        """
+        """在隔离异步环境中安排并验证：事件只投递桌面及来源渠道。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         hub = InteractionEventHub()
         hub.register_channel("qq")
@@ -48,14 +44,10 @@ def test_event_hub_routes_only_to_desktop_and_origin() -> None:
 
 
 def test_in_process_adapter_uses_shared_command_and_event_contract() -> None:
-    """验证进程内 Adapter 与桌面使用同一命令事件契约。
-
-    """
+    """验证进程内 Adapter 与桌面使用同一命令事件契约。"""
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：进程内 Adapter 与桌面使用同一命令事件契约。
-
-        """
+        """在隔离异步环境中安排并验证：进程内 Adapter 与桌面使用同一命令事件契约。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         hub = InteractionEventHub()
         hub.register_channel("test")
@@ -93,14 +85,10 @@ def test_in_process_adapter_uses_shared_command_and_event_contract() -> None:
 
 
 def test_slow_subscriber_reconnects_from_snapshot_watermark() -> None:
-    """验证慢订阅者断开后可按快照水位恢复。
-
-    """
+    """验证慢订阅者断开后可按快照水位恢复。"""
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：慢订阅者断开后可按快照水位恢复。
-
-        """
+        """在隔离异步环境中安排并验证：慢订阅者断开后可按快照水位恢复。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         hub = InteractionEventHub(queue_size=1)
         stream = hub.subscribe("s", "desktop")

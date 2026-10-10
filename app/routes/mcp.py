@@ -17,7 +17,7 @@ def _result(data) -> Result:
         data: 写入响应的数据。
 
     Returns:
-        状态码为 200 的统一响应对象。
+        Result: 状态码为 200 的统一响应对象。
     """
     return Result(data=data, msg="success", code=200)
 
@@ -27,10 +27,10 @@ def list_servers(service: MCPService = Depends(get_mcp_service)) -> Result:
     """列出全部 MCP Server。
 
     Args:
-        service: 由依赖注入提供的 MCP 应用服务。
+        service (MCPService): 由依赖注入提供的 MCP 应用服务。
 
     Returns:
-        包含 Server 视图列表的统一响应。
+        Result: 包含 Server 视图列表的统一响应。
     """
     return _result(service.list_servers())
 
@@ -43,11 +43,11 @@ async def test_server(
     """测试 MCP Server 配置而不保存。
 
     Args:
-        server: 待测试的 Server 配置。
-        service: 由依赖注入提供的 MCP 应用服务。
+        server (MCPServerConfig): 待测试的 Server 配置。
+        service (MCPService): 由依赖注入提供的 MCP 应用服务。
 
     Returns:
-        包含连接诊断结果的统一响应。
+        Result: 包含连接诊断结果的统一响应。
 
     Raises:
         HTTPException: Server 连接测试失败。
@@ -66,11 +66,11 @@ async def create_server(
     """创建 MCP Server。
 
     Args:
-        server: 待创建的 Server 配置。
-        service: 由依赖注入提供的 MCP 应用服务。
+        server (MCPServerConfig): 待创建的 Server 配置。
+        service (MCPService): 由依赖注入提供的 MCP 应用服务。
 
     Returns:
-        包含新 Server 视图的统一响应。
+        Result: 包含新 Server 视图的统一响应。
 
     Raises:
         HTTPException: Server ID 已存在。
@@ -90,12 +90,12 @@ async def update_server(
     """更新指定 MCP Server。
 
     Args:
-        server_id: 路径中的 MCP Server ID。
-        server: 更新后的完整 Server 配置。
-        service: 由依赖注入提供的 MCP 应用服务。
+        server_id (str): 路径中的 MCP Server ID。
+        server (MCPServerConfig): 更新后的完整 Server 配置。
+        service (MCPService): 由依赖注入提供的 MCP 应用服务。
 
     Returns:
-        包含更新后 Server 视图的统一响应。
+        Result: 包含更新后 Server 视图的统一响应。
 
     Raises:
         HTTPException: Server 不存在或请求尝试修改 ID。
@@ -116,11 +116,11 @@ async def delete_server(
     """删除 MCP Server 并清理模型引用。
 
     Args:
-        server_id: 待删除的 MCP Server ID。
-        service: 由依赖注入提供的 MCP 应用服务。
+        server_id (str): 待删除的 MCP Server ID。
+        service (MCPService): 由依赖注入提供的 MCP 应用服务。
 
     Returns:
-        包含受影响会话 ID 的统一响应。
+        Result: 包含受影响会话 ID 的统一响应。
 
     Raises:
         HTTPException: 指定 Server 不存在。
@@ -140,11 +140,11 @@ async def reconnect_server(
     """重新连接指定 MCP Server。
 
     Args:
-        server_id: 待重连的 MCP Server ID。
-        service: 由依赖注入提供的 MCP 应用服务。
+        server_id (str): 待重连的 MCP Server ID。
+        service (MCPService): 由依赖注入提供的 MCP 应用服务。
 
     Returns:
-        包含重连后 Server 视图的统一响应。
+        Result: 包含重连后 Server 视图的统一响应。
 
     Raises:
         HTTPException: Server 不存在或重连失败。
@@ -167,11 +167,11 @@ def list_server_tools(
     """列出指定 MCP Server 的工具目录。
 
     Args:
-        server_id: MCP Server ID。
-        service: 由依赖注入提供的 MCP 应用服务。
+        server_id (str): MCP Server ID。
+        service (MCPService): 由依赖注入提供的 MCP 应用服务。
 
     Returns:
-        包含工具目录的统一响应。
+        Result: 包含工具目录的统一响应。
 
     Raises:
         HTTPException: 指定 Server 不存在。

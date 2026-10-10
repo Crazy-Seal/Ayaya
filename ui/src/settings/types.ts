@@ -143,7 +143,9 @@ export type PageEventCallback = (event: PageEvent) => void | Promise<void>;
 export interface ISettingsPage {
   /**
    * 渲染页面
-   * @param data 渲染数据（来自 editingState 或 savedState）
+   *
+   * Args:
+   *     data (PageRenderData): 当前已保存设置和本页所需模型、插件及工具目录。
    */
   render(data: PageRenderData): void;
 
@@ -155,6 +157,9 @@ export interface ISettingsPage {
 
   /**
    * 设置事件回调
+   *
+   * Args:
+   *     callback (PageEventCallback): 设置页主控制器接收本页提交或编辑事件的回调。
    */
   onEvent(callback: PageEventCallback): void;
 }

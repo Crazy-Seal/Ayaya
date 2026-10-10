@@ -31,6 +31,13 @@ class EpisodicChromaStore:
         embedding_config: dict[str, Any],
         persist_path: str | None = None,
     ):
+        """创建向量客户端及当前会话集合；有目录时持久保存向量，未指定时使用内存集合。
+
+        Args:
+            collection_name (str): 当前会话独立使用的 Chroma 集合名称。
+            embedding_config (dict[str, Any]): 向量模型的地址、凭据、模型名及可选维数配置。
+            persist_path (str | None): 向量集合的持久目录；省略时使用内存存储。
+        """
         self.collection_name = collection_name
         self.embedding_config = embedding_config
         self.persist_path = persist_path
@@ -66,9 +73,9 @@ class EpisodicChromaStore:
         """插入或更新向量
 
         Args:
-            record_id: 记录ID
-            content: 文本内容
-            metadata: 元数据（timestamp, importance, session_id, etc.）
+            record_id (str): 记录ID
+            content (str): 文本内容
+            metadata (dict[str, Any] | None): 元数据（timestamp, importance, session_id, etc.）
         """
         embedding = await self._embedding_client.embed_documents([content])
 
@@ -91,12 +98,12 @@ class EpisodicChromaStore:
         """向量检索
 
         Args:
-            query: 查询文本（空字符串则只做元数据过滤）
-            top_k: 返回数量
-            where: 元数据过滤条件
+            query (str): 查询文本（空字符串则只做元数据过滤）
+            top_k (int): 返回数量
+            where (dict[str, Any] | None): 元数据过滤条件
 
         Returns:
-            检索结果列表，每个元素包含 id, content, metadata, distance
+            list[dict[str, Any]]: 检索结果列表，每个元素包含 id, content, metadata, distance
         """
         if query:
             query_embedding = await self._embedding_client.embed_documents([query])
@@ -139,7 +146,7 @@ class EpisodicChromaStore:
         """删除向量
 
         Args:
-            record_id: 记录ID
+            record_id (str): 记录ID
         """
         await asyncio.to_thread(self._collection.delete, ids=[record_id])
 
@@ -147,10 +154,10 @@ class EpisodicChromaStore:
         """按元数据删除
 
         Args:
-            where: 元数据过滤条件
+            where (dict[str, Any]): 元数据过滤条件
 
         Returns:
-            删除的数量
+            int: 删除的数量
         """
         result = await asyncio.to_thread(self._collection.delete, where=where)
         return len(result.get("ids", []))
@@ -159,7 +166,7 @@ class EpisodicChromaStore:
         """获取记录数量
 
         Returns:
-            记录数量
+            int: 记录数量
         """
         return await asyncio.to_thread(self._collection.count)
 
@@ -167,10 +174,10 @@ class EpisodicChromaStore:
         """根据 ID 获取单条记录
 
         Args:
-            record_id: 记录ID
+            record_id (str): 记录ID
 
         Returns:
-            记录数据，不存在则返回 None
+            dict[str, Any] | None: 记录数据，不存在则返回 None
         """
         result = await asyncio.to_thread(self._collection.get, ids=[record_id])
 

@@ -29,7 +29,13 @@ TOOL_MEMORY_CONSTRAINT = (
 
 
 def test_protocol_store_freezes_ten_complete_turns_and_five_history_turns(tmp_path: Path) -> None:
+    """验证协议历史按边界选十轮当前批次及五轮前情。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     async def scenario():
+        """由外层测试调用，完成“协议历史按边界选十轮当前批次及五轮前情”的异步步骤。"""
         db_path = tmp_path / "agent.sqlite3"
         manager = StateManager("session", db_path=str(db_path))
         try:
@@ -55,7 +61,13 @@ def test_protocol_store_freezes_ten_complete_turns_and_five_history_turns(tmp_pa
 
 
 def test_completed_turn_query_does_not_accept_a_chunk_head_fragment(tmp_path: Path) -> None:
+    """验证分块开头不完整轮次不会当作完整历史。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     async def scenario():
+        """由外层测试调用，完成“分块开头不完整轮次不会当作完整历史”的异步步骤。"""
         db_path = tmp_path / "agent.sqlite3"
         manager = StateManager("session", db_path=str(db_path))
         try:
@@ -108,6 +120,7 @@ def test_long_term_memory_format_has_full_current_tools_and_light_history_tools(
 
 
 def test_diary_format_skips_system_injected_tool_images() -> None:
+    """验证日记格式化跳过内部工具图片。"""
     formatted = DiaryMemory._format_messages([
         HumanMessage(text="请看一下屏幕"),
         ToolMessage(content="截屏成功", tool_name="screenshot", tool_call_id="call-shot"),
@@ -122,19 +135,54 @@ def test_diary_format_skips_system_injected_tool_images() -> None:
 
 
 def test_diary_generation_restores_previous_diaries_and_conversation_context() -> None:
+    """验证生成日记时恢复旧日记和更早对话前情。"""
     class ChatStore:
+        """提供当前用例所需的 ChatStore 测试替身，执行记录仅供外层断言使用。
+
+        该定义仅用于外层用例：验证生成日记时恢复旧日记和更早对话前情。
+        """
         def __init__(self) -> None:
+            """保存本用例的脚本输入和依赖，初始化测试对象的执行记录。
+
+            该定义仅用于外层用例：验证生成日记时恢复旧日记和更早对话前情。
+            """
             self.before_calls: list[dict] = []
 
         async def get_last_chat_date(self, *_args, **_kwargs):
+            """提供用例指定的最近聊天日，并记录排除日期和读取边界。
+
+            该定义仅用于外层用例：验证生成日记时恢复旧日记和更早对话前情。
+
+            Args:
+                _args (dict[str, Any]): 当前工具调用或被包装函数的参数。
+                _kwargs (dict[str, Any]): 传递给被调用函数的其他关键字参数。
+            """
             return date(2026, 9, 1)
 
         async def get_messages_by_date(self, *_args, **_kwargs):
+            """提供目标日期的测试对话，并记录历史读取边界。
+
+            该定义仅用于外层用例：验证生成日记时恢复旧日记和更早对话前情。
+
+            Args:
+                _args (dict[str, Any]): 当前工具调用或被包装函数的参数。
+                _kwargs (dict[str, Any]): 传递给被调用函数的其他关键字参数。
+            """
             return [HumanMessage(text="今天继续昨天的设计")]
 
         async def get_messages_before_date(
             self, session_id, before_date, limit=10, *, max_history_id=None
         ):
+            """提供仅作为前情使用的较早对话。
+
+            该定义仅用于外层用例：验证生成日记时恢复旧日记和更早对话前情。
+
+            Args:
+                session_id (Any): 当前操作所属的会话编号。
+                before_date (Any): 只读取该有效日期之前的记录。
+                limit (Any): 最多返回的记录数量。
+                max_history_id (Any): 本次提取开始前捕获的协议日志最大编号；排除之后到达的消息。
+            """
             self.before_calls.append({
                 "session_id": session_id,
                 "before_date": before_date,
@@ -147,13 +195,37 @@ def test_diary_generation_restores_previous_diaries_and_conversation_context() -
             ]
 
     class DiaryStore:
+        """提供当前用例所需的 DiaryStore 测试替身，执行记录仅供外层断言使用。
+
+        该定义仅用于外层用例：验证生成日记时恢复旧日记和更早对话前情。
+        """
         def __init__(self) -> None:
+            """保存本用例的脚本输入和依赖，初始化测试对象的执行记录。
+
+            该定义仅用于外层用例：验证生成日记时恢复旧日记和更早对话前情。
+            """
             self.added: list[tuple[str, date, str]] = []
 
         async def exists(self, *_args):
+            """返回用例指定的日记是否存在。
+
+            该定义仅用于外层用例：验证生成日记时恢复旧日记和更早对话前情。
+
+            Args:
+                _args (dict[str, Any]): 当前工具调用或被包装函数的参数。
+            """
             return False
 
         async def get_recent_before_date(self, session_id, before_date, n=2):
+            """提供目标日期之前的测试日记。
+
+            该定义仅用于外层用例：验证生成日记时恢复旧日记和更早对话前情。
+
+            Args:
+                session_id (Any): 当前操作所属的会话编号。
+                before_date (Any): 只读取该有效日期之前的记录。
+                n (Any): 最多返回的日记条数。
+            """
             assert session_id == "session"
             assert before_date == date(2026, 9, 1)
             assert n == 2
@@ -163,18 +235,43 @@ def test_diary_generation_restores_previous_diaries_and_conversation_context() -
             ]
 
         async def add(self, session_id, effective_date, content):
+            """记录本次日记或长期记忆保存内容，供外层检查。
+
+            该定义仅用于外层用例：验证生成日记时恢复旧日记和更早对话前情。
+
+            Args:
+                session_id (Any): 当前操作所属的会话编号。
+                effective_date (Any): 按日记规则划分的有效日期，格式为 YYYY-MM-DD。
+                content (Any): 当前处理的正文。
+            """
             self.added.append((session_id, effective_date, content))
             return 1
 
     class LLM:
+        """提供当前用例所需的 LLM 测试替身，执行记录仅供外层断言使用。
+
+        该定义仅用于外层用例：验证生成日记时恢复旧日记和更早对话前情。
+        """
         def __init__(self) -> None:
+            """保存本用例的脚本输入和依赖，初始化测试对象的执行记录。
+
+            该定义仅用于外层用例：验证生成日记时恢复旧日记和更早对话前情。
+            """
             self.calls: list[list[dict]] = []
 
         async def ainvoke(self, messages):
+            """记录日记模型收到的提示词并返回脚本正文。
+
+            该定义仅用于外层用例：验证生成日记时恢复旧日记和更早对话前情。
+
+            Args:
+                messages (list[dict]): 按对话顺序排列的消息集合。
+            """
             self.calls.append(messages)
             return SimpleNamespace(content="生成的日记")
 
     async def scenario():
+        """由外层测试调用，完成“生成日记时恢复旧日记和更早对话前情”的异步步骤。"""
         memory = DiaryMemory.__new__(DiaryMemory)
         memory.session_id = "session"
         memory.config = SimpleNamespace(recent_diaries_count=2)
@@ -214,6 +311,7 @@ def test_diary_generation_restores_previous_diaries_and_conversation_context() -
 
 
 def test_diary_prompt_marks_missing_reference_context_as_unavailable() -> None:
+    """验证缺失前情在日记提示词中明确说明。"""
     memory = DiaryMemory.__new__(DiaryMemory)
     memory.chat_settings = SimpleNamespace(
         name="Ayaya",
@@ -382,13 +480,37 @@ def test_diary_and_long_term_memory_are_scheduled_independently(monkeypatch) -> 
 
 
 def test_long_term_memory_uses_frozen_protocol_cutoff(monkeypatch) -> None:
+    """验证长期记忆提取使用捕获的协议日志边界。
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
+    """
     calls: list[dict] = []
 
     class Store:
+        """提供当前用例所需的 Store 测试替身，执行记录仅供外层断言使用。
+
+        该定义仅用于外层用例：验证长期记忆提取使用捕获的协议日志边界。
+        """
         async def get_latest_message_id(self, session_id):
+            """提供用例指定的协议日志最大编号。
+
+            该定义仅用于外层用例：验证长期记忆提取使用捕获的协议日志边界。
+
+            Args:
+                session_id (Any): 当前操作所属的会话编号。
+            """
             raise AssertionError("must use the cutoff frozen before the new user input")
 
         async def get_recent_completed_turns(self, session_id, **kwargs):
+            """按用例提供前情和本批完整轮次，并记录日志边界。
+
+            该定义仅用于外层用例：验证长期记忆提取使用捕获的协议日志边界。
+
+            Args:
+                session_id (Any): 当前操作所属的会话编号。
+                kwargs (dict[str, Any]): 传递给被调用函数的其他关键字参数。
+            """
             calls.append({"session_id": session_id, **kwargs})
             current = []
             for index in range(12):
@@ -399,9 +521,22 @@ def test_long_term_memory_uses_frozen_protocol_cutoff(monkeypatch) -> None:
             return [], current
 
     class MemoryManager:
+        """提供当前用例所需的 MemoryManager 测试替身，执行记录仅供外层断言使用。
+
+        该定义仅用于外层用例：验证长期记忆提取使用捕获的协议日志边界。
+        """
         chat_history_store = Store()
 
         async def add(self, messages, history, **kwargs):
+            """记录本次日记或长期记忆保存内容，供外层检查。
+
+            该定义仅用于外层用例：验证长期记忆提取使用捕获的协议日志边界。
+
+            Args:
+                messages (list[dict]): 按对话顺序排列的消息集合。
+                history (Any): 只作为前情使用的旧消息。
+                kwargs (dict[str, Any]): 传递给被调用函数的其他关键字参数。
+            """
             calls.append({
                 "message_count": len(messages),
                 "history_count": len(history),
@@ -415,6 +550,7 @@ def test_long_term_memory_uses_frozen_protocol_cutoff(monkeypatch) -> None:
     )
 
     async def scenario():
+        """由外层测试调用，完成“长期记忆提取使用捕获的协议日志边界”的异步步骤。"""
         plugin = MemoryPlugin()
         await plugin._persist_from_protocol(
             "session",
@@ -548,7 +684,9 @@ def test_memory_preparation_failure_keeps_pending_turn_counter(monkeypatch) -> N
 
 
 def test_memory_plugin_does_not_own_completed_turn_counting() -> None:
+    """验证记忆插件不自行增加已完成轮次计数。"""
     async def scenario():
+        """由外层测试调用，完成“记忆插件不自行增加已完成轮次计数”的异步步骤。"""
         plugin = MemoryPlugin(
             enable_diary=False,
             enable_episodic=False,
@@ -566,11 +704,17 @@ def test_memory_plugin_does_not_own_completed_turn_counting() -> None:
 
 
 def test_diaries_have_a_separate_effective_date_unique_table(tmp_path: Path) -> None:
+    """验证日记使用独立有效日期唯一表。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     store = DiarySqliteStore(str(tmp_path / "memory.sqlite3"))
     assert store.TABLE_NAME == "diaries"
 
 
 def test_memory_prompts_only_add_the_tool_evidence_constraint() -> None:
+    """验证记忆提示词只追加工具事实约束。"""
     assert TOOL_MEMORY_CONSTRAINT in MEM0_CUSTOM_INSTRUCTIONS
     memory = EpisodicMemory.__new__(EpisodicMemory)
     memory.chat_settings = SimpleNamespace(

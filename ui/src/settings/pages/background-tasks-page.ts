@@ -37,11 +37,11 @@ export class BackgroundTasksPage {
     refresh: HTMLButtonElement,
   ) {
     refresh.addEventListener("click", /**
-     * 响应当前控件事件，调用所属视图的刷新、输出或命令入口。
+     * 任务页可见时定时刷新当前会话任务记录。
      */
     () => { void this.render(this.sessionId); });
     more.addEventListener("click", /**
-     * 响应当前控件事件，调用所属视图的刷新、输出或命令入口。
+     * 已选择任务时定时读取新输出，继续读取位置由返回偏移决定。
      */
     () => { void this.loadOutput(); });
   }
@@ -86,17 +86,19 @@ export class BackgroundTasksPage {
       this.show(records);
       // 2. 只为可见页中的运行任务刷新耗时和输出摘要，终态或切页后释放计时器。
       const running = records.some(/**
-       * 判断是否仍有需要实时更新的任务。
+       * 检查是否仍有运行任务，全部结束后停止任务状态轮询。
        *
        * Args:
-       *     record (BackgroundTaskRecord): 当前任务记录。
+       *     record (BackgroundTaskRecord): 当前后台任务记录，包含编号、执行状态及结果信息。
        *
        * Returns:
-       *     boolean: 是否仍处于运行状态。
+       *     boolean: 任务状态为 running 时为 true。
        */
       (record) => record.status === TaskStatus.RUNNING);
       if (this.active && running && !this.timer) {
-        this.timer = setInterval(/** 仅在任务页可见时更新当前会话任务。 */
+        this.timer = setInterval(/**
+         * 任务状态变化后刷新可见任务页面。
+         */
         () => { void this.render(this.sessionId); }, TASK_REFRESH_INTERVAL_MS);
       } else if ((!this.active || !running) && this.timer) {
         clearInterval(this.timer);
@@ -137,7 +139,7 @@ export class BackgroundTasksPage {
       details.type = "button";
       details.textContent = "输出";
       details.addEventListener("click", /**
-       * 响应当前控件事件，调用所属视图的刷新、输出或命令入口。
+       * 用户选择任务详情时切换任务编号并清空旧输出，从零开始读取该任务输出。
        */
       () => {
         this.selectedTask = record.task_id;
@@ -156,26 +158,26 @@ export class BackgroundTasksPage {
         stop.type = "button";
         stop.textContent = "停止";
         stop.addEventListener("click", /**
-         * 响应当前控件事件，调用所属视图的刷新、输出或命令入口。
+         * 用户点击停止任务时提交指定任务的停止命令，完成后检查后端是否受理。
          */
         () => {
           void window.desktopPetApi.submitInteractionCommand({
             session_id: this.sessionId, origin_channel: DESKTOP_CHANNEL,
             kind: CommandKind.STOP_BACKGROUND_TASK, task_id: record.task_id,
           }).then(/**
-           * 应用已经完成的异步结果，继续当前事件或页面更新。
+           * 停止回执到达后只在已受理时刷新任务状态，拒绝则交给错误提示。
            *
            * Args:
-           *     receipt (any): 后端命令受理回执。
+           *     receipt (CommandReceipt): 后端对任务操作的命令回执。
            */
           (receipt) => {
             if (!receipt.accepted) throw new Error(receipt.reason || "无法停止任务");
             void this.render(this.sessionId);
           }).catch(/**
-           * 处理异步失败并更新对应错误提示，不取消后端运行。
+           * 停止任务失败或被拒绝后在该任务标题显示原因。
            *
            * Args:
-           *     error (unknown): 当前异步查询或提交失败原因。
+           *     error (unknown): 本次捕获的异常。
            */
           (error: unknown) => { title.textContent = `停止失败: ${String(error)}`; });
         });

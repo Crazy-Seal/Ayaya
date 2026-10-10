@@ -107,6 +107,13 @@ class EpisodicMemory:
         config: MemoryConfig,
         chat_settings: ChatSettings,
     ):
+        """绑定会话并装配情景记忆提取模型、向量检索集合及 SQLite 正文存储；SQLite 保存完整记忆事实。
+
+        Args:
+            session_id (str): 当前操作所属的会话编号。
+            config (MemoryConfig): 调用方提供的配置。
+            chat_settings (ChatSettings): 当前会话的模型、角色及插件设置。
+        """
         self.session_id = session_id
         self.config = config
         self.chat_settings = chat_settings
@@ -224,11 +231,11 @@ class EpisodicMemory:
         综合评分 = (向量相似度 * 0.8 + 近因分数 * 0.2) * 重要性权重
 
         Args:
-            query: 查询文本
-            top_k: 返回数量
+            query (str): 查询文本
+            top_k (int): 返回数量
 
         Returns:
-            相关记忆列表（按综合评分降序）
+            list[MemoryItem]: 相关记忆列表（按综合评分降序）
         """
         if not query.strip():
             return []
@@ -330,11 +337,11 @@ class EpisodicMemory:
         """时间线查询（从 SQLite 查询，更高效可靠）
 
         Args:
-            start_date: 开始日期
-            end_date: 结束日期
+            start_date (date): 开始日期
+            end_date (date): 结束日期
 
         Returns:
-            时间范围内的记忆列表（按日期升序）
+            list[MemoryItem]: 时间范围内的记忆列表（按日期升序）
         """
         records = await self.sqlite_store.get_by_date_range(
             session_id=self.session_id,
@@ -459,7 +466,12 @@ class EpisodicMemory:
         messages: str,
         history: str,
     ) -> str:
-        """构建记忆提取提示词"""
+        """构建记忆提取提示词
+
+        Args:
+            messages (str): 按对话顺序排列的消息集合。
+            history (str): 仅用于理解前情的更早对话消息。
+        """
         return f"""你是{self.chat_settings.name}，一个{self.chat_settings.feature}的{self.chat_settings.character}，称呼用户为{self.chat_settings.address}。
 
 {self.chat_settings.characteristic}
@@ -499,7 +511,11 @@ class EpisodicMemory:
     # ==================== 删除和恢复方法 ====================
 
     async def delete(self, memory_id: str) -> bool:
-        """删除记忆（双删：SQLite + Chroma）"""
+        """删除记忆（双删：SQLite + Chroma）
+
+        Args:
+            memory_id (str): 要查询或删除的记忆记录编号。
+        """
         # 1. SQLite 删除
         sqlite_success = await self.sqlite_store.delete(memory_id)
 
@@ -512,7 +528,11 @@ class EpisodicMemory:
         return sqlite_success
 
     async def delete_by_importance(self, importance_below: float) -> int:
-        """删除低重要度的记忆"""
+        """删除低重要度的记忆
+
+        Args:
+            importance_below (float): 只删除重要度低于该数值的情景记忆。
+        """
         # 1. 从 SQLite 批量删除
         sqlite_count = await self.sqlite_store.delete_by_metadata(
             session_id=self.session_id,
@@ -542,7 +562,11 @@ class EpisodicMemory:
         return sqlite_count
 
     async def delete_before_date(self, before_date: date) -> int:
-        """删除指定日期之前的记忆"""
+        """删除指定日期之前的记忆
+
+        Args:
+            before_date (date): 只读取该有效日期之前的记录。
+        """
         sqlite_count = await self.sqlite_store.delete_by_metadata(
             session_id=self.session_id,
             event_date_before=before_date.isoformat(),

@@ -39,8 +39,21 @@ const rendererPolicy = createTrustedRendererPolicy({
   ],
 });
 
+/**
+ * 取得当前开发或生产环境允许加载的应用页面规则。
+ *
+ * Returns:
+ *     TrustedRendererPolicy: 应用窗口共用的可信来源配置。
+ */
 export const getTrustedRendererPolicy = () => rendererPolicy;
 
+/**
+ * 记录应用窗口被阻止的导航类型和目标来源。
+ *
+ * Args:
+ *     kind (string): 被阻止的导航类别。
+ *     targetUrl (string): 本次导航准备访问的目标地址。
+ */
 const logBlockedNavigation = (kind: string, targetUrl: string): void => {
   appendFrontendLog(
     "warn",
@@ -49,9 +62,25 @@ const logBlockedNavigation = (kind: string, targetUrl: string): void => {
   );
 };
 
+/**
+ * 为新应用窗口接入可信导航限制和渲染日志采集。
+ *
+ * Args:
+ *     win (BrowserWindow): 需要保护来源与导航的应用窗口。
+ *     scope (string): 日志所属模块或功能名称。
+ */
 const protectApplicationWindow = (win: BrowserWindow, scope: string): void => {
   installNavigationGuards(
     win.webContents,
+    /**
+     * 应用窗口导航前使用当前可信页面规则检查目标地址。
+     *
+     * Args:
+     *     targetUrl (string): 本次导航准备访问的目标地址。
+     *
+     * Returns:
+     *     boolean: 目标属于允许的应用页面时为 true。
+     */
     (targetUrl) => isTrustedRendererUrl(targetUrl, rendererPolicy),
     logBlockedNavigation
   );
@@ -90,10 +119,19 @@ export const getSettingsWindow = (): BrowserWindow | null => {
   return settingsWindow;
 };
 
+/**
+ * 向日志分发方提供当前日志窗口。
+ *
+ * Returns:
+ *     BrowserWindow | null: 存活的日志窗口，未打开或已关闭时为空。
+ */
 export const getLogWindow = (): BrowserWindow | null => logWindow;
 
 /**
  * 设置主窗口引用
+ *
+ * Args:
+ *     win (BrowserWindow | null): 需要保护来源与导航的应用窗口。
  */
 export const setMainWindow = (win: BrowserWindow | null): void => {
   mainWindow = win;
@@ -101,6 +139,9 @@ export const setMainWindow = (win: BrowserWindow | null): void => {
 
 /**
  * 设置设置窗口引用
+ *
+ * Args:
+ *     win (BrowserWindow | null): 需要保护来源与导航的应用窗口。
  */
 export const setSettingsWindow = (win: BrowserWindow | null): void => {
   settingsWindow = win;
@@ -155,14 +196,16 @@ export const createMainWindow = (): BrowserWindow => {
  * 打开或聚焦设置窗口，任务快捷入口在新窗口和已有窗口都直达任务页。
  *
  * Args:
- *     page ("tasks" | undefined): 指定任务页；省略时保持当前页或默认模型页。
+ *     page ("tasks"): 指定任务页；省略时保持当前页或默认模型页。
  */
 export const openSettingsWindow = (page?: "tasks"): void => {
   if (settingsWindow && !settingsWindow.isDestroyed()) {
     // 1. 已有窗口使用 IPC 导航，避免重新加载丢失其他设置页的状态。
     if (page) {
       const target = settingsWindow;
-      /** 在页面监听就绪后导航，避免首次加载期间连续点击丢失目标页。 */
+      /**
+       *  在页面监听就绪后导航，避免首次加载期间连续点击丢失目标页。
+       */
       const navigate = (): void => {
         if (!target.isDestroyed()) target.webContents.send("desktop-pet:open-settings-page", page);
       };
@@ -204,12 +247,18 @@ export const openSettingsWindow = (page?: "tasks"): void => {
     win.loadFile(productionSettingsPath, { query: page ? { page } : {} });
   }
 
-  win.once("ready-to-show", () => {
+  win.once("ready-to-show", /**
+   * 设置窗口内容准备完成后显示窗口并获得焦点。
+   */
+  () => {
     win.show();
     win.focus();
   });
 
-  win.on("closed", () => {
+  win.on("closed", /**
+   * 设置窗口关闭时仅清除仍指向该窗口的缓存引用。
+   */
+  () => {
     if (settingsWindow === win) {
       settingsWindow = null;
     }
@@ -218,7 +267,9 @@ export const openSettingsWindow = (page?: "tasks"): void => {
   settingsWindow = win;
 };
 
-/** 创建或聚焦前后端实时日志控制台。 */
+/**
+ *  创建或聚焦前后端实时日志控制台。
+ */
 export const openLogWindow = (): BrowserWindow => {
   if (logWindow && !logWindow.isDestroyed()) {
     if (logWindow.isMinimized()) logWindow.restore();
@@ -251,17 +302,29 @@ export const openLogWindow = (): BrowserWindow => {
   } else {
     void win.loadFile(productionLogsPath);
   }
-  win.once("ready-to-show", () => {
+  win.once("ready-to-show", /**
+   * 日志窗口内容准备完成后显示窗口并获得焦点。
+   */
+  () => {
     win.show();
     win.focus();
   });
-  win.on("closed", () => {
+  win.on("closed", /**
+   * 日志窗口关闭时清除该窗口的缓存引用，后续日志入口可重新创建。
+   */
+  () => {
     if (logWindow === win) logWindow = null;
   });
   logWindow = win;
   return win;
 };
 
+/**
+ * 日志窗口存在时把已脱敏日志批次发送给页面。
+ *
+ * Args:
+ *     batch (LogBatch): 包含已脱敏日志记录的实时批次。
+ */
 export const sendLogBatch = (batch: LogBatch): void => {
   if (!logWindow || logWindow.isDestroyed()) return;
   logWindow.webContents.send("desktop-pet:log-batch", batch);
@@ -269,6 +332,9 @@ export const sendLogBatch = (batch: LogBatch): void => {
 
 /**
  * 打开图片预览窗口
+ *
+ * Args:
+ *     imageSrc (string): 要预览的图片地址。
  */
 export const openImagePreviewWindow = (imageSrc: string): void => {
   // 如果已有预览窗口，先关闭
@@ -383,17 +449,32 @@ export const openImagePreviewWindow = (imageSrc: string): void => {
   const previewUrl = `data:text/html;charset=utf-8,${encodeURIComponent(htmlContent)}`;
   installNavigationGuards(
     win.webContents,
+    /**
+     * 图片预览导航只允许本次生成的预览页面，其他目标均拒绝。
+     *
+     * Args:
+     *     targetUrl (string): 本次导航准备访问的目标地址。
+     *
+     * Returns:
+     *     boolean: 目标与当前预览地址完全一致时为 true。
+     */
     (targetUrl) => targetUrl === previewUrl,
     logBlockedNavigation
   );
   win.loadURL(previewUrl);
 
-  win.once("ready-to-show", () => {
+  win.once("ready-to-show", /**
+   * 图片预览内容准备完成后显示并聚焦窗口。
+   */
+  () => {
     win.show();
     win.focus();
   });
 
-  win.on("closed", () => {
+  win.on("closed", /**
+   * 图片预览窗口关闭后清除缓存引用。
+   */
+  () => {
     imagePreviewWindow = null;
   });
 
@@ -404,8 +485,18 @@ export const openImagePreviewWindow = (imageSrc: string): void => {
  * 初始化窗口事件监听
  */
 export const initWindowEventListeners = (): void => {
-  app.on("browser-window-created", (_event, win) => {
-    win.on("closed", () => {
+  app.on("browser-window-created", /**
+   * Electron 创建窗口后安装关闭监听，关闭时释放对应缓存引用。
+   *
+   * Args:
+   *     _event ({ preventDefault: () => void; readonly defaultPrevented: boolean; }): Electron 传入的事件对象，不作为业务载荷使用。
+   *     win (BrowserWindow): 需要保护来源与导航的应用窗口。
+   */
+  (_event, win) => {
+    win.on("closed", /**
+     * 窗口关闭时逐项核对是否为当前主窗口、设置窗口或日志窗口，仅移除匹配引用。
+     */
+    () => {
       if (mainWindow === win) {
         mainWindow = null;
       }
@@ -418,7 +509,10 @@ export const initWindowEventListeners = (): void => {
     });
   });
 
-  app.on("activate", () => {
+  app.on("activate", /**
+   * 应用被重新激活且没有窗口时重新创建桌面主窗口。
+   */
+  () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createMainWindow();
     }

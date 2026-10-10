@@ -27,11 +27,11 @@ def build_exposed_tool_name(server_id: str, remote_tool_name: str) -> str:
     """生成唯一且符合模型 API 限制的 MCP 工具名称。
 
     Args:
-        server_id: MCP Server ID。
-        remote_tool_name: Server 中的原始工具名称。
+        server_id (str): MCP Server ID。
+        remote_tool_name (str): Server 中的原始工具名称。
 
     Returns:
-        带 Server 命名空间、最长 64 字符的模型可见名称。
+        str: 带 Server 命名空间、最长 64 字符的模型可见名称。
     """
     raw = f"mcp__{server_id}__{remote_tool_name}"
     normalized = re.sub(r"[^A-Za-z0-9_-]", "_", raw)
@@ -57,12 +57,12 @@ class MCPToolAdapter(BaseTool):
         """初始化 MCP 工具适配器。
 
         Args:
-            session_id: 模型配置对应的会话 ID。
-            server_id: MCP Server ID。
-            server_name: MCP Server 显示名称。
-            descriptor: 远端工具契约描述符。
-            connection_manager: 进程级 MCP 连接管理器。
-            authorization: 统一工具授权层。
+            session_id (str): 模型配置对应的会话 ID。
+            server_id (str): MCP Server ID。
+            server_name (str): MCP Server 显示名称。
+            descriptor (MCPToolDescriptor): 远端工具契约描述符。
+            connection_manager (MCPConnectionManager): 进程级 MCP 连接管理器。
+            authorization (ToolAuthorization): 统一工具授权层。
         """
         self.session_id = session_id
         self.server_id = server_id
@@ -88,11 +88,11 @@ class MCPToolAdapter(BaseTool):
         """校验远端身份和契约后执行 MCP 工具调用。
 
         Args:
-            args: 模型生成的工具调用参数。
-            context: 包含会话状态和中断恢复数据的工具上下文。
+            args (dict): 模型生成的工具调用参数。
+            context (ToolContext): 包含会话状态和中断恢复数据的工具上下文。
 
         Returns:
-            MCP 执行结果或安全校验错误。
+            ToolResult: MCP 执行结果或安全校验错误。
         """
         identity_error = self._validate_policy_identity()
         if identity_error:
@@ -114,7 +114,7 @@ class MCPToolAdapter(BaseTool):
 
         Args:
         Returns:
-            校验失败时的错误消息；通过时返回 ``None``。
+            str | None: 校验失败时的错误消息；通过时返回 ``None``。
         """
         if not self._authorization.is_exposed(self.session_id, self):
             return "当前模型未获准使用此 MCP 工具"
@@ -131,7 +131,7 @@ class MCPToolAdapter(BaseTool):
         """校验实时会话权限是否绑定到当前 Server 身份。
 
         Returns:
-            身份缺失或发生变化时的错误消息；校验通过时返回 ``None``。
+            str | None: 身份缺失或发生变化时的错误消息；校验通过时返回 ``None``。
         """
         expected = self._authorization.get_bound_mcp_identity(
             self.session_id, self.server_id
@@ -149,11 +149,12 @@ class MCPToolAdapter(BaseTool):
         """把 MCP SDK 调用结果转换为 Ayaya 工具结果。
 
         Args:
-            result: MCP SDK 返回的原始调用结果。
+            result (Any): MCP SDK 返回的原始调用结果。
 
         Returns:
-            包含文本、结构化内容和图片的统一工具结果。
+            ToolResult: 包含文本、结构化内容和图片的统一工具结果。
         """
+        # 1. 兼容两种 SDK 字段名称，结构化结果和文本/图片部分分别读取。
         structured = getattr(result, "structuredContent", None)
         if structured is None:
             structured = getattr(result, "structured_content", None)
@@ -167,6 +168,7 @@ class MCPToolAdapter(BaseTool):
             content_part_count = len(content_parts)
         except TypeError:
             content_part_count = None
+        # 2. 按服务返回顺序读取受支持内容，超过部分数上限即停止；图片格式校验由统一结果层完成。
         for index, part in enumerate(content_parts):
             if index >= MAX_CONTENT_PARTS:
                 skipped_content_parts = (
@@ -192,15 +194,22 @@ class MCPToolAdapter(BaseTool):
         content = "\n".join(text_parts)
 
         def append_section(value: str) -> None:
+            """转换 MCP 结果时按出现顺序追加一段文本，已有正文时用空行分隔。
+
+            Args:
+                value (str): 当前需要校验或转换的值。
+            """
             nonlocal content
             content += ("\n\n" if content else "") + value
 
+        # 3. 把忽略原因加入正文，随后与普通工具结果共用同一文本限长流程。
         if unsupported_count:
             append_section(f"[已忽略 {unsupported_count} 个不支持的 MCP 内容类型]")
         if skipped_content_parts:
             append_section(
                 f"[已忽略 {skipped_content_parts} 个 MCP content parts：超过总数限制]"
             )
+        # 4. 结构化结果限制深度和节点数，不按 Schema 字节上限截断；已有完全相同文本则不重复追加。
         if structured is not None:
             try:
                 validate_json_value(
@@ -225,6 +234,7 @@ class MCPToolAdapter(BaseTool):
             except (TypeError, ValueError) as exc:
                 append_section(f"[已忽略 structured content: {exc}]")
 
+        # 5. 服务的错误标记转成工具错误正文，完整结果继续交给管道统一规范化。
         content = content or "(MCP 工具未返回内容)"
         if bool(getattr(result, "isError", getattr(result, "is_error", False))):
             return ToolResult(content=f"错误: {content or 'MCP Server 返回错误'}")

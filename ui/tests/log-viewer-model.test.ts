@@ -4,6 +4,15 @@ import { test } from "node:test";
 import { LogViewerModel } from "../src/logs/log-viewer-model.js";
 import type { LogRecord } from "../shared-types.js";
 
+/**
+ * 构造带稳定编号、类别、级别和正文的测试日志。
+ *
+ * Args:
+ *     id (number): 当前模型参数或日志记录的编号。
+ *     side ("frontend" | "backend"): 前端或后端日志类别。
+ *     level ("debug" | "info" | "warn" | "error"): 当前日志级别。
+ *     message (string): 当前需要显示或记录的文本。
+ */
 const record = (
   id: number,
   side: "frontend" | "backend",
@@ -19,7 +28,10 @@ const record = (
   message,
 });
 
-test("查看器合并快照和实时批次时按 ID 去重并限制记录数", () => {
+test("查看器合并快照和实时批次时按 ID 去重并限制记录数", /**
+ * 验证查看器合并快照和实时批次时按 ID 去重并限制记录数。
+ */
+() => {
   const model = new LogViewerModel({
     frontend: [record(1, "frontend"), record(2, "frontend")],
     backend: [],
@@ -27,12 +39,39 @@ test("查看器合并快照和实时批次时按 ID 去重并限制记录数", (
 
   const delta = model.append([record(2, "frontend"), record(3, "frontend")]);
 
-  assert.deepEqual(model.getRecords("frontend").map((item) => item.id), [2, 3]);
-  assert.deepEqual(delta.added.map((item) => item.id), [3]);
-  assert.deepEqual(delta.removed.map((item) => item.id), [1]);
+  assert.deepEqual(model.getRecords("frontend").map(/**
+   * 由集合的 map 遍历每项数据时调用，读取 item.id 供当前步骤继续处理。
+   *
+   * 此定义用于：验证查看器合并快照和实时批次时按 ID 去重并限制记录数。
+   *
+   * Args:
+   *     item (LogRecord): 当前遍历的配置或目录条目。
+   */
+  (item) => item.id), [2, 3]);
+  assert.deepEqual(delta.added.map(/**
+   * 由集合的 map 遍历每项数据时调用，读取 item.id 供当前步骤继续处理。
+   *
+   * 此定义用于：验证查看器合并快照和实时批次时按 ID 去重并限制记录数。
+   *
+   * Args:
+   *     item (LogRecord): 当前遍历的配置或目录条目。
+   */
+  (item) => item.id), [3]);
+  assert.deepEqual(delta.removed.map(/**
+   * 由集合的 map 遍历每项数据时调用，读取 item.id 供当前步骤继续处理。
+   *
+   * 此定义用于：验证查看器合并快照和实时批次时按 ID 去重并限制记录数。
+   *
+   * Args:
+   *     item (LogRecord): 当前遍历的配置或目录条目。
+   */
+  (item) => item.id), [1]);
 });
 
-test("暂停期间保留新日志，继续后一次性应用", () => {
+test("暂停期间保留新日志，继续后一次性应用", /**
+ * 验证暂停期间保留新日志，继续后一次性应用。
+ */
+() => {
   const model = new LogViewerModel({ frontend: [], backend: [] }, 10);
   model.setPaused(true);
   const pausedDelta = model.append([record(1, "backend")]);
@@ -40,11 +79,30 @@ test("暂停期间保留新日志，继续后一次性应用", () => {
   assert.deepEqual(pausedDelta, { added: [], removed: [] });
 
   const resumedDelta = model.setPaused(false);
-  assert.deepEqual(model.getRecords("backend").map((item) => item.id), [1]);
-  assert.deepEqual(resumedDelta.added.map((item) => item.id), [1]);
+  assert.deepEqual(model.getRecords("backend").map(/**
+   * 由集合的 map 遍历每项数据时调用，读取 item.id 供当前步骤继续处理。
+   *
+   * 此定义用于：验证暂停期间保留新日志，继续后一次性应用。
+   *
+   * Args:
+   *     item (LogRecord): 当前遍历的配置或目录条目。
+   */
+  (item) => item.id), [1]);
+  assert.deepEqual(resumedDelta.added.map(/**
+   * 由集合的 map 遍历每项数据时调用，读取 item.id 供当前步骤继续处理。
+   *
+   * 此定义用于：验证暂停期间保留新日志，继续后一次性应用。
+   *
+   * Args:
+   *     item (LogRecord): 当前遍历的配置或目录条目。
+   */
+  (item) => item.id), [1]);
 });
 
-test("暂停期间清空视图不会在继续时恢复已清除日志", () => {
+test("暂停期间清空视图不会在继续时恢复已清除日志", /**
+ * 验证暂停期间清空视图不会在继续时恢复已清除日志。
+ */
+() => {
   const model = new LogViewerModel({ frontend: [], backend: [] }, 10);
   model.setPaused(true);
   model.append([record(1, "backend")]);
@@ -54,7 +112,10 @@ test("暂停期间清空视图不会在继续时恢复已清除日志", () => {
   assert.deepEqual(model.getRecords("backend"), []);
 });
 
-test("查看器按最低级别、文本和来源组合过滤", () => {
+test("查看器按最低级别、文本和来源组合过滤", /**
+ * 验证查看器按最低级别、文本和来源组合过滤。
+ */
+() => {
   const model = new LogViewerModel({
     frontend: [
       { ...record(1, "frontend", "info", "request started"), source: "electron-main" },
@@ -71,10 +132,21 @@ test("查看器按最低级别、文本和来源组合过滤", () => {
     sources: new Set(["electron-main"]),
   });
 
-  assert.deepEqual(filtered.map((item) => item.id), [2, 3]);
+  assert.deepEqual(filtered.map(/**
+   * 由集合的 map 遍历每项数据时调用，读取 item.id 供当前步骤继续处理。
+   *
+   * 此定义用于：验证查看器按最低级别、文本和来源组合过滤。
+   *
+   * Args:
+   *     item (LogRecord): 当前遍历的配置或目录条目。
+   */
+  (item) => item.id), [2, 3]);
 });
 
-test("查看器按 DEBUG、INFO、WARN、ERROR 阈值逐级收窄结果", () => {
+test("查看器按 DEBUG、INFO、WARN、ERROR 阈值逐级收窄结果", /**
+ * 验证查看器按 DEBUG、INFO、WARN、ERROR 阈值逐级收窄结果。
+ */
+() => {
   const model = new LogViewerModel({
     frontend: [
       record(1, "frontend", "debug"),
@@ -85,12 +157,28 @@ test("查看器按 DEBUG、INFO、WARN、ERROR 阈值逐级收窄结果", () => 
     backend: [],
   }, 10);
 
+  /**
+   * 提取指定日志级别过滤结果的编号，供比较阈值筛选行为。
+   *
+   * 此定义用于：验证查看器按 DEBUG、INFO、WARN、ERROR 阈值逐级收窄结果。
+   *
+   * Args:
+   *     minimumLevel ("debug" | "info" | "warn" | "error"): 当前用例要验证的最低日志级别。
+   */
   const idsAt = (minimumLevel: "debug" | "info" | "warn" | "error") =>
     model.filter("frontend", {
       query: "",
       minimumLevel,
       sources: new Set(),
-    }).map((item) => item.id);
+    }).map(/**
+     * 由集合的 map 遍历每项数据时调用，读取 item.id 供当前步骤继续处理。
+     *
+     * 此定义用于：提取指定日志级别过滤结果的编号，供比较阈值筛选行为。
+     *
+     * Args:
+     *     item (LogRecord): 当前遍历的配置或目录条目。
+     */
+    (item) => item.id);
 
   assert.deepEqual(idsAt("debug"), [1, 2, 3, 4]);
   assert.deepEqual(idsAt("info"), [2, 3, 4]);

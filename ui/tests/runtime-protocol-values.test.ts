@@ -7,7 +7,7 @@ import {
 } from "../shared-types.js";
 
 test("前端运行时常量与后端共用的固定协议样例一致", /**
- * 检查两端实际共享的取值，独立样例防止代码和测试同步误改线协议。
+ * 验证前端运行时常量与后端共用的固定协议样例一致。
  */
 () => {
   const expected = JSON.parse(readFileSync(

@@ -4,7 +4,10 @@ import { test } from "node:test";
 
 import { bindPressToRevealSecret } from "../src/settings/components/press-to-reveal-secret.js";
 
-test("LLM API Key 输入框默认使用密码掩码显示", () => {
+test("LLM API Key 输入框默认使用密码掩码显示", /**
+ * 验证LLM API Key 输入框默认使用密码掩码显示。
+ */
+() => {
   const settingsHtml = readFileSync("settings.html", "utf8");
   const apiKeyInput = settingsHtml.match(/<input\s+[^>]*id="llm-api-key"[^>]*>/)?.[0];
 
@@ -18,10 +21,23 @@ test("LLM API Key 输入框默认使用密码掩码显示", () => {
   assert.match(settingsHtml, /<button\s+[^>]*id="llm-api-key-reveal"[^>]*>/);
 });
 
-test("仅在按住查看按钮时显示密钥，松开或失焦后立即恢复掩码", () => {
+test("仅在按住查看按钮时显示密钥，松开或失焦后立即恢复掩码", /**
+ * 验证仅在按住查看按钮时显示密钥，松开或失焦后立即恢复掩码。
+ */
+() => {
   const input = { type: "password" };
   const button = new EventTarget();
   const windowTarget = new EventTarget();
+  /**
+   * 手动触发测试按压事件，供检查凭据显示与隐藏。
+   *
+   * 此定义用于：验证仅在按住查看按钮时显示密钥，松开或失焦后立即恢复掩码。
+   *
+   * Args:
+   *     target (EventTarget): 本次操作目标。
+   *     type (string): 本次手动触发的页面事件类型。
+   *     mouseButton (number): 模拟按压事件的鼠标按钮编号。
+   */
   const dispatchPointer = (target: EventTarget, type: string, mouseButton = 0): void => {
     const event = new Event(type);
     Object.defineProperty(event, "button", { value: mouseButton });

@@ -17,11 +17,11 @@ async def add_chat_settings(
     """新增模型配置。
 
     Args:
-        chat_settings: 待新增的模型配置。
-        chat_settings_service: 由依赖注入提供的模型配置服务。
+        chat_settings (ChatSettings): 待新增的模型配置。
+        chat_settings_service (ChatSettingsService): 由依赖注入提供的模型配置服务。
 
     Returns:
-        统一成功响应。
+        Result: 统一成功响应。
 
     Raises:
         HTTPException: 配置写入发生冲突。
@@ -42,11 +42,11 @@ async def delete_chat_settings(
     """删除指定会话的模型配置。
 
     Args:
-        session_id: 待删除配置的会话 ID。
-        chat_settings_service: 由依赖注入提供的模型配置服务。
+        session_id (str): 待删除配置的会话 ID。
+        chat_settings_service (ChatSettingsService): 由依赖注入提供的模型配置服务。
 
     Returns:
-        统一成功响应。
+        Result: 统一成功响应。
 
     Raises:
         HTTPException: 指定配置不存在。
@@ -64,6 +64,18 @@ def get_chat_settings(
     session_id: str,
     chat_settings_service: ChatSettingsService = Depends(get_chat_settings_service),
 ) -> Result:
+    """设置页或桌面主进程按会话读取已规范化的模型配置。
+
+    Args:
+        session_id (str): 当前操作所属的会话编号。
+        chat_settings_service (ChatSettingsService): 读取与规范化会话设置的应用服务。
+
+    Returns:
+        Result: 包含会话配置的统一接口结果。
+
+    Raises:
+        HTTPException: 指定会话不存在，返回 HTTP 404。
+    """
     try:
         data = chat_settings_service.get_chat_settings_by_session(session_id)
         return Result(data=data, msg="success", code=200)
@@ -80,11 +92,11 @@ async def update_chat_settings(
     """更新模型配置及其 MCP 权限。
 
     Args:
-        chat_settings: 更新后的完整模型配置。
-        chat_settings_service: 由依赖注入提供的模型配置服务。
+        chat_settings (ChatSettings): 更新后的完整模型配置。
+        chat_settings_service (ChatSettingsService): 由依赖注入提供的模型配置服务。
 
     Returns:
-        统一成功响应。
+        Result: 统一成功响应。
 
     Raises:
         HTTPException: 指定配置不存在。

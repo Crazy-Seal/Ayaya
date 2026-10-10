@@ -43,7 +43,16 @@ def _get_cached_mem0(
     embedding_base_url: str,
     embedding_api_key: str,
 ) -> Memory:
-    """获取缓存的 Mem0 实例（单例）"""
+    """按模型、向量及存储配置复用 Mem0 实例，初始化后接入事实提取响应兼容层。
+
+    Args:
+        collection_name (str): 当前会话独立使用的 Chroma 集合名称。
+        qdrant_path (str): 当前环境的 Mem0/Qdrant 持久目录。
+        embedding_dimension (int): 向量模型输出维数。
+        embedding_model (str): 该记录使用的向量模型名称。
+        embedding_base_url (str): 向量模型兼容接口地址。
+        embedding_api_key (str): 向量模型调用凭据，仅用于请求认证。
+    """
     mem0_config: dict[str, Any] = {
         "vector_store": {
             "provider": "qdrant",
@@ -137,13 +146,20 @@ class Mem0SemanticMemory:
         config: MemoryConfig,
         chat_settings: ChatSettings,
     ):
+        """绑定会话和角色设置，初始化 Mem0 的语义记忆存储及兼容的事实提取客户端。
+
+        Args:
+            session_id (str): 当前操作所属的会话编号。
+            config (MemoryConfig): 调用方提供的配置。
+            chat_settings (ChatSettings): 当前会话的模型、角色及插件设置。
+        """
         self.session_id = session_id
         self.config = config
         self.chat_settings = chat_settings
         self._memory = self._init_mem0()
 
     def _init_mem0(self) -> Memory:
-        """初始化 Mem0 实例（使用缓存）"""
+        """按当前记忆配置取得共享 Mem0 实例，会话范围由后续记忆操作指定。"""
         return _get_cached_mem0(
             collection_name=self.config.mem0_collection_name,
             qdrant_path=self.config.mem0_qdrant_path,
@@ -221,7 +237,12 @@ class Mem0SemanticMemory:
             return []
 
     async def search(self, query: str, top_k: int = 3) -> list[MemoryItem]:
-        """搜索相关记忆"""
+        """按当前会话范围检索相关语义记忆，并转换为项目记忆条目。
+
+        Args:
+            query (str): 用户或工具提供的检索文本。
+            top_k (int): 最多检索返回的记忆数量。
+        """
         if not query.strip():
             return []
 
@@ -267,7 +288,7 @@ class Mem0SemanticMemory:
             return []
 
     async def get_all(self) -> list[dict]:
-        """获取所有记忆"""
+        """读取当前会话已有语义记忆，不修改其他会话记录。"""
         try:
             results = await asyncio.to_thread(
                 self._memory.get_all, agent_id=self.session_id
@@ -283,7 +304,7 @@ class Mem0SemanticMemory:
             return []
 
     async def clear(self) -> None:
-        """清除所有记忆"""
+        """删除当前会话语义记忆，其他会话的记录不在删除范围内。"""
         try:
             await asyncio.to_thread(self._memory.delete_all, agent_id=self.session_id)
             logger.info("[Mem0SemanticMemory] 清除所有记忆, session_id=%s", self.session_id)
@@ -304,7 +325,7 @@ class Mem0SemanticMemory:
             mark_as_history (bool): 是否将材料标记为历史回忆而非当前对话。
 
         Returns:
-            list[dict]: 当前查询或执行结果。
+            list[dict]: 按角色、来源和工具事实整理的语义记忆提取材料。
         """
         mem0_messages = []
 

@@ -55,6 +55,14 @@ def _build_command(command: str) -> list[str]:
 
 
 def _select_timeout_sec(command: str) -> Tuple[int, str]:
+    """按命令类别选择前台等待时长，安装、Git 网络操作和 Python 程序使用不同预算。
+
+    Args:
+        command (str): 要在 PowerShell 执行的命令文本。
+
+    Returns:
+        Tuple[int, str]: 等待秒数及超时后解释后台任务状态的提示文本。
+    """
     cmd = command.strip().lower()
     if re.search(r"(^|\s)(pip|pip3)(\s+install|\s+uninstall|\s+download)\b", cmd):
         return RUN_PS_TIMEOUT_PIP_SEC, "命令执行时间长"
@@ -120,8 +128,8 @@ async def run_ps(
     """运行 PowerShell 命令并返回输出结果。警告：绝对禁止运行可能对系统造成损害的命令，如删除文件、操作磁盘或注册表、重启或关闭计算机等。
 
     Args:
-        command (Annotated[str, 'PowerShell 命令字符串。']): 需要执行或展示的 PowerShell 命令正文。
-        run_in_background (Annotated[bool, '立即在后台运行；任务结束时 Ayaya 会收到通知。']): 是否立即返回后台任务标识。
+        command (str): 需要执行或展示的 PowerShell 命令正文。
+        run_in_background (bool): 是否立即返回后台任务标识。
         context (ToolContext | None): 后端注入的工具上下文。
 
     Returns:

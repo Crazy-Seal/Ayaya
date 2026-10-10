@@ -67,9 +67,12 @@ class MainApp {
        * 检查图片附件是否构成有效草稿。
        *
        * Returns:
-       *     boolean: 当前查询、回调或视图操作的结果。
+       *     boolean: 当前图片草稿至少有一项附件时为 true。
        */
       hasAttachments: () => this.imageManager.getDataUrls().length > 0,
+      /**
+       * 聊天轮次完成后清空本次图片草稿，附件变化监听随后刷新预览和发送按钮。
+       */
       onChatComplete: () => {
         // 聊天完成后清空图片
         this.imageManager.clear();
@@ -95,13 +98,16 @@ class MainApp {
    */
   private setupEventListeners(): void {
     // 设置按钮
-    this.elements.settingsBtn.addEventListener("click", () => {
+    this.elements.settingsBtn.addEventListener("click", /**
+     * 用户点击设置入口时请求主进程打开设置窗口。
+     */
+    () => {
       window.desktopPetApi.openSettingsWindow();
     });
 
     // 输入框自动调整高度
     this.elements.input.addEventListener("input", /**
-     * 响应当前控件事件，调用所属视图的刷新、输出或命令入口。
+     * 聊天草稿变化后调整输入框高度并刷新发送按钮状态。
      */
     () => {
       this.autoResizeInput();
@@ -110,10 +116,10 @@ class MainApp {
 
     // 输入框键盘事件：Enter 发送，Shift+Enter 换行
     this.elements.input.addEventListener("keydown", /**
-     * 非 IME 状态下把 Enter 转为表单提交，Shift+Enter 保留换行。
+     * 用户按 Enter 且不在输入法组合中时提交表单，Shift+Enter 仍保留换行。
      *
      * Args:
-     *     event (KeyboardEvent): 渠道事件或 DOM 事件，由所属定义决定。
+     *     event (KeyboardEvent): 调用方或浏览器触发的当前事件。
      */
     (event) => {
       if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
@@ -125,6 +131,12 @@ class MainApp {
     // 滚轮缩放
     window.addEventListener(
       "wheel",
+      /**
+       * 聊天历史和输入框上的滚轮交给原控件；其他区域按模型交互规则处理滚动。
+       *
+       * Args:
+       *     event (WheelEvent): 调用方或浏览器触发的当前事件。
+       */
       (event) => {
         const hoveredElement = document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null;
         // 如果在聊天历史列表或输入框上，不拦截事件，让它正常滚动
@@ -146,20 +158,38 @@ class MainApp {
     );
 
     // 窗口大小变化
-    window.addEventListener("resize", () => {
+    window.addEventListener("resize", /**
+     * 窗口尺寸变化后重新适配当前模型显示。
+     */
+    () => {
       this.modelInfo?.fitModel();
     });
 
     // 图片选择按钮
-    this.elements.imageBtn.addEventListener("click", async () => {
+    this.elements.imageBtn.addEventListener("click", /**
+     * 用户选择图片后只把有效返回图片加入草稿附件。
+     */
+    async () => {
       const images = await window.desktopPetApi.selectImages();
       if (images && images.length > 0) {
-        this.imageManager.addDataUrls(images.map((img) => img.dataUrl));
+        this.imageManager.addDataUrls(images.map(/**
+         * 提取图片选择结果的 data URL，供附件管理器使用。
+         *
+         * Args:
+         *     img ({ path: string; dataUrl: string; }): 当前等待加载的聊天图片元素。
+         *
+         * Returns:
+         *     string: 图片地址。
+         */
+        (img) => img.dataUrl));
       }
     });
 
     // 图片输入框变化
-    this.elements.imageInput.addEventListener("change", async () => {
+    this.elements.imageInput.addEventListener("change", /**
+     * 文件输入框选择变化后读取附件，结束后清空选择值，允许再次选择同一文件。
+     */
+    async () => {
       const files = this.elements.imageInput.files;
       if (files && files.length > 0) {
         await this.imageManager.addFiles(files);
@@ -168,13 +198,16 @@ class MainApp {
     });
 
     // 清空图片按钮
-    this.elements.clearImagesBtn.addEventListener("click", () => {
+    this.elements.clearImagesBtn.addEventListener("click", /**
+     * 用户清空附件时同步清空草稿图片集合。
+     */
+    () => {
       this.imageManager.clear();
     });
 
     // 图片状态变化监听
     this.imageManager.subscribe(/**
-     * 刷新附件视图并重新计算纯图片草稿的发送动作。
+     * 草稿附件变化后刷新图片预览和发送按钮。
      */
     () => {
       this.updateImagePreview();
@@ -182,16 +215,22 @@ class MainApp {
     });
     // 1. 输入法组合事件只同步发送状态，Enter 处理另检查 isComposing。
     this.elements.input.addEventListener("compositionstart", /**
-     * 标记 IME 开始组合输入，暂停发送按钮模式变化。
+     * 输入法组合开始时禁止把 Enter 当作发送命令。
      */
     () => this.chatClient.setComposing(true));
     this.elements.input.addEventListener("compositionend", /**
-     * 标记 IME 结束组合输入并重新计算发送动作。
+     * 输入法组合结束时恢复正常发送按钮及按键处理。
      */
     () => this.chatClient.setComposing(false));
 
     // 使用事件委托处理图片删除按钮点击
-    this.elements.imagePreviewList.addEventListener("click", (event) => {
+    this.elements.imagePreviewList.addEventListener("click", /**
+     * 用户点击图片预览中的移除按钮时按附件编号删除该图。
+     *
+     * Args:
+     *     event (PointerEvent): 调用方或浏览器触发的当前事件。
+     */
+    (event) => {
       const target = event.target as HTMLElement;
       const removeBtn = target.closest(".remove-btn") as HTMLButtonElement | null;
       if (removeBtn) {
@@ -203,13 +242,10 @@ class MainApp {
     });
 
     this.elements.form.addEventListener("submit", /**
-     * 用户提交聊天表单时，把文本和当前附件交给统一命令入口。
+     * 用户提交聊天表单时阻止默认刷新，并将当前正文与附件交给统一发送命令。
      *
      * Args:
-     *     event (SubmitEvent): 浏览器表单提交事件，需要阻止默认页面跳转。
-     *
-     * Returns:
-     *     Promise<void>: 输入或停止命令提交结束，历史刷新由后端事件决定。
+     *     event (SubmitEvent): 调用方或浏览器触发的当前事件。
      */
     async (event) => {
       event.preventDefault();
@@ -219,10 +255,7 @@ class MainApp {
 
     // 2. 排队提交与普通发送共用文本和附件来源，由后端决定交付时机。
     document.getElementById("queue-btn")?.addEventListener("click", /**
-     * 把当前文本和附件提交为后续轮次排队输入。
-     *
-     * Returns:
-     *     Promise<void>: 当前异步处理完成的等待结果。
+     * 用户点击排队发送时提交当前正文及附件，等待后端返回受理回执。
      */
     async () => {
       const images = this.imageManager.getDataUrls();
@@ -230,12 +263,21 @@ class MainApp {
     });
 
     // 模型变化监听
-    const unsubscribeModelChanged = window.desktopPetApi?.onModelChanged?.(() => {
+    const unsubscribeModelChanged = window.desktopPetApi?.onModelChanged?.(/**
+     * 活动模型变化后重新加载主页面，切换到新模型及其会话。
+     */
+    () => {
       globalThis.location.reload();
     });
 
     // 光标位置监听
-    const unsubscribeCursor = window.desktopPetApi?.onCursor?.((cursorData) => {
+    const unsubscribeCursor = window.desktopPetApi?.onCursor?.(/**
+     * 鼠标位置事件到达后更新目光目标，并按当前模型区域判断窗口交互。
+     *
+     * Args:
+     *     cursorData (CursorSyncData): 主进程转发的鼠标位置和显示器信息。
+     */
+    (cursorData) => {
       if (this.followCursor && this.modelInfo) {
         this.gazeTracker.updateTarget(cursorData, this.elements.stageHost, this.followCursor);
       }
@@ -250,6 +292,12 @@ class MainApp {
 
     // 模型变换监听
     const unsubscribeModelTransformChanged = window.desktopPetApi?.onModelTransformChanged?.(
+      /**
+       * 模型显示参数事件到达后仅更新当前活动模型，其他模型的迟到事件忽略。
+       *
+       * Args:
+       *     payload (ModelTransformData): 已经过入口校验的桌面动作参数。
+       */
       (payload) => {
         if (payload.id !== this.activeModelId) {
           return;
@@ -268,12 +316,24 @@ class MainApp {
     );
 
     // 动作播放请求监听（从设置窗口发来）
-    const unsubscribePlayMotion = window.desktopPetApi?.onPlayMotionRequest?.((motionName) => {
+    const unsubscribePlayMotion = window.desktopPetApi?.onPlayMotionRequest?.(/**
+     * 收到设置页动作预览请求后按名称播放当前模型动作。
+     *
+     * Args:
+     *     motionName (string): 需要播放或保存配置的动作名称。
+     */
+    (motionName) => {
       this.playMotionByName(motionName);
     });
 
     // 动作配置变化监听
     const unsubscribeMotionConfigChanged = window.desktopPetApi?.onMotionConfigChanged?.(
+      /**
+       * 收到当前模型动作配置后更新本地规则并重新选择空闲动作。
+       *
+       * Args:
+       *     payload ({ modelId: string; motionConfig: MotionConfig[]; }): 已经过入口校验的桌面动作参数。
+       */
       (payload) => {
         if (payload.modelId !== this.activeModelId) {
           return;
@@ -284,7 +344,7 @@ class MainApp {
     );
 
     window.addEventListener("beforeunload", /**
-     * 页面卸载时取消模型和桌面状态监听，避免旧页面继续处理主进程通知。
+     * 主页面卸载时逐项取消模型、鼠标、显示参数、动作请求及配置订阅。
      */
     () => {
       if (typeof unsubscribeModelChanged === "function") {
@@ -332,7 +392,10 @@ class MainApp {
 
     // 初始缩放
     this.modelInfo.fitModel();
-    setTimeout(() => this.modelInfo?.fitModel(), 120);
+    setTimeout(/**
+     * 模型容器尺寸变化后重新适配当前模型。
+     */
+    () => this.modelInfo?.fitModel(), 120);
 
     // 注册视线跟随到 ticker
     const gazeUpdate = createGazeUpdateFunction(this.modelInfo.model, this.gazeTracker);
@@ -370,7 +433,16 @@ class MainApp {
    * 设置空闲动作
    */
   private setIdleMotion(): void {
-    const idleConfig = this.motionConfig.find((c) => c.setting === "idle");
+    const idleConfig = this.motionConfig.find(/**
+     * 从模型动作规则中寻找唯一空闲动作。
+     *
+     * Args:
+     *     c (MotionConfig): 当前动作的配置项。
+     *
+     * Returns:
+     *     boolean: 当前规则的设置为 idle 时为 true。
+     */
+    (c) => c.setting === "idle");
     const idleMotionName = idleConfig?.motionName || "Idle";
 
     // 设置模型的空闲动作组
@@ -388,8 +460,10 @@ class MainApp {
 
   /**
    * 通过名称播放动作
-   * @param motionName 动作名称（组名）
-   * @param priority 优先级：1=IDLE, 2=NORMAL, 3=FORCE
+   *
+   * Args:
+   *     motionName (string): 动作名称（组名）
+   *     priority (number): 优先级：1=IDLE, 2=NORMAL, 3=FORCE
    */
   private playMotionByName(motionName: string, priority: number = 2): void {
     if (!this.live2dModel || typeof (this.live2dModel as any).motion !== "function") {
@@ -404,9 +478,21 @@ class MainApp {
 
   /**
    * 通过标签播放动作（加入队列）
+   *
+   * Args:
+   *     label (string): 当前工具、表情或动作的显示名称。
    */
   playMotionByLabel(label: string): void {
-    const config = this.motionConfig.find((c) => c.setting === "expression" && c.label === label);
+    const config = this.motionConfig.find(/**
+     * 按表情标签查找被声明为表情的对应动作。
+     *
+     * Args:
+     *     c (MotionConfig): 当前动作的配置项。
+     *
+     * Returns:
+     *     boolean: 规则类型和标签都匹配时为 true。
+     */
+    (c) => c.setting === "expression" && c.label === label);
     if (config) {
       this.queueMotion(config.motionName);
     }
@@ -414,6 +500,9 @@ class MainApp {
 
   /**
    * 添加动作到队列
+   *
+   * Args:
+   *     motionName (string): 需要播放或保存规则的模型动作名称。
    */
   private queueMotion(motionName: string): void {
     this.motionQueue.push(motionName);
@@ -445,7 +534,13 @@ class MainApp {
     }
 
     // 等待动作播放一段时间
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    await new Promise(/**
+     * Promise 创建时安排短暂状态恢复等待，到期后继续动作处理。
+     *
+     * Args:
+     *     resolve ((value: unknown) => void): 准备成功或等待结束时完成 Promise 的函数。
+     */
+    resolve => setTimeout(resolve, 2000));
 
     this.playNextMotion();
   }
@@ -455,12 +550,33 @@ class MainApp {
    */
   getExpressionLabels(): string[] {
     return this.motionConfig
-      .filter((c) => c.setting === "expression" && c.label)
-      .map((c) => c.label!);
+      .filter(/**
+       * 只保留带有标签的表情动作，供模型提示词声明可用表情。
+       *
+       * Args:
+       *     c (MotionConfig): 当前动作的配置项。
+       *
+       * Returns:
+       *     string | false | undefined: 规则为表情且标签非空时为 true。
+       */
+      (c) => c.setting === "expression" && c.label)
+      .map(/**
+       * 提取已筛选表情动作的标签名称。
+       *
+       * Args:
+       *     c (MotionConfig): 当前动作的配置项。
+       *
+       * Returns:
+       *     string: 当前表情标签。
+       */
+      (c) => c.label!);
   }
 
   /**
    * 处理模型加载失败
+   *
+   * Args:
+   *     error (unknown): 本次捕获的异常。
    */
   private handleModelLoadFailure(error: unknown): void {
     this.pointerManager.forceWindowInteractive();
@@ -484,7 +600,10 @@ class MainApp {
       clearTimeout(this.persistTimer);
     }
 
-    this.persistTimer = setTimeout(() => {
+    this.persistTimer = setTimeout(/**
+     * 模型拖动位置或缩放稳定后保存当前显示参数，再清空本次持久化定时标记。
+     */
+    () => {
       void window.desktopPetApi.updateModelTransform({
         modelId: this.activeModelId,
         offsetX: this.offsetX,
@@ -570,7 +689,10 @@ let hiddenElementsByScreenshot: HTMLElement[] = [];
 /**
  * 隐藏界面元素（截屏或屏幕操作前调用）
  */
-window.hideElementsForScreenshot = () => {
+window.hideElementsForScreenshot = /**
+ * 截图准备阶段只隐藏当前可见的桌面组件，并记录本次实际隐藏的元素。
+ */
+() => {
   hiddenElementsByScreenshot = [];
   for (const selector of HIDE_ELEMENTS_ON_SCREENSHOT) {
     const el = document.querySelector<HTMLElement>(selector);
@@ -584,7 +706,10 @@ window.hideElementsForScreenshot = () => {
 /**
  * 恢复界面元素（截屏或屏幕操作后调用）
  */
-window.restoreElementsAfterScreenshot = () => {
+window.restoreElementsAfterScreenshot = /**
+ * 截图结束后恢复本次隐藏的元素，清空记录以免影响后续截图。
+ */
+() => {
   for (const el of hiddenElementsByScreenshot) {
     el.hidden = false;
   }
@@ -597,14 +722,26 @@ let mainAppInstance: MainApp | null = null;
 /**
  * 通过标签播放动作（供聊天模块调用）
  */
-window.playMotionByLabel = (label: string) => {
+window.playMotionByLabel = /**
+ * 聊天回复中识别到表情标签后按标签播放当前模型动作。
+ *
+ * Args:
+ *     label (string): 当前工具、表情或动作的显示名称。
+ */
+(label: string) => {
   mainAppInstance?.playMotionByLabel(label);
 };
 
 /**
  * 获取表达式标签列表（供聊天模块调用）
  */
-window.getExpressionLabels = () => {
+window.getExpressionLabels = /**
+ * 向聊天解析器提供当前模型允许使用的表情标签，没有模型时返回空列表。
+ *
+ * Returns:
+ *     string[]: 当前模型表情标签列表。
+ */
+() => {
   return mainAppInstance?.getExpressionLabels() ?? [];
 };
 

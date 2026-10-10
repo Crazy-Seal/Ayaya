@@ -17,7 +17,11 @@ logger = logging.getLogger(__name__)
 
 @tool(is_resumable=True, compressible=True)
 async def screenshot(context: ToolContext) -> ToolResult:
-    """向用户请求截屏。用户确认后系统会携带截图继续对话。"""
+    """向用户请求截屏。用户确认后系统会携带截图继续对话。
+
+    Args:
+        context (ToolContext): 执行管道提供的工具运行上下文。
+    """
     if context.resume_data is None:
         return ToolResult.continuation(
             DesktopExecutionKind.CAPTURE_SCREEN,

@@ -26,8 +26,7 @@ def test_task_list_excludes_foreground_until_same_process_becomes_background(tmp
         tmp_path (Path): 测试专用持久记录与输出目录。
     """
     async def scenario() -> None:
-        """通过任务启动与列表接口检查前后台展示边界，不依赖私有字段。
-        """
+        """通过任务启动与列表接口检查前后台展示边界，不依赖私有字段。"""
         supervisor = TaskSupervisor(db_path=str(tmp_path / "state.sqlite3"), spool_dir=tmp_path / "tasks")
         try:
             # 1. 正常前台完成仍保留可按身份查询的输出，但不进入后台任务列表。
@@ -67,8 +66,7 @@ def test_background_task_terminal_notification_is_once_and_output_survives_resta
     """
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：任务终态只通知一次且输出重启后可查。
-        """
+        """在隔离异步环境中安排并验证：任务终态只通知一次且输出重启后可查。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         db_path = str(tmp_path / "state.sqlite3")
         supervisor = TaskSupervisor(db_path=db_path, spool_dir=tmp_path / "tasks")
@@ -196,8 +194,7 @@ def test_spool_write_failure_marks_task_failed_and_notifies_once(tmp_path, monke
     monkeypatch.setattr(Path, "open", fail_spool_open)
 
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：输出写入失败会终止任务并仅通知一次。
-        """
+        """在隔离异步环境中安排并验证：输出写入失败会终止任务并仅通知一次。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         db_path = str(tmp_path / "state.sqlite3")
         supervisor = TaskSupervisor(db_path=db_path, spool_dir=tmp_path / "tasks")
@@ -233,8 +230,7 @@ def test_immediate_child_is_in_job_and_stops_with_parent(tmp_path) -> None:
     """
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：立即启动的子进程也受 Job 约束并随父进程停止。
-        """
+        """在隔离异步环境中安排并验证：立即启动的子进程也受 Job 约束并随父进程停止。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         pid_file = tmp_path / "child.pid"
         script = (
@@ -303,8 +299,7 @@ def test_existing_task_table_adds_origin_columns_without_rewriting_records(tmp_p
         )
 
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：既有任务表只补字段而不重写历史记录。
-        """
+        """在隔离异步环境中安排并验证：既有任务表只补字段而不重写历史记录。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         supervisor = TaskSupervisor(db_path=str(db_path), spool_dir=tmp_path / "tasks")
         try:
@@ -326,8 +321,7 @@ def test_output_pages_preserve_utf8_characters_across_byte_boundaries(tmp_path) 
     """
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：按字节分页仍保留完整 UTF-8 字符。
-        """
+        """在隔离异步环境中安排并验证：按字节分页仍保留完整 UTF-8 字符。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         supervisor = TaskSupervisor(
             db_path=str(tmp_path / "state.sqlite3"), spool_dir=tmp_path / "tasks",
@@ -363,8 +357,7 @@ def test_running_output_keeps_incomplete_utf8_bytes_for_next_page(tmp_path) -> N
     """
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：运行中不完整 UTF-8 字节留给下一页。
-        """
+        """在隔离异步环境中安排并验证：运行中不完整 UTF-8 字节留给下一页。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         supervisor = TaskSupervisor(
             db_path=str(tmp_path / "state.sqlite3"), spool_dir=tmp_path / "tasks",
@@ -410,8 +403,7 @@ def test_foreground_result_is_bounded_but_spool_keeps_full_output(tmp_path) -> N
     """
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：前台返回限制预览大小而完整输出仍保存。
-        """
+        """在隔离异步环境中安排并验证：前台返回限制预览大小而完整输出仍保存。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         supervisor = TaskSupervisor(
             db_path=str(tmp_path / "state.sqlite3"), spool_dir=tmp_path / "tasks",
@@ -440,8 +432,7 @@ def test_explicit_stop_ends_process_and_records_stopped_status(tmp_path) -> None
     """
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：显式停止结束受管进程并记录 stopped。
-        """
+        """在隔离异步环境中安排并验证：显式停止结束受管进程并记录 stopped。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         supervisor = TaskSupervisor(
             db_path=str(tmp_path / "state.sqlite3"), spool_dir=tmp_path / "tasks",
@@ -472,16 +463,14 @@ def test_terminal_notification_wakes_idle_agent_on_desktop_channel(tmp_path) -> 
     """
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：终态通知唤醒空闲 Agent 并只发给桌面。
-        """
+        """在隔离异步环境中安排并验证：终态通知唤醒空闲 Agent 并只发给桌面。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         db_path = str(tmp_path / "state.sqlite3")
         delivered = asyncio.Event()
         supervisor = TaskSupervisor(db_path=db_path, spool_dir=tmp_path / "tasks")
 
         class FakeAgent:
-            """提供隔离测试替身，用于验证：终态通知唤醒空闲 Agent 并只发给桌面。
-            """
+            """提供隔离测试替身，用于验证：终态通知唤醒空闲 Agent 并只发给桌面。"""
             async def run(self, message, *, inbox_claim=None, **kwargs):
                 """持久交付本次真人输入，建立当前进程的会话激活资格。
 
@@ -528,8 +517,7 @@ def test_terminal_notification_wakes_idle_agent_on_desktop_channel(tmp_path) -> 
                 yield AgentEvent(EventType.DONE, None)
 
             async def close(self):
-                """完成替身清理而不访问真实服务。
-                """
+                """完成替身清理而不访问真实服务。"""
                 pass
 
         hub = InteractionEventHub()
@@ -584,8 +572,7 @@ def test_restart_marks_unfinished_task_orphaned_once(tmp_path) -> None:
     """
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：重启后的遗留任务只标记并通知 orphaned 一次。
-        """
+        """在隔离异步环境中安排并验证：重启后的遗留任务只标记并通知 orphaned 一次。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         db_path = str(tmp_path / "state.sqlite3")
         supervisor = TaskSupervisor(db_path=db_path, spool_dir=tmp_path / "tasks")
@@ -626,8 +613,7 @@ def test_active_turn_receives_multiple_task_terminals_at_next_model_boundary(tmp
     """
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：活动轮次在下一次模型调用前收到合并终态。
-        """
+        """在隔离异步环境中安排并验证：活动轮次在下一次模型调用前收到合并终态。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         db_path = str(tmp_path / "state.sqlite3")
         reached_boundary = asyncio.Event()
@@ -636,8 +622,7 @@ def test_active_turn_receives_multiple_task_terminals_at_next_model_boundary(tmp
         supervisor = TaskSupervisor(db_path=db_path, spool_dir=tmp_path / "tasks")
 
         class FakeAgent:
-            """提供隔离测试替身，用于验证：活动轮次在下一次模型调用前收到合并终态。
-            """
+            """提供隔离测试替身，用于验证：活动轮次在下一次模型调用前收到合并终态。"""
             async def run(
                 self, message, images=None, *, origin_channel="desktop",
                 inbox_claim=None, turn_control=None, before_next_llm=None, on_input_committed=None,
@@ -697,8 +682,7 @@ def test_active_turn_receives_multiple_task_terminals_at_next_model_boundary(tmp
                     await manager.close()
 
             async def close(self):
-                """完成替身清理而不访问真实服务。
-                """
+                """完成替身清理而不访问真实服务。"""
                 pass
 
         scheduler = AgentRuntimeScheduler(
@@ -754,8 +738,7 @@ def test_idle_task_notification_is_committed_before_pending_human_turn(tmp_path)
     """
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：空闲激活时任务通知先于同批真人消息提交。
-        """
+        """在隔离异步环境中安排并验证：空闲激活时任务通知先于同批真人消息提交。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         db_path = str(tmp_path / "state.sqlite3")
         supervisor = TaskSupervisor(db_path=db_path, spool_dir=tmp_path / "tasks")
@@ -773,8 +756,7 @@ def test_idle_task_notification_is_committed_before_pending_human_turn(tmp_path)
         assert record is not None and record.status == "completed"
 
         class FakeAgent:
-            """提供隔离测试替身，用于验证：空闲激活时任务通知先于同批真人消息提交。
-            """
+            """提供隔离测试替身，用于验证：空闲激活时任务通知先于同批真人消息提交。"""
             async def run(
                 self, message, images=None, *, origin_channel="desktop",
                 inbox_claim=None, inbox_claims=None, runtime_inputs=(),
@@ -829,8 +811,7 @@ def test_idle_task_notification_is_committed_before_pending_human_turn(tmp_path)
                 yield AgentEvent(EventType.DONE, None)
 
             async def close(self):
-                """完成替身清理而不访问真实服务。
-                """
+                """完成替身清理而不访问真实服务。"""
                 pass
 
         scheduler = AgentRuntimeScheduler(

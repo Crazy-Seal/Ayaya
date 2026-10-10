@@ -9,6 +9,12 @@ const markerPath = path.join(outputRoot, "hiyori_pro_zh", "runtime", "hiyori_pro
 const cubismCorePath = path.join(projectRoot, "public", "live2dcubismcore.min.js");
 const cubismCoreUrl = "https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js";
 
+/**
+ * 构建或开发启动前准备 Cubism Core 资源，已有有效文件时复用。
+ *
+ * Returns:
+ *     Promise<void>: 所需 Live2D 核心资源准备完成后结束。
+ */
 const ensureCubismCore = async () => {
   if (fs.existsSync(cubismCorePath)) {
     console.log("Cubism Core 已存在，跳过下载。");

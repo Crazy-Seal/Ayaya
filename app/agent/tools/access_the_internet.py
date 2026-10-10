@@ -27,7 +27,11 @@ def _load_tavily_api_key() -> str | None:
 
 
 def _format_search_output(data) -> str:
-    """把搜索结果整理成紧凑可读文本。"""
+    """把搜索结果整理成紧凑可读文本。
+
+    Args:
+        data (Any): 需要解析或保存的结构化数据。
+    """
     if isinstance(data, str):
         text = data.strip()
         return text if text else "未检索到相关互联网信息。"
@@ -69,7 +73,11 @@ def _format_search_output(data) -> str:
 async def access_the_internet(
     query: Annotated[str, "你的搜索问题或关键词等。"],
 ) -> str:
-    """访问互联网，搜索你想要的信息。当用户提及你不知道的信息，或你想上网查询时使用。"""
+    """访问互联网，搜索你想要的信息。当用户提及你不知道的信息，或你想上网查询时使用。
+
+    Args:
+        query (str): 你的搜索问题或关键词等。
+    """
     if not query or not query.strip():
         return "错误: query不能为空。"
 

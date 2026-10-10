@@ -32,6 +32,14 @@ if TYPE_CHECKING:
 
 
 def _fingerprint(value: Any) -> str:
+    """将参数或准备动作按稳定键序编码并计算摘要，用于确认审批后的执行内容未变化。
+
+    Args:
+        value (Any): 当前需要校验或转换的值。
+
+    Returns:
+        str: 当前内容的 SHA-256 摘要。
+    """
     encoded = json.dumps(
         to_json_value(value),
         ensure_ascii=False,
@@ -43,7 +51,11 @@ def _fingerprint(value: Any) -> str:
 
 
 def descriptor_for_tool(tool: Any) -> ToolDescriptor:
-    """从统一 BaseTool 表面构造授权描述符。"""
+    """从统一 BaseTool 表面构造授权描述符。
+
+    Args:
+        tool (Any): 需要注册或执行的工具对象。
+    """
     identity = getattr(tool, "identity", None) or ToolIdentity.local(tool.name)
     schema = getattr(tool, "parameters_schema", {}) or {}
     contract = (
@@ -82,13 +94,25 @@ class ToolAuthorization:
         settings_writer: Callable[[str, "ChatSettings"], "ChatSettings"] | None = None,
         mutation_coordinator: "SettingsMutationCoordinator | None" = None,
     ) -> None:
+        """保存最新配置读取、目录与配置写入依赖，工具调用时再核对权限和审批。
+
+        Args:
+            settings_loader (Callable[[str], ChatSettings]): 按会话编号读取最新 ChatSettings 的函数。
+            catalog (UnifiedToolCatalog | None): 合并本地和 MCP 工具信息的目录对象。
+            settings_writer (Callable[[str, 'ChatSettings'], 'ChatSettings'] | None): 保存会话设置并清理相关缓存的函数。
+            mutation_coordinator (SettingsMutationCoordinator | None): 保证关联配置修改按顺序完成的协调器。
+        """
         self._settings_loader = settings_loader
         self._catalog = catalog
         self._settings_writer = settings_writer
         self._mutation_coordinator = mutation_coordinator
 
     def list_policies(self, session_id: str) -> list["ToolCatalogEntry"]:
-        """通过统一目录列出当前会话全部已知工具及其策略。"""
+        """通过统一目录列出当前会话全部已知工具及其策略。
+
+        Args:
+            session_id (str): 当前操作所属的会话编号。
+        """
         if self._catalog is None:
             raise RuntimeError("当前 ToolAuthorization 未配置工具目录")
         return self._catalog.list_entries(self._settings_loader(session_id))
@@ -99,7 +123,13 @@ class ToolAuthorization:
         identity: ToolIdentity,
         policy: ToolPolicy,
     ) -> list["ToolCatalogEntry"]:
-        """更新一个工具策略并返回最新目录。"""
+        """更新一个工具策略并返回最新目录。
+
+        Args:
+            session_id (str): 当前操作所属的会话编号。
+            identity (ToolIdentity): 来源、名称及服务编号确定的工具身份。
+            policy (ToolPolicy): 该工具的 allow、ask 或 deny 权限。
+        """
         return await self.set_policies(session_id, {identity.stable_key: policy})
 
     async def set_policies(
@@ -107,7 +137,12 @@ class ToolAuthorization:
         session_id: str,
         policies: dict[str, ToolPolicy],
     ) -> list["ToolCatalogEntry"]:
-        """原子更新一组工具策略；未知 stable key 一律拒绝。"""
+        """原子更新一组工具策略；未知 stable key 一律拒绝。
+
+        Args:
+            session_id (str): 当前操作所属的会话编号。
+            policies (dict[str, ToolPolicy]): 按 local:名称 或 mcp:服务编号:名称 保存的工具权限。
+        """
         if self._settings_writer is None or self._mutation_coordinator is None:
             raise RuntimeError("当前 ToolAuthorization 未配置策略存储")
         async with self._mutation_coordinator.lock:
@@ -125,7 +160,12 @@ class ToolAuthorization:
         return self.list_policies(session_id)
 
     def get_policy(self, session_id: str, identity: ToolIdentity) -> ToolPolicy:
-        """按调用读取最新策略；配置异常安全降级为 DENY。"""
+        """按调用读取最新策略；配置异常安全降级为 DENY。
+
+        Args:
+            session_id (str): 当前操作所属的会话编号。
+            identity (ToolIdentity): 来源、名称及服务编号确定的工具身份。
+        """
         try:
             settings = self._settings_loader(session_id)
             if identity.source == "mcp":
@@ -139,10 +179,24 @@ class ToolAuthorization:
             return ToolPolicy.DENY
 
     def is_exposed(self, session_id: str, tool: Any) -> bool:
+        """生成模型工具列表时排除 deny 工具，ask 工具仍可公开但执行前需审批。
+
+        Args:
+            session_id (str): 当前操作所属的会话编号。
+            tool (Any): 需要注册或执行的工具对象。
+
+        Returns:
+            bool: 当前权限不是 deny 时为 True。
+        """
         return self.get_policy(session_id, descriptor_for_tool(tool).identity) != ToolPolicy.DENY
 
     def get_bound_mcp_identity(self, session_id: str, server_id: str) -> str | None:
-        """读取已启用 MCP Server 的会话绑定身份。"""
+        """读取已启用 MCP Server 的会话绑定身份。
+
+        Args:
+            session_id (str): 当前操作所属的会话编号。
+            server_id (str): MCP 服务的稳定编号。
+        """
         try:
             server = self._settings_loader(session_id).mcp.servers.get(server_id)
             return server.identity_fingerprint if server and server.enabled else None
@@ -285,6 +339,14 @@ class ToolAuthorization:
 
     @staticmethod
     def _snapshot(invocation: ToolInvocation) -> dict[str, Any]:
+        """为一次调用保存身份、参数、工具定义和准备动作摘要，将批准绑定到具体操作。
+
+        Args:
+            invocation (ToolInvocation): 本次会话中的工具身份、调用参数及可选准备动作。
+
+        Returns:
+            dict[str, Any]: 可持久保存并在恢复执行时重新比对的调用摘要。
+        """
         return {
             "tool_call_id": invocation.tool_call_id,
             "tool_identity": invocation.descriptor.identity.stable_key,
@@ -299,6 +361,15 @@ class ToolAuthorization:
 
     @classmethod
     def _matches(cls, invocation: ToolInvocation, snapshot: dict[str, Any]) -> bool:
+        """恢复审批后重算调用摘要，确认批准对应的工具、参数和动作均未变化。
+
+        Args:
+            invocation (ToolInvocation): 本次会话中的工具身份、调用参数及可选准备动作。
+            snapshot (dict[str, Any]): 审批时保存的工具调用与授权约束摘要。
+
+        Returns:
+            bool: 除保留审批编号外所有字段一致时为 True。
+        """
         return snapshot == {
             **cls._snapshot(invocation),
             "request_id": snapshot.get("request_id"),

@@ -60,7 +60,16 @@ ConversationSummary = Annotated[
 
 
 class ContextSummaryTask(BaseModel):
-    """仍需继续处理的工作任务或工作性质讨论。"""
+    """描述压缩后仍需继续处理的一项工作，保留进展和后续执行所需信息。
+
+    Attributes:
+        topic (TaskTopic): 任务主题。
+        current_state (TaskState): 当前进度和已确认事实。
+        constraints (list[TaskListItem]): 后续仍须遵守的约束。
+        decisions (list[TaskListItem]): 已确认且仍有效的决定。
+        pending (list[TaskListItem]): 未完成或待确认的事项。
+        references (list[TaskListItem]): 后续仍需使用的文件、链接等引用。
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -74,6 +83,14 @@ class ContextSummaryTask(BaseModel):
     @field_validator("constraints", "decisions", "pending", "references")
     @classmethod
     def deduplicate_items(cls, items: list[str]) -> list[str]:
+        """Pydantic 校验任务列表时按首次出现顺序去重，避免摘要反复保存同一事项。
+
+        Args:
+            items (list[str]): 已通过元素约束校验的任务条目。
+
+        Returns:
+            list[str]: 保留原顺序的去重条目。
+        """
         return list(dict.fromkeys(items))
 
 
@@ -87,6 +104,14 @@ class ContextSummary(BaseModel):
 
 
 def _task_string_array_schema(description: str) -> dict:
+    """生成摘要中约束、决定、待办和引用共用的字符串列表定义。
+
+    Args:
+        description (str): 告诉摘要模型该字段应填写什么内容的说明。
+
+    Returns:
+        dict: 包含元素长度和列表数量限制的 JSON Schema。
+    """
     return {
         "type": "array",
         "items": {"type": "string", "minLength": 1, "maxLength": 400},
@@ -150,7 +175,11 @@ class ContextOverflowError(RuntimeError):
 
 
 def validate_openai_protocol(messages: list[dict]) -> None:
-    """确保 ToolMessage 不孤立，且每组 tool_calls 都有完整返回。"""
+    """确保 ToolMessage 不孤立，且每组 tool_calls 都有完整返回。
+
+    Args:
+        messages (list[dict]): 按对话顺序排列的消息集合。
+    """
     expected: set[str] = set()
     for message in messages:
         role = message.get("role")
@@ -174,17 +203,39 @@ def validate_openai_protocol(messages: list[dict]) -> None:
 
 @dataclass
 class PreparedModelInput:
+    """把本次模型请求与对应预算一起交给执行管道，并告知是否需要先保存压缩后的状态。
+
+    Attributes:
+        messages (list[dict]): 本次模型调用的完整消息列表。
+        token_assessment (TokenAssessment): 同一份输入的预算结果。
+        state_changed (bool): 准备输入时是否修改了内存中的 AgentState；不表示已保存 checkpoint。
+    """
     messages: list[dict]
     token_assessment: TokenAssessment
     state_changed: bool = False
 
     @property
     def estimated_tokens(self) -> int:
+        """提供本次完整模型输入经过基线校准后的大小。
+
+        Returns:
+            int: 对应 token_assessment 的估算输入 token 数。
+        """
         return self.token_assessment.estimated_prompt_tokens
 
 
 class ContextCompactionCoordinator:
-    """编排两层 State 压缩；通过窄日期接口感知日记覆盖。"""
+    """在模型调用前缩短工具结果、清除已有日记覆盖的摘要，并生成新的历史摘要。
+
+    只更新或返回内存消息；checkpoint 由执行管道在调用模型前保存。
+
+    Attributes:
+        budget (ContextBudgetService): 输入大小估算器及压缩配置。
+        policy (ContextCompressionPolicy): 消息选择和替换规则。
+        summary_client (SummaryClient): 生成结构化历史摘要的模型客户端。
+        diary_coverage (DiaryCoverage | None): 查询有效日期是否已有日记的接口。
+        chat_settings (ChatSettings | None): 构造摘要提示词时使用的会话角色设置。
+    """
 
     def __init__(
         self,
@@ -194,6 +245,14 @@ class ContextCompactionCoordinator:
         *,
         chat_settings: "ChatSettings | None" = None,
     ) -> None:
+        """保存压缩依赖，此时不查询日记，也不调用模型。
+
+        Args:
+            budget (ContextBudgetService): 估算消息大小的对象。
+            summary_client (SummaryClient): 用于生成历史摘要的模型客户端。
+            diary_coverage (DiaryCoverage | None): 可选的日记覆盖查询接口。
+            chat_settings (ChatSettings | None): 摘要使用的会话角色配置。
+        """
         self.budget = budget
         self.policy = ContextCompressionPolicy()
         self.summary_client = summary_client
@@ -201,6 +260,11 @@ class ContextCompactionCoordinator:
         self.chat_settings = chat_settings
 
     def _build_summary_system_prompt(self) -> str:
+        """从会话角色设置构造摘要系统提示词，并明确历史只作为待分析数据。
+
+        Returns:
+            str: 角色说明和摘要安全规则；未提供角色设置时使用默认助手称呼。
+        """
         if self.chat_settings is None:
             return f"""你是AI助手，称呼用户为用户。
 
@@ -211,6 +275,14 @@ class ContextCompactionCoordinator:
 {SUMMARY_SYSTEM_PROMPT}"""
 
     def compress_tool_results(self, state: AgentState) -> int:
+        """在内存状态中压缩允许缩短的旧工具结果，保护尚未完成的工具调用。
+
+        Args:
+            state (AgentState): 本次模型调用所属的会话状态。
+
+        Returns:
+            int: 本次替换或删除的消息数量；调用方据此决定是否保存 checkpoint。
+        """
         candidate, changed = self.policy.compress_old_tool_results(
             state.messages,
             protected_tool_call_ids=(
@@ -222,10 +294,19 @@ class ContextCompactionCoordinator:
         return changed
 
     async def drop_diary_covered_summaries(self, state: AgentState) -> int:
+        """逐项查询摘要覆盖日期，只从内存状态移除已经有日记的旧摘要。
+
+        Args:
+            state (AgentState): 当前会话状态，普通消息始终保留。
+
+        Returns:
+            int: 移除的摘要数量；未配置日记查询接口时为零。
+        """
         if self.diary_coverage is None:
             return 0
         kept: list[BaseMessage] = []
         removed = 0
+        # 1. 普通消息和没有覆盖日期的摘要保留；有覆盖日期的摘要才查询日记。
         for message in state.messages:
             effective_date = (
                 message.covered_effective_date
@@ -241,13 +322,21 @@ class ContextCompactionCoordinator:
                 removed += 1
             else:
                 kept.append(message)
+        # 2. 全部日期查询成功后才替换内存消息，查询异常不会留下部分删除结果。
         if removed:
             state.commit_compaction(kept)
         return removed
 
     @staticmethod
     def _coverage_marker(selected_messages: Sequence[BaseMessage]) -> tuple[str, str]:
-        """返回最后一条被覆盖内容的消息游标和日记有效日期。"""
+        """确定新摘要覆盖到哪条原消息，以及该消息归属的日记有效日期。
+
+        Args:
+            selected_messages (Sequence[BaseMessage]): 已选择且非空的待总结消息。
+
+        Returns:
+            tuple[str, str]: 最后一条原消息编号和有效日期；末尾为旧摘要时复用其覆盖标记。
+        """
         last = selected_messages[-1]
         if isinstance(last, ContextSummaryMessage):
             return last.covered_through_message_id, last.covered_effective_date
@@ -257,6 +346,13 @@ class ContextCompactionCoordinator:
         return last.message_id, effective_date
 
     def _build_summary_extraction_prompt(self) -> str:
+        """构造摘要提取规则，区分需要继续的工作任务和普通聊天信息。
+
+        本方法读取 chat_settings.address，调用方须已提供会话角色设置。
+
+        Returns:
+            str: 发送给摘要模型的任务保留、删除、合并及输出格式规则。
+        """
         return f"""# 上下文摘要提取规则
 请根据该规则和以上的历史消息，生成一份用于支撑后续对话进行的完整摘要。
 
@@ -284,6 +380,20 @@ class ContextCompactionCoordinator:
         frozen: Sequence[BaseMessage],
         ratio: float,
     ) -> tuple[BaseMessage, ...]:
+        """从本次捕获的历史中选择完整轮次并生成摘要，返回经工具协议检查的候选消息集合。
+
+        Args:
+            frozen (Sequence[BaseMessage]): 本次压缩开始前的消息集合，两次尝试使用同一份历史。
+            ratio (float): 希望覆盖的可压缩历史比例。
+
+        Returns:
+            tuple[BaseMessage, ...]: 用一条上下文摘要替换选中历史后的消息；尚未提交给 AgentState。
+
+        Raises:
+            ContextOverflowError: 没有可安全压缩的已完成历史。
+            ValueError: 候选消息违反工具请求与结果的配对要求，或模型摘要结构不合法。
+        """
+        # 1. 从本次捕获的历史中选完整轮次，先确认工具调用都有对应结果再交给摘要模型。
         selected = self.policy.select_prefix(
             frozen, self.budget, ratio=ratio
         )
@@ -293,6 +403,7 @@ class ContextCompactionCoordinator:
         selected_messages = [frozen[index] for index in selected]
         validate_openai_protocol([message.to_openai_format() for message in selected_messages])
         source = build_model_window(selected_messages)
+        # 2. 模型只返回摘要数据；结构校验失败时不向 AgentState 提交任何候选消息。
         response = await self.summary_client.ainvoke_structured(
             [
                 SystemMessage(text=self._build_summary_system_prompt()).to_openai_format(),
@@ -315,6 +426,7 @@ class ContextCompactionCoordinator:
             self.budget.estimate_message(message.to_openai_format())
             for message in selected_messages
         )
+        # 3. 记录原历史覆盖边界，让后续压缩和日记清理仍能追溯被摘要替换的内容。
         summary_message = ContextSummaryMessage(
             content=f"{CONTEXT_SUMMARY_PREFIX}\n{summary}",
             created_at=created_at,
@@ -323,6 +435,7 @@ class ContextCompactionCoordinator:
             covered_effective_date=effective_date,
             compression_ratio=round(summary_tokens / max(source_tokens, 1), 4),
         )
+        # 4. 在原历史位置放入摘要，保留未选消息顺序，最终再检查一次工具协议。
         first = min(selected)
         candidate = [message for index, message in enumerate(frozen) if index not in selected_set]
         candidate.insert(first, summary_message)
@@ -331,7 +444,14 @@ class ContextCompactionCoordinator:
 
 
 class ModelInputCoordinator:
-    """主模型调用前的唯一输入协调入口。"""
+    """由执行管道在每次调用主模型前准备消息，统一处理截图保留、历史压缩和输入预算。
+
+    Attributes:
+        budget (ContextBudgetService): 当前会话的预算估算器。
+        compaction (ContextCompactionCoordinator): 工具结果和历史摘要的压缩协调器。
+        screenshot_policy (ContextCompressionPolicy): 截图过期及数量限制规则。
+        accounting_key (str): 当前模型配置的用量计量标识。
+    """
 
     def __init__(
         self,
@@ -342,6 +462,15 @@ class ModelInputCoordinator:
         chat_settings: "ChatSettings | None" = None,
         accounting_key: str = "openai-chat-completions:default",
     ) -> None:
+        """装配模型输入所需的预算、压缩策略和日记查询依赖。
+
+        Args:
+            config (ContextStrategyConfig): 当前会话的上下文压缩配置。
+            summary_client (SummaryClient): 生成结构化摘要的模型客户端。
+            diary_coverage (DiaryCoverage | None): 可选的日记覆盖查询接口。
+            chat_settings (ChatSettings | None): 摘要模型的角色与称呼设置。
+            accounting_key (str): 当前模型、协议和服务地址的计量配置标识。
+        """
         self.budget = ContextBudgetService(config)
         self.compaction = ContextCompactionCoordinator(
             self.budget,
@@ -359,6 +488,17 @@ class ModelInputCoordinator:
         tools: list[dict],
         turn_context: RuntimeContext,
     ) -> tuple[list[dict], TokenAssessment]:
+        """构造临时模型消息并估算输入大小，时间和检索记忆不写回原领域消息。
+
+        Args:
+            state (AgentState): 当前状态或供预算检查使用的候选状态。
+            system_prompt (str): 本次主模型的系统提示词。
+            tools (list[dict]): 当前向模型公开的工具定义。
+            turn_context (RuntimeContext): 当前轮次的时间、真人输入编号和检索记忆。
+
+        Returns:
+            tuple[list[dict], TokenAssessment]: 完整模型消息与同一份输入的预算结果。
+        """
         transient = append_transient_context(state.messages, turn_context)
         history = build_model_window(transient)
         messages = (
@@ -392,6 +532,22 @@ class ModelInputCoordinator:
         tools: list[dict],
         turn_context: RuntimeContext,
     ) -> PreparedModelInput:
+        """先压缩旧截图，再按预算逐层缩短历史，给执行管道返回可发送的模型输入。
+
+        Args:
+            state (AgentState): 当前会话的内存状态，成功压缩后会更新其中的消息。
+            system_prompt (str): 本次主模型的系统提示词。
+            tools (list[dict]): 当前向模型公开的工具定义。
+            turn_context (RuntimeContext): 本轮临时上下文。
+
+        Returns:
+            PreparedModelInput: 完整消息、输入预算及状态变化标记；执行管道负责先保存 checkpoint。
+
+        Raises:
+            ContextOverflowError: 没有安全压缩范围，或两次摘要尝试后仍达到压缩阈值。
+            ValueError: 工具协议或模型返回的摘要结构不合法。
+        """
+        # 1. 截图按自身保留规则压缩，即使总输入尚未达到 token 阈值也执行。
         screenshot_candidate, screenshot_count = self.screenshot_policy.compress_screenshots(
             state.messages,
             ttl_human_messages=self.budget.config.screenshot_ttl_human_messages,
@@ -404,11 +560,13 @@ class ModelInputCoordinator:
         if not self.budget.should_compact(assessment.estimated_prompt_tokens):
             return PreparedModelInput(messages, assessment, state_changed=changed)
 
+        # 2. 达到阈值后先缩短旧工具结果；重新估算达标即可返回，避免无必要的摘要调用。
         changed = bool(self.compaction.compress_tool_results(state)) or changed
         messages, assessment = self._view(state, system_prompt, tools, turn_context)
         if not self.budget.should_compact(assessment.estimated_prompt_tokens):
             return PreparedModelInput(messages, assessment, state_changed=changed)
 
+        # 3. 再移除已有日记覆盖的摘要，并按清理后的完整输入重新判断预算。
         removed_summaries = await self.compaction.drop_diary_covered_summaries(state)
         changed = changed or bool(removed_summaries)
         if removed_summaries:
@@ -416,10 +574,12 @@ class ModelInputCoordinator:
             if not self.budget.should_compact(assessment.estimated_prompt_tokens):
                 return PreparedModelInput(messages, assessment, state_changed=True)
 
+        # 4. 两种压缩比例都从同一份历史生成，第二次不会在第一次摘要上再次丢失细节。
         frozen = state.messages
         for ratio in (0.60, 0.75):
             candidate = await self.compaction.summarize_candidate(frozen, ratio)
             candidate_state = AgentState.from_checkpoint(state.to_checkpoint())
+            # 4.1. 在独立候选状态上估算，只有低于阈值的候选才更新当前内存状态。
             candidate_state.commit_compaction(candidate)
             candidate_messages, candidate_assessment = self._view(
                 candidate_state, system_prompt, tools, turn_context
@@ -433,6 +593,7 @@ class ModelInputCoordinator:
                     candidate_assessment,
                     state_changed=True,
                 )
+        # 5. 两次候选都过大则终止主模型调用，错误交由执行管道和会话调度器报告。
         raise ContextOverflowError("上下文在扩大到75%摘要后仍达到配置的压缩触发阈值，已停止主模型调用")
 
     def observe_usage(
@@ -442,6 +603,14 @@ class ModelInputCoordinator:
         prepared: PreparedModelInput,
         prompt_tokens: int,
     ) -> None:
+        """成功的模型流结束后，把真实输入用量记入内存状态，供后续请求校准预算。
+
+        Args:
+            state (AgentState): 当前会话状态，checkpoint 仍由执行管道保存。
+            prepared (PreparedModelInput): 该请求发送前的消息与预算结果。
+            prompt_tokens (int): 模型服务返回的真实输入 token 数；非正值不更新基线。
+        """
+        # 1. 用量缺失时不覆盖已有基线；有效用量这里只记入内存，随后随 checkpoint 保存。
         baseline = self.budget.observe(
             prepared.token_assessment,
             actual_prompt_tokens=prompt_tokens,
@@ -456,7 +625,14 @@ class ModelInputCoordinator:
 
     @staticmethod
     def is_context_overflow(error: Exception) -> bool:
-        """仅明确的模型上下文拒绝进入压缩恢复。"""
+        """识别模型明确返回的上下文超限错误，避免把其他失败当作需要压缩重试。
+
+        Args:
+            error (Exception): 当前模型调用抛出的异常。
+
+        Returns:
+            bool: 错误文本包含受支持的上下文超限标记时为 True。
+        """
         text = str(error).lower()
         return "context_length_exceeded" in text or "maximum context" in text
 
@@ -468,11 +644,29 @@ class ModelInputCoordinator:
         tools: list[dict],
         turn_context: RuntimeContext,
     ) -> AsyncGenerator[PreparedModelInput, None]:
-        """按需提供两次强制压缩输入；冻结源仅在本次恢复期间存活。"""
+        """主模型拒绝上下文后，按同一份历史依次提供 60% 和 75% 的摘要压缩结果。
+
+        调用方每次先保存新状态，再重试模型；重试成功即可停止消费，不再生成下一候选。
+
+        Args:
+            state (AgentState): 当前会话状态，每次产出前更新其中的候选消息。
+            system_prompt (str): 主模型系统提示词。
+            tools (list[dict]): 当前向模型公开的工具定义。
+            turn_context (RuntimeContext): 本轮临时上下文。
+
+        Yields:
+            PreparedModelInput: 本次强制压缩后的模型输入，尚未保存 checkpoint。
+
+        Raises:
+            ContextOverflowError: 没有安全压缩范围。
+            ValueError: 工具协议或模型返回的摘要结构不合法。
+        """
+        # 1. 模型已经拒绝输入，先执行轻量清理，再捕获两次恢复共同使用的历史。
         self.compaction.compress_tool_results(state)
         await self.compaction.drop_diary_covered_summaries(state)
         frozen = state.messages
         for ratio in (0.60, 0.75):
+            # 2. 每次产出前更新内存消息；执行管道负责保存成功后重试，保存失败不会发送模型请求。
             candidate = await self.compaction.summarize_candidate(frozen, ratio)
             candidate_state = AgentState.from_checkpoint(state.to_checkpoint())
             candidate_state.commit_compaction(candidate)

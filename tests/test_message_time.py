@@ -20,6 +20,7 @@ FIXED_TIME = datetime(2026, 7, 12, 3, 4, 5, tzinfo=timezone.utc)
 
 
 def test_message_round_trip_preserves_created_at() -> None:
+    """验证消息保存恢复保留创建时间。"""
     message = HumanMessage(text="原始输入", created_at=FIXED_TIME)
     payload = message.to_storage_format()
 
@@ -31,6 +32,7 @@ def test_message_round_trip_preserves_created_at() -> None:
 
 
 def test_time_projection_covers_dialogue_and_screenshot_without_mutation() -> None:
+    """验证时间投影覆盖对话和截图且不改原消息。"""
     messages = (
         HumanMessage(text="你好", created_at=FIXED_TIME),
         AssistantMessage(text="你好呀", created_at=FIXED_TIME),
@@ -65,6 +67,7 @@ def test_time_projection_covers_dialogue_and_screenshot_without_mutation() -> No
 
 
 def test_context_strategy_projects_time_and_removes_internal_metadata() -> None:
+    """验证模型上下文附加时间并清除内部元数据。"""
     state = AgentState.create_new("time-test")
     state.append_input(HumanMessage(text="你好", created_at=FIXED_TIME))
     result = build_model_window(state)

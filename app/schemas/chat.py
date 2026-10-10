@@ -1,16 +1,16 @@
 from pydantic import BaseModel, Field
 
 
-# DTO
+# 路由将数据库协议记录转换成这些字段，供聊天列表恢复可见历史。
 class ChatHistoryItem(BaseModel):
     """定义桌面可见历史项，旧项缺少来源时默认 desktop。
 
     Attributes:
-        id (str): SQLite 自增输入序号，在事件中作为 input_sequence。
+        id (str): 用于聊天历史去重的稳定消息编号；工具提示可在原消息编号后追加 :tools。
         role (str): 桌面展示角色，可能为 Human、AI 或 AI_Tool_Calling。
-        content (str): Assistant 正文。
-        timestamp (str): 事件创建的 UTC 时间。
-        images (list[str] | None): 真人附件的图片 data URL 列表。
+        content (str): 当前可见项的真人正文、助手正文或工具调用提示。
+        timestamp (str): 协议记录转换为本机时区后的显示时间。
+        images (list[str] | None): 图片文件路径，未成功外置时可保留原图片地址。
         origin_channel (str): 输入或本轮回复所属的渠道。
     """
     id: str

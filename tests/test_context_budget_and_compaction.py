@@ -46,6 +46,14 @@ from types import SimpleNamespace
 
 
 def _summary_settings(*, address: str = "用户") -> SimpleNamespace:
+    """构造摘要生成使用的角色与称呼配置。
+
+    Args:
+        address (str): 摘要提示词使用的用户称呼。
+
+    Returns:
+        SimpleNamespace: 供外层用例断言使用的预设结果。
+    """
     return SimpleNamespace(
         name="Ayaya",
         feature="",
@@ -56,6 +64,15 @@ def _summary_settings(*, address: str = "用户") -> SimpleNamespace:
 
 
 def _tool_call(message_id: str, tool_call_id: str) -> AssistantMessage:
+    """构造带稳定编号和参数的测试工具调用。
+
+    Args:
+        message_id (str): 原领域消息的稳定编号。
+        tool_call_id (str): 用于配对工具请求和结果的调用编号。
+
+    Returns:
+        AssistantMessage: 供外层用例断言使用的预设结果。
+    """
     return AssistantMessage(
         message_id=message_id,
         created_at=datetime(2026, 8, 29, tzinfo=timezone.utc),
@@ -70,6 +87,16 @@ def _tool_result(
     compressible: bool = True,
     content: str | None = None,
 ) -> ToolMessage:
+    """构造与指定工具调用配对的文本结果。
+
+    Args:
+        index (int): 模型片段中的工具调用索引。
+        compressible (bool): 是否允许后续上下文压缩缩短这条工具结果。
+        content (str | None): 当前处理的正文。
+
+    Returns:
+        ToolMessage: 供外层用例断言使用的预设结果。
+    """
     return ToolMessage(
         message_id=f"tool-{index}",
         created_at=datetime(2026, 8, 29, 0, 0, 1, tzinfo=timezone.utc),
@@ -86,6 +113,16 @@ def _tool_image(
     name: str = SCREENSHOT_MESSAGE_NAME,
     image_count: int = 1,
 ) -> ToolMediaMessage:
+    """构造与工具结果关联的测试图片消息。
+
+    Args:
+        associated_message_id (str | None): 工具图片应关联的文本结果消息编号。
+        name (str): 当前对象的名称。
+        image_count (int): 当前用例构造的图片数量。
+
+    Returns:
+        ToolMediaMessage: 供外层用例断言使用的预设结果。
+    """
     media_kind = {
         SCREENSHOT_MESSAGE_NAME: "screenshot",
         MCP_TOOL_IMAGE_MESSAGE_NAME: "mcp",
@@ -104,6 +141,14 @@ def _tool_image(
 
 
 def _human(index: int) -> HumanMessage:
+    """构造当前用例的真人输入消息。
+
+    Args:
+        index (int): 模型片段中的工具调用索引。
+
+    Returns:
+        HumanMessage: 供外层用例断言使用的预设结果。
+    """
     return HumanMessage(
         message_id=f"human-{index}",
         created_at=datetime(2026, 8, 29, 0, 0, index, tzinfo=timezone.utc),
@@ -112,6 +157,15 @@ def _human(index: int) -> HumanMessage:
 
 
 def _state(session_id: str, messages) -> AgentState:
+    """按用例给定消息和未完成调用构造会话状态。
+
+    Args:
+        session_id (str): 当前操作所属的会话编号。
+        messages (list[dict]): 按对话顺序排列的消息集合。
+
+    Returns:
+        AgentState: 供外层用例断言使用的预设结果。
+    """
     state = AgentState.create_new(session_id)
     checkpoint = state.to_checkpoint()
     checkpoint["messages"] = [message.to_storage_format() for message in messages]
@@ -119,6 +173,7 @@ def _state(session_id: str, messages) -> AgentState:
 
 
 def test_screenshot_policy_expires_after_two_real_human_messages() -> None:
+    """验证截图在后续两条真人输入到达后过期。"""
     screenshot_message = replace(
         _tool_image("tool-0"),
         payload=AvailableMedia(
@@ -149,6 +204,7 @@ def test_screenshot_policy_expires_after_two_real_human_messages() -> None:
 
 
 def test_screenshot_policy_ignores_system_tool_and_injected_user_messages() -> None:
+    """验证系统、工具和内部通知不消耗截图保留次数。"""
     messages = [
         _tool_image("tool-0"),
         SystemMessage(text="系统提示"),
@@ -174,6 +230,7 @@ def test_screenshot_policy_ignores_system_tool_and_injected_user_messages() -> N
 
 
 def test_screenshot_policy_keeps_only_two_latest_in_long_task() -> None:
+    """验证长任务只保留最近两张未压缩截图。"""
     messages = [_tool_image(f"tool-{index}") for index in range(3)]
 
     candidate, changed = ContextCompressionPolicy().compress_screenshots(
@@ -198,6 +255,12 @@ def test_screenshot_policy_zero_compresses_immediately_and_is_idempotent(
     ttl_human_messages: int,
     max_screenshots: int,
 ) -> None:
+    """验证零保留配置立即压缩且重复操作无变化。
+
+    Args:
+        ttl_human_messages (int): 截图过期前允许出现的后续真人消息数量。
+        max_screenshots (int): 最多保留的未压缩截图数量。
+    """
     messages = [_tool_image("tool-0")]
 
     first, first_changed = ContextCompressionPolicy().compress_screenshots(
@@ -218,6 +281,7 @@ def test_screenshot_policy_zero_compresses_immediately_and_is_idempotent(
 
 
 def test_screenshot_policy_removes_large_payload_from_production_shape() -> None:
+    """验证真实消息结构中的大截图内容确实被移除。"""
     image_payload = "data:image/png;base64," + "A" * 100_000
     messages = []
     for index in range(16):
@@ -244,7 +308,9 @@ def test_screenshot_policy_removes_large_payload_from_production_shape() -> None
 
 
 def test_screenshot_compaction_runs_below_token_threshold_and_marks_state_changed() -> None:
+    """验证低于 token 阈值也压缩过期截图并标记状态变化。"""
     async def scenario():
+        """由外层测试调用，完成“低于 token 阈值也压缩过期截图并标记状态变化”的异步步骤。"""
         screenshots = [_tool_image(f"tool-{index}") for index in range(3)]
         state = _state("session-screenshot-limit", [*screenshots, _human(1)])
         coordinator = ModelInputCoordinator(
@@ -286,12 +352,14 @@ def test_screenshot_compaction_runs_below_token_threshold_and_marks_state_change
 
 
 def test_screen_tools_allow_old_results_to_be_compacted() -> None:
+    """验证屏幕工具允许旧结果参与上下文压缩。"""
     assert screenshot.compressible is True
     assert control_screen.compressible is True
     assert control_screen_with_vlm.compressible is True
 
 
 def test_first_layer_keeps_latest_five_compressible_tool_results() -> None:
+    """验证第一层保留最近五条允许压缩的工具结果。"""
     messages: list[dict] = []
     contents = [f"{index}-" + "中" * 50 for index in range(7)]
     for index in range(7):
@@ -315,6 +383,7 @@ def test_first_layer_keeps_latest_five_compressible_tool_results() -> None:
 
 
 def test_first_layer_never_compresses_pending_tool_batch() -> None:
+    """验证未完成工具批次的结果不会被压缩。"""
     messages: list[dict] = []
     for index in range(7):
         messages.extend([
@@ -355,6 +424,12 @@ def test_first_layer_uses_weighted_fifty_character_text_threshold(
     content: str,
     should_compress: bool,
 ) -> None:
+    """验证第一层按五十加权字符阈值判断文本。
+
+    Args:
+        content (str): 当前处理的正文。
+        should_compress (bool): 当前截图输入按用例预期是否应该压缩。
+    """
     messages = [_tool_result(0, content=content)]
 
     candidate, changed = ContextCompressionPolicy().compress_old_tool_results(messages, keep_latest=0)
@@ -366,6 +441,7 @@ def test_first_layer_uses_weighted_fifty_character_text_threshold(
 
 
 def test_first_layer_removes_old_tool_image_but_keeps_short_text() -> None:
+    """验证旧工具图片被删除但短文本保留。"""
     messages: list[dict] = []
     for index in range(6):
         messages.extend([
@@ -385,6 +461,7 @@ def test_first_layer_removes_old_tool_image_but_keeps_short_text() -> None:
 
 
 def test_first_layer_removes_only_strongly_associated_tool_images() -> None:
+    """验证只删除明确关联到目标结果的工具图片。"""
     target = _tool_result(0, content="中" * 50)
     associated_screenshot = _tool_image("tool-0")
     associated_compressed_screenshot = replace(
@@ -428,6 +505,7 @@ def test_first_layer_removes_only_strongly_associated_tool_images() -> None:
 
 
 def test_first_layer_cleans_images_from_already_compressed_result_idempotently() -> None:
+    """验证已经压缩结果的残留图片清理可以重复执行。"""
     messages = [
         _tool_result(0, content=COMPRESSED_TOOL_RESULT),
         _tool_image("tool-0"),
@@ -449,7 +527,9 @@ def test_first_layer_cleans_images_from_already_compressed_result_idempotently()
 
 
 def test_image_only_compaction_marks_prepared_state_as_changed() -> None:
+    """验证仅图片变化也标记模型准备结果需要保存。"""
     async def scenario():
+        """由外层测试调用，完成“仅图片变化也标记模型准备结果需要保存”的异步步骤。"""
         messages = []
         for index in range(6):
             messages.extend([
@@ -490,11 +570,31 @@ def test_image_only_compaction_marks_prepared_state_as_changed() -> None:
 
 
 def test_diary_coverage_port_removes_only_covered_context_summaries() -> None:
+    """验证只删除已被日记覆盖的上下文摘要。"""
     class Coverage:
+        """提供当前用例所需的 Coverage 测试替身，执行记录仅供外层断言使用。
+
+        该定义仅用于外层用例：验证只删除已被日记覆盖的上下文摘要。
+        """
         async def has_diary_for_effective_date(self, effective_date: str) -> bool:
+            """按用例指定的日期判断日记覆盖，不访问真实日记。
+
+            该定义仅用于外层用例：验证只删除已被日记覆盖的上下文摘要。
+
+            Args:
+                effective_date (str): 按日记规则划分的有效日期，格式为 YYYY-MM-DD。
+
+            Returns:
+                bool: 供外层用例断言使用的预设结果。
+            """
             return effective_date == "2026-08-28"
 
     async def scenario() -> tuple[int, list[str | None]]:
+        """由外层测试调用，完成“只删除已被日记覆盖的上下文摘要”的异步步骤。
+
+        Returns:
+            tuple[int, list[str | None]]: 供外层用例断言使用的预设结果。
+        """
         budget = ContextBudgetService(ContextStrategyConfig(compression_trigger_tokens_k=10))
         coordinator = ContextCompactionCoordinator(
             budget,
@@ -522,6 +622,7 @@ def test_diary_coverage_port_removes_only_covered_context_summaries() -> None:
 
 
 def test_context_budget_uses_actual_prompt_as_baseline_for_net_rough_delta() -> None:
+    """验证预算使用真实输入用量加粗估净变化。"""
     service = ContextBudgetService(ContextStrategyConfig(compression_trigger_tokens_k=10))
     first = service.assess(
         system_prompt="system",
@@ -554,6 +655,7 @@ def test_context_budget_uses_actual_prompt_as_baseline_for_net_rough_delta() -> 
 
 
 def test_context_budget_net_delta_accounts_for_replacement_and_deletion() -> None:
+    """验证预算净变化包含消息替换和删除。"""
     service = ContextBudgetService(ContextStrategyConfig(compression_trigger_tokens_k=10))
     first = service.assess(
         system_prompt="system",
@@ -598,6 +700,12 @@ def test_context_budget_invalidates_incompatible_baseline(
     accounting_key: str,
     system_prompt: str,
 ) -> None:
+    """验证不兼容的真实用量基线被丢弃。
+
+    Args:
+        accounting_key (str): 用例指定的模型计量标识。
+        system_prompt (str): 本次模型调用的系统提示词。
+    """
     service = ContextBudgetService(ContextStrategyConfig(compression_trigger_tokens_k=10))
     first = service.assess(
         system_prompt="system",
@@ -622,6 +730,7 @@ def test_context_budget_invalidates_incompatible_baseline(
 
 
 def test_context_budget_invalidates_baseline_when_tools_change() -> None:
+    """验证工具定义变化导致真实用量基线失效。"""
     service = ContextBudgetService(ContextStrategyConfig(compression_trigger_tokens_k=10))
     first = service.assess(
         system_prompt="system",
@@ -646,6 +755,7 @@ def test_context_budget_invalidates_baseline_when_tools_change() -> None:
 
 
 def test_context_budget_ignores_missing_actual_usage() -> None:
+    """验证缺少真实用量时不更新基线。"""
     service = ContextBudgetService(ContextStrategyConfig(compression_trigger_tokens_k=10))
     assessment = service.assess(
         system_prompt="system",
@@ -659,6 +769,7 @@ def test_context_budget_ignores_missing_actual_usage() -> None:
 
 
 def test_token_baseline_survives_checkpoint_round_trip() -> None:
+    """验证真实用量基线经 checkpoint 保存读取仍完整。"""
     state = AgentState.create_new("session")
     state.token_baseline = TokenBaseline(
         accounting_key="openai-chat:model-a",
@@ -674,6 +785,7 @@ def test_token_baseline_survives_checkpoint_round_trip() -> None:
 
 
 def test_compression_trigger_is_configured_directly_in_k_tokens() -> None:
+    """验证压缩阈值按千 token 配置直接换算。"""
     defaults = ContextStrategyConfig()
     minimum = ContextStrategyConfig(compression_trigger_tokens_k=10)
 
@@ -684,6 +796,7 @@ def test_compression_trigger_is_configured_directly_in_k_tokens() -> None:
 
 
 def test_protocol_blocks_never_split_tool_call_from_results() -> None:
+    """验证工具请求和结果不会被压缩边界拆开。"""
     messages = [
         HumanMessage(text="one"),
         _tool_call("ai-1", "call-1"),
@@ -698,6 +811,7 @@ def test_protocol_blocks_never_split_tool_call_from_results() -> None:
 
 
 def test_transient_context_is_appended_to_copy_of_latest_human_message() -> None:
+    """验证临时背景只追加到最新真人消息副本。"""
     original = (HumanMessage(
         text="问题",
         message_id="human-1",
@@ -718,7 +832,13 @@ def test_transient_context_is_appended_to_copy_of_latest_human_message() -> None
 
 
 class _SummaryClient:
+    """提供按用例脚本输出的模型响应，验证流式处理、摘要或失败恢复，不调用真实模型。"""
     def __init__(self, result: dict | None = None) -> None:
+        """保存本用例的脚本输入和依赖，初始化测试对象的执行记录。
+
+        Args:
+            result (dict | None): 当前工具或被包装函数返回的结果。
+        """
         self.calls: list[dict] = []
         self.result = result or {
             "active_tasks": [{
@@ -733,11 +853,19 @@ class _SummaryClient:
         }
 
     async def ainvoke_structured(self, messages: list[dict], schema: dict, **kwargs):
+        """接收摘要请求并返回预设结构或异常，供检查候选校验及恢复次数。
+
+        Args:
+            messages (list[dict]): 按对话顺序排列的消息集合。
+            schema (dict): 当前要检查或转换的 JSON Schema。
+            kwargs (dict[str, Any]): 传递给被调用函数的其他关键字参数。
+        """
         self.calls.append({"messages": messages, "schema": schema, "kwargs": kwargs})
         return self.result
 
 
 def test_context_summary_schema_normalizes_and_deduplicates_task_lists() -> None:
+    """验证摘要任务列表经过规范化和去重。"""
     summary = ContextSummary.model_validate({
         "active_tasks": [{
             "topic": " 设计上下文摘要 ",
@@ -774,11 +902,17 @@ def test_context_summary_schema_normalizes_and_deduplicates_task_lists() -> None
     ],
 )
 def test_context_summary_schema_rejects_invalid_shapes(payload: dict) -> None:
+    """验证无效摘要结构被拒绝。
+
+    Args:
+        payload (dict): 用例指定的结构化模型响应或调用载荷。
+    """
     with pytest.raises(ValidationError):
         ContextSummary.model_validate(payload)
 
 
 def test_context_summary_prompt_separates_work_state_from_conversation_summary() -> None:
+    """验证摘要提示词区分工作状态和普通聊天摘要。"""
     coordinator = ContextCompactionCoordinator(
         ContextBudgetService(ContextStrategyConfig()),
         SimpleNamespace(),
@@ -801,10 +935,29 @@ class _RatioBudget:
     """让60%候选仍超限、75%候选低于阈值的可预测预算替身。"""
 
     def __init__(self, config: ContextStrategyConfig, *, accept_75: bool = True) -> None:
+        """保存本用例的脚本输入和依赖，初始化测试对象的执行记录。
+
+        该定义仅用于外层用例：让60%候选仍超限、75%候选低于阈值的可预测预算替身。
+
+        Args:
+            config (ContextStrategyConfig): 调用方提供的配置。
+            accept_75 (bool): 是否让百分之七十五摘要候选通过预算检查。
+        """
         self.config = config
         self.accept_75 = accept_75
 
     def assess(self, *, messages: list[dict], **_kwargs) -> TokenAssessment:
+        """返回用例指定的 token 估算结果，控制是否需要第二次摘要。
+
+        该定义仅用于外层用例：让60%候选仍超限、75%候选低于阈值的可预测预算替身。
+
+        Args:
+            messages (list[dict]): 按对话顺序排列的消息集合。
+            _kwargs (dict[str, Any]): 传递给被调用函数的其他关键字参数。
+
+        Returns:
+            TokenAssessment: 供外层用例断言使用的预设结果。
+        """
         marker = " ".join(str(message.get("content", "")) for message in messages)
         if "candidate-75" in marker and self.accept_75:
             raw = 10
@@ -820,22 +973,56 @@ class _RatioBudget:
         )
 
     def should_compact(self, estimate: int) -> bool:
+        """按测试预算规则判断当前候选是否应继续压缩。
+
+        该定义仅用于外层用例：让60%候选仍超限、75%候选低于阈值的可预测预算替身。
+
+        Args:
+            estimate (int): 测试指定的输入 token 估算值。
+
+        Returns:
+            bool: 供外层用例断言使用的预设结果。
+        """
         return estimate >= self.config.compression_trigger_tokens
 
 
 class _RatioCompaction:
+    """提供当前用例所需的 _RatioCompaction 测试替身，执行记录仅供外层断言使用。"""
     def __init__(self) -> None:
+        """保存本用例的脚本输入和依赖，初始化测试对象的执行记录。"""
         self.ratios: list[float] = []
 
     @staticmethod
     def compress_tool_results(_state: AgentState) -> int:
+        """记录第一层工具结果压缩调用，供检查恢复顺序。
+
+        Args:
+            _state (AgentState): 当前会话的内存 AgentState；保存由调用方负责。
+
+        Returns:
+            int: 供外层用例断言使用的预设结果。
+        """
         return 0
 
     @staticmethod
     async def drop_diary_covered_summaries(_state: AgentState) -> int:
+        """记录日记覆盖清理调用，避免访问真实日记服务。
+
+        Args:
+            _state (AgentState): 当前会话的内存 AgentState；保存由调用方负责。
+
+        Returns:
+            int: 供外层用例断言使用的预设结果。
+        """
         return 0
 
     async def summarize_candidate(self, frozen, ratio: float):
+        """按用例要求构造摘要候选，记录原历史与比例供外层断言。
+
+        Args:
+            frozen (Any): 压缩开始时捕获的原历史，用于检查两次候选使用同一来源。
+            ratio (float): 本次摘要选择的历史比例。
+        """
         self.ratios.append(ratio)
         return (
             ContextSummaryMessage(
@@ -852,7 +1039,9 @@ class _RatioCompaction:
 
 
 def test_model_input_coordinator_replaces_old_turns_with_state_only_summary() -> None:
+    """验证旧轮次被仅保存到状态的摘要替换。"""
     async def scenario():
+        """由外层测试调用，完成“旧轮次被仅保存到状态的摘要替换”的异步步骤。"""
         messages = []
         created_at = datetime(2026, 8, 29, tzinfo=timezone.utc)
         for index in range(12):
@@ -927,7 +1116,13 @@ def test_model_input_coordinator_replaces_old_turns_with_state_only_summary() ->
 
 
 def test_context_summary_persona_is_built_directly_from_optional_chat_settings() -> None:
+    """验证摘要角色信息来自可选会话设置。"""
     async def scenario() -> list[dict]:
+        """由外层测试调用，完成“摘要角色信息来自可选会话设置”的异步步骤。
+
+        Returns:
+            list[dict]: 供外层用例断言使用的预设结果。
+        """
         client = _SummaryClient()
         coordinator = ContextCompactionCoordinator(
             ContextBudgetService(ContextStrategyConfig()),
@@ -956,7 +1151,9 @@ def test_context_summary_persona_is_built_directly_from_optional_chat_settings()
 
 
 def test_repeated_compaction_advances_coverage_from_old_summary_to_latest_raw_message() -> None:
+    """验证重复压缩的覆盖边界推进到新原消息。"""
     async def scenario():
+        """由外层测试调用，完成“重复压缩的覆盖边界推进到新原消息”的异步步骤。"""
         old_payload = {"active_tasks": [], "summary": "旧摘要"}
         frozen = (
             ContextSummaryMessage(
@@ -988,7 +1185,9 @@ def test_repeated_compaction_advances_coverage_from_old_summary_to_latest_raw_me
 
 
 def test_summary_coverage_reuses_existing_summary_cursor() -> None:
+    """验证摘要末尾为旧摘要时复用原覆盖游标。"""
     async def scenario():
+        """由外层测试调用，完成“摘要末尾为旧摘要时复用原覆盖游标”的异步步骤。"""
         frozen = (
             ContextSummaryMessage(
                 content="旧的摘要", message_id="summary",
@@ -1013,6 +1212,7 @@ def test_summary_coverage_reuses_existing_summary_cursor() -> None:
 
 
 def test_context_summary_accepts_valid_structure_regardless_of_estimated_size() -> None:
+    """验证结构合法摘要不会仅因粗估大小被拒绝。"""
     oversized_task = {
         "topic": "任务",
         "current_state": "中" * 800,
@@ -1043,7 +1243,13 @@ def test_context_summary_accepts_valid_structure_regardless_of_estimated_size() 
 
 
 def test_invalid_structured_summary_does_not_replace_state_messages() -> None:
+    """验证无效结构化摘要不替换状态消息。"""
     async def scenario() -> tuple[AgentState, dict]:
+        """由外层测试调用，完成“无效结构化摘要不替换状态消息”的异步步骤。
+
+        Returns:
+            tuple[AgentState, dict]: 供外层用例断言使用的预设结果。
+        """
         messages = []
         for index in range(12):
             messages.extend([
@@ -1080,7 +1286,13 @@ def test_invalid_structured_summary_does_not_replace_state_messages() -> None:
 
 
 def test_model_input_expands_from_frozen_source_to_75_percent() -> None:
+    """验证第二次压缩从同一历史扩大到百分之七十五。"""
     async def scenario(*, accept_75: bool):
+        """由外层测试调用，完成“第二次压缩从同一历史扩大到百分之七十五”的异步步骤。
+
+        Args:
+            accept_75 (bool): 是否让百分之七十五摘要候选通过预算检查。
+        """
         state = _state("session-expand", (
             HumanMessage(text="old", message_id="human-old", created_at=datetime(2026, 8, 28, tzinfo=timezone.utc)),
             HumanMessage(text="latest", message_id="human-latest", created_at=datetime(2026, 8, 29, tzinfo=timezone.utc)),
@@ -1110,7 +1322,9 @@ def test_model_input_expands_from_frozen_source_to_75_percent() -> None:
 
 
 def test_model_input_stops_before_main_model_when_75_percent_is_still_over_budget() -> None:
+    """验证百分之七十五摘要仍过大时停止主模型调用。"""
     async def scenario():
+        """由外层测试调用，完成“百分之七十五摘要仍过大时停止主模型调用”的异步步骤。"""
         state = _state("session-overflow", (
             HumanMessage(text="old", message_id="human-old", created_at=datetime(2026, 8, 28, tzinfo=timezone.utc)),
             HumanMessage(text="latest", message_id="human-latest", created_at=datetime(2026, 8, 29, tzinfo=timezone.utc)),

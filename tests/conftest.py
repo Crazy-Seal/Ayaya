@@ -23,6 +23,12 @@ for variable in (
 
 
 def pytest_sessionfinish(session, exitstatus) -> None:
+    """由 Pytest 在整轮测试结束后调用，关闭测试工具日志句柄并清理一次性存储目录。
+
+    Args:
+        session (pytest.Session): Pytest 当前测试会话，用于结束阶段的资源清理。
+        exitstatus (int): Pytest 本次执行的退出状态。
+    """
     tool_logger = logging.getLogger("app.agent.tools")
     test_tool_log = (Path(_TEST_STORAGE.name) / "logs" / "tools.log").resolve()
     for handler in tuple(tool_logger.handlers):

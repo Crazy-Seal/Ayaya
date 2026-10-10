@@ -12,13 +12,27 @@ def test_clearing_chat_settings_cache_also_clears_memory_manager_cache(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    """验证清除设置缓存也清除记忆管理器工厂缓存。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
+    """
     import app.agent.memory as memory_package
 
     cleared: list[bool] = []
 
     class FakeMemoryManagerFactory:
+        """提供当前用例所需的 FakeMemoryManagerFactory 测试替身，执行记录仅供外层断言使用。
+
+        该定义仅用于外层用例：验证清除设置缓存也清除记忆管理器工厂缓存。
+        """
         @staticmethod
         def cache_clear() -> None:
+            """记录记忆工厂缓存清理调用，确认设置修改同步使旧实例失效。
+
+            该定义仅用于外层用例：验证清除设置缓存也清除记忆管理器工厂缓存。
+            """
             cleared.append(True)
 
     monkeypatch.setattr(
@@ -36,6 +50,11 @@ def test_clearing_chat_settings_cache_also_clears_memory_manager_cache(
 
 
 def test_skills_survive_round_trip(tmp_path: Path) -> None:
+    """验证技能设置经 YAML 保存读取仍完整。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     config_file = tmp_path / "chat_settings.yaml"
     config_file.write_text("chat_models: []\n", encoding="utf-8")
     dao = ChatSettingsDao(config_file=config_file)
@@ -58,6 +77,11 @@ def test_skills_survive_round_trip(tmp_path: Path) -> None:
 
 
 def test_agent_plugins_round_trip_with_long_term_memory_interval(tmp_path: Path) -> None:
+    """验证插件设置保留长期记忆提取间隔。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     config_file = tmp_path / "chat_settings.yaml"
     config_file.write_text("chat_models: []\n", encoding="utf-8")
     dao = ChatSettingsDao(config_file=config_file)
@@ -94,6 +118,7 @@ def test_agent_plugins_round_trip_with_long_term_memory_interval(tmp_path: Path)
 
 
 def test_memory_plugin_is_inherent_even_when_disabled_or_all_types_disabled() -> None:
+    """验证记忆插件始终作为固有插件存在。"""
     settings = ChatSettings(
         session_id="test-session",
         model_name="test-model",
@@ -122,6 +147,7 @@ def test_memory_plugin_is_inherent_even_when_disabled_or_all_types_disabled() ->
 
 
 def test_agent_plugin_config_is_validated_before_persistence() -> None:
+    """验证插件配置在持久保存前经过校验。"""
     with pytest.raises(ValidationError):
         ChatSettings(
             session_id="test-session",
@@ -141,6 +167,7 @@ def test_agent_plugin_config_is_validated_before_persistence() -> None:
 
 
 def test_context_strategy_is_required_and_validated() -> None:
+    """验证上下文策略必须存在并满足约束。"""
     with pytest.raises(ValidationError):
         ChatSettings(
             session_id="test-session",
@@ -162,6 +189,11 @@ def test_context_strategy_is_required_and_validated() -> None:
 
 
 def test_context_strategy_defaults_to_100k_and_two_screenshots(tmp_path: Path) -> None:
+    """验证默认压缩阈值为十万 token 且保留两张截图。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     config_file = tmp_path / "chat_settings.yaml"
     config_file.write_text("chat_models: []\n", encoding="utf-8")
     dao = ChatSettingsDao(config_file=config_file)
@@ -187,6 +219,11 @@ def test_context_strategy_defaults_to_100k_and_two_screenshots(tmp_path: Path) -
 def test_legacy_context_strategy_without_screenshot_fields_uses_defaults(
     tmp_path: Path,
 ) -> None:
+    """验证旧上下文配置缺少截图字段时补默认值。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+    """
     config_file = tmp_path / "chat_settings.yaml"
     config_file.write_text(
         """chat_models:

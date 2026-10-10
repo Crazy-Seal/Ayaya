@@ -21,8 +21,7 @@ from app.services.interaction_event_hub import InteractionEventHub
 
 
 def test_unknown_command_keeps_http_200_business_rejection() -> None:
-    """验证类型整理没有把未知命令提前变成 HTTP 422 或启动 Agent。
-    """
+    """验证类型整理没有把未知命令提前变成 HTTP 422 或启动 Agent。"""
     def unexpected_agent(session_id: str):
         """禁止未知命令触发真实执行。
 
@@ -65,16 +64,14 @@ def test_idle_sse_heartbeats_preserve_pending_event_and_close_source(monkeypatch
         execution (bool): 是否检查独立屏幕执行流。
     """
     async def scenario() -> None:
-        """跨越两次心跳后继续接收同一来源事件，并在关闭时验证订阅释放。
-        """
+        """跨越两次心跳后继续接收同一来源事件，并在关闭时验证订阅释放。"""
         monkeypatch.setattr(agent_routes, "SSE_HEARTBEAT_SECONDS", 0.01, raising=False)
         release = asyncio.Event()
         closed = asyncio.Event()
         cancelled = asyncio.Event()
 
         class Source:
-            """用可控屏障模拟没有业务数据的长期事件来源。
-            """
+            """用可控屏障模拟没有业务数据的长期事件来源。"""
             def validate_source(self, channel: str) -> None:
                 """接受测试渠道。
 
@@ -140,11 +137,9 @@ def test_idle_sse_heartbeats_preserve_pending_event_and_close_source(monkeypatch
 
 
 def test_approval_arguments_are_json_objects_in_increment_and_snapshot() -> None:
-    """验证不可变工具参数在实时审批和重连快照中都保持 JSON 对象。
-    """
+    """验证不可变工具参数在实时审批和重连快照中都保持 JSON 对象。"""
     async def scenario() -> None:
-        """消费真实 SSE 路由生成的帧，检查前端实际收到的参数类型和内容。
-        """
+        """消费真实 SSE 路由生成的帧，检查前端实际收到的参数类型和内容。"""
         call = ToolCall(id="call", name="run_ps", args={
             "command": "Write-Output test", "options": {"values": [1, 2]},
         })
@@ -153,8 +148,7 @@ def test_approval_arguments_are_json_objects_in_increment_and_snapshot() -> None
         ).to_client()
 
         class Events:
-            """为路由提供有限的实时审批和重连快照，不连接生产运行时。
-            """
+            """为路由提供有限的实时审批和重连快照，不连接生产运行时。"""
             def validate_source(self, channel: str) -> None:
                 """接受测试的桌面渠道。
 
@@ -207,9 +201,7 @@ class _Scheduler:
         commands (list[ChannelCommand]): 测试观测到的已提交命令。
     """
     def __init__(self) -> None:
-        """初始化测试替身的观测记录。
-
-        """
+        """初始化测试替身的观测记录。"""
         self.commands = []
 
     async def submit(self, command):
@@ -223,9 +215,7 @@ class _Scheduler:
 
 
 def test_command_route_requires_session_and_source() -> None:
-    """验证HTTP 命令必须包含会话与来源。
-
-    """
+    """验证HTTP 命令必须包含会话与来源。"""
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     app = FastAPI()
     app.include_router(agent_router)
@@ -237,9 +227,7 @@ def test_command_route_requires_session_and_source() -> None:
 
 
 def test_command_route_forwards_approval_identity() -> None:
-    """验证HTTP 入口保留审批请求身份。
-
-    """
+    """验证HTTP 入口保留审批请求身份。"""
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     app = FastAPI()
     app.include_router(agent_router)

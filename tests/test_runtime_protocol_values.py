@@ -10,8 +10,7 @@ from app.utils.sse_stream import stream_sse_json
 
 
 def test_runtime_values_match_fixed_protocol_and_serialize_as_strings() -> None:
-    """验证全部分类的值与既有协议一致，嵌套枚举经过真实 SSE 仍是字符串。
-    """
+    """验证全部分类的值与既有协议一致，嵌套枚举经过真实 SSE 仍是字符串。"""
     fixture = json.loads((Path(__file__).parent / "fixtures/runtime-protocol-values.json").read_text(encoding="utf-8"))
     values = {}
     # 1. 固定样例独立于实现定义，增删或改名必须显式确认协议，而不能随实现自动通过。
@@ -21,8 +20,7 @@ def test_runtime_values_match_fixed_protocol_and_serialize_as_strings() -> None:
         values[name] = list(enum_type)
 
     async def scenario() -> None:
-        """消费真实序列化帧，确认枚举名称没有泄漏到线协议。
-        """
+        """消费真实序列化帧，确认枚举名称没有泄漏到线协议。"""
         async def source():
             """产生包含所有取值的有限事件，避免依赖真实 Agent 和数据库。
 

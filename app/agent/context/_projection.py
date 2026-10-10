@@ -20,6 +20,15 @@ from app.agent.utils.domain.text import normalize_messages_for_model
 
 
 def _project_content(content: Any, timestamp: object) -> Any:
+    """在临时模型输入中加入消息发送时间，保留原正文和图片结构。
+
+    Args:
+        content (Any): 消息正文，可能为字符串或多模态内容列表。
+        timestamp (object): 供时间格式化函数解析的消息创建时间。
+
+    Returns:
+        Any: 带时间前缀的字符串或内容列表副本；不支持的内容类型原样返回。
+    """
     if isinstance(content, str):
         return render_timed_text(content, timestamp)
     if not isinstance(content, list):
@@ -107,5 +116,13 @@ def append_transient_context(
 def build_model_window(
     state: AgentState | Sequence[BaseMessage],
 ) -> list[dict]:
+    """把领域消息转换成带时间的模型请求消息，并清理模型协议不接受的内部字段。
+
+    Args:
+        state (AgentState | Sequence[BaseMessage]): 当前会话状态，或压缩流程提供的消息集合。
+
+    Returns:
+        list[dict]: 独立的模型输入列表；不会修改领域消息或保存 checkpoint。
+    """
     messages = state.messages if isinstance(state, AgentState) else state
     return normalize_messages_for_model(project_messages_with_time(messages))

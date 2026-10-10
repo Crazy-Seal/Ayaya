@@ -3,10 +3,7 @@ import { test } from "node:test";
 import { appendFrontendLog, closeLogFiles, getLogSnapshot } from "../electron/logging/app-logger.js";
 
 test("统一前端日志保留流断线的底层错误码和原因", /**
- * 通过公共日志入口检查 native fetch 的包装错误不会丢失超时原因。
- *
- * Returns:
- *     Promise<void>: 日志断言完成且内存批次计时器已释放。
+ * 验证统一前端日志保留流断线的底层错误码和原因。
  */
 async () => {
   try {

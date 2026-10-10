@@ -34,6 +34,14 @@ class LocalToolCatalogAdapter:
     """把本地 ToolRegistry 投影为统一目录。"""
 
     def list_entries(self, settings: ChatSettings) -> list[ToolCatalogEntry]:
+        """读取本地工具注册信息及会话权限，新工具没有保存权限时默认要求审批。
+
+        Args:
+            settings (ChatSettings): 当前会话保存的模型和工具权限设置。
+
+        Returns:
+            list[ToolCatalogEntry]: 供设置页显示的本地工具目录。
+        """
         result: list[ToolCatalogEntry] = []
         for name in ToolRegistry.list_tools():
             tool_class = ToolRegistry.get(name)
@@ -61,10 +69,24 @@ class MCPToolCatalogAdapter:
         settings_dao: MCPSettingsDao,
         connection_manager: MCPConnectionManager,
     ) -> None:
+        """保存服务配置与共享连接依赖，列表查询时再判断服务身份和工具可用性。
+
+        Args:
+            settings_dao (MCPSettingsDao): 读取 MCP 服务配置的数据访问对象。
+            connection_manager (MCPConnectionManager): 进程共用的 MCP 连接及工具目录管理器。
+        """
         self._settings_dao = settings_dao
         self._connection_manager = connection_manager
 
     def list_entries(self, settings: ChatSettings) -> list[ToolCatalogEntry]:
+        """合并已连接工具与保存过的权限名称，服务禁用、失联或身份变化时明确标记不可用。
+
+        Args:
+            settings (ChatSettings): 当前会话保存的模型和工具权限设置。
+
+        Returns:
+            list[ToolCatalogEntry]: 含权限和不可用原因的 MCP 工具目录。
+        """
         result: list[ToolCatalogEntry] = []
         configs = {server.id: server for server in self._settings_dao.load().servers}
         for server_id, server_policy in settings.mcp.servers.items():
@@ -121,10 +143,24 @@ class UnifiedToolCatalog:
         local: LocalToolCatalogAdapter,
         mcp: MCPToolCatalogAdapter,
     ) -> None:
+        """保存本地和 MCP 目录适配器，后续查询共用同一会话设置。
+
+        Args:
+            local (LocalToolCatalogAdapter): 本地工具目录查询对象。
+            mcp (MCPToolCatalogAdapter): MCP 工具目录查询对象。
+        """
         self._local = local
         self._mcp = mcp
 
     def list_entries(self, settings: ChatSettings) -> list[ToolCatalogEntry]:
+        """合并当前会话的本地和 MCP 工具目录，交给权限服务转换为响应。
+
+        Args:
+            settings (ChatSettings): 当前会话保存的模型和工具权限设置。
+
+        Returns:
+            list[ToolCatalogEntry]: 本地工具在前、MCP 工具在后的目录列表。
+        """
         return [
             *self._local.list_entries(settings),
             *self._mcp.list_entries(settings),

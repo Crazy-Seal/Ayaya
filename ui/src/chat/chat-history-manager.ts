@@ -9,6 +9,9 @@ import { DESKTOP_CHANNEL } from "../../shared-types.js";
 
 /**
  * 去掉句尾的句号
+ *
+ * Args:
+ *     sentence (string): 等待显示的一句回复。
  */
 const removeTrailingPeriod = (sentence: string): string => {
   if (sentence.endsWith("。")) {
@@ -20,6 +23,9 @@ const removeTrailingPeriod = (sentence: string): string => {
 /**
  * 提取完整的句子（以句号、问号、叹号、省略号结尾）
  * 返回 { complete: 完整句子数组, remaining: 剩余不完整的文本 }
+ *
+ * Args:
+ *     text (string): 本次需要展示或输入的文本。
  */
 const extractCompleteSentences = (text: string): { complete: string[]; remaining: string } => {
   if (!text || text.trim().length === 0) {
@@ -72,6 +78,12 @@ export class ChatHistoryManager {
   private outputTimer: ReturnType<typeof setInterval> | null = null;
   private static readonly OUTPUT_INTERVAL_MS = 500;
 
+  /**
+   * 绑定聊天列表容器，后续历史加载和流式回复均更新此容器。
+   *
+   * Args:
+   *     container (HTMLDivElement): 当前组件负责维护的页面容器。
+   */
   constructor(container: HTMLDivElement) {
     this.container = container;
   }
@@ -115,6 +127,9 @@ export class ChatHistoryManager {
 
   /**
    * 清理消息内容中的表情标签
+   *
+   * Args:
+   *     content (string): 当前需要展示的正文。
    */
   private cleanExpressionTags(content: string): string {
     return content.replace(/<[^<>]+>/g, "").trim();
@@ -150,6 +165,9 @@ export class ChatHistoryManager {
   /**
    * 显示工具调用提示（作为消息记录）
    * 显示为"正在调用工具: xxx"，带闪烁效果
+   *
+   * Args:
+   *     toolName (string): 当前需要显示调用状态的工具名称。
    */
   showToolCallMessage(toolName: string): void {
     // 先隐藏"对方正在输入中"提示
@@ -171,7 +189,13 @@ export class ChatHistoryManager {
    */
   finalizeToolCallIndicator(): void {
     const pendingIndicators = this.container.querySelectorAll('.typing-indicator[data-tool-call="pending"]');
-    pendingIndicators.forEach((indicator) => {
+    pendingIndicators.forEach(/**
+     * 一轮工具执行结束时把所有待完成提示改为完成状态，保留工具名称并停止闪烁。
+     *
+     * Args:
+     *     indicator (Element): 当前需要更新显示状态的提示元素。
+     */
+    (indicator) => {
       const text = indicator.textContent || "";
       // 从"正在调用工具: xxx" 改为 "调用工具: xxx"
       const toolName = text.replace("正在调用工具: ", "");
@@ -183,6 +207,9 @@ export class ChatHistoryManager {
   /**
    * 显示错误提示
    * 显示为"出现错误"或具体错误信息，带错误样式
+   *
+   * Args:
+   *     message (string): 当前需要显示或记录的文本。
    */
   showErrorMessage(message?: string): void {
     // 先隐藏"对方正在输入中"提示
@@ -261,13 +288,13 @@ export class ChatHistoryManager {
   addMessage(message: ChatHistoryItem): void {
     // 1. 历史快照与真人增量可能包含同一消息，先按稳定身份去重。
     if (message.id && this.messages.some(/**
-     * 比较消息身份以判断历史与增量是否重复。
+     * 按稳定消息编号检查历史是否已有当前真人消息，避免快照和增量重复显示。
      *
      * Args:
-     *     item (ChatHistoryItem): 当前集合元素。
+     *     item (ChatHistoryItem): 当前遍历的配置或目录条目。
      *
      * Returns:
-     *     boolean: 当前查询、回调或视图操作的结果。
+     *     boolean: 历史编号匹配时为 true。
      */
     (item) => item.id === message.id)) return;
     this.historyRevision += 1;
@@ -414,7 +441,10 @@ export class ChatHistoryManager {
       return;
     }
 
-    this.outputTimer = setInterval(() => {
+    this.outputTimer = setInterval(/**
+     * 句子输出定时器到期时追加下一句，让最终回复继续按间隔显示。
+     */
+    () => {
       this.outputNextSentence();
     }, ChatHistoryManager.OUTPUT_INTERVAL_MS);
   }
@@ -500,7 +530,10 @@ export class ChatHistoryManager {
       this.renderMessage(msg);
     }
     // 渲染完成后移除禁用动画的类
-    requestAnimationFrame(() => {
+    requestAnimationFrame(/**
+     * 历史整体重绘后恢复气泡动画，避免历史消息入场动画干扰初始布局。
+     */
+    () => {
       this.container.classList.remove("no-animation");
     });
   }
@@ -582,7 +615,10 @@ export class ChatHistoryManager {
         img.style.cursor = "pointer";
 
         // 点击打开独立预览窗口
-        img.addEventListener("click", () => {
+        img.addEventListener("click", /**
+         * 用户点击聊天图片时请求主进程打开该图片预览。
+         */
+        () => {
           window.desktopPetApi.openImagePreview(img.src);
         });
 
@@ -606,6 +642,9 @@ export class ChatHistoryManager {
 
   /**
    * 将文本分割成句子
+   *
+   * Args:
+   *     text (string): 本次需要展示或输入的文本。
    */
   private splitIntoSentences(text: string): string[] {
     if (!text || text.trim().length === 0) {
@@ -656,15 +695,27 @@ export class ChatHistoryManager {
     let loadedCount = 0;
     const totalCount = images.length;
 
+    /**
+     * 图片加载回调触发时检查本批图片是否均已结束加载，再滚动到最新消息。
+     */
     const checkAllLoaded = () => {
       loadedCount++;
       if (loadedCount >= totalCount) {
         // 所有图片加载完成，滚动到底部
-        setTimeout(() => this.scrollToBottom(), 50);
+        setTimeout(/**
+         * 本批图片全部加载或失败后重新滚到最新消息。
+         */
+        () => this.scrollToBottom(), 50);
       }
     };
 
-    images.forEach((img) => {
+    images.forEach(/**
+     * 逐张检查历史图片，已完成的立即计数，其余同时监听成功与失败，任一都结束该图等待。
+     *
+     * Args:
+     *     img (HTMLImageElement): 聊天列表中需要等待加载或预览的图片元素。
+     */
+    (img) => {
       if (img.complete) {
         // 图片已经加载完成
         checkAllLoaded();
@@ -676,7 +727,10 @@ export class ChatHistoryManager {
     });
 
     // 设置超时，防止图片加载过慢导致永远不滚动
-    setTimeout(() => {
+    setTimeout(/**
+     * 图片等待的兜底定时器到期后再次滚到底部，避免长期未完成图片阻止显示最新消息。
+     */
+    () => {
       this.scrollToBottom();
     }, 1000);
   }

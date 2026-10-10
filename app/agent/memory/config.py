@@ -11,13 +11,13 @@ from app.runtime import get_mem0_qdrant_dir, get_memory_base_dir
 
 
 def get_system_timezone() -> ZoneInfo:
-    """获取系统时区"""
+    """读取本机时区，供日记有效日期和记忆时间展示使用。"""
     return datetime.now().astimezone().tzinfo
 
 
 @dataclass
 class MemoryConfig:
-    """记忆系统配置"""
+    """集中保存记忆提取模型、向量模型、隔离存储路径、时区及提取预算。"""
     # 存储路径
     sqlite_path: str = ""
     chroma_path: str = ""
@@ -49,7 +49,7 @@ class MemoryConfig:
 
     @classmethod
     def from_env(cls) -> "MemoryConfig":
-        """从环境变量加载配置"""
+        """从当前环境读取记忆模型和存储配置，所有持久路径经运行环境隔离规则解析。"""
         base_path = get_memory_base_dir()
 
         tz_name = os.getenv("MEMORY_TIMEZONE")

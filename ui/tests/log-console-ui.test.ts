@@ -2,10 +2,19 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
+/**
+ * 读取仓库 UI 文件，供检查页面结构、样式与事件绑定。
+ *
+ * Args:
+ *     relativePath (string): 相对于 UI 根目录的待检查源码路径。
+ */
 const readUiFile = (relativePath: string): string =>
   readFileSync(relativePath, "utf8");
 
-test("设置侧栏将日志入口放在独立紧凑工具区", () => {
+test("设置侧栏将日志入口放在独立紧凑工具区", /**
+ * 验证设置侧栏将日志入口放在独立紧凑工具区。
+ */
+() => {
   const html = readUiFile("settings.html");
   const utilitySection = html.match(
     /<div class="settings-utility-section">[\s\S]*?<\/div>/,
@@ -19,7 +28,10 @@ test("设置侧栏将日志入口放在独立紧凑工具区", () => {
   assert.doesNotMatch(utilitySection, />\s*日志控制台\s*<\/button>/);
 });
 
-test("日志窗口复用设置标题栏并使用阈值级别选项", () => {
+test("日志窗口复用设置标题栏并使用阈值级别选项", /**
+ * 验证日志窗口复用设置标题栏并使用阈值级别选项。
+ */
+() => {
   const html = readUiFile("logs.html");
 
   assert.match(html, /class="settings-titlebar log-titlebar"/);
@@ -33,7 +45,10 @@ test("日志窗口复用设置标题栏并使用阈值级别选项", () => {
   assert.match(html, /class="panel-btn panel-btn-danger[^"]*ui-button--danger/);
 });
 
-test("设置页与日志页共同使用窗口视觉基础样式", () => {
+test("设置页与日志页共同使用窗口视觉基础样式", /**
+ * 验证设置页与日志页共同使用窗口视觉基础样式。
+ */
+() => {
   const sharedCss = readUiFile("src/window-theme.css");
   const componentsCss = readUiFile("src/window-components.css");
   const settingsCss = readUiFile("src/settings.css");
@@ -49,7 +64,10 @@ test("设置页与日志页共同使用窗口视觉基础样式", () => {
   assert.doesNotMatch(logsCss, /--color-primary:/);
 });
 
-test("日志列表使用可聚焦底部锚点和增量渲染而非每批整表重建", () => {
+test("日志列表使用可聚焦底部锚点和增量渲染而非每批整表重建", /**
+ * 验证日志列表使用可聚焦底部锚点和增量渲染而非每批整表重建。
+ */
+() => {
   const html = readUiFile("logs.html");
   const viewer = readUiFile("src/logs/log-viewer.ts");
   const css = readUiFile("src/logs/logs.css");

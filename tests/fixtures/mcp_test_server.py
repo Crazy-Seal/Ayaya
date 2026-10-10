@@ -22,13 +22,21 @@ server = FastMCP(
 
 @server.tool()
 def echo(value: str) -> dict[str, str]:
-    """Return the supplied value."""
+    """返回集成测试输入文本，用于验证真实 MCP 请求和响应链路。
+
+    Args:
+        value (str): 当前需要校验或转换的值。
+    """
     return {"value": value}
 
 
 @server.tool()
 def read_environment(name: str) -> str:
-    """Read one environment variable for transport inheritance tests."""
+    """返回测试允许读取的环境字段，用于检查 MCP 子进程环境隔离。
+
+    Args:
+        name (str): 当前对象的名称。
+    """
     return os.environ.get(name, "")
 
 
@@ -38,10 +46,23 @@ if transport == "http":
     app = server.streamable_http_app()
 
     class RequireIntegrationHeader:
+        """校验 HTTP 集成测试请求头，避免测试误连接不属于本次用例的服务。"""
         def __init__(self, inner):
+            """保存本用例的脚本输入和依赖，初始化测试对象的执行记录。
+
+            Args:
+                inner (Any): 需要增加集成测试请求头校验的 ASGI 应用。
+            """
             self.inner = inner
 
         async def __call__(self, scope, receive, send):
+            """处理集成测试 ASGI 请求，只放行包含测试请求头的调用。
+
+            Args:
+                scope (Any): 当前 ASGI 请求的协议与请求头信息。
+                receive (Any): ASGI 提供的请求数据读取函数。
+                send (Any): ASGI 提供的响应发送函数。
+            """
             if scope["type"] == "http":
                 headers = {key.lower(): value for key, value in scope.get("headers", [])}
                 if headers.get(b"x-integration-test") != b"plain-local-value":

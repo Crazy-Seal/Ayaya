@@ -2,15 +2,36 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
+/**
+ * 读取仓库 UI 文件，供检查页面结构、样式与事件绑定。
+ *
+ * Args:
+ *     relativePath (string): 相对于 UI 根目录的待检查源码路径。
+ */
 const readUiFile = (relativePath: string): string =>
   readFileSync(relativePath, "utf8");
 
+/**
+ * 从测试页面源码提取指定元素，供检查语义类和可访问属性。
+ *
+ * Args:
+ *     html (string): 当前需要检查结构和样式类的页面源码。
+ *     id (string): 当前模型参数或日志记录的编号。
+ */
 const elementById = (html: string, id: string): string => {
   const element = html.match(new RegExp(`<[^>]+id="${id}"[^>]*>`))?.[0];
   assert.ok(element, `缺少元素 #${id}`);
   return element;
 };
 
+/**
+ * 断言当前元素包含用例要求的全部共享样式类。
+ *
+ * Args:
+ *     html (string): 当前需要检查结构和样式类的页面源码。
+ *     id (string): 当前模型参数或日志记录的编号。
+ *     expectedClasses (readonly string[]): 本用例要求该元素包含的共享样式类。
+ */
 const assertHasClasses = (
   html: string,
   id: string,
@@ -27,7 +48,10 @@ const assertHasClasses = (
   }
 };
 
-test("设置页和日志页共同引用窗口组件样式层", () => {
+test("设置页和日志页共同引用窗口组件样式层", /**
+ * 验证设置页和日志页共同引用窗口组件样式层。
+ */
+() => {
   const settingsCss = readUiFile("src/settings.css");
   const logsCss = readUiFile("src/logs/logs.css");
   const componentsCss = readUiFile("src/window-components.css");
@@ -37,7 +61,10 @@ test("设置页和日志页共同引用窗口组件样式层", () => {
   assert.match(componentsCss, /@import "\.\/window-theme\.css";/);
 });
 
-test("共享组件覆盖语义按钮、表单控件和完整交互状态", () => {
+test("共享组件覆盖语义按钮、表单控件和完整交互状态", /**
+ * 验证共享组件覆盖语义按钮、表单控件和完整交互状态。
+ */
+() => {
   const css = readUiFile("src/window-components.css");
 
   for (const selector of [
@@ -73,7 +100,10 @@ test("共享组件覆盖语义按钮、表单控件和完整交互状态", () =>
   assert.match(css, /prefers-reduced-motion:\s*reduce/);
 });
 
-test("窗口静态控件使用统一语义类", () => {
+test("窗口静态控件使用统一语义类", /**
+ * 验证窗口静态控件使用统一语义类。
+ */
+() => {
   const settingsHtml = readUiFile("settings.html");
   const logsHtml = readUiFile("logs.html");
 
@@ -128,7 +158,10 @@ test("窗口静态控件使用统一语义类", () => {
   assertHasClasses(logsHtml, "backend-autoscroll", ["ui-checkbox"]);
 });
 
-test("设置页动态生成的控件也使用共享组件类", () => {
+test("设置页动态生成的控件也使用共享组件类", /**
+ * 验证设置页动态生成的控件也使用共享组件类。
+ */
+() => {
   const modelPage = readUiFile("src/settings/pages/model-page.ts");
   const motionPage = readUiFile("src/settings/pages/motion-page.ts");
   const pluginsPage = readUiFile("src/settings/pages/plugins-page.ts");
@@ -153,7 +186,10 @@ test("设置页动态生成的控件也使用共享组件类", () => {
   assert.match(mcpPage, /toggle.className = "ui-checkbox"/);
 });
 
-test("MCP 编辑器展开时使用自然高度且固定控件不会被压缩", () => {
+test("MCP 编辑器展开时使用自然高度且固定控件不会被压缩", /**
+ * 验证MCP 编辑器展开时使用自然高度且固定控件不会被压缩。
+ */
+() => {
   const css = readUiFile("src/settings.css");
 
   assert.match(
@@ -178,7 +214,10 @@ test("MCP 编辑器展开时使用自然高度且固定控件不会被压缩", (
   );
 });
 
-test("MCP 权限按钮位于编辑器之后并正确同步空状态", () => {
+test("MCP 权限按钮位于编辑器之后并正确同步空状态", /**
+ * 验证MCP 权限按钮位于编辑器之后并正确同步空状态。
+ */
+() => {
   const html = readUiFile("settings.html");
   const componentsCss = readUiFile("src/window-components.css");
   const mcpPage = readUiFile("src/settings/pages/mcp-page.ts");
@@ -206,7 +245,10 @@ test("MCP 权限按钮位于编辑器之后并正确同步空状态", () => {
   );
 });
 
-test("设置侧栏在固定窗口高度内使用紧凑页签并隔离溢出滚动", () => {
+test("设置侧栏在固定窗口高度内使用紧凑页签并隔离溢出滚动", /**
+ * 验证设置侧栏在固定窗口高度内使用紧凑页签并隔离溢出滚动。
+ */
+() => {
   const themeCss = readUiFile("src/window-theme.css");
   const settingsCss = readUiFile("src/settings.css");
 
@@ -225,7 +267,10 @@ test("设置侧栏在固定窗口高度内使用紧凑页签并隔离溢出滚�
   );
 });
 
-test("共享下拉框显示清晰箭头并为原生选项提供主题样式", () => {
+test("共享下拉框显示清晰箭头并为原生选项提供主题样式", /**
+ * 验证共享下拉框显示清晰箭头并为原生选项提供主题样式。
+ */
+() => {
   const css = readUiFile("src/window-components.css");
 
   assert.doesNotMatch(
@@ -255,7 +300,10 @@ test("共享下拉框显示清晰箭头并为原生选项提供主题样式", ()
   );
 });
 
-test("支持环境使用 base-select 美化按钮、Picker 和选项状态", () => {
+test("支持环境使用 base-select 美化按钮、Picker 和选项状态", /**
+ * 验证支持环境使用 base-select 美化按钮、Picker 和选项状态。
+ */
+() => {
   const css = readUiFile("src/window-components.css");
   const supportStart = css.indexOf("@supports (appearance: base-select)");
 
@@ -282,7 +330,10 @@ test("支持环境使用 base-select 美化按钮、Picker 和选项状态", () 
   assert.match(supportedCss, /\.ui-select option::checkmark\s*\{/);
 });
 
-test("动态表情设置下拉框提供包含动作名称的可访问名称", () => {
+test("动态表情设置下拉框提供包含动作名称的可访问名称", /**
+ * 验证动态表情设置下拉框提供包含动作名称的可访问名称。
+ */
+() => {
   const motionPage = readUiFile("src/settings/pages/motion-page.ts");
 
   assert.match(
@@ -291,7 +342,10 @@ test("动态表情设置下拉框提供包含动作名称的可访问名称", ()
   );
 });
 
-test("工具审批引导输入框提供可访问名称", () => {
+test("工具审批引导输入框提供可访问名称", /**
+ * 验证工具审批引导输入框提供可访问名称。
+ */
+() => {
   const html = readUiFile("index.html");
 
   assert.match(
@@ -300,7 +354,10 @@ test("工具审批引导输入框提供可访问名称", () => {
   );
 });
 
-test("Vite 生产构建使用相对资源路径供 Electron loadFile 加载", () => {
+test("Vite 生产构建使用相对资源路径供 Electron loadFile 加载", /**
+ * 验证Vite 生产构建使用相对资源路径供 Electron loadFile 加载。
+ */
+() => {
   const viteConfig = readUiFile("vite.config.ts");
 
   assert.match(viteConfig, /base:\s*["']\.\/["']/);

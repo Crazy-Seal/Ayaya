@@ -6,7 +6,11 @@ from typing import Any
 
 
 def stable_json(value: Any) -> str:
-    """以稳定键序列化值，供估算和指纹计算复用。"""
+    """以稳定键序列化值，供估算和指纹计算复用。
+
+    Args:
+        value (Any): 当前需要校验或转换的值。
+    """
     return json.dumps(
         value,
         ensure_ascii=False,
@@ -17,6 +21,14 @@ def stable_json(value: Any) -> str:
 
 
 def _rough_text_tokens(value: str) -> int:
+    """按 ASCII 每三字符及非 ASCII 每字符粗估输入 token，供本地预算使用。
+
+    Args:
+        value (str): 当前需要校验或转换的值。
+
+    Returns:
+        int: 向上取整的粗估 token 数。
+    """
     ascii_count = sum(1 for char in value if ord(char) < 128)
     return math.ceil(ascii_count / 3) + (len(value) - ascii_count)
 
@@ -30,6 +42,14 @@ class RoughTokenEstimator:
     IMAGE_TOKENS = 2_000
 
     def estimate_value(self, value: Any) -> int:
+        """粗估文本或多模态值的输入大小，图片按固定开销计算而不计 Base64 文本长度。
+
+        Args:
+            value (Any): 当前需要校验或转换的值。
+
+        Returns:
+            int: 该内容的粗估 token 数。
+        """
         if isinstance(value, str):
             return _rough_text_tokens(value)
         if isinstance(value, list):
@@ -46,6 +66,14 @@ class RoughTokenEstimator:
         return _rough_text_tokens(str(value))
 
     def estimate_message(self, message: dict) -> int:
+        """粗估一条模型消息的正文、消息包装及工具调用开销。
+
+        Args:
+            message (dict): 当前需要读取或追加的消息。
+
+        Returns:
+            int: 该消息的粗估 token 数。
+        """
         total = self.MESSAGE_OVERHEAD + self.estimate_value(message.get("content", ""))
         for tool_call in message.get("tool_calls") or []:
             total += self.TOOL_CALL_OVERHEAD + self.estimate_value(tool_call)
@@ -58,6 +86,16 @@ class RoughTokenEstimator:
         tools: list[dict] | None,
         messages: list[dict],
     ) -> int:
+        """粗估完整请求的系统提示词、工具定义和历史消息，最小返回一个 token。
+
+        Args:
+            system_prompt (str): 本次模型调用的系统提示词。
+            tools (list[dict] | None): 当前向模型公开的工具定义。
+            messages (list[dict]): 按对话顺序排列的消息集合。
+
+        Returns:
+            int: 完整输入的本地粗估 token 数。
+        """
         total = self.MESSAGE_OVERHEAD + _rough_text_tokens(system_prompt or "")
         total += self.estimate_value(tools or [])
         total += sum(self.estimate_message(message) for message in messages)
