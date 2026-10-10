@@ -115,29 +115,55 @@ def test_read_image_counts_only_valid_images_toward_limit(tmp_path: Path, monkey
 
 
 def test_run_ps_preserves_output_for_unified_normalization(monkeypatch) -> None:
+    """验证任务运行器输出仍交给统一工具结果规范化。
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Pytest 依赖替换 fixture。
+    """
+    # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     import app.agent.tools.run_ps as run_ps_module
+    from app.agent.tools.base import ToolContext
+    from app.services.task_supervisor import TaskLaunchResult
 
-    class _Process:
-        pid = 1
+    class _Launcher:
+        """提供隔离测试替身，用于验证：任务运行器输出仍交给统一工具结果规范化。
 
-        async def communicate(self):
-            return b"x" * 60_000, b""
+        """
+        async def launch(self, session_id, command, argv, *, cwd, background, timeout_sec,
+                         origin_run_id=None, origin_tool_call_id=None):
+            """执行该回归场景中的局部测试步骤。
 
-    async def fake_build_command(_command: str):
+            Args:
+                session_id (对象): 共享 Ayaya 会话标识。
+                command (ChannelCommand): 统一渠道命令或需要执行的命令正文，类型决定其含义。
+                argv (对象): 已经构造好的进程参数列表。
+                cwd (对象): 命令执行工作目录。
+                background (对象): 是否立即后台运行。
+                timeout_sec (对象): 前台等待预算，超时后保留同一进程。
+                origin_run_id (对象): 发起进程任务的运行轮次标识。
+                origin_tool_call_id (对象): 发起任务的工具调用标识。
+            """
+            return TaskLaunchResult("task", False, "x" * 60_000)
+
+    def fake_build_command(_command: str):
+        """执行该回归场景中的局部测试步骤。
+
+        Args:
+            _command (str): 统一渠道命令或需要执行的命令正文，类型决定其含义。
+        """
         return ["fake"]
 
-    async def fake_create_subprocess_exec(*_args, **_kwargs):
-        return _Process()
-
     monkeypatch.setattr(run_ps_module, "_build_command", fake_build_command)
-    monkeypatch.setattr(
-        run_ps_module.asyncio,
-        "create_subprocess_exec",
-        fake_create_subprocess_exec,
+    context = ToolContext(
+        session_id="s", state=None,
+        emit_event=lambda *_args: None,
+        get_checkpoint=lambda: {}, set_checkpoint=lambda _value: None,
+        task_launcher=_Launcher(),
     )
 
-    result = asyncio.run(run_ps_module._run_command("Write-Output x"))
+    result = asyncio.run(run_ps_module._run_command("Write-Output x", context))
 
+    # 2. 核对公开结果和持久状态，确保场景中的输入、通知或副作用未重复。
     assert result == "x" * 60_000
 
 

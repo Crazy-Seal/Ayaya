@@ -1,24 +1,17 @@
-"""在独立 conda 环境中执行 PowerShell 命令，并提供危险命令拦截与动态超时。"""
+"""直接执行 PowerShell 命令，由任务管理器保存输出并管理前台和后台进程。"""
 
-import asyncio
 import os
 import re
-import subprocess
 from typing import Annotated, Tuple
 
 from app.agent.tools.decorator import tool
+from app.agent.tools.base import ToolContext
 from app.agent.utils.infra.safe_path import WORKDIR
 
-# 默认把 run_ps 放到独立 conda 环境执行，避免污染主项目环境。
-RUN_PS_CONDA_ENV = os.getenv("RUN_PS_CONDA_ENV", "agent_workspace")
-RUN_PS_FORCE_CONDA = True
 RUN_PS_TIMEOUT_SEC = int(os.getenv("RUN_PS_TIMEOUT_SEC", "120"))
 RUN_PS_TIMEOUT_PIP_SEC = int(os.getenv("RUN_PS_TIMEOUT_PIP_SEC", "600"))
 RUN_PS_TIMEOUT_PYTHON_SEC = int(os.getenv("RUN_PS_TIMEOUT_PYTHON_SEC", "5"))
 RUN_PS_TIMEOUT_GIT_SEC = int(os.getenv("RUN_PS_TIMEOUT_GIT_SEC", "180"))
-RUN_PS_TIMEOUT_BEHAVIOR = os.getenv("RUN_PS_TIMEOUT_BEHAVIOR", "background").lower()
-if RUN_PS_TIMEOUT_BEHAVIOR not in {"background", "kill"}:
-    RUN_PS_TIMEOUT_BEHAVIOR = "background"
 
 DANGEROUS_PATTERNS = [
     # 文件与目录破坏
@@ -38,25 +31,15 @@ DANGEROUS_PATTERNS = [
 ]
 
 
-async def _find_conda_exe() -> str | None:
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "where", "conda",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        stdout, _ = await proc.communicate()
-        output = stdout.decode("utf-8", errors="replace")
-        for line in output.splitlines():
-            candidate = line.strip().strip('"')
-            if candidate.lower().endswith(".exe"):
-                return candidate
-        return None
-    except Exception:
-        return None
+def _build_command(command: str) -> list[str]:
+    """构造非交互 PowerShell 参数，进程继承后端环境而不自动激活 Conda。
 
+    Args:
+        command (str): 用户工具调用提供的 PowerShell 命令正文。
 
-async def _build_command(command: str) -> list[str] | None:
+    Returns:
+        list[str]: 直接交给 TaskSupervisor 启动的程序及参数，保留 UTF-8 输出设置。
+    """
     utf8_command = (
         "$utf8NoBom = New-Object System.Text.UTF8Encoding($false);"
         "[Console]::InputEncoding = $utf8NoBom;"
@@ -65,29 +48,10 @@ async def _build_command(command: str) -> list[str] | None:
         "chcp 65001 > $null;"
         f"{command}"
     )
-    ps_cmd = [
+    return [
         "powershell.exe", "-NoProfile", "-NonInteractive",
         "-ExecutionPolicy", "Bypass", "-Command", utf8_command,
     ]
-    if not RUN_PS_FORCE_CONDA:
-        return ps_cmd
-
-    conda_exe = await _find_conda_exe()
-    if not conda_exe:
-        return None
-    return [conda_exe, "run", "-n", RUN_PS_CONDA_ENV] + ps_cmd
-
-
-async def _kill_process_tree(pid: int) -> None:
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "taskkill", "/PID", str(pid), "/T", "/F",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        await asyncio.wait_for(proc.communicate(), timeout=10)
-    except Exception:
-        pass
 
 
 def _select_timeout_sec(command: str) -> Tuple[int, str]:
@@ -105,43 +69,44 @@ def _select_timeout_sec(command: str) -> Tuple[int, str]:
     return RUN_PS_TIMEOUT_SEC, "命令执行时间长"
 
 
-async def _run_command(command: str) -> str:
+async def _run_command(
+    command: str, context: ToolContext | None, *, run_in_background: bool = False
+) -> str:
+    """保留危险命令硬拦截，将前台、后台和超时等待统一交给任务启动器。
+
+    Args:
+        command (str): 需要执行或展示的 PowerShell 命令正文。
+        context (ToolContext | None): 后端注入的工具上下文。
+        run_in_background (bool): 是否立即返回后台任务标识。
+
+    Returns:
+        str: 前台输出、后台 task_id 提示或已格式化的错误信息。
+    """
+    # 1. 危险命令先硬拦截，工具授权 allow 也不能绕过这一步。
     cmd_lower = command.lower()
     if any(d in cmd_lower for d in DANGEROUS_PATTERNS):
         return "错误: 检测到潜在危险命令，已阻止执行。"
 
-    final_cmd = await _build_command(command)
-    if final_cmd is None:
-        return "错误: 未找到 conda 可执行文件，无法使用独立环境执行命令。"
+    # 2. 直接构造 PowerShell 参数；任务管理器使用后端环境和现有工作目录启动一次进程。
+    final_cmd = _build_command(command)
 
     timeout_sec, report = _select_timeout_sec(command)
-
+    if context is None or context.task_launcher is None:
+        return "错误: 后台任务运行器未就绪。"
+    # 3. 使用共享任务端口启动一次进程，前台超时只改变等待方式。
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *final_cmd,
-            cwd=WORKDIR,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+        result = await context.task_launcher.launch(
+            context.session_id, command, final_cmd,
+            cwd=str(WORKDIR), background=run_in_background, timeout_sec=timeout_sec,
+            origin_run_id=context.origin_run_id or None,
+            origin_tool_call_id=context.origin_tool_call_id or None,
         )
-        try:
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout_sec
-            )
-            stdout = stdout_bytes.decode("utf-8", errors="replace")
-            stderr = stderr_bytes.decode("utf-8", errors="replace")
-        except asyncio.TimeoutError:
-            if RUN_PS_TIMEOUT_BEHAVIOR == "kill":
-                await _kill_process_tree(proc.pid)
-                return f"命令执行超时（{timeout_sec}s），已终止进程树。"
-            return (
-                report
-                + f"，超过{timeout_sec}s，已停止等待并保持后台运行，PID={proc.pid}。"
-                "如需结束该任务，可使用 taskkill /PID <pid> /T /F。"
-            )
-
-        out = (stdout + stderr).strip()
-        return out if out else "(无输出)"
+        # 4. 后台返回稳定 task_id，前台完成返回有限输出；完整日志始终由任务接口读取。
+        if result.background:
+            if run_in_background:
+                return f"后台任务已启动，task_id={result.task_id}。"
+            return f"{report}，超过 {timeout_sec}s 后转入后台，task_id={result.task_id}。"
+        return result.output
     except Exception as e:
         return f"错误: 命令执行失败: {e}"
 
@@ -149,6 +114,17 @@ async def _run_command(command: str) -> str:
 @tool
 async def run_ps(
     command: Annotated[str, "PowerShell 命令字符串。"],
+    run_in_background: Annotated[bool, "立即在后台运行；任务结束时 Ayaya 会收到通知。"] = False,
+    context: ToolContext | None = None,
 ) -> str:
-    """运行 PowerShell 命令并返回输出结果。警告：绝对禁止运行可能对系统造成损害的命令，如删除文件、操作磁盘或注册表、重启或关闭计算机等。"""
-    return await _run_command(command)
+    """运行 PowerShell 命令并返回输出结果。警告：绝对禁止运行可能对系统造成损害的命令，如删除文件、操作磁盘或注册表、重启或关闭计算机等。
+
+    Args:
+        command (Annotated[str, 'PowerShell 命令字符串。']): 需要执行或展示的 PowerShell 命令正文。
+        run_in_background (Annotated[bool, '立即在后台运行；任务结束时 Ayaya 会收到通知。']): 是否立即返回后台任务标识。
+        context (ToolContext | None): 后端注入的工具上下文。
+
+    Returns:
+        str: 前台输出、后台 task_id 提示或已格式化的错误信息。
+    """
+    return await _run_command(command, context, run_in_background=run_in_background)
