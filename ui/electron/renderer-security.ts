@@ -19,7 +19,7 @@ type IpcSenderDescriptor = {
   isMainFrame: boolean;
 };
 
-const DEV_ALLOWED_PATHS = new Set(["/", "/index.html", "/settings.html", "/logs.html"]);
+const DEV_ALLOWED_PATHS = new Set(["/", "/index.html", "/settings.html", "/logs.html", "/chat.html", "/image-preview.html"]);
 
 /**
  * 确认 IPv4 地址格式合法且属于 127 回环网段。

@@ -8,6 +8,8 @@ import { registerLive2DProtocol, initLive2DProtocolHandler } from "./live2d-prot
 import {
   createMainWindow,
   getMainWindow,
+  openChatWindow,
+  beginWindowShutdown,
   getTrustedRendererPolicy,
   initWindowEventListeners,
   openLogWindow,
@@ -118,9 +120,10 @@ onBackendUnexpectedExit(/**
 });
 
 /**
- * 先停止两条桌面订阅，再交给统一关闭协调器释放应用资源。
+ * 先关闭界面操作并通知页面，再停止两条桌面订阅，最后由统一协调器释放应用资源。
  */
 const requestApplicationShutdown = (): void => {
+  beginWindowShutdown();
   stopDesktopExecutor?.();
   stopDesktopSession();
   void applicationShutdownCoordinator.requestShutdown();
@@ -165,7 +168,7 @@ async () => {
     openLogWindow,
     sendBatch: sendLogBatch,
   });
-  registerIpcHandlers();
+  registerIpcHandlers({ requestApplicationExit: requestApplicationShutdown });
   openLogWindow();
   appendFrontendLog("info", "startup", "日志控制台已启动，正在启动后端");
 
@@ -193,6 +196,8 @@ async () => {
     requestApplicationShutdown();
     return;
   }
+  // 1. 用户可能在后端启动等待时确认退出，启动成功也不能再创建窗口或订阅。
+  if (applicationShutdownCoordinator.isShuttingDown()) return;
   appendFrontendLog("info", "startup", "后端已就绪");
   // 创建主窗口
   const mainWindow = createMainWindow();
@@ -202,6 +207,8 @@ async () => {
   // 初始化 Live2D 协议处理器
   initLive2DProtocolHandler();
   initAyayaImageProtocolHandler();
+
+  openChatWindow();
 
   // 开始光标追踪
   startCursorTracking();

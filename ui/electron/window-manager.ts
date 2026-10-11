@@ -16,19 +16,25 @@ import {
   LOG_WINDOW_MIN_WIDTH,
   LOG_WINDOW_MIN_HEIGHT,
 } from "./config.js";
-import type { LogBatch } from "../shared-types.js";
+import type { LogBatch, ChatAttentionUpdate, WindowGesture } from "../shared-types.js";
+import { WindowGestureController } from "./window-gesture.js";
+import { applicationOperations } from "./application-operations.js";
 import { appendFrontendLog, captureRendererLogs } from "./logging/app-logger.js";
 import {
   createTrustedRendererPolicy,
   describeRendererUrl,
   isTrustedRendererUrl,
 } from "./renderer-security.js";
+import { fitChatBounds, stabilizeChatBounds } from "./chat-window-state.js";
+import { readFrontendSettings, saveFrontendSettings } from "./frontend-settings-store.js";
 import { installNavigationGuards } from "./navigation-guards.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const productionIndexPath = path.resolve(__dirname, "../../dist/index.html");
 const productionSettingsPath = path.resolve(__dirname, "../../dist/settings.html");
+const productionChatPath = path.resolve(__dirname, "../../dist/chat.html");
+const productionPreviewPath = path.resolve(__dirname, "../../dist/image-preview.html");
 const productionLogsPath = path.resolve(__dirname, "../../dist/logs.html");
 const rendererPolicy = createTrustedRendererPolicy({
   devServerUrl: process.env.VITE_DEV_SERVER_URL,
@@ -36,6 +42,8 @@ const rendererPolicy = createTrustedRendererPolicy({
     pathToFileURL(productionIndexPath).href,
     pathToFileURL(productionSettingsPath).href,
     pathToFileURL(productionLogsPath).href,
+    pathToFileURL(productionChatPath).href,
+    pathToFileURL(productionPreviewPath).href,
   ],
 });
 
@@ -105,6 +113,261 @@ let logWindow: BrowserWindow | null = null;
  */
 let imagePreviewWindow: BrowserWindow | null = null;
 
+/** 独立聊天窗口和窗口提醒状态，仅在主进程内保存。 */
+let chatWindow: BrowserWindow | null = null;
+/** 只登记聊天与日志窗口，IPC 发送者只能操作自己的控制器。 */
+const windowGestures = new Map<BrowserWindow, WindowGestureController>();
+const activeWindowGestures = new Set<BrowserWindow>();
+let requestedPetInteractive = false;
+let appliedPetInteractive = false;
+let unread = false;
+let approvalId: string | null = null;
+let modelError: string | null = null;
+
+/**
+ * 返回独立聊天窗口，供事件分发与屏幕操作共用。
+ * Returns:
+ *     BrowserWindow | null: 当前聊天窗口实例。
+ */
+export const getChatWindow = (): BrowserWindow | null => chatWindow;
+
+/** 按角色命中结果和应用窗口拖动状态切换穿透，仅在实际状态改变时调用系统。 */
+const applyPetPointerState = (): void => {
+  const enabled = requestedPetInteractive && activeWindowGestures.size === 0 && !applicationOperations.isShuttingDown();
+  if (mainWindow && !mainWindow.isDestroyed() && enabled !== appliedPetInteractive) {
+    mainWindow.setIgnoreMouseEvents(!enabled, { forward: true });
+    appliedPetInteractive = enabled;
+  }
+};
+
+/**
+ * 角色页面上报鼠标命中时保留最新结果；聊天或日志拖动期间始终穿透，避免切换透明窗口样式。
+ * Args:
+ *     enabled (boolean): 鼠标是否命中当前角色像素。
+ */
+export const setPetPointerInteractive = (enabled: boolean): void => {
+  requestedPetInteractive = enabled; applyPetPointerState();
+};
+
+/**
+ * 可信应用页面捕获鼠标后，只开始发送者所属窗口的移动或缩放。
+ * Args:
+ *     win (BrowserWindow): 主进程按 IPC 发送者取得的窗口。
+ *     kind (WindowGesture): 已校验的操作方向。
+ */
+export const beginWindowGesture = (win: BrowserWindow, kind: WindowGesture): void => {
+  if (!applicationOperations.isShuttingDown()) windowGestures.get(win)?.begin(kind);
+};
+
+/**
+ * 页面松开鼠标后停止自己的采样，保留最后一次按住期间读取的位置。
+ * Args:
+ *     win (BrowserWindow): 主进程按 IPC 发送者取得的窗口。
+ */
+export const endWindowGesture = (win: BrowserWindow): void => { windowGestures.get(win)?.end(); };
+
+/**
+ * 为聊天或日志接入同一套鼠标采样和生命周期清理，不修改角色位置或显示状态。
+ * Args:
+ *     win (BrowserWindow): 新创建的聊天或日志窗口。
+ */
+const installWindowGestures = (win: BrowserWindow): void => {
+  const controller = new WindowGestureController(win, screen.getCursorScreenPoint, /**
+   * 当前窗口开始操作时固定角色穿透，所有操作结束后按最后一次角色命中恢复。
+   * Args:
+   *     active (boolean): 当前窗口是否正在移动或缩放。
+   */
+  (active) => {
+    // 1. 每个窗口分别记录，旧窗口迟到的结束通知不能解除另一个窗口的穿透保护。
+    if (active) activeWindowGestures.add(win);
+    else activeWindowGestures.delete(win);
+    applyPetPointerState();
+  });
+  windowGestures.set(win, controller);
+  /** 最小化、隐藏、失焦或页面卸载时取消采样，避免收不到 pointerup 后继续拖动。 */
+  const cancelGesture = (): void => controller.end();
+  win.on("minimize", cancelGesture); win.on("hide", cancelGesture); win.on("blur", cancelGesture);
+  win.webContents.on("did-start-navigation", cancelGesture);
+  win.webContents.on("render-process-gone", cancelGesture);
+  win.on("closed", /** 窗口实际关闭时释放采样与登记，日志窗口下次打开可重新装配。 */
+  () => { controller.end(); windowGestures.delete(win); });
+};
+
+/** 应用清理开始前关闭操作门禁、通知全部页面、结束采样并允许聊天释放。 */
+export const beginWindowShutdown = (): void => {
+  // 1. 先记录主进程状态，通知尚未绘制完的页面时也不会接受新的业务 IPC。
+  if (!applicationOperations.beginShutdown()) return;
+  for (const controller of windowGestures.values()) controller.end();
+  applyPetPointerState();
+  // 2. 页面进入统一等待界面；尚未收到通知的迟加载页面通过退出状态查询补齐。
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
+    // 2.1. 单个页面崩溃或正在卸载时，通知失败不能中断其他窗口锁定或应用资源清理。
+    try { win.webContents.send("desktop-pet:application-shutdown"); }
+    catch (error) { appendFrontendLog("warn", "shutdown", "通知页面进入退出状态失败", error); }
+  }
+};
+
+/**
+ * 更新任务栏标题，待审批优先于普通未读消息。
+ */
+const refreshChatTitle = (): void => {
+  if (!chatWindow || chatWindow.isDestroyed()) return;
+  chatWindow.setTitle(approvalId ? "Ayaya · 等待审批" : unread ? "Ayaya · 有新消息" : "Ayaya 聊天");
+};
+
+/**
+ * 接收已经通过会话和事件水位检查的提醒，不主动显示或聚焦窗口。
+ * Args:
+ *     update (ChatAttentionUpdate): 当前回复或审批变化。
+ */
+export const updateChatAttention = (update: ChatAttentionUpdate): void => {
+  if (!chatWindow || chatWindow.isDestroyed()) return;
+  // 1. 会话切换只清除旧会话的窗口提醒，不提交停止或审批命令。
+  if (update.reset) { unread = false; approvalId = null; chatWindow.flashFrame(false); }
+  // 2. 回复正文到达但用户未查看时记录未读，连续分片不会累计多个提示。
+  if (update.newMessage && (!chatWindow.isFocused() || chatWindow.isMinimized())) unread = true;
+  // 3. 同一审批编号只启动一次闪烁；处理完成后关闭闪烁但不改变窗口可见状态。
+  if (update.approvalId !== undefined) {
+    const changed = update.approvalId !== approvalId;
+    approvalId = update.approvalId;
+    if (!approvalId) chatWindow.flashFrame(false);
+    else if (changed && (!chatWindow.isFocused() || chatWindow.isMinimized())) chatWindow.flashFrame(true);
+  }
+  refreshChatTitle();
+};
+
+/**
+ * 保存 Live2D 错误并送给聊天，窗口首次加载后可重送，避免初始化竞争丢提示。
+ * Args:
+ *     message (string): 已限制长度的模型错误说明。
+ */
+export const deliverModelError = (message: string): void => {
+  modelError = message;
+  if (chatWindow && !chatWindow.isDestroyed()) chatWindow.webContents.send("desktop-pet:model-error", message);
+};
+
+/**
+ * 保存聊天置顶设置并应用到窗口。
+ * Args:
+ *     pinned (boolean): 用户选择的置顶状态。
+ * Returns:
+ *     boolean: 保存并应用后的状态。
+ */
+export const setChatPinned = (pinned: boolean): boolean => {
+  saveFrontendSettings({ chat_window_pinned: pinned });
+  chatWindow?.setAlwaysOnTop(pinned);
+  return pinned;
+};
+
+/**
+ * 创建可移动、可缩放的聊天窗口；保持一个实例和一个页面草稿。
+ * Returns:
+ *     BrowserWindow: 当前独立聊天窗口。
+ */
+export const openChatWindow = (): BrowserWindow => {
+  // 1. 重复打开恢复现有窗口，保留渲染进程中的草稿和正在接收的消息。
+  if (chatWindow && !chatWindow.isDestroyed()) {
+    if (chatWindow.isMinimized()) chatWindow.restore();
+    chatWindow.show(); chatWindow.focus();
+    return chatWindow;
+  }
+  // 2. 读取前端位置配置并按当前显示器修正，旧文件缺少这些字段时使用默认值。
+  const settings = readFrontendSettings();
+  const saved = settings.chat_window_bounds;
+  const area = saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)
+    && Number.isFinite(saved.width) && saved.width > 0 && Number.isFinite(saved.height) && saved.height > 0
+    ? screen.getDisplayMatching(saved).workArea : screen.getPrimaryDisplay().workArea;
+  const bounds = fitChatBounds(saved, area);
+  // 3. 聊天窗口正常接收鼠标，最小化时继续处理订阅事件和流式消息。
+  const win = new BrowserWindow({
+    ...bounds, minWidth: Math.min(420, area.width), minHeight: Math.min(480, area.height),
+    // 3.1. 透明窗口合成避开 Windows 不透明窗口缩放时的白条；页面绘制深色背景与统一圆角。
+    // 3.2. 透明无边框窗口的原生拖边不可依赖，八个边缘由聊天页面捕获并交给主进程计算。
+    frame: false, thickFrame: false, transparent: true, resizable: true, maximizable: false, useContentSize: true,
+    fullscreenable: false, show: false, backgroundColor: "#00000000",
+    alwaysOnTop: settings.chat_window_pinned === true,
+    webPreferences: {
+      preload: path.resolve(__dirname, "preload.cjs"),
+      contextIsolation: true, nodeIntegration: false, backgroundThrottling: false,
+    },
+  });
+  chatWindow = win;
+  installWindowGestures(win);
+  protectApplicationWindow(win, "chat-window");
+  // 4. 位置保存、关闭转最小化和工作区适配都由主进程处理，页面不自行模拟窗口。
+  let persistTimer: ReturnType<typeof setTimeout> | null = null;
+  let boundsReady = false;
+  let savedBounds = bounds;
+  /** 用户结束移动或缩放后保存普通状态尺寸；不把临时最小化状态写入配置。 */
+  const persist = (): void => {
+    if (!boundsReady || win.isDestroyed() || win.isMinimized()) return;
+    // 1. 保存可见页面区域，不包含 Windows 的隐藏边框；创建和恢复也使用同一坐标含义。
+    // 1.1. 125% 等显示缩放可能让系统 getter 与恢复目标差一像素，不能逐次写回放大窗口。
+    savedBounds = stabilizeChatBounds(win.getContentBounds(), savedBounds);
+    try { saveFrontendSettings({ chat_window_bounds: savedBounds }); }
+    catch (error) { appendFrontendLog("error", "chat-window", "保存聊天窗口位置失败", error); }
+  };
+  /** 合并窗口连续移动和缩放事件，降低配置写入频率。 */
+  const schedulePersist = (): void => {
+    if (persistTimer) clearTimeout(persistTimer);
+    persistTimer = setTimeout(persist, 200);
+  };
+  win.on("move", schedulePersist); win.on("resize", schedulePersist);
+  win.on("close", /**
+   * 用户关闭请求只最小化，应用明确进入退出流程后放行。
+   * Args:
+   *     event (Event): Electron 的关闭事件。
+   */
+  (event) => {
+    persist();
+    if (!applicationOperations.isShuttingDown()) { event.preventDefault(); win.minimize(); }
+  });
+  win.on("focus", /** 恢复焦点后清除普通未读和闪烁，待审批标题保留至处理完成。 */
+  () => { unread = false; win.flashFrame(false); refreshChatTitle(); });
+  /** 显示器工作区变化后修正离屏位置，保留用户最小化状态。 */
+  const fitToDisplay = (): void => {
+    if (win.isDestroyed()) return;
+    const before = win.isMinimized()
+      ? readFrontendSettings().chat_window_bounds ?? win.getNormalBounds() : win.getContentBounds();
+    const area = screen.getDisplayMatching(before).workArea;
+    const corrected = fitChatBounds(before, area);
+    // 1. 最小化期间只保存修正结果，恢复时再调整窗口，避免系统改变最小化状态。
+    if (win.isMinimized()) {
+      savedBounds = corrected;
+      try { saveFrontendSettings({ chat_window_bounds: corrected }); }
+      catch (error) { appendFrontendLog("error", "chat-window", "保存工作区适配位置失败", error); }
+      return;
+    }
+    win.setMinimumSize(Math.min(420, area.width), Math.min(480, area.height));
+    // 2. 当前尺寸和位置已合法时不重复设置，避免不必要的原生窗口布局变化。
+    if (before.x !== corrected.x || before.y !== corrected.y
+      || before.width !== corrected.width || before.height !== corrected.height) {
+      savedBounds = corrected;
+      win.setContentBounds(corrected);
+    }
+  };
+  win.on("restore", fitToDisplay);
+  screen.on("display-removed", fitToDisplay); screen.on("display-metrics-changed", fitToDisplay);
+  win.on("closed", /** 页面实际释放时清理窗口监听和定时器。 */
+  () => {
+    if (persistTimer) clearTimeout(persistTimer);
+    screen.removeListener("display-removed", fitToDisplay); screen.removeListener("display-metrics-changed", fitToDisplay);
+    if (chatWindow === win) chatWindow = null;
+  });
+  win.webContents.on("did-finish-load", /** 聊天监听安装完毕后补送模型加载错误。 */
+  () => { if (modelError) win.webContents.send("desktop-pet:model-error", modelError); });
+  if (rendererPolicy.mode === "development") void win.loadURL(`${rendererPolicy.origin}/chat.html`);
+  else void win.loadFile(productionChatPath);
+  win.once("ready-to-show", /** 首次启动始终显示聊天窗口，不恢复上次最小化状态。 */
+  () => {
+    // 1. Windows 首次显示完成后按页面区域定位，再允许移动监听保存配置，避免把隐藏边框累计进尺寸。
+    win.show(); win.setContentBounds(bounds); boundsReady = true; persist();
+    win.focus(); refreshChatTitle();
+  });
+  return win;
+};
+
 /**
  * 获取主窗口
  */
@@ -148,7 +411,10 @@ export const setSettingsWindow = (win: BrowserWindow | null): void => {
 };
 
 /**
- * 创建主窗口
+ * 创建固定透明角色窗口并初始化鼠标穿透，聊天记录和输入由独立窗口负责。
+ *
+ * Returns:
+ *     BrowserWindow: 接收角色加载、目光与动作事件的桌面窗口。
  */
 export const createMainWindow = (): BrowserWindow => {
   const display = screen.getPrimaryDisplay();
@@ -179,6 +445,7 @@ export const createMainWindow = (): BrowserWindow => {
   win.setAlwaysOnTop(true, "screen-saver");
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   win.setIgnoreMouseEvents(true, { forward: true });
+  requestedPetInteractive = false; appliedPetInteractive = false;
   mainWindow = win;
 
   if (rendererPolicy.mode === "development") {
@@ -212,6 +479,8 @@ export const openSettingsWindow = (page?: "tasks"): void => {
       if (target.webContents.isLoadingMainFrame()) target.webContents.once("did-finish-load", navigate);
       else navigate();
     }
+    if (settingsWindow.isMinimized()) settingsWindow.restore();
+    settingsWindow.show();
     settingsWindow.focus();
     return;
   }
@@ -232,7 +501,7 @@ export const openSettingsWindow = (page?: "tasks"): void => {
     resizable: false,
     show: false,
     fullscreenable: false,
-    backgroundColor: "#141722",
+    backgroundColor: "#1c1917",
     webPreferences: {
       preload: path.resolve(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -268,7 +537,10 @@ export const openSettingsWindow = (page?: "tasks"): void => {
 };
 
 /**
- *  创建或聚焦前后端实时日志控制台。
+ * 创建或聚焦前后端实时日志控制台，复用聊天的透明合成、圆角与窗口拖动。
+ *
+ * Returns:
+ *     BrowserWindow: 当前日志控制台实例，允许正常关闭并重新创建。
  */
 export const openLogWindow = (): BrowserWindow => {
   if (logWindow && !logWindow.isDestroyed()) {
@@ -285,17 +557,20 @@ export const openLogWindow = (): BrowserWindow => {
     minHeight: LOG_WINDOW_MIN_HEIGHT,
     center: true,
     frame: false,
-    transparent: false,
+    // 1. 与聊天共用透明合成和应用边缘缩放，避免原生客户区重绘时出现白边。
+    thickFrame: false,
+    transparent: true,
     resizable: true,
     show: false,
     fullscreenable: false,
-    backgroundColor: "#141722",
+    backgroundColor: "#00000000",
     webPreferences: {
       preload: path.resolve(__dirname, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
     },
   });
+  installWindowGestures(win);
   protectApplicationWindow(win, "log-window");
   if (rendererPolicy.mode === "development") {
     void win.loadURL(`${rendererPolicy.origin}/logs.html`);
@@ -361,107 +636,19 @@ export const openImagePreviewWindow = (imageSrc: string): void => {
     resizable: true,
     show: false,
     fullscreenable: false,
-    backgroundColor: "#1a1a1a",
+    backgroundColor: "#1c1917",
     webPreferences: {
+      preload: path.resolve(__dirname, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
     },
   });
 
-  // 创建简单的 HTML 内容显示图片
-  const htmlContent = `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta charset="UTF-8">
-      <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-          background: #1a1a1a;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          height: 100vh;
-          overflow: hidden;
-          user-select: none;
-        }
-        /* 拖拽区域：整个窗口顶部 40px */
-        .drag-region {
-          position: fixed;
-          top: 0;
-          left: 0;
-          right: 0;
-          height: 40px;
-          -webkit-app-region: drag;
-          z-index: 50;
-        }
-        .close-btn {
-          position: fixed;
-          top: 12px;
-          right: 12px;
-          width: 32px;
-          height: 32px;
-          border: none;
-          border-radius: 8px;
-          background: rgba(255, 82, 82, 0.9);
-          color: #fff;
-          font-size: 14px;
-          cursor: pointer;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          z-index: 100;
-          box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-          transition: transform 0.15s, background 0.15s;
-          -webkit-app-region: no-drag;
-        }
-        .close-btn:hover {
-          transform: scale(1.1);
-          background: rgba(255, 82, 82, 1);
-        }
-        img {
-          max-width: 100%;
-          max-height: 100vh;
-          object-fit: contain;
-          border-radius: 8px;
-        }
-      </style>
-    </head>
-    <body>
-      <div class="drag-region"></div>
-      <button class="close-btn" id="closeBtn">✕</button>
-      <img src="${imageSrc}" alt="图片预览" />
-      <script>
-        document.getElementById('closeBtn').addEventListener('click', function() {
-          window.close();
-        });
-        // ESC 键关闭
-        document.addEventListener('keydown', function(e) {
-          if (e.key === 'Escape') {
-            window.close();
-          }
-        });
-      </script>
-    </body>
-    </html>
-  `;
-
-  const previewUrl = `data:text/html;charset=utf-8,${encodeURIComponent(htmlContent)}`;
-  installNavigationGuards(
-    win.webContents,
-    /**
-     * 图片预览导航只允许本次生成的预览页面，其他目标均拒绝。
-     *
-     * Args:
-     *     targetUrl (string): 本次导航准备访问的目标地址。
-     *
-     * Returns:
-     *     boolean: 目标与当前预览地址完全一致时为 true。
-     */
-    (targetUrl) => targetUrl === previewUrl,
-    logBlockedNavigation
-  );
-  win.loadURL(previewUrl);
+  protectApplicationWindow(win, "image-preview-window");
+  const query = { image: imageSrc };
+  if (rendererPolicy.mode === "development") {
+    void win.loadURL(`${rendererPolicy.origin}/image-preview.html?${new URLSearchParams(query)}`);
+  } else { void win.loadFile(productionPreviewPath, { query }); }
 
   win.once("ready-to-show", /**
    * 图片预览内容准备完成后显示并聚焦窗口。
@@ -510,10 +697,10 @@ export const initWindowEventListeners = (): void => {
   });
 
   app.on("activate", /**
-   * 应用被重新激活且没有窗口时重新创建桌面主窗口。
+   * 应用被重新激活且没有窗口时重新创建主窗口，退出等待期间禁止重新创建。
    */
   () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
+    if (!applicationOperations.isShuttingDown() && BrowserWindow.getAllWindows().length === 0) {
       createMainWindow();
     }
   });

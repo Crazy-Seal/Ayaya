@@ -7,9 +7,10 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { FRONTEND_SETTINGS_PATH } from "./config.js";
+import { readFrontendSettings, saveFrontendSettings } from "./frontend-settings-store.js";
 import { backendFetch } from "./backend-client.js";
 import { submitInteractionCommand, subscribeDesktopSession } from "./interaction-adapter.js";
-import type { ChannelCommand } from "../shared-types.js";
+import type { ChannelCommand, ChatAttentionUpdate } from "../shared-types.js";
 import { DESKTOP_CHANNEL } from "../shared-types.js";
 import type {
   ChatSettingsData,
@@ -49,7 +50,10 @@ import {
   saveToolPermissions,
   fetchAvailablePlugins,
 } from "./chat-settings.js";
-import { getMainWindow, getSettingsWindow, getTrustedRendererPolicy, openSettingsWindow, openImagePreviewWindow } from "./window-manager.js";
+import { getMainWindow, getChatWindow, getSettingsWindow, getTrustedRendererPolicy, openSettingsWindow, openImagePreviewWindow, setChatPinned, updateChatAttention, deliverModelError,
+  beginWindowGesture, endWindowGesture, setPetPointerInteractive } from "./window-manager.js";
+import { isWindowGesture } from "./window-gesture.js";
+import { applicationOperations, SHUTDOWN_STATE_CHANNEL } from "./application-operations.js";
 import { createTrustedIpcRegistrar } from "./ipc-security.js";
 import { resolveScreenActionPoint } from "./screen-action-coordinates.js";
 import { pasteScreenActionText } from "./screen-action-input.js";
@@ -73,6 +77,7 @@ import type {
  */
 const notifyModelChanged = (): void => {
   const active = getActiveModelRecord();
+  deliverModelError("");
   const payload: ModelChangedPayload = {
     id: active.id,
     name: active.name,
@@ -84,16 +89,9 @@ const notifyModelChanged = (): void => {
     followCursor: active.followCursor ?? true,
   };
 
-  // 通知主窗口
-  const mainWindow = getMainWindow();
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send("desktop-pet:model-changed", payload);
-  }
-
-  // 通知设置窗口
-  const settingsWindow = getSettingsWindow();
-  if (settingsWindow && !settingsWindow.isDestroyed()) {
-    settingsWindow.webContents.send("desktop-pet:model-changed", payload);
+  // 1. 角色、聊天和设置共用同一活动模型身份。
+  for (const window of [getMainWindow(), getChatWindow(), getSettingsWindow()]) {
+    if (window && !window.isDestroyed()) window.webContents.send("desktop-pet:model-changed", payload);
   }
 };
 
@@ -241,9 +239,13 @@ export const performScreenAction = async (payload: ScreenActionRequest): Promise
 
 /**
  * 注册受信任 Renderer 的 IPC 入口，将运行时命令、事件和任务查询接入主进程。
+ * Args:
+ *     options ({ requestApplicationExit: () => void }): 设置确认后调用的统一应用清理入口。
  */
-export const registerIpcHandlers = (): void => {
+export const registerIpcHandlers = (options: { requestApplicationExit: () => void }): void => {
   const trustedIpc = createTrustedIpcRegistrar(getTrustedRendererPolicy());
+  trustedIpc.handle(SHUTDOWN_STATE_CHANNEL, /** 页面首次加载时补查退出状态，退出门禁只保留此查询。 */
+  () => applicationOperations.isShuttingDown());
   // 鼠标穿透控制
   trustedIpc.on("desktop-pet:set-mouse-passthrough", /**
    * 可信页面请求鼠标穿透时定位发送窗口，再更新窗口是否忽略鼠标事件。
@@ -270,12 +272,28 @@ export const registerIpcHandlers = (): void => {
    *     enabled (boolean): 是否启用当前界面选项。
    */
   (event, enabled: boolean) => {
-    const win = BrowserWindow.fromWebContents(event.sender) ?? getMainWindow();
-    if (!win) {
-      return;
-    }
+    // 1. 只有角色页面能改变角色穿透；应用窗口拖动时暂存结果而不切换窗口样式。
+    if (event.sender === getMainWindow()?.webContents && typeof enabled === "boolean") setPetPointerInteractive(enabled);
+  });
 
-    win.setIgnoreMouseEvents(!Boolean(enabled), { forward: true });
+  trustedIpc.on("desktop-pet:begin-window-gesture", /**
+   * 可信页面以合法方向开始拖动自己的窗口，主进程只接受已登记聊天或日志窗口。
+   * Args:
+   *     event (IpcMainEvent): 已通过来源检查的发送者。
+   *     kind (unknown): 页面请求的操作方向。
+   */
+  (event, kind: unknown) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win && isWindowGesture(kind)) beginWindowGesture(win, kind);
+  });
+  trustedIpc.on("desktop-pet:end-window-gesture", /**
+   * 页面松开或取消鼠标捕获后只结束自己的采样，其他可信窗口不能中断操作。
+   * Args:
+   *     event (IpcMainEvent): 已通过来源检查的发送者。
+   */
+  (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win) endWindowGesture(win);
   });
 
   // 获取当前激活的模型
@@ -886,6 +904,65 @@ export const registerIpcHandlers = (): void => {
     win?.close();
   });
 
+  trustedIpc.handle("desktop-pet:set-chat-pinned", /**
+   * 仅聊天窗口可以修改自己的置顶状态。
+   * Args:
+   *     event (IpcMainInvokeEvent): 可信发送窗口。
+   *     pinned (unknown): 用户选择的置顶状态。
+   * Returns:
+   *     boolean: 已保存的状态。
+   */
+  (event, pinned: unknown) => {
+    if (BrowserWindow.fromWebContents(event.sender) !== getChatWindow() || typeof pinned !== "boolean") throw new Error("无效的聊天置顶请求");
+    return setChatPinned(pinned);
+  });
+  trustedIpc.on("desktop-pet:chat-attention", /**
+   * 仅接收聊天窗口的提醒状态，拒绝其他页面操作聊天任务栏。
+   * Args:
+   *     event (IpcMainEvent): 可信发送窗口。
+   *     value (ChatAttentionUpdate | null): 去重后的提醒变化。
+   */
+  (event, value: ChatAttentionUpdate | null) => {
+    if (BrowserWindow.fromWebContents(event.sender) !== getChatWindow() || !value || typeof value !== "object") return;
+    const update: ChatAttentionUpdate = { newMessage: value.newMessage === true, reset: value.reset === true };
+    if (value.approvalId === null || (typeof value.approvalId === "string" && value.approvalId.length <= 256)) update.approvalId = value.approvalId;
+    updateChatAttention(update);
+  });
+  trustedIpc.on("desktop-pet:exit-application", /**
+   * 设置页面确认后进入统一应用退出流程，不把窗口关闭当作退出。
+   * Args:
+   *     event (IpcMainEvent): 可信设置页面的请求。
+   */
+  (event) => { if (BrowserWindow.fromWebContents(event.sender) === getSettingsWindow()) options.requestApplicationExit(); });
+  trustedIpc.on("desktop-pet:play-expression", /**
+   * 核对当前模型的表情标签后交给 Live2D 页面播放。
+   * Args:
+   *     event (IpcMainEvent): 可信聊天页面的请求。
+   *     label (unknown): 正文中的表情标签。
+   */
+  (event, label: unknown) => {
+    if (BrowserWindow.fromWebContents(event.sender) !== getChatWindow() || typeof label !== "string") return;
+    const active = getActiveModelRecord();
+    if (!active.motionConfig?.some(/**
+     * 只允许当前模型明确配置的表情，不接受任意动作名称。
+     * Args:
+     *     rule (MotionConfig): 已保存的动作规则。
+     * Returns:
+     *     boolean: 规则标签与请求一致时为 true。
+     */
+    (rule) => rule.setting === "expression" && rule.label === label)) return;
+    getMainWindow()?.webContents.send("desktop-pet:expression-request", label);
+  });
+  trustedIpc.on("desktop-pet:model-error", /**
+   * 只将角色页面的加载错误转发给聊天窗口。
+   * Args:
+   *     event (IpcMainEvent): 角色窗口发送请求。
+   *     message (unknown): 模型错误说明。
+   */
+  (event, message: unknown) => {
+    if (BrowserWindow.fromWebContents(event.sender) === getMainWindow() && typeof message === "string") deliverModelError(message.slice(0, 2000));
+  });
+
   // 打开图片预览窗口
   trustedIpc.on("desktop-pet:open-image-preview", /**
    * 聊天页点击历史图片后打开受限图片预览窗口。
@@ -905,8 +982,8 @@ export const registerIpcHandlers = (): void => {
    * Returns:
    *     Promise<{ path: string; dataUrl: string; }[] | null>: 图片选择结果，取消时为空。
    */
-  async () => {
-    const chooser = getMainWindow();
+  async (event) => {
+    const chooser = BrowserWindow.fromWebContents(event.sender);
     if (!chooser) {
       return null;
     }
@@ -1060,20 +1137,7 @@ export const registerIpcHandlers = (): void => {
    *     FrontendSettings: 当前前端设置或默认值。
    */
   () => {
-    const defaultSettings: FrontendSettings = {
-      hide_on_screenshot: true,
-    };
-
-    try {
-      if (!fs.existsSync(FRONTEND_SETTINGS_PATH)) {
-        return defaultSettings;
-      }
-      const content = fs.readFileSync(FRONTEND_SETTINGS_PATH, "utf-8");
-      const settings = JSON.parse(content) as Partial<FrontendSettings>;
-      return { ...defaultSettings, ...settings };
-    } catch {
-      return defaultSettings;
-    }
+    return readFrontendSettings();
   });
 
   // 更新前端设置
@@ -1088,22 +1152,8 @@ export const registerIpcHandlers = (): void => {
    *     { hide_on_screenshot: boolean; }: 保存后的前端设置。
    */
   (_event, settings: Partial<FrontendSettings>) => {
-    let current: FrontendSettings;
-    try {
-      if (fs.existsSync(FRONTEND_SETTINGS_PATH)) {
-        const content = fs.readFileSync(FRONTEND_SETTINGS_PATH, "utf-8");
-        current = JSON.parse(content) as FrontendSettings;
-      } else {
-        current = { hide_on_screenshot: true };
-      }
-    } catch {
-      current = { hide_on_screenshot: true };
-    }
-
-    const updated = { ...current, ...settings };
-    fs.mkdirSync(path.dirname(FRONTEND_SETTINGS_PATH), { recursive: true });
-    fs.writeFileSync(FRONTEND_SETTINGS_PATH, JSON.stringify(updated, null, 2), "utf-8");
-    return updated;
+    // 设置页面只能更新截图隐藏选项，窗口位置与置顶由对应入口管理。
+    return saveFrontendSettings({ hide_on_screenshot: settings.hide_on_screenshot !== false });
   });
 
   // 获取模型动作配置
@@ -1162,12 +1212,13 @@ export const registerIpcHandlers = (): void => {
       saveModelConfig(config);
 
       // 通知主窗口动作配置已更新
-      const mainWindow = getMainWindow();
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send("desktop-pet:motion-config-changed", {
-          modelId: payload.modelId,
-          motionConfig: payload.motionConfig,
-        });
+      for (const mainWindow of [getMainWindow(), getChatWindow()]) {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send("desktop-pet:motion-config-changed", {
+            modelId: payload.modelId,
+            motionConfig: payload.motionConfig,
+          });
+        }
       }
     }
   );

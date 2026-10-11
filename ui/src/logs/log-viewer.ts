@@ -1,3 +1,6 @@
+import { initializeIcons } from "../ui/icons.js";
+import { setupWindowGestures } from "../ui/window-gestures.js";
+import { setupApplicationShutdownUi } from "../ui/application-shutdown.js";
 import "./logs.css";
 
 import type {
@@ -669,6 +672,8 @@ const setupControls = (): void => {
  *     Promise<void>: 日志窗口初始化完成后结束。
  */
 const start = async (): Promise<void> => {
+  // 1. 日志快照读取前先安装窗口拖动，连接失败时仍能移动和缩放日志窗口。
+  const releaseWindowGestures = setupWindowGestures(getElement(".log-window"));
   const earlyRecords: LogRecord[] = [];
   let acceptingEarly = true;
   const unsubscribe = window.desktopPetApi.onLogBatch(/**
@@ -685,9 +690,10 @@ const start = async (): Promise<void> => {
     appendIncomingRecords(batch.records);
   });
   window.addEventListener("beforeunload", /**
-   * 日志窗口卸载时取消日志订阅，并断开所有尺寸观察器。
+   * 日志窗口卸载时停止窗口拖动、取消日志订阅，并断开所有尺寸观察器。
    */
   () => {
+    releaseWindowGestures();
     unsubscribe();
     for (const observer of resizeObservers) observer.disconnect();
   }, { once: true });
@@ -701,6 +707,7 @@ const start = async (): Promise<void> => {
   status.textContent = "实时日志流已连接";
 };
 
+setupApplicationShutdownUi();
 void start().catch(/**
  * 日志窗口初始化失败后在状态栏显示错误原因。
  *
@@ -710,3 +717,5 @@ void start().catch(/**
 (error: unknown) => {
   status.textContent = error instanceof Error ? error.message : "日志控制台初始化失败";
 });
+
+initializeIcons();

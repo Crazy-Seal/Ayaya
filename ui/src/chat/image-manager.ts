@@ -57,10 +57,14 @@ export const convertToJpegDataUrl = async (file: File, quality = 0.8): Promise<s
 };
 
 /**
- * 图片管理器类
+ * 管理当前草稿附件，清空或切换会话后使仍在读取的旧附件失效。
+ *
+ * Attributes:
+ *     revision (number): 每次清空递增，选图和转换完成后核对草稿归属。
  */
 export class ImageManager {
   private images: PendingImage[] = [];
+  private revision = 0;
   private maxImages = 5;
   private listeners: Set<() => void> = new Set();
 
@@ -98,22 +102,30 @@ export class ImageManager {
   }
 
   /**
-   * 添加图片文件
+   * 读取拖入、粘贴或文件输入的图片；清空或会话切换后不接收旧读取结果。
    *
    * Args:
    *     files (FileList | File[]): 用户拖入或选中的文件集合。
+   *
+   * Returns:
+   *     Promise<number>: 本批次实际加入当前草稿的图片数量。
    */
   async addFiles(files: FileList | File[]): Promise<number> {
+    const revision = this.revision;
     const fileArray = Array.from(files);
     let addedCount = 0;
 
     for (const file of fileArray) {
+      if (revision !== this.revision) break;
       if (this.images.length >= this.maxImages) break;
       if (!file.type.startsWith("image/")) continue;
 
       try {
-        // 所有图片统一转换为 JPEG 格式以减小体积
+        // 1. 转换期间用户可能清空、发送草稿或切换会话，完成后先核对所属草稿。
         const dataUrl = await convertToJpegDataUrl(file);
+        if (revision !== this.revision) return 0;
+        // 2. 并发粘贴或拖入可能先占满附件数量，不能依赖转换前读取的数量。
+        if (this.images.length >= this.maxImages) break;
 
         this.images.push({
           id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -126,11 +138,26 @@ export class ImageManager {
       }
     }
 
-    if (addedCount > 0) {
+    if (addedCount > 0 && revision === this.revision) {
       this.notifyListeners();
     }
 
     return addedCount;
+  }
+
+  /**
+   * 记录草稿版本后打开选图，清空或切换会话后丢弃迟到结果。
+   *
+   * Args:
+   *     select (() => Promise<string[] | null>): 聊天调用主进程选图并读取图片正文的入口。
+   *
+   * Returns:
+   *     Promise<void>: 选择结果已处理；取消或过期时不改变附件。
+   */
+  async addFromSelection(select: () => Promise<string[] | null>): Promise<void> {
+    const revision = this.revision;
+    const dataUrls = await select();
+    if (revision === this.revision && dataUrls) this.addDataUrls(dataUrls);
   }
 
   /**
@@ -173,9 +200,11 @@ export class ImageManager {
   }
 
   /**
-   * 清空所有图片
+   * 清空当前草稿图片并使仍在等待的选图或图片转换失效。
    */
   clear(): void {
+    // 1. 先改变草稿版本，异步读取回调不能把已清空的图片重新加入当前会话。
+    this.revision += 1;
     this.images = [];
     this.notifyListeners();
   }

@@ -188,13 +188,71 @@ const desktopPetApi: DesktopPetApi = {
     ipcRenderer.send("desktop-pet:close-current-window");
   },
   /**
-   * 由聊天页请求主进程打开指定历史图片的预览窗口。
-   *
+   * 保存并应用聊天置顶。
    * Args:
-   *     imageSrc (string): 要预览的图片地址。
-   *
+   *     pinned (boolean): 用户当前选择。
    * Returns:
-   *     void: 主进程处理结果。
+   *     Promise<boolean>: 保存后的状态。
+   */
+  setChatPinned: (pinned) => ipcRenderer.invoke("desktop-pet:set-chat-pinned", pinned),
+  /**
+   * 只发送拖动方向，窗口位置与尺寸由主进程读取系统鼠标计算。
+   * Args:
+   *     kind (WindowGesture): 当前窗口标题栏移动或边缘缩放方向。
+   */
+  beginWindowGesture: (kind) => ipcRenderer.send("desktop-pet:begin-window-gesture", kind),
+  /** 松开鼠标、失去捕获或页面卸载时结束当前拖动。 */
+  endWindowGesture: () => ipcRenderer.send("desktop-pet:end-window-gesture"),
+  /**
+   * 转交已去重的聊天提醒。
+   * Args:
+   *     update (ChatAttentionUpdate): 当前消息与审批变化。
+   */
+  reportChatAttention: (update) => ipcRenderer.send("desktop-pet:chat-attention", update),
+  /** 设置确认退出后请求应用清理。 */
+  requestApplicationExit: () => ipcRenderer.send("desktop-pet:exit-application"),
+  /** 查询主进程退出状态，此查询在退出等待期间仍允许执行。 */
+  getApplicationShutdownState: () => ipcRenderer.invoke("desktop-pet:get-shutdown-state"),
+  /**
+   * 主进程关闭业务门禁后通知页面停止交互，不暴露 Electron 事件对象。
+   * Args:
+   *     callback (() => void): 页面进入退出等待界面的回调。
+   * Returns:
+   *     (() => void): 页面卸载时取消监听的函数。
+   */
+  onApplicationShutdown: (callback) => subscribe("desktop-pet:application-shutdown", callback),
+  /**
+   * 把聊天表情标签交给主进程核对并转发。
+   * Args:
+   *     label (string): 识别到的表情标签。
+   */
+  playExpression: (label) => ipcRenderer.send("desktop-pet:play-expression", label),
+  /**
+   * 将 Live2D 错误交给聊天页。
+   * Args:
+   *     message (string): 模型错误说明。
+   */
+  reportModelError: (message) => ipcRenderer.send("desktop-pet:model-error", message),
+  /**
+   * 订阅模型错误。
+   * Args:
+   *     listener ((message: string) => void): 错误展示回调。
+   * Returns:
+   *     () => void: 取消订阅函数。
+   */
+  onModelError: (listener) => subscribe("desktop-pet:model-error", listener),
+  /**
+   * 订阅聊天发来的表情请求。
+   * Args:
+   *     listener ((label: string) => void): Live2D 播放回调。
+   * Returns:
+   *     () => void: 取消订阅函数。
+   */
+  onExpressionRequest: (listener) => subscribe("desktop-pet:expression-request", listener),
+  /**
+   * 聊天页请求主进程打开图片预览，预览窗口复用应用共享样式。
+   * Args:
+   *     imageSrc (string): 历史或附件图片地址。
    */
   openImagePreview: (imageSrc) => {
     ipcRenderer.send("desktop-pet:open-image-preview", imageSrc);

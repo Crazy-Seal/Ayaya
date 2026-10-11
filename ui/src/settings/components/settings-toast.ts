@@ -1,3 +1,4 @@
+import { iconPathData } from "../../ui/icons.js";
 export type SettingsToastVariant = "success" | "error";
 
 /**
@@ -45,10 +46,8 @@ export interface SettingsToastTimer {
 }
 
 const TOAST_DURATION_MS = 3000;
-const SUCCESS_ICON_PATH =
-  "M12 2a10 10 0 1 0 10 10A10.01 10.01 0 0 0 12 2Zm-2 15-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8Z";
-const ERROR_ICON_PATH =
-  "M12 2a10 10 0 1 0 10 10A10.01 10.01 0 0 0 12 2Zm4.3 14.3-1.4 1.4-2.9-2.9-2.9 2.9-1.4-1.4 2.9-2.9-2.9-2.9 1.4-1.4 2.9 2.9 2.9-2.9 1.4 1.4-2.9 2.9Z";
+const SUCCESS_ICON_PATH = iconPathData("check");
+const ERROR_ICON_PATH = iconPathData("close");
 
 const defaultTimer: SettingsToastTimer = {
   /**

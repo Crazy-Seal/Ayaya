@@ -23,7 +23,7 @@ test("设置侧栏将日志入口放在独立紧凑工具区", /**
   assert.ok(utilitySection, "缺少设置侧栏独立工具区");
   assert.match(utilitySection, /id="open-log-window-btn"/);
   assert.match(utilitySection, /aria-label="打开日志控制台"/);
-  assert.match(utilitySection, /<svg[^>]*aria-hidden="true"/);
+  assert.match(utilitySection, /data-icon="log"/);
   assert.match(utilitySection, />\s*日志\s*<\/button>/);
   assert.doesNotMatch(utilitySection, />\s*日志控制台\s*<\/button>/);
 });
@@ -36,8 +36,8 @@ test("日志窗口复用设置标题栏并使用阈值级别选项", /**
 
   assert.match(html, /class="settings-titlebar log-titlebar"/);
   assert.match(html, /class="settings-title log-title"/);
-  assert.match(html, /aria-label="最小化">─<\/button>/);
-  assert.match(html, /aria-label="关闭">✕<\/button>/);
+  assert.match(html, /aria-label="最小化"><span data-icon="minimize"><\/span><\/button>/);
+  assert.match(html, /aria-label="关闭"><span data-icon="close"><\/span><\/button>/);
   assert.match(html, /<option value="debug">DEBUG<\/option>/);
   assert.match(html, /<option value="info">INFO<\/option>/);
   assert.match(html, /<option value="warn">WARNING<\/option>/);

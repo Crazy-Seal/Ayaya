@@ -47,6 +47,7 @@ export class ChannelSubscriptionsPage {
       status.textContent = channel.ready ? "已连接" : "未连接";
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
+      checkbox.className = "ui-checkbox";
       checkbox.checked = channel.enabled;
       // 1. 桌面订阅固定启用，可选渠道才允许发送持久配置变更。
       checkbox.disabled = channel.channel === "desktop";

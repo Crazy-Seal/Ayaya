@@ -46,7 +46,7 @@
   width: 18px;
   height: 18px;
   flex: 0 0 auto;
-  fill: currentColor;
+  fill: none;
 }
 
 .settings-toast-message {
@@ -107,6 +107,8 @@
 }
 
 .settings-utility-section {
+  display: flex;
+  gap: var(--spacing-sm);
   margin-top: auto;
   padding-top: var(--spacing-md);
   border-top: 1px solid var(--color-border-subtle);
@@ -124,7 +126,7 @@
   stroke: currentColor;
   stroke-linecap: round;
   stroke-linejoin: round;
-  stroke-width: 1.8;
+  stroke-width: 2;
 }
 
 /* ==================== Content Area ==================== */
@@ -257,11 +259,11 @@
   font-family: inherit;
   cursor: pointer;
   box-shadow: var(--shadow-clay-elevated);
-  transition: all var(--transition-fast);
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
 }
 
 .model-item:hover {
-  transform: translateX(4px);
+  transform: translateX(2px);
   box-shadow: var(--shadow-clay-dark);
 }
 
@@ -340,7 +342,7 @@
   height: 100%;
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.8;
+  stroke-width: 2;
 }
 
 .llm-divider {
@@ -522,44 +524,11 @@
 }
 
 /* ==================== Confirm Dialog ==================== */
-.confirm-overlay {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(0, 0, 0, 0.6);
-  backdrop-filter: blur(4px);
-  z-index: 20;
-}
-
-.confirm-overlay[hidden] {
-  display: none !important;
-}
-
 .confirm-modal {
   width: min(420px, calc(100% - 32px));
   padding: var(--spacing-xl);
   display: flex;
   flex-direction: column;
-  gap: var(--spacing-md);
-  animation: modalSlideIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-@keyframes modalSlideIn {
-  from {
-    opacity: 0;
-    transform: translateY(-20px) scale(0.95);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-}
-
-.confirm-header {
-  display: flex;
-  align-items: center;
   gap: var(--spacing-md);
 }
 
@@ -572,7 +541,7 @@
 .confirm-icon svg {
   width: 100%;
   height: 100%;
-  fill: currentColor;
+  fill: none;
 }
 
 .confirm-title {
@@ -589,9 +558,6 @@
 }
 
 .confirm-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: var(--spacing-sm);
   margin-top: var(--spacing-sm);
 }
 
@@ -926,3 +892,11 @@
   overflow: auto;
   white-space: pre-wrap;
 }
+
+/** 日志和退出占用侧栏底部同样大小的按钮，不扩大设置窗口。 */
+.settings-nav { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: var(--spacing-sm); overflow-y: auto; overscroll-behavior: contain; }
+.settings-nav .settings-tab { flex-shrink: 0; }
+.settings-utility-section { flex-shrink: 0; }
+.settings-utility-section > .ui-button { flex: 1; min-width: 0; padding-inline: var(--spacing-sm); justify-content: center; }
+.settings-utility-section .ui-icon { width: 16px; height: 16px; }
+.settings-toast-icon { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }

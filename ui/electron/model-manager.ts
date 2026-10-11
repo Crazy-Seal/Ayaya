@@ -5,9 +5,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
+  UI_ROOT,
   USER_DATA_DIR,
   IMPORTED_MODELS_DIR,
   MODEL_CONFIG_PATH,
@@ -304,11 +305,15 @@ export const getActiveModelRecord = (): ModelRecord => {
  * 解析模型 URL
  *
  * Args:
- *     model (ModelRecord): 需要展示的后端恢复对话框信息。
+ *     model (ModelRecord): 需要解析入口资源地址的 Live2D 模型记录，包含来源和入口路径。
+ * Returns:
+ *     string: 开发服务器资源、本地打包文件或自定义模型协议地址。
  */
 export const resolveModelUrl = (model: ModelRecord): string => {
   if (model.source === "builtin") {
-    return model.entry;
+    // 1. 开发页面使用资源服务器，生产页面使用打包目录；根路径不能直接交给 file 页面。
+    if (process.env.VITE_DEV_SERVER_URL) return new URL(model.entry, process.env.VITE_DEV_SERVER_URL).href;
+    return pathToFileURL(path.resolve(UI_ROOT, "dist", model.entry.replace(/^\/+/, ""))).href;
   }
 
   const encodedEntry = model.entry

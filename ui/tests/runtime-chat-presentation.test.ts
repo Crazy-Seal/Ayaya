@@ -5,7 +5,7 @@ import { RuntimeChatClient, type RuntimeChatClientOptions } from "../src/chat/ru
 import { ChatHistoryManager } from "../src/chat/chat-history-manager.js";
 import { BubbleManager } from "../src/chat/bubble.js";
 import { BackgroundTasksPage } from "../src/settings/pages/background-tasks-page.js";
-import type { ChatHistoryItem, InteractionEvent } from "../shared-types.js";
+import type { ChatAttentionUpdate, ChatHistoryItem, InteractionEvent } from "../shared-types.js";
 
 /**
  * 提供真实展示类所需的最小 DOM 行为，文本可从公开容器读取。
@@ -203,6 +203,7 @@ function createPresentation(withTaskEntry = false) {
   const persisted: ChatHistoryItem[] = [];
   const historyReads = { calls: 0, barrier: null as Promise<void> | null, failure: null as string | null };
   const approvals = { opened: 0 };
+  const attention: ChatAttentionUpdate[] = [];
   const taskHeader = new PresentationElement();
   const taskButton = new PresentationElement();
   const taskNotice = new PresentationElement();
@@ -323,6 +324,12 @@ function createPresentation(withTaskEntry = false) {
   const history = new ChatHistoryManager(root as unknown as HTMLDivElement);
   const client = new RuntimeChatClient({
     sessionId: "s", bridge, chatHistory: history,
+    /**
+     * 记录真实聊天客户端交给窗口的未读与审批提醒，不启动系统窗口。
+     * Args:
+     *     update (ChatAttentionUpdate): 本次提醒变化。
+     */
+    onAttention: (update) => { attention.push(update); },
     bubble: new BubbleManager(bubble as unknown as HTMLDivElement),
     sendBtn: { innerHTML: "send",
       /**
@@ -350,7 +357,7 @@ function createPresentation(withTaskEntry = false) {
   });
   return {
     root, bubble, motions, persisted, taskHeader, taskButton, taskNotice, tasks, openedPages,
-    client, historyReads, approvals,
+    client, historyReads, approvals, attention,
     /**
      * 从公共 bridge 注入事件并等待 Renderer 处理完成。
      *
@@ -379,6 +386,59 @@ function createPresentation(withTaskEntry = false) {
     },
   };
 }
+
+test("重连历史中的新回复补发提醒，首次旧历史和重复快照不误报", /**
+ * 验证没有收到流式分片时仍提醒新增的持久化回复，旧历史和重复恢复不会重复提醒。
+ * Returns:
+ *     Promise<void>: 所有快照已通过真实客户端与历史展示器处理。
+ */
+async () => {
+  const view = createPresentation();
+  try {
+    view.persisted.push({ id: "old-reply", role: "ai", content: "启动前的回答", timestamp: "2026-10-11T00:00:00Z" });
+    await view.emit("session_snapshot", { phase: "idle" }, 0);
+    assert.deepEqual(view.attention, [{ approvalId: null }]);
+    view.attention.length = 0;
+
+    // 1. 模拟连接中断期间后端保存回复，重连仅交付快照与完整历史。
+    view.persisted.push({ id: "offline-reply", role: "ai", content: "断线期间完成的回答", timestamp: "2026-10-11T00:01:00Z" });
+    await view.emit("session_snapshot", { phase: "idle" }, 1);
+    assert.deepEqual(view.attention, [{ newMessage: true }, { approvalId: null }]);
+    assert.ok(view.root.textContent.includes("断线期间完成的回答"));
+
+    // 2. 相同历史再次恢复只同步审批状态，不把旧回复当作新消息。
+    view.attention.length = 0;
+    await view.emit("session_snapshot", { phase: "idle" }, 2);
+    assert.deepEqual(view.attention, [{ approvalId: null }]);
+  } finally { view.close(); }
+});
+
+test("终态历史新回复提醒且查询失败不提前消费回复编号", /**
+ * 验证没有正文分片的完成事件补发提醒，失败的历史查询不丢失下次重连提醒。
+ * Returns:
+ *     Promise<void>: 完成与恢复场景已处理。
+ */
+async () => {
+  const view = createPresentation();
+  try {
+    await view.emit("session_snapshot", { phase: "idle" }, 0);
+    view.attention.length = 0;
+    await view.emit("run_started", {}, 1);
+    view.persisted.push({ id: "completed-reply", role: "ai", content: "完整回答", timestamp: "2026-10-11T00:01:00Z" });
+    await view.emit("run_completed", {}, 2);
+    assert.deepEqual(view.attention, [{ approvalId: null }, { newMessage: true }]);
+
+    view.attention.length = 0;
+    view.persisted.push({ id: "later-reply", role: "assistant", content: "后续回答", timestamp: "2026-10-11T00:02:00Z" });
+    view.historyReads.failure = "模拟历史读取失败";
+    await view.emit("session_snapshot", { phase: "idle" }, 3);
+    assert.deepEqual(view.attention, [{ approvalId: null }]);
+    view.attention.length = 0;
+    view.historyReads.failure = null;
+    await view.emit("session_snapshot", { phase: "idle" }, 4);
+    assert.deepEqual(view.attention, [{ newMessage: true }, { approvalId: null }]);
+  } finally { view.close(); }
+});
 
 test("任务入口只计运行任务，点击打开详情，全部结束后短提示消失", /**
  * 验证任务入口只计运行任务，点击打开详情，全部结束后短提示消失。

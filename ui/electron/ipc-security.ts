@@ -10,6 +10,7 @@ import {
   type TrustedRendererPolicy,
 } from "./renderer-security.js";
 import { appendFrontendLog } from "./logging/app-logger.js";
+import { applicationOperations } from "./application-operations.js";
 
 /**
  * 从 IPC 事件提取发送页面与主框架信息，供可信来源校验。
@@ -48,7 +49,7 @@ const logBlockedIpc = (channel: string, event: IpcMainEvent | IpcMainInvokeEvent
 };
 
 /**
- * 创建统一 IPC 注册入口，在调用业务函数前检查发送方是否为可信应用页面。
+ * 创建统一 IPC 注册入口，先检查可信来源，再检查退出门禁，最后调用业务处理器。
  *
  * Args:
  *     policy (TrustedRendererPolicy): 允许访问的应用页面及来源规则。
@@ -58,7 +59,7 @@ const logBlockedIpc = (channel: string, event: IpcMainEvent | IpcMainInvokeEvent
  */
 export const createTrustedIpcRegistrar = (policy: TrustedRendererPolicy) => ({
   /**
-   * 注册有返回值的 IPC 请求处理器，先校验来源再调用业务函数。
+   * 注册有返回值的 IPC 请求处理器，先校验来源与退出状态，再调用业务函数。
    *
    * Args:
    *     channel (string): 主进程与页面约定的 IPC 事件名称。
@@ -69,11 +70,11 @@ export const createTrustedIpcRegistrar = (policy: TrustedRendererPolicy) => ({
     handler: (event: IpcMainInvokeEvent, ...args: TArgs) => TResult
   ): void {
     ipcMain.handle(channel, /**
-     * Electron 收到有返回值的 IPC 请求后核对页面和框架来源，不可信则拒绝，可信才交给业务处理器。
+     * Electron 收到请求后核对页面来源与退出状态；不可信或正在退出时拒绝，不执行业务处理器。
      *
      * Args:
      *     event (IpcMainInvokeEvent): 调用方或浏览器触发的当前事件。
-     *     args (any[]): 传递给子进程的命令行参数。
+     *     args (unknown[]): 当前页面发送的业务参数，校验通过后传给业务处理器。
      *
      * Returns:
      *     TResult: 业务处理器的响应。
@@ -83,12 +84,13 @@ export const createTrustedIpcRegistrar = (policy: TrustedRendererPolicy) => ({
         logBlockedIpc(channel, event);
         throw new Error("拒绝来自不可信页面的 IPC 请求");
       }
-      return handler(event, ...(args as TArgs));
+      return applicationOperations.invoke(channel, /** 来源通过后才检查退出状态，已关闭的业务不再执行。 */
+      () => handler(event, ...(args as TArgs)));
     });
   },
 
   /**
-   * 注册无需响应的 IPC 事件监听器，只处理可信页面发送的事件。
+   * 注册无需响应的 IPC 事件监听器，只在尚未退出时处理可信页面发送的事件。
    *
    * Args:
    *     channel (string): 主进程与页面约定的 IPC 事件名称。
@@ -99,18 +101,19 @@ export const createTrustedIpcRegistrar = (policy: TrustedRendererPolicy) => ({
     handler: (event: IpcMainEvent, ...args: TArgs) => void
   ): void {
     ipcMain.on(channel, /**
-     * Electron 收到无响应 IPC 事件后核对来源，不可信则记录并忽略，可信才调用业务函数。
+     * Electron 收到事件后核对来源，不可信则记录并忽略；退出期间也不执行可信事件的业务函数。
      *
      * Args:
      *     event (IpcMainEvent): 调用方或浏览器触发的当前事件。
-     *     args (any[]): 传递给子进程的命令行参数。
+     *     args (unknown[]): 当前页面发送的业务参数，校验通过后传给业务处理器。
      */
     (event, ...args) => {
       if (!isTrustedIpcSender(senderDescriptor(event), policy)) {
         logBlockedIpc(channel, event);
         return;
       }
-      handler(event, ...(args as TArgs));
+      applicationOperations.send(channel, /** 退出开始后忽略新的事件，不调用原业务回调。 */
+      () => handler(event, ...(args as TArgs)));
     });
   },
 });

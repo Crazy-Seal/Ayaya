@@ -14,6 +14,8 @@ export default defineConfig({
       input: {
         main: fileURLToPath(new URL("./index.html", import.meta.url)),
         settings: fileURLToPath(new URL("./settings.html", import.meta.url)),
+        chat: fileURLToPath(new URL("./chat.html", import.meta.url)),
+        preview: fileURLToPath(new URL("./image-preview.html", import.meta.url)),
         logs: fileURLToPath(new URL("./logs.html", import.meta.url)),
       },
     },

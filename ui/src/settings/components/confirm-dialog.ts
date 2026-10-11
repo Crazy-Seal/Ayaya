@@ -1,3 +1,4 @@
+import { createDialogFocus } from "../../ui/dialog-focus.js";
 /**
  * 确认对话框组件
  */
@@ -32,6 +33,7 @@ export class ConfirmDialog {
   private okBtn: HTMLButtonElement;
   private title: HTMLElement;
   private message: HTMLElement;
+  private focus: ReturnType<typeof createDialogFocus>;
   private pendingResolver: ((confirmed: boolean) => void) | null = null;
 
   /**
@@ -57,6 +59,8 @@ export class ConfirmDialog {
     this.title = title;
     this.message = message;
 
+    this.focus = createDialogFocus(this.dialog, /** 用户按 Escape 时取消当前设置确认。 */
+    () => this.close(false));
     this.setupEventListeners();
   }
 
@@ -99,6 +103,7 @@ export class ConfirmDialog {
    */
   private close(confirmed: boolean): void {
     this.dialog.hidden = true;
+    this.focus.deactivate();
     this.dialog.setAttribute("aria-hidden", "true");
 
     const resolver = this.pendingResolver;
@@ -127,8 +132,10 @@ export class ConfirmDialog {
     );
     this.okBtn.classList.add(`confirm-btn-${options.variant}`);
     this.okBtn.classList.add(`ui-button--${options.variant}`);
+    this.focus.activate();
     this.dialog.hidden = false;
     this.dialog.setAttribute("aria-hidden", "false");
+    this.cancelBtn.focus();
     return new Promise<boolean>(/**
      * Promise 创建时保存当前确认操作的完成函数，由用户选择结束等待。
      *

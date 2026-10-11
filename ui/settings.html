@@ -13,8 +13,8 @@
       <header class="settings-titlebar">
         <div class="settings-title">设置面板</div>
         <div class="window-actions">
-          <button id="settings-min-btn" class="window-btn ui-button ui-button--secondary ui-button--icon" type="button" aria-label="最小化">─</button>
-          <button id="settings-close-btn" class="window-btn window-btn-close ui-button ui-button--danger ui-button--icon" type="button" aria-label="关闭">✕</button>
+          <button id="settings-min-btn" class="window-btn ui-button ui-button--secondary ui-button--icon" type="button" aria-label="最小化"><span data-icon="minimize"></span></button>
+          <button id="settings-close-btn" class="window-btn window-btn-close ui-button ui-button--danger ui-button--icon" type="button" aria-label="关闭"><span data-icon="close"></span></button>
         </div>
       </header>
       <div
@@ -32,6 +32,7 @@
       </div>
       <div class="settings-layout">
         <aside class="settings-sidebar" id="settings-sidebar">
+          <nav class="settings-nav" aria-label="设置分类">
           <button class="settings-tab ui-nav-item active" type="button" data-page="model">模型管理</button>
           <button class="settings-tab ui-nav-item" type="button" data-page="llm">LLM配置</button>
           <button class="settings-tab ui-nav-item" type="button" data-page="motion">表情控制</button>
@@ -42,6 +43,7 @@
           <button class="settings-tab ui-nav-item" type="button" data-page="multimodal">多模态</button>
           <button class="settings-tab ui-nav-item" type="button" data-page="channels">渠道订阅</button>
           <button class="settings-tab ui-nav-item" type="button" data-page="tasks">后台任务</button>
+          </nav>
           <div class="settings-utility-section">
             <button
               id="open-log-window-btn"
@@ -50,17 +52,10 @@
               aria-label="打开日志控制台"
               title="打开日志控制台"
             >
-              <svg
-                class="settings-log-icon"
-                viewBox="0 0 24 24"
-                aria-hidden="true"
-                focusable="false"
-              >
-                <path d="M6.5 3.5h11a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2h-11a2 2 0 0 1-2-2v-13a2 2 0 0 1 2-2Z"></path>
-                <path d="M8.5 8h7M8.5 12h7M8.5 16h4.5M2.5 7h4M2.5 12h4M2.5 17h4"></path>
-              </svg>
+              <span data-icon="log"></span>
               日志
             </button>
+            <button id="exit-application-btn" class="settings-exit-btn ui-button ui-button--danger ui-button--small" type="button" aria-label="退出 Ayaya" title="退出 Ayaya"><span data-icon="exit"></span>退出</button>
           </div>
         </aside>
         <section class="settings-content">
@@ -113,10 +108,7 @@
                     aria-label="按住显示 API Key"
                     title="按住显示 API Key"
                   >
-                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                      <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"></path>
-                      <circle cx="12" cy="12" r="2.75"></circle>
-                    </svg>
+                    <span data-icon="eye"></span>
                   </button>
                 </div>
               </div>
@@ -289,7 +281,7 @@
                   <span>操作屏幕或截屏时隐藏界面</span>
                   <input id="checkbox-hide-on-screenshot" class="ui-checkbox" type="checkbox" checked />
                 </label>
-                <div class="multimodal-hint">开启后，截屏和屏幕操作时会暂时隐藏 Live2D 模型、对话框和聊天界面</div>
+                <div class="multimodal-hint">开启后，截屏和屏幕操作时会暂时隐藏角色窗口和聊天窗口；已最小化的窗口保持原状态。</div>
               </div>
             </div>
           </div>
@@ -312,18 +304,16 @@
           </div>
         </section>
       </div>
-      <div id="delete-confirm-dialog" class="confirm-overlay" hidden aria-hidden="true">
+      <div id="delete-confirm-dialog" class="confirm-overlay ui-dialog-overlay" hidden aria-hidden="true">
         <div class="confirm-modal ui-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-confirm-title">
-          <div class="confirm-header">
+          <div class="confirm-header ui-dialog-heading">
             <div class="confirm-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" focusable="false">
-                <path d="M12 2.8L22.3 20a1.2 1.2 0 01-1 1.8H2.7a1.2 1.2 0 01-1-1.8L12 2.8zm0 5a1.2 1.2 0 00-1.2 1.2V13a1.2 1.2 0 102.4 0V9A1.2 1.2 0 0012 7.8zm0 9.8a1.4 1.4 0 100-2.8 1.4 1.4 0 000 2.8z" />
-              </svg>
+              <span data-icon="warning"></span>
             </div>
             <div id="delete-confirm-title" class="confirm-title">删除模型确认</div>
           </div>
           <div id="delete-confirm-message" class="confirm-message">将删除该模型所有的配置文件和会话记忆，请谨慎操作</div>
-          <div class="confirm-actions">
+          <div class="confirm-actions ui-dialog-actions">
             <button id="delete-confirm-cancel" type="button" class="confirm-btn confirm-btn-ghost ui-button ui-button--secondary ui-button--small">取消</button>
             <button id="delete-confirm-ok" type="button" class="confirm-btn confirm-btn-danger ui-button ui-button--danger ui-button--small">确认删除</button>
           </div>

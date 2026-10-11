@@ -1,3 +1,4 @@
+import { createDialogFocus } from "../ui/dialog-focus.js";
 import type { ApprovalDecision } from "../../shared-types.js";
 import { ApprovalDecisionKind } from "../../shared-types.js";
 
@@ -19,12 +20,15 @@ export class ToolApprovalDialog {
   private readonly allowBtn = document.getElementById("screenshot-allow-btn") as HTMLButtonElement;
   private readonly steerBtn = document.getElementById("tool-steer-btn") as HTMLButtonElement;
   private readonly steerInput = document.getElementById("tool-steer-input") as HTMLTextAreaElement;
+  private focus: ReturnType<typeof createDialogFocus>;
   private pendingResolver: ((decision: ApprovalDecision) => void) | null = null;
 
   /**
    *  绑定批准、拒绝和引导入口，所有决定共用同一具名协议取值。
    */
   constructor() {
+    this.focus = createDialogFocus(this.dialog, /** 用户按 Escape 时拒绝当前请求，保留原审批语义。 */
+    () => this.close({ kind: ApprovalDecisionKind.REJECT }));
     // 1. 按钮只产生本地决定，实际审批的先到先得仍由后端仲裁。
     this.denyBtn.addEventListener("click", /**
      * 用户点击拒绝时结束审批框等待，返回 reject 决定。
@@ -46,7 +50,7 @@ export class ToolApprovalDialog {
      *     event (KeyboardEvent): 调用方或浏览器触发的当前事件。
      */
     (event) => {
-      if (event.key === "Enter" && !event.shiftKey) {
+      if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
         event.preventDefault();
         this.submitSteer();
       }
@@ -93,6 +97,7 @@ export class ToolApprovalDialog {
    */
   private close(decision: ApprovalDecision): void {
     this.dialog.hidden = true;
+    this.focus.deactivate();
     this.dialog.setAttribute("aria-hidden", "true");
     const resolver = this.pendingResolver;
     this.pendingResolver = null;
@@ -124,6 +129,7 @@ export class ToolApprovalDialog {
     this.steerBtn.textContent = "引导";
     this.allowBtn.textContent = "批准";
     this.denyBtn.textContent = "拒绝";
+    this.focus.activate();
     this.dialog.hidden = false;
     this.dialog.setAttribute("aria-hidden", "false");
     this.allowBtn.focus();

@@ -66,6 +66,8 @@ class FakeClassList {
  * 模拟当前用例需要的 DOM 文本、属性和子元素，避免依赖真实浏览器页面。
  */
 class FakeElement extends EventTarget {
+  /** 模拟确认框打开时聚焦取消按钮。 */
+  focus(): void {}
   hidden = true;
   textContent = "";
   readonly classList = new FakeClassList();
@@ -96,6 +98,10 @@ class FakeElement extends EventTarget {
     return this.attributes.get(name) ?? null;
   }
 }
+
+// 1. 确认框焦点管理读取浏览器当前焦点；本文件只测试文案和选择，初始没有焦点。
+Object.defineProperty(globalThis, "document", { value: { activeElement: null }, configurable: true });
+Object.defineProperty(globalThis, "HTMLElement", { value: FakeElement, configurable: true });
 
 /**
  * 创建带可替换页面元素的确认框，供测试等待用户选择。

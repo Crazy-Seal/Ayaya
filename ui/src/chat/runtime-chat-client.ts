@@ -1,9 +1,11 @@
 /** 桌面交互 Adapter 的 Renderer 视图；Agent 生命周期由后端管理。 */
+import { iconMarkup } from "../ui/icons.js";
 import { ToolApprovalDialog } from "./tool-approval-dialog.js";
 import { BackgroundTaskEntry } from "./background-task-entry.js";
 import {
   CommandKind, DESKTOP_CHANNEL, InteractionEventKind, InterruptKind, SessionPhase,
 } from "../../shared-types.js";
+import type { ChatAttentionUpdate, ChatHistoryItem } from "../../shared-types.js";
 import type { BubbleManager } from "./bubble.js";
 import type { ChatHistoryManager } from "./chat-history-manager.js";
 import type {
@@ -52,6 +54,8 @@ export interface RuntimeChatClientOptions {
   sessionId: string;
   hasAttachments?: () => boolean;
   onChatComplete?: () => void;
+  /** 已核对会话与事件水位后通知窗口更新未读或审批提醒。 */
+  onAttention?: (update: ChatAttentionUpdate) => void;
   bridge?: RuntimeBridge;
   confirmDialog?: Pick<ToolApprovalDialog, "open" | "dismiss">;
 }
@@ -99,6 +103,10 @@ export class RuntimeChatClient {
   private playedLabels = new Set<string>();
   private streaming = false;
   private approvalId: string | null = null;
+  /** 当前任务栏提示对应的审批编号，用户点击后仍保留到后端确认处理。 */
+  private attentionApprovalId: string | null = null;
+  /** 当前会话上次成功读取的回复编号；null 表示尚未建立旧历史基线。 */
+  private historyReplyIds: Set<string> | null = null;
   private epoch = "";
   private sequence = -1;
   private submitting = false;
@@ -180,6 +188,9 @@ export class RuntimeChatClient {
     this.refreshingRevision = null;
     // 1.1. 切换会话清理上一轮临时状态和审批，避免迟到事件串入新视图。
     if (this.sessionId !== sessionId) {
+      this.options.onAttention?.({ reset: true });
+      this.attentionApprovalId = null;
+      this.historyReplyIds = null;
       this.phase = SessionPhase.IDLE;
       this.runId = null;
       this.partial = "";
@@ -248,7 +259,7 @@ export class RuntimeChatClient {
     // 2. 文本或图片都构成有效草稿；运行中空草稿表示停止，有草稿表示引导。
     const hasDraft = Boolean(draft || this.options.hasAttachments?.());
     const stop = this.phase === SessionPhase.RUNNING && !hasDraft;
-    this.options.sendBtn.innerHTML = stop ? "<span aria-hidden=\"true\">■</span>" : this.originalSendIcon;
+    this.options.sendBtn.innerHTML = stop ? iconMarkup("stop") : this.originalSendIcon;
     this.options.sendBtn.setAttribute("aria-label", stop ? "停止当前回答" : "发送消息");
     this.options.sendBtn.title = stop ? "停止当前回答" : "发送消息";
     if (queueButton) {
@@ -351,6 +362,7 @@ export class RuntimeChatClient {
     try {
       const history = await this.options.chatHistory.loadHistory(sessionId);
       if (revision !== this.sessionRevision || sessionId !== this.sessionId || history === null) return false;
+      this.reportHistoryAttention(history);
       // 2. 历史与实时正文使用相同标签清洗规则，但读取历史不能重播模型表情。
       let latestText = "";
       for (let index = history.length - 1; index >= 0; index -= 1) {
@@ -370,6 +382,28 @@ export class RuntimeChatClient {
       // 3. 会话切换后不能解除新页面的查询保护，也不能用旧查询更新其显示。
       if (this.refreshingRevision === revision) this.refreshingRevision = null;
     }
+  }
+
+  /**
+   * 根据保存的回复编号补发断线期间的新消息提醒，首次加载和重复历史不提醒。
+   *
+   * Args:
+   *     history (ChatHistoryItem[]): 已核对当前会话归属且成功展示的完整历史。
+   */
+  private reportHistoryAttention(history: ChatHistoryItem[]): void {
+    const current = new Set<string>();
+    let hasNewReply = false;
+    // 1. 只记录有正文或图片的模型回复，真人消息和空工具记录不触发回复提醒。
+    for (const item of history) {
+      const role = item.role.toLowerCase();
+      if ((role !== "ai" && role !== "assistant") || (!item.content.trim() && !item.images?.length)) continue;
+      const key = item.id ?? `${item.timestamp}:${item.content}`;
+      current.add(key);
+      if (this.historyReplyIds && !this.historyReplyIds.has(key)) hasNewReply = true;
+    }
+    // 2. 首次成功读取只建立旧历史基线；重连、审批或终态刷新发现新编号时才通知窗口。
+    this.historyReplyIds = current;
+    if (hasNewReply) this.options.onAttention?.({ newMessage: true });
   }
 
   /**
@@ -441,6 +475,7 @@ export class RuntimeChatClient {
       const cancel = document.createElement("button");
       cancel.type = "button";
       cancel.textContent = "撤销";
+      cancel.className = "ui-button ui-button--secondary ui-button--small";
       cancel.setAttribute("aria-label", `撤销排队消息 ${message || sequence}`);
       cancel.addEventListener("click", /**
        * 用户点击排队项撤销按钮后提交指定输入编号的撤销命令。
@@ -624,6 +659,8 @@ export class RuntimeChatClient {
         this.options.chatHistory.showTypingIndicator();
         this.options.bubble.setText("正在回答…");
       }
+      this.attentionApprovalId = pendingInterrupt?.type === InterruptKind.AUTHORIZATION_REQUEST ? String(pendingInterrupt.request_id) : null;
+      this.options.onAttention?.({ approvalId: this.attentionApprovalId });
       if (pendingInterrupt) {
         if (historyLoaded && pendingInterrupt.type === InterruptKind.AUTHORIZATION_REQUEST) {
           this.refreshedApprovals.add(`${this.epoch}:${String(pendingInterrupt.request_id || "")}`);
@@ -693,6 +730,7 @@ export class RuntimeChatClient {
         this.startStreaming();
       }
     } else if (event.kind === InteractionEventKind.TEXT_CHUNK) {
+      this.options.onAttention?.({ newMessage: true });
       if (this.deferredRuns.has(this.replyKey(event.run_id || this.runId))) return;
       this.currentToolActive = false;
       this.runOrigin = event.origin_channel || DESKTOP_CHANNEL;
@@ -709,6 +747,8 @@ export class RuntimeChatClient {
       this.phase = value.type === InterruptKind.AUTHORIZATION_REQUEST ? SessionPhase.PENDING_INTERRUPT : SessionPhase.PENDING_EXECUTION;
       // 6.2. 自动桌面操作只更新状态；人工审批先显示已保存说明，同请求成功刷新一次。
       if (this.phase === SessionPhase.PENDING_INTERRUPT) {
+        this.attentionApprovalId = String(value.request_id);
+        this.options.onAttention?.({ approvalId: this.attentionApprovalId });
         const approvalKey = `${this.epoch}:${String(value.request_id || "")}`;
         if (!this.refreshedApprovals.has(approvalKey)) {
           const loaded = await this.refreshHistory();
@@ -719,12 +759,19 @@ export class RuntimeChatClient {
       }
     // 7. 跨端首个决定按 request_id 关闭本地审批，不能提交第二个决定。
     } else if (event.kind === InteractionEventKind.AUTHORIZATION_RESOLVED) {
+      // 1. 用户提交决定后本地弹窗已关闭，但提醒要等后端确认同一请求处理完成才清除。
+      if (this.attentionApprovalId === event.request_id) {
+        this.attentionApprovalId = null;
+        this.options.onAttention?.({ approvalId: null });
+      }
       if (this.approvalId === event.request_id) {
         this.approvalId = null;
         this.dialog.dismiss();
       }
     // 8. 完成含用户停止：收到保存后的事件才刷新；错误只恢复此前保存，最后展示错误。
     } else if (event.kind === InteractionEventKind.RUN_COMPLETED) {
+      this.attentionApprovalId = null;
+      this.options.onAttention?.({ approvalId: null });
       const completedKey = this.replyKey(event.run_id || this.runId);
       this.phase = SessionPhase.IDLE;
       this.runId = null;
@@ -733,6 +780,8 @@ export class RuntimeChatClient {
       this.deferredRuns.delete(completedKey);
       this.options.chatHistory.hideTypingIndicator();
     } else if (event.kind === InteractionEventKind.ERROR) {
+      this.attentionApprovalId = null;
+      this.options.onAttention?.({ approvalId: null });
       const failedKey = this.replyKey(event.run_id || this.runId);
       this.pendingSteerMessage = null;
       this.options.chatHistory.clearPendingSteer?.();

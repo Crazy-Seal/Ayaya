@@ -67,3 +67,25 @@ test("仅在按住查看按钮时显示密钥，松开或失焦后立即恢复�
 
   unbind();
 });
+
+test("键盘按住显示密钥，松开与清理后恢复掩码", /** 验证键盘和鼠标采用相同的按住显示约束。 */
+() => {
+  const input = { type: "password" }; const button = new EventTarget(); const windowTarget = new EventTarget();
+  /**
+   * 触发带 key 的测试事件，不依赖浏览器全局 KeyboardEvent。
+   * Args:
+   *     target (EventTarget): 按钮或窗口测试目标。
+   *     type (string): 按下或松开事件。
+   *     key (string): 当前按键。
+   */
+  const dispatchKey = (target: EventTarget, type: string, key: string): void => {
+    const event = new Event(type, { cancelable: true });
+    Object.defineProperty(event, "key", { value: key }); target.dispatchEvent(event);
+  };
+  const unbind = bindPressToRevealSecret(input as HTMLInputElement, button as HTMLButtonElement, windowTarget);
+  dispatchKey(button, "keydown", " "); assert.equal(input.type, "text");
+  dispatchKey(windowTarget, "keyup", " "); assert.equal(input.type, "password");
+  dispatchKey(button, "keydown", "Enter"); assert.equal(input.type, "text");
+  unbind(); assert.equal(input.type, "password");
+  dispatchKey(button, "keydown", "Enter"); assert.equal(input.type, "password");
+});

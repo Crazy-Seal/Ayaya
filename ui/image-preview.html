@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><title>图片预览</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" /><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&family=Nunito:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  </head>
+  <body>
+    <div class="preview-window">
+      <header class="ui-titlebar"><div class="ui-window-title">图片预览</div><div class="window-actions">
+        <button id="preview-close-btn" class="ui-button ui-button--danger ui-button--icon" aria-label="关闭图片预览" title="关闭图片预览" type="button"><span data-icon="close"></span></button>
+      </div></header>
+      <main class="preview-content"><img id="preview-image" alt="图片预览" /><p id="preview-error" role="status" hidden>图片无法加载，请关闭后重试。</p></main>
+    </div>
+    <script type="module" src="/src/ui/image-preview.ts"></script>
+  </body>
+</html>

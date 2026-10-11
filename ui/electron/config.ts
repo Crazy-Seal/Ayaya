@@ -33,7 +33,7 @@ const __dirname = path.dirname(__filename);
 
 export const UI_ROOT = path.resolve(__dirname, "..", "..");
 export const WORKSPACE_ROOT = path.resolve(UI_ROOT, "..");
-export const USER_DATA_DIR = path.join(UI_ROOT, "user_data");
+export const USER_DATA_DIR = path.resolve(process.env.AYAYA_UI_DATA_DIR ?? path.join(UI_ROOT, "user_data"));
 export const IMPORTED_MODELS_DIR = path.join(USER_DATA_DIR, "live2d_models");
 export const MODEL_CONFIG_PATH = path.join(USER_DATA_DIR, "models.json");
 export const FRONTEND_SETTINGS_PATH = path.join(USER_DATA_DIR, "frontend_settings.json");

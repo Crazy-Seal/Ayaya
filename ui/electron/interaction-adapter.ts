@@ -1,6 +1,6 @@
 /** 桌面交互 Adapter：提交统一命令，将订阅控制器的事件转发给窗口。 */
 import { backendFetch } from "./backend-client.js";
-import { getMainWindow, getSettingsWindow } from "./window-manager.js";
+import { getChatWindow, getSettingsWindow } from "./window-manager.js";
 import { appendFrontendLog } from "./logging/app-logger.js";
 import { DesktopSessionController } from "./desktop-session-controller.js";
 import type {
@@ -14,7 +14,7 @@ import type {
  *     event (InteractionEvent): 控制器已经核对订阅代次的事件。
  */
 const deliverDesktopEvent = (event: InteractionEvent): void => {
-  for (const window of [getMainWindow(), getSettingsWindow()]) {
+  for (const window of [getChatWindow(), getSettingsWindow()]) {
     if (window && !window.isDestroyed()) window.webContents.send("desktop-pet:interaction-event", event);
   }
 };

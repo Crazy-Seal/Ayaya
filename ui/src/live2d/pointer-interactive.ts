@@ -70,22 +70,7 @@ export class PointerInteractiveManager {
   }
 
   /**
-   * 检查光标是否在聊天控件或任务标题栏上。
-   *
-   * Args:
-   *     windowX (number): 光标在窗口内的横坐标。
-   *     windowY (number): 光标在窗口内的纵坐标。
-   *
-   * Returns:
-   *     boolean: 当前区域应由应用接收鼠标事件。
-   */
-  isCursorOnChatControls(windowX: number, windowY: number): boolean {
-    const hoveredElement = document.elementFromPoint(windowX, windowY) as HTMLElement | null;
-    return Boolean(hoveredElement?.closest("#chat-form, #bubble, #chat-history-region, #image-preview-container, #screenshot-confirm-dialog"));
-  }
-
-  /**
-   * 根据聊天区域和模型像素决定窗口是否捕获鼠标，任务入口不能点击穿透。
+   * 根据角色像素决定透明窗口是否捕获鼠标，聊天窗口独立接收交互。
    *
    * Args:
    *     windowX (number): 光标在窗口内的横坐标。
@@ -101,11 +86,6 @@ export class PointerInteractiveManager {
       return;
     }
 
-    const hoveredElement = document.elementFromPoint(windowX, windowY) as HTMLElement | null;
-    const onControls = Boolean(
-      hoveredElement?.closest("#chat-form, #bubble, #chat-history-region, #settings-panel, #settings-btn, #image-preview-container, #screenshot-confirm-dialog")
-    );
-
     const onModelBounds =
       windowX >= modelBounds.x &&
       windowX <= modelBounds.x + modelBounds.width &&
@@ -114,7 +94,7 @@ export class PointerInteractiveManager {
 
     const modelAlpha = onModelBounds ? this.sampleCanvasAlpha(windowX, windowY) : 0;
     const onModelPixel = modelAlpha >= 12;
-    const shouldCapture = onControls || (onModelBounds && onModelPixel);
+    const shouldCapture = onModelBounds && onModelPixel;
 
     if (this.lastPointerInteractive !== shouldCapture) {
       window.desktopPetApi.setPointerInteractive(shouldCapture);

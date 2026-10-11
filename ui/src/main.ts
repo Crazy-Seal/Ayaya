@@ -3,40 +3,31 @@
  */
 
 import * as PIXI from "pixi.js";
-import "./style.css";
+import "./live2d/live2d.css";
+import { setupApplicationShutdownUi } from "./ui/application-shutdown.js";
 
-import { getMainUiElements } from "./ui/dom.js";
+
 import { Live2DModelLoader, clamp } from "./live2d/model-loader.js";
 import { GazeTracker, createGazeUpdateFunction } from "./live2d/gaze-tracker.js";
 import { PointerInteractiveManager } from "./live2d/pointer-interactive.js";
-import { BubbleManager } from "./chat/bubble.js";
-import { RuntimeChatClient as ChatClient } from "./chat/runtime-chat-client.js";
-import { ChatHistoryManager } from "./chat/chat-history-manager.js";
-import { ImageManager } from "./chat/image-manager.js";
-import { setupDropHandler } from "./chat/drop-handler.js";
 import type { MotionConfig } from "./types.js";
 
+setupApplicationShutdownUi();
 // 全局 PIXI 引用（Live2D 需要）
 (globalThis as unknown as { PIXI: typeof PIXI }).PIXI = PIXI;
 
 /**
- * 装配桌面 Renderer 的模型、输入、附件和运行时视图。
+ * 装配固定桌面窗口中的 Live2D 模型、目光和动作。
  */
 class MainApp {
-  private elements = getMainUiElements();
+  private elements = { stageHost: document.getElementById("live2d-stage") as HTMLDivElement };
   private app: PIXI.Application;
   private modelLoader: Live2DModelLoader;
   private gazeTracker = new GazeTracker();
   private pointerManager: PointerInteractiveManager;
-  private bubbleManager: BubbleManager;
-  private chatHistoryManager: ChatHistoryManager;
-  private chatClient: ChatClient;
-  private imageManager = new ImageManager(5);
-  private cleanupDropHandler: (() => void) | null = null;
   private modelInfo: Awaited<ReturnType<Live2DModelLoader["loadModel"]>> | null = null;
   private live2dModel: unknown = null;
   private motionConfig: MotionConfig[] = [];
-  private currentSessionId = "";
   private activeModelId = "";
   private userScale = 1;
   private offsetX = 0;
@@ -55,29 +46,6 @@ class MainApp {
     this.app = Live2DModelLoader.createApp(this.elements.stageHost);
     this.modelLoader = new Live2DModelLoader(this.app, this.elements.stageHost);
     this.pointerManager = new PointerInteractiveManager(this.app);
-    this.bubbleManager = new BubbleManager(this.elements.bubble);
-    this.chatHistoryManager = new ChatHistoryManager(this.elements.chatHistoryList);
-    this.chatClient = new ChatClient({
-      bubble: this.bubbleManager,
-      chatHistory: this.chatHistoryManager,
-      sendBtn: this.elements.sendBtn,
-      input: this.elements.input,
-      sessionId: "",
-      /**
-       * 检查图片附件是否构成有效草稿。
-       *
-       * Returns:
-       *     boolean: 当前图片草稿至少有一项附件时为 true。
-       */
-      hasAttachments: () => this.imageManager.getDataUrls().length > 0,
-      /**
-       * 聊天轮次完成后清空本次图片草稿，附件变化监听随后刷新预览和发送按钮。
-       */
-      onChatComplete: () => {
-        // 聊天完成后清空图片
-        this.imageManager.clear();
-      },
-    });
   }
 
   /**
@@ -94,57 +62,20 @@ class MainApp {
   }
 
   /**
-   * 连接草稿、附件、IME 和排队动作，Enter 只在非组合输入期间提交。
+   * 连接模型目光、缩放和跨窗口动作，窗口本身保持固定。
    */
   private setupEventListeners(): void {
-    // 设置按钮
-    this.elements.settingsBtn.addEventListener("click", /**
-     * 用户点击设置入口时请求主进程打开设置窗口。
-     */
-    () => {
-      window.desktopPetApi.openSettingsWindow();
-    });
-
-    // 输入框自动调整高度
-    this.elements.input.addEventListener("input", /**
-     * 聊天草稿变化后调整输入框高度并刷新发送按钮状态。
-     */
-    () => {
-      this.autoResizeInput();
-      this.chatClient.updateSendButton();
-    });
-
-    // 输入框键盘事件：Enter 发送，Shift+Enter 换行
-    this.elements.input.addEventListener("keydown", /**
-     * 用户按 Enter 且不在输入法组合中时提交表单，Shift+Enter 仍保留换行。
-     *
-     * Args:
-     *     event (KeyboardEvent): 调用方或浏览器触发的当前事件。
-     */
-    (event) => {
-      if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
-        event.preventDefault();
-        this.elements.form.requestSubmit();
-      }
-    });
-
     // 滚轮缩放
     window.addEventListener(
       "wheel",
       /**
-       * 聊天历史和输入框上的滚轮交给原控件；其他区域按模型交互规则处理滚动。
+       * 光标命中角色像素时调整模型缩放；透明区域不拦截桌面滚轮。
        *
        * Args:
        *     event (WheelEvent): 调用方或浏览器触发的当前事件。
        */
       (event) => {
-        const hoveredElement = document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null;
-        // 如果在聊天历史列表或输入框上，不拦截事件，让它正常滚动
-        if (hoveredElement?.closest("#chat-history-region, #chat-input")) {
-          return;
-        }
-
-        if (!this.pointerManager.isCursorOnChatControls(event.clientX, event.clientY)) {
+        if (this.pointerManager.sampleCanvasAlpha(event.clientX, event.clientY) < 12) {
           return;
         }
 
@@ -165,102 +96,12 @@ class MainApp {
       this.modelInfo?.fitModel();
     });
 
-    // 图片选择按钮
-    this.elements.imageBtn.addEventListener("click", /**
-     * 用户选择图片后只把有效返回图片加入草稿附件。
-     */
-    async () => {
-      const images = await window.desktopPetApi.selectImages();
-      if (images && images.length > 0) {
-        this.imageManager.addDataUrls(images.map(/**
-         * 提取图片选择结果的 data URL，供附件管理器使用。
-         *
-         * Args:
-         *     img ({ path: string; dataUrl: string; }): 当前等待加载的聊天图片元素。
-         *
-         * Returns:
-         *     string: 图片地址。
-         */
-        (img) => img.dataUrl));
-      }
-    });
-
-    // 图片输入框变化
-    this.elements.imageInput.addEventListener("change", /**
-     * 文件输入框选择变化后读取附件，结束后清空选择值，允许再次选择同一文件。
-     */
-    async () => {
-      const files = this.elements.imageInput.files;
-      if (files && files.length > 0) {
-        await this.imageManager.addFiles(files);
-      }
-      this.elements.imageInput.value = "";
-    });
-
-    // 清空图片按钮
-    this.elements.clearImagesBtn.addEventListener("click", /**
-     * 用户清空附件时同步清空草稿图片集合。
-     */
-    () => {
-      this.imageManager.clear();
-    });
-
-    // 图片状态变化监听
-    this.imageManager.subscribe(/**
-     * 草稿附件变化后刷新图片预览和发送按钮。
-     */
-    () => {
-      this.updateImagePreview();
-      this.chatClient.updateSendButton();
-    });
-    // 1. 输入法组合事件只同步发送状态，Enter 处理另检查 isComposing。
-    this.elements.input.addEventListener("compositionstart", /**
-     * 输入法组合开始时禁止把 Enter 当作发送命令。
-     */
-    () => this.chatClient.setComposing(true));
-    this.elements.input.addEventListener("compositionend", /**
-     * 输入法组合结束时恢复正常发送按钮及按键处理。
-     */
-    () => this.chatClient.setComposing(false));
-
-    // 使用事件委托处理图片删除按钮点击
-    this.elements.imagePreviewList.addEventListener("click", /**
-     * 用户点击图片预览中的移除按钮时按附件编号删除该图。
-     *
+    const unsubscribeExpression = window.desktopPetApi.onExpressionRequest(/**
+     * 聊天窗口识别表情且主进程核对配置后，按标签加入当前模型动作队列。
      * Args:
-     *     event (PointerEvent): 调用方或浏览器触发的当前事件。
+     *     label (string): 当前模型允许的表情标签。
      */
-    (event) => {
-      const target = event.target as HTMLElement;
-      const removeBtn = target.closest(".remove-btn") as HTMLButtonElement | null;
-      if (removeBtn) {
-        const id = removeBtn.dataset.imageId;
-        if (id) {
-          this.imageManager.removeImage(id);
-        }
-      }
-    });
-
-    this.elements.form.addEventListener("submit", /**
-     * 用户提交聊天表单时阻止默认刷新，并将当前正文与附件交给统一发送命令。
-     *
-     * Args:
-     *     event (SubmitEvent): 调用方或浏览器触发的当前事件。
-     */
-    async (event) => {
-      event.preventDefault();
-      const images = this.imageManager.getDataUrls();
-      await this.chatClient.sendMessage(images.length > 0 ? images : undefined);
-    });
-
-    // 2. 排队提交与普通发送共用文本和附件来源，由后端决定交付时机。
-    document.getElementById("queue-btn")?.addEventListener("click", /**
-     * 用户点击排队发送时提交当前正文及附件，等待后端返回受理回执。
-     */
-    async () => {
-      const images = this.imageManager.getDataUrls();
-      await this.chatClient.queueMessage(images.length > 0 ? images : undefined);
-    });
+    (label) => this.playMotionByLabel(label));
 
     // 模型变化监听
     const unsubscribeModelChanged = window.desktopPetApi?.onModelChanged?.(/**
@@ -365,14 +206,12 @@ class MainApp {
       if (this.persistTimer) {
         clearTimeout(this.persistTimer);
       }
-      if (this.cleanupDropHandler) {
-        this.cleanupDropHandler();
-      }
+      unsubscribeExpression();
     });
   }
 
   /**
-   * 切换模型与会话，历史恢复交给运行时快照，最近回复只用于启动气泡。
+   * 加载活动角色及显示参数，再安装目光与空闲动作；聊天会话由独立窗口装配。
    *
    * Returns:
    *     Promise<void>: 当前异步处理完成的等待结果。
@@ -401,18 +240,6 @@ class MainApp {
     const gazeUpdate = createGazeUpdateFunction(this.modelInfo.model, this.gazeTracker);
     this.app.ticker.add(gazeUpdate, undefined, PIXI.UPDATE_PRIORITY.LOW);
 
-    // 设置拖拽处理器
-    this.cleanupDropHandler = setupDropHandler({
-      stageHost: this.elements.stageHost,
-      form: this.elements.form,
-      imageManager: this.imageManager,
-      dragOverlay: this.elements.dragOverlay,
-    });
-
-    // 更新会话 ID
-    this.currentSessionId = activeModel.sessionId;
-    this.chatClient.setSessionId(activeModel.sessionId);
-
     // 加载动作配置并设置空闲动作
     if (activeModel.motionConfig) {
       this.motionConfig = activeModel.motionConfig;
@@ -425,8 +252,8 @@ class MainApp {
       }
     }
     this.setIdleMotion();
-
-    // 历史和气泡由桌面事件流统一装载，不再单独查询最后一条回答。
+    // 1. 清除聊天窗口中的模型错误提示；本窗口不读取消息或建立聊天订阅。
+    window.desktopPetApi.reportModelError("");
   }
 
   /**
@@ -579,17 +406,10 @@ class MainApp {
    *     error (unknown): 本次捕获的异常。
    */
   private handleModelLoadFailure(error: unknown): void {
-    this.pointerManager.forceWindowInteractive();
+    // 1. 角色加载失败不阻塞独立聊天页；让透明窗口继续穿透，避免挡住桌面。
+    window.desktopPetApi.setPointerInteractive(false);
     const message = error instanceof Error ? error.message : String(error);
-    this.bubbleManager.setText(`模型加载失败，请在设置-模型管理中重选模型（${message}）`);
-    this.elements.sendBtn.disabled = true;
-
-    if (
-      window.desktopPetApi &&
-      typeof window.desktopPetApi.openSettingsWindow === "function"
-    ) {
-      window.desktopPetApi.openSettingsWindow();
-    }
+    window.desktopPetApi.reportModelError(`模型加载失败，请在设置中重选模型：${message}`);
   }
 
   /**
@@ -614,137 +434,8 @@ class MainApp {
     }, 120);
   }
 
-  /**
-   * 自动调整输入框高度
-   */
-  private autoResizeInput(): void {
-    const input = this.elements.input;
-    // 如果没有内容，重置为默认高度
-    if (!input.value) {
-      input.style.height = "44px";
-      return;
-    }
-    // 先重置高度以获取正确的 scrollHeight
-    input.style.height = "auto";
-    // 设置新高度，限制在 44px 和 max-height 之间
-    const newHeight = Math.min(input.scrollHeight, 120);
-    input.style.height = `${newHeight}px`;
-  }
-
-  /**
-   * 更新图片预览
-   */
-  private updateImagePreview(): void {
-    const images = this.imageManager.getImages();
-    const container = this.elements.imagePreviewContainer;
-    const list = this.elements.imagePreviewList;
-
-    if (images.length === 0) {
-      container.hidden = true;
-      list.innerHTML = "";
-      return;
-    }
-
-    container.hidden = false;
-    list.innerHTML = "";
-
-    for (const image of images) {
-      const item = document.createElement("div");
-      item.className = "image-preview-item";
-
-      const img = document.createElement("img");
-      img.src = image.dataUrl;
-      img.alt = "预览";
-
-      const removeBtn = document.createElement("button");
-      removeBtn.className = "remove-btn";
-      removeBtn.type = "button";
-      removeBtn.textContent = "×";
-      removeBtn.dataset.imageId = image.id;
-
-      item.appendChild(img);
-      item.appendChild(removeBtn);
-      list.appendChild(item);
-    }
-  }
 }
 
-/**
- * 截屏或屏幕操作时需要隐藏的元素选择器
- */
-const HIDE_ELEMENTS_ON_SCREENSHOT = [
-  "#live2d-stage",
-  "#chat-form",
-  "#bubble",
-  "#chat-history-list",
-  "#tool-call-toasts",
-  "#image-preview-container",
-];
-
-/**
- * 被隐藏的元素列表（用于恢复）
- */
-let hiddenElementsByScreenshot: HTMLElement[] = [];
-
-/**
- * 隐藏界面元素（截屏或屏幕操作前调用）
- */
-window.hideElementsForScreenshot = /**
- * 截图准备阶段只隐藏当前可见的桌面组件，并记录本次实际隐藏的元素。
- */
-() => {
-  hiddenElementsByScreenshot = [];
-  for (const selector of HIDE_ELEMENTS_ON_SCREENSHOT) {
-    const el = document.querySelector<HTMLElement>(selector);
-    if (el && !el.hidden) {
-      el.hidden = true;
-      hiddenElementsByScreenshot.push(el);
-    }
-  }
-};
-
-/**
- * 恢复界面元素（截屏或屏幕操作后调用）
- */
-window.restoreElementsAfterScreenshot = /**
- * 截图结束后恢复本次隐藏的元素，清空记录以免影响后续截图。
- */
-() => {
-  for (const el of hiddenElementsByScreenshot) {
-    el.hidden = false;
-  }
-  hiddenElementsByScreenshot = [];
-};
-
-// 全局主应用实例引用
-let mainAppInstance: MainApp | null = null;
-
-/**
- * 通过标签播放动作（供聊天模块调用）
- */
-window.playMotionByLabel = /**
- * 聊天回复中识别到表情标签后按标签播放当前模型动作。
- *
- * Args:
- *     label (string): 当前工具、表情或动作的显示名称。
- */
-(label: string) => {
-  mainAppInstance?.playMotionByLabel(label);
-};
-
-/**
- * 获取表达式标签列表（供聊天模块调用）
- */
-window.getExpressionLabels = /**
- * 向聊天解析器提供当前模型允许使用的表情标签，没有模型时返回空列表。
- *
- * Returns:
- *     string[]: 当前模型表情标签列表。
- */
-() => {
-  return mainAppInstance?.getExpressionLabels() ?? [];
-};
-
-// 启动应用
-mainAppInstance = new MainApp();
+/** Live2D 页面启动时只装配角色，消息与输入由独立聊天窗口负责。 */
+const mainAppInstance = new MainApp();
 void mainAppInstance.init();

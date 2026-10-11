@@ -504,6 +504,10 @@ export type ApprovalDecision =
   | { kind: typeof ApprovalDecisionKind.STEER; message: string };
 
 export type FrontendSettings = {
+  /** 聊天窗口普通状态的可见页面区域坐标和尺寸，不包含系统隐藏边框，不保存最小化状态。 */
+  chat_window_bounds?: { x: number; y: number; width: number; height: number };
+  /** 用户是否要求聊天窗口置顶，默认关闭。 */
+  chat_window_pinned?: boolean;
   hide_on_screenshot: boolean;
 };
 
@@ -667,6 +671,58 @@ export interface DesktopPetApi {
   openLogWindow: () => void;
   minimizeCurrentWindow: () => void;
   closeCurrentWindow: () => void;
+  /**
+   * 设置聊天窗口置顶，仅聊天窗口调用。
+   * Args:
+   *     pinned (boolean): 用户选择的置顶状态。
+   * Returns:
+   *     Promise<boolean>: 主进程保存并应用后的置顶状态。
+   */
+  setChatPinned: (pinned: boolean) => Promise<boolean>;
+  /** 页面按住当前窗口标题栏或边缘后，主进程开始采样真实桌面鼠标。 */
+  beginWindowGesture: (kind: WindowGesture) => void;
+  /** 页面收到松开、取消或失去鼠标捕获后停止移动和缩放。 */
+  endWindowGesture: () => void;
+  /**
+   * 更新聊天窗口提醒，窗口最小化不改变会话或审批状态。
+   * Args:
+   *     update (ChatAttentionUpdate): 已通过事件水位校验的消息与审批变化。
+   */
+  reportChatAttention: (update: ChatAttentionUpdate) => void;
+  /** 设置页确认退出后请求主进程清理整个应用。 */
+  requestApplicationExit: () => void;
+  /** 页面首次加载时查询是否正在退出，补齐早于页面加载完成的通知。 */
+  getApplicationShutdownState: () => Promise<boolean>;
+  /** 监听应用开始退出，调用方立即锁定本页面的功能操作。 */
+  onApplicationShutdown: (callback: () => void) => () => void;
+  /**
+   * 聊天识别表情后通知 Live2D 页面，主进程只接受已配置的标签。
+   * Args:
+   *     label (string): 当前模型允许的表情标签。
+   */
+  playExpression: (label: string) => void;
+  /**
+   * Live2D 加载失败后通知聊天页面，不影响聊天初始化。
+   * Args:
+   *     message (string): 模型加载错误说明。
+   */
+  reportModelError: (message: string) => void;
+  /**
+   * 监听 Live2D 页模型加载错误。
+   * Args:
+   *     callback ((message: string) => void): 聊天中的错误展示回调。
+   * Returns:
+   *     () => void: 移除监听的清理函数。
+   */
+  onModelError: (callback: (message: string) => void) => () => void;
+  /**
+   * 监听跨窗口表情播放请求。
+   * Args:
+   *     callback ((label: string) => void): Live2D 的标签播放回调。
+   * Returns:
+   *     () => void: 移除监听的清理函数。
+   */
+  onExpressionRequest: (callback: (label: string) => void) => () => void;
   openImagePreview: (imageSrc: string) => void;
   getActiveModel: () => Promise<ModelInfo>;
   getModelConfig: () => Promise<ModelConfigView>;
@@ -729,3 +785,15 @@ export interface DesktopPetApi {
   clearLogBuffer: (side: LogSide) => Promise<void>;
   openLogDirectory: () => Promise<void>;
 }
+
+/**
+ * 表示聊天页经过事件去重后提交的窗口提醒变化。
+ * Attributes:
+ *     newMessage (boolean | undefined): 本次出现新的回复正文。
+ *     approvalId (string | null | undefined): 当前待审批请求，null 表示已处理。
+ *     reset (boolean | undefined): 会话切换时清除上一会话提醒。
+ */
+export type ChatAttentionUpdate = { newMessage?: boolean; approvalId?: string | null; reset?: boolean };
+
+/** 当前应用窗口标题栏移动或八个边缘方向的缩放，不接受页面提供的窗口坐标。 */
+export type WindowGesture = "move" | "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";

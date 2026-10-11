@@ -31,6 +31,24 @@ export const bindPressToRevealSecret = (
     input.type = "text";
   };
 
+  /**
+   * 键盘按住 Space 或 Enter 时显示凭据，松开后立即隐藏。
+   * Args:
+   *     event (KeyboardEvent): 显示按钮的键盘事件。
+   */
+  const revealKey = (event: KeyboardEvent): void => {
+    if (event.key === " " || event.key === "Enter") { event.preventDefault(); input.type = "text"; }
+  };
+  /**
+   * 对应显示按键松开时隐藏，其他按键不改变状态。
+   * Args:
+   *     event (KeyboardEvent): 全局键盘松开事件。
+   */
+  const concealKey = (event: KeyboardEvent): void => {
+    if (event.key === " " || event.key === "Enter") conceal();
+  };
+  trigger.addEventListener("keydown", revealKey);
+  globalTarget.addEventListener("keyup", concealKey as EventListener);
   trigger.addEventListener("pointerdown", reveal);
   trigger.addEventListener("pointerup", conceal);
   trigger.addEventListener("pointerleave", conceal);
@@ -44,6 +62,8 @@ export const bindPressToRevealSecret = (
    */
   return () => {
     conceal();
+    trigger.removeEventListener("keydown", revealKey);
+    globalTarget.removeEventListener("keyup", concealKey as EventListener);
     trigger.removeEventListener("pointerdown", reveal);
     trigger.removeEventListener("pointerup", conceal);
     trigger.removeEventListener("pointerleave", conceal);

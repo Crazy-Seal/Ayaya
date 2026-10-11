@@ -17,12 +17,16 @@ test("生产策略只允许明确列出的本地页面", /**
       "file:///C:/Ayaya/dist/index.html",
       "file:///C:/Ayaya/dist/settings.html",
       "file:///C:/Ayaya/dist/logs.html",
+      "file:///C:/Ayaya/dist/chat.html",
+      "file:///C:/Ayaya/dist/image-preview.html",
     ],
   });
 
   assert.equal(isTrustedRendererUrl("file:///C:/Ayaya/dist/index.html", policy), true);
   assert.equal(isTrustedRendererUrl("file:///C:/Ayaya/dist/settings.html#llm", policy), true);
   assert.equal(isTrustedRendererUrl("file:///C:/Ayaya/dist/logs.html", policy), true);
+  assert.equal(isTrustedRendererUrl("file:///C:/Ayaya/dist/chat.html", policy), true);
+  assert.equal(isTrustedRendererUrl("file:///C:/Ayaya/dist/image-preview.html?image=test", policy), true);
   assert.equal(isTrustedRendererUrl("file:///C:/Ayaya/dist/other.html", policy), false);
   assert.equal(isTrustedRendererUrl("https://example.com", policy), false);
 });
@@ -61,6 +65,8 @@ test("开发策略只允许环回 Vite origin 的应用页面", /**
   assert.equal(isTrustedRendererUrl("http://127.0.0.1:5173/index.html", policy), true);
   assert.equal(isTrustedRendererUrl("http://127.0.0.1:5173/settings.html", policy), true);
   assert.equal(isTrustedRendererUrl("http://127.0.0.1:5173/logs.html", policy), true);
+  assert.equal(isTrustedRendererUrl("http://127.0.0.1:5173/chat.html", policy), true);
+  assert.equal(isTrustedRendererUrl("http://127.0.0.1:5173/image-preview.html", policy), true);
   assert.equal(isTrustedRendererUrl("http://127.0.0.1:5173/admin.html", policy), false);
   assert.equal(isTrustedRendererUrl("http://127.0.0.1.evil:5173/", policy), false);
   assert.equal(isTrustedRendererUrl("http://evil@127.0.0.1:5173/", policy), false);

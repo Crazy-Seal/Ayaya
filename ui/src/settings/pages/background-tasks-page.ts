@@ -137,6 +137,7 @@ export class BackgroundTasksPage {
       title.textContent = `${record.command} · ${labels[record.status]} · ${Math.floor(seconds / 60)}分${seconds % 60}秒`;
       const details = document.createElement("button");
       details.type = "button";
+      details.className = "ui-button ui-button--secondary ui-button--small";
       details.textContent = "输出";
       details.addEventListener("click", /**
        * 用户选择任务详情时切换任务编号并清空旧输出，从零开始读取该任务输出。
@@ -156,6 +157,7 @@ export class BackgroundTasksPage {
       if (record.status === TaskStatus.RUNNING) {
         const stop = document.createElement("button");
         stop.type = "button";
+        stop.className = "ui-button ui-button--danger ui-button--small";
         stop.textContent = "停止";
         stop.addEventListener("click", /**
          * 用户点击停止任务时提交指定任务的停止命令，完成后检查后端是否受理。

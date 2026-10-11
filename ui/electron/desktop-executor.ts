@@ -6,7 +6,8 @@ import { FRONTEND_SETTINGS_PATH } from "./config.js";
 import { performScreenAction } from "./ipc-handlers.js";
 import { selectPrimaryDisplaySource } from "./screen-capture-source.js";
 import { readSseJson } from "./sse-json.js";
-import { getMainWindow } from "./window-manager.js";
+import { getMainWindow, getChatWindow } from "./window-manager.js";
+import { hideDesktopWindows } from "./desktop-window-visibility.js";
 import { appendFrontendLog } from "./logging/app-logger.js";
 import type { ScreenActionRequest } from "./types.js";
 import { DesktopExecutionKind } from "../shared-types.js";
@@ -107,12 +108,8 @@ const execute = async (request: ExecutionRequest, signal: AbortSignal): Promise<
     };
     hide = settings.hide_on_screenshot !== false;
   } catch { /* 首次启动使用默认设置。 */ }
-  const window = getMainWindow();
-  const wasVisible = Boolean(window && !window.isDestroyed() && window.isVisible());
-  if (hide && wasVisible) {
-    window?.hide();
-    await pause(SCREEN_CAPTURE_HIDE_DELAY_MS);
-  }
+  const visibility = hideDesktopWindows(hide ? [getMainWindow(), getChatWindow()] : []);
+  if (visibility.hidden) await pause(SCREEN_CAPTURE_HIDE_DELAY_MS);
   // 3. 动作只执行一次；成功或失败均构造真实结果，finally 恢复原窗口可见状态。
   let result: Record<string, unknown>;
   try {
@@ -138,7 +135,7 @@ const execute = async (request: ExecutionRequest, signal: AbortSignal): Promise<
   } catch (error) {
     result = { executed: false, error: String(error) };
   } finally {
-    if (hide && wasVisible && window && !window.isDestroyed()) window.show();
+    visibility.restore();
   }
   // claim 后绝不重做屏幕动作；连接暂断时只重试同一个结果。
   // 4. 已领取后只重试同一结果 POST，不能因断线重做点击或按键。

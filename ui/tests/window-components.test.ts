@@ -282,7 +282,7 @@ test("共享下拉框显示清晰箭头并为原生选项提供主题样式", /*
   assert.match(css, /textarea\.ui-control:read-only/);
   assert.match(
     css,
-    /\.ui-select\s*\{[^}]*background-image:\s*url\("data:image\/svg\+xml;base64,/s,
+    /\.ui-select\s*\{[^}]*background-image:\s*var\(--icon-chevron\)/s,
   );
   assert.match(
     css,
@@ -346,7 +346,7 @@ test("工具审批引导输入框提供可访问名称", /**
  * 验证工具审批引导输入框提供可访问名称。
  */
 () => {
-  const html = readUiFile("index.html");
+  const html = readUiFile("chat.html");
 
   assert.match(
     elementById(html, "tool-steer-input"),

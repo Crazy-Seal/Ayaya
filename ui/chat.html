@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN" class="ui-transparent-window">
+  <head>
+    <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Ayaya 聊天</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" /><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&family=Nunito:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  </head>
+  <body>
+    <div id="chat-window" class="chat-window ui-window-frame">
+      <header class="ui-titlebar">
+        <div id="chat-title" class="ui-window-title">Ayaya</div>
+        <div class="window-actions">
+          <button id="settings-btn" class="ui-button ui-button--secondary ui-button--icon" type="button" aria-label="打开设置" title="设置"><span data-icon="settings"></span></button>
+          <button id="chat-pin-btn" class="ui-button ui-button--secondary ui-button--icon" type="button" aria-label="置顶聊天窗口" title="置顶聊天窗口" aria-pressed="false"><span data-icon="pin"></span></button>
+          <button id="chat-min-btn" class="ui-button ui-button--secondary ui-button--icon" type="button" aria-label="最小化" title="最小化"><span data-icon="minimize"></span></button>
+        </div>
+      </header>
+      <div id="bubble" class="chat-status" role="status" aria-live="polite" hidden></div>
+      <div id="model-status" class="chat-status error-indicator" role="status" aria-live="polite" hidden></div>
+      <main id="chat-history-region" class="chat-history-region">
+        <div id="chat-history-toolbar" class="chat-history-toolbar" hidden>
+          <span class="chat-history-title">聊天记录</span>
+          <span id="background-task-notice" class="background-task-notice" aria-live="polite" hidden></span>
+          <button id="background-task-entry" class="ui-button ui-button--secondary ui-button--small" type="button" title="查看后台任务" hidden>任务</button>
+        </div>
+        <div id="chat-history-list" class="chat-history-list" role="log" aria-label="聊天记录"></div>
+      </main>
+      <div id="tool-call-toasts" class="tool-call-toasts" aria-live="polite"></div>
+      <section class="chat-composer" aria-label="消息输入">
+        <div id="image-preview-container" class="image-preview-container" hidden>
+          <div id="image-preview-list" class="image-preview-list"></div>
+          <button id="clear-images-btn" class="ui-button ui-button--danger ui-button--icon" type="button" title="清除所有图片" aria-label="清除所有图片"><span data-icon="close"></span></button>
+        </div>
+        <div id="queue-status" aria-live="polite" hidden></div>
+        <form id="chat-form" class="chat-form">
+          <input id="image-input" type="file" accept="image/*" multiple hidden />
+          <button id="image-btn" class="ui-button ui-button--secondary ui-button--icon" type="button" aria-label="选择图片" title="选择图片"><span data-icon="image"></span></button>
+          <textarea id="chat-input" class="ui-control" aria-label="消息正文" placeholder="和我说点什么…" maxlength="300" rows="1"></textarea>
+          <button id="send-btn" class="ui-button ui-button--primary ui-button--icon" type="submit" aria-label="发送消息" title="发送消息"><span data-icon="send"></span></button>
+          <button id="queue-btn" class="ui-button ui-button--secondary ui-button--small" type="button" title="排队到下一轮" aria-label="排队到下一轮" hidden>排队</button>
+        </form>
+      </section>
+      <div id="drag-overlay" class="drag-overlay" hidden><div class="ui-surface">释放以添加图片</div></div>
+      <div id="screenshot-confirm-dialog" class="screenshot-confirm-overlay ui-dialog-overlay" hidden aria-hidden="true">
+        <div class="screenshot-confirm-modal ui-dialog" role="dialog" aria-modal="true" aria-labelledby="screenshot-confirm-title">
+          <div class="ui-dialog-heading">
+            <div class="dialog-icon" data-icon="warning"></div>
+            <div id="screenshot-confirm-title" class="ui-window-title">工具调用确认</div>
+          </div>
+          <div id="screenshot-confirm-message" class="screenshot-confirm-message"></div>
+          <textarea id="tool-steer-input" class="ui-control tool-steer-input" hidden aria-label="引导 Agent 下一步操作" placeholder="告诉 Agent 接下来应该怎么做"></textarea>
+          <div class="screenshot-confirm-actions ui-dialog-actions">
+            <button id="screenshot-deny-btn" type="button" class="ui-button ui-button--secondary">拒绝</button>
+            <button id="tool-steer-btn" type="button" class="ui-button ui-button--secondary">引导</button>
+            <button id="screenshot-allow-btn" type="button" class="ui-button ui-button--primary">批准</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/chat/chat-app.ts"></script>
+  </body>
+</html>

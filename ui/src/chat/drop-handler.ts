@@ -1,5 +1,5 @@
 /**
- * 拖拽处理器 - 处理图片拖拽到 Live2D 舞台和聊天表单
+ * 拖拽处理器 - 处理图片拖拽到独立聊天窗口
  */
 
 import type { ImageManager } from "./image-manager.js";
@@ -8,8 +8,7 @@ import type { ImageManager } from "./image-manager.js";
  * 拖拽处理器选项
  */
 export interface DropHandlerOptions {
-  stageHost: HTMLElement;
-  form: HTMLElement;
+  root: HTMLElement;
   imageManager: ImageManager;
   dragOverlay: HTMLElement;
 }
@@ -21,7 +20,7 @@ export interface DropHandlerOptions {
  *     options (DropHandlerOptions): 调用方提供的配置或运行选项。
  */
 export const setupDropHandler = (options: DropHandlerOptions): (() => void) => {
-  const { stageHost, form, imageManager, dragOverlay } = options;
+  const { root, imageManager, dragOverlay } = options;
 
   let dragCounter = 0;
   let isDragging = false;
@@ -106,8 +105,8 @@ export const setupDropHandler = (options: DropHandlerOptions): (() => void) => {
     }
   };
 
-  // 添加监听器到舞台和表单
-  const targets = [stageHost, form];
+  // 只在窗口根容器监听，避免表单冒泡导致同一张图片被重复添加
+  const targets = [root];
 
   targets.forEach(/**
    * 为每个拖拽目标登记同一组进入、离开、经过及放下处理器。

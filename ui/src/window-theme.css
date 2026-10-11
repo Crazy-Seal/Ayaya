@@ -25,8 +25,11 @@
   --color-danger: #EF4444;
 
   --color-bg-base: #1c1917;
+  --color-bg-window-end: #0c0a09;
   --color-bg-elevated: #292524;
   --color-bg-surface: #3f3a36;
+  --color-bg-message-human: #3c2a21;
+  --color-border-primary: rgba(249, 115, 22, 0.32);
   --color-bg-overlay: rgba(28, 25, 23, 0.85);
 
   --color-text-primary: rgba(255, 255, 255, 0.95);
@@ -39,6 +42,8 @@
 
   --gradient-primary:
     linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-light) 100%);
+  --gradient-window:
+    linear-gradient(145deg, var(--color-bg-base) 0%, var(--color-bg-window-end) 100%);
   --gradient-primary-hover:
     linear-gradient(135deg, var(--color-primary-light) 0%, #fdba74 100%);
   --gradient-danger:
@@ -58,6 +63,7 @@
 
   --radius-sm: 10px;
   --radius-md: 14px;
+  --radius-window: var(--radius-md);
   --radius-lg: 18px;
   --radius-xl: 22px;
 
@@ -94,7 +100,7 @@ body {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: linear-gradient(145deg, var(--color-bg-base) 0%, #0c0a09 100%);
+  background: var(--gradient-window);
   color: var(--color-text-primary);
   font-family: var(--font-family-body);
   font-size: 14px;
@@ -102,7 +108,8 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-.settings-titlebar {
+.settings-titlebar,
+.ui-titlebar {
   height: 48px;
   flex: 0 0 48px;
   display: flex;
@@ -114,7 +121,8 @@ body {
   -webkit-app-region: drag;
 }
 
-.settings-title {
+.settings-title,
+.ui-window-title {
   color: var(--color-text-primary);
   font-family: var(--font-family-display);
   font-size: 16px;

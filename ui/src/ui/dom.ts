@@ -6,7 +6,7 @@
  * 主要 UI 元素
  */
 export interface MainUiElements {
-  stageHost: HTMLDivElement;
+  root: HTMLDivElement;
   bubble: HTMLDivElement;
   chatHistoryList: HTMLDivElement;
   form: HTMLFormElement;
@@ -22,10 +22,10 @@ export interface MainUiElements {
 }
 
 /**
- * 获取主要 UI 元素
+ * 获取独立聊天窗口的 UI 元素
  */
 export const getMainUiElements = (): MainUiElements => {
-  const stageHost = document.querySelector<HTMLDivElement>("#live2d-stage");
+  const root = document.querySelector<HTMLDivElement>("#chat-window");
   const bubble = document.querySelector<HTMLDivElement>("#bubble");
   const chatHistoryList = document.querySelector<HTMLDivElement>("#chat-history-list");
   const form = document.querySelector<HTMLFormElement>("#chat-form");
@@ -40,7 +40,7 @@ export const getMainUiElements = (): MainUiElements => {
   const imageBtn = document.querySelector<HTMLButtonElement>("#image-btn");
 
   if (
-    !stageHost ||
+    !root ||
     !bubble ||
     !chatHistoryList ||
     !form ||
@@ -58,7 +58,7 @@ export const getMainUiElements = (): MainUiElements => {
   }
 
   return {
-    stageHost,
+    root,
     bubble,
     chatHistoryList,
     form,

@@ -3,6 +3,8 @@
  */
 
 import "../settings.css";
+import { initializeIcons } from "../ui/icons.js";
+import { setupApplicationShutdownUi, lockApplicationShutdownUi } from "../ui/application-shutdown.js";
 
 import { ConfirmDialog } from "./components/confirm-dialog.js";
 import { SettingsToast, appendErrorMessage } from "./components/settings-toast.js";
@@ -68,6 +70,7 @@ class SettingsApp {
    * 装配 SettingsApp 的依赖并初始化本地视图状态。
    */
   constructor() {
+    initializeIcons();
     // 获取 DOM 元素
     this.sidebar = this.getElement("#settings-sidebar");
     this.minBtn = this.getElement("#settings-min-btn");
@@ -260,6 +263,21 @@ class SettingsApp {
     });
 
     // 关闭按钮
+    this.getElement<HTMLButtonElement>("#exit-application-btn").addEventListener("click", /**
+     * 用户确认退出后停止整个应用；取消保留当前聊天与设置状态。
+     */
+    async () => {
+      const confirmed = await this.confirmDialog.open({
+        title: "退出 Ayaya", message: "退出会停止当前对话和后台任务，是否继续？",
+        confirmText: "退出", cancelText: "取消", variant: "danger",
+      });
+      if (confirmed) {
+        // 1. 确认后同步锁定本窗口，再通知主进程关闭所有业务入口，避免等待期间再次点击。
+        lockApplicationShutdownUi();
+        window.desktopPetApi.requestApplicationExit();
+      }
+    });
+
     this.closeBtn.addEventListener("click", /**
      * 用户点击标题栏关闭时请求主进程关闭设置窗口。
      */
@@ -920,4 +938,5 @@ class SettingsApp {
 }
 
 // 启动应用
+setupApplicationShutdownUi();
 void new SettingsApp().init();
