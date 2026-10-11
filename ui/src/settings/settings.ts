@@ -148,7 +148,7 @@ class SettingsApp {
 
     // 初始化多模态配置页面
     this.multimodalPage = new MultimodalPage(
-      this.getElement("#checkbox-hide-on-screenshot")
+      this.getElement("#checkbox-hide-on-screenshot"), this.toast
     );
 
     // 初始化动作控制页面

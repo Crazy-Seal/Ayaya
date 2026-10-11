@@ -522,16 +522,20 @@ const desktopPetApi: DesktopPetApi = {
    */
   getFrontendSettings: () => ipcRenderer.invoke("desktop-pet:get-frontend-settings"),
   /**
-   * 页面提交前端选项，由主进程保存并同步相关窗口。
-   *
-   * Args:
-   *     settings (Partial<FrontendSettings>): 当前会话或桌面界面的设置。
+   * 多模态页面通过主进程读取后端全局桌面 YAML 设置。
    *
    * Returns:
-   *     Promise<any>: 保存后的前端设置。
+   *     Promise<DesktopSettings>: 后端确认保存且已完成旧配置迁移的值。
    */
-  updateFrontendSettings: (settings) =>
-    ipcRenderer.invoke("desktop-pet:update-frontend-settings", settings),
+  getDesktopSettings: () => ipcRenderer.invoke("desktop-pet:get-desktop-settings"),
+  /**
+   * 保存后端桌面配置，返回已写入 YAML 的值。
+   * Args:
+   *     settings (DesktopSettings): 完整的截图与动作显隐选项。
+   * Returns:
+   *     Promise<DesktopSettings>: 后端已确认保存的设置。
+   */
+  updateDesktopSettings: (settings) => ipcRenderer.invoke("desktop-pet:update-desktop-settings", settings),
   /**
    * 动作设置页读取当前模型的动作规则。
    *

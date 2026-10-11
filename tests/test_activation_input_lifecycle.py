@@ -20,7 +20,7 @@ from app.agent.state.manager import StateManager
 from app.agent.state.messages import BaseMessage, HumanMessage, TaskResultMessage, ToolCall
 from app.agent.tools.base import BaseTool, ToolContext, ToolResult
 from app.crud.task_record_dao import TaskRecordDao
-from app.schemas.runtime_types import DesktopExecutionKind, InteractionEventKind, InterruptKind, TaskStatus
+from app.schemas.runtime_types import InteractionEventKind, InterruptKind, TaskStatus
 from app.services.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.services.channel_subscription_service import ChannelSubscriptionService
 from app.services.interaction_contract import ChannelCommand, InteractionEvent
@@ -636,11 +636,11 @@ class PausingTool(BaseTool):
         if context.resume_data is None:
             if self.kind == InterruptKind.AUTHORIZATION_REQUEST:
                 return ToolResult.needs_input(self.kind, "等待审批")
-            return ToolResult.continuation(DesktopExecutionKind.CAPTURE_SCREEN, "等待桌面结果")
+            return ToolResult.needs_input(InterruptKind.AUTHORIZATION_REQUEST, "等待审批")
         return ToolResult.success("原工具已恢复")
 
 
-@pytest.mark.parametrize("kind", [InterruptKind.AUTHORIZATION_REQUEST, InterruptKind.CONTINUATION_REQUEST])
+@pytest.mark.parametrize("kind", [InterruptKind.AUTHORIZATION_REQUEST])
 def test_resuming_original_turn_does_not_commit_another_activation(tmp_path: Path, monkeypatch, kind: InterruptKind) -> None:
     """审批或桌面结果继续原轮次，中途任务通知不能消费该轮记忆计数。
 

@@ -14,7 +14,6 @@ from app.crud.task_record_dao import TaskRecordDao
 from app.services.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.services.interaction_contract import ChannelCommand
 from app.services.interaction_event_hub import InteractionEventHub
-from app.services.desktop_execution_broker import DesktopExecutionBroker, DesktopExecutionRequest
 
 
 def test_restart_discards_humans_and_releases_terminal_claims(tmp_path) -> None:
@@ -233,8 +232,6 @@ def test_start_finalizes_abandoned_checkpoint_without_execution(tmp_path, case) 
             await scheduler.start()
             await scheduler.start()
             assert (await scheduler.snapshot("s", "desktop"))["phase"] == "idle"
-            assert not await scheduler.desktop_executor.claim("s", "old-request")
-            assert not await scheduler.desktop_executor.submit_result("s", "old-request", {})
             manager = StateManager("s", path)
             try:
                 closed = await manager.load()
@@ -427,98 +424,6 @@ def test_start_failure_keeps_execution_closed_and_retry_finishes_cleanup(tmp_pat
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("operation", ["claim", "result"])
-def test_broker_close_waits_for_admitted_result_and_rejects_new_operations(tmp_path, operation) -> None:
-    """验证关闭等待已进入保存的结果，关闭后新请求不产生持久副作用。
-
-    Args:
-        tmp_path (Path): 隔离数据库目录。
-        operation (str): 关闭前已进入保存的领取或结果操作。
-    """
-    async def scenario() -> None:
-        """用持久保存屏障构造关闭与桌面结果并发。"""
-        path = str(tmp_path / "state.sqlite3")
-        manager = StateManager("s", path)
-        state = AgentState.create_new("s")
-        call = ToolCall(id="c", name="control_screen", args={})
-        state.record_assistant_step("", (call,))
-        state.clear_pending_tool_calls()
-        state.set_interrupt({
-            "type": "continuation_request", "request_id": "r",
-            "tool_call_id": call.id, "tool_name": call.name,
-            "resume_state": {"continuation_claimed": operation == "result"},
-        })
-        await manager.save(state, checkpoint_type="intermediate")
-        await manager.close()
-        entered = asyncio.Event()
-        release = asyncio.Event()
-
-        class DelayedManager(StateManager):
-            """只延迟已进入持久保存的桌面结果。"""
-            async def save(self, state, **kwargs):
-                """保存开始后允许测试关闭执行入口，再继续原子写入。
-
-                Args:
-                    state (AgentState): 需要保存的桌面回报。
-                    **kwargs (dict): 原保存参数。
-                Returns:
-                    int: 保存后的 checkpoint 编号。
-                """
-                entered.set()
-                await release.wait()
-                return await super().save(state, **kwargs)
-
-        class AuthorizedAgent:
-            """只确认当前请求有效，不执行任何屏幕动作。"""
-            async def validate_pending_continuation(self, interrupt):
-                """允许测试中的当前请求进入持久领取。
-
-                Args:
-                    interrupt (dict): 当前中断快照。
-                Returns:
-                    bool: 测试授权有效。
-                """
-                return True
-
-            async def close(self):
-                """授权替身不拥有外部资源。"""
-
-        broker = DesktopExecutionBroker(
-            state_manager_factory=lambda session: DelayedManager(session, path),
-            agent_factory=lambda _: AuthorizedAgent(), on_result=lambda *args: None,
-        )
-        await broker.enqueue(DesktopExecutionRequest("s", "r", "perform_screen_action", {}))
-        stream = broker.subscribe()
-        assert (await anext(stream)).request_id == "r"
-        result = asyncio.create_task(broker.claim("s", "r") if operation == "claim"
-                                     else broker.submit_result("s", "r", {"executed": True}))
-        await entered.wait()
-        closing = asyncio.create_task(broker.close())
-        try:
-            await asyncio.sleep(0)
-            assert not closing.done()
-            assert not await broker.claim("other", "r")
-            with pytest.raises(StopAsyncIteration):
-                await anext(stream)
-            release.set()
-            assert await result == (operation == "result")
-            await closing
-            assert not await broker.submit_result("s", "r", {"executed": False})
-            manager = StateManager("s", path)
-            try:
-                interrupt = (await manager.load()).interrupt_data
-                assert interrupt["resume_state"]["continuation_claimed"]
-                if operation == "result":
-                    assert interrupt["desktop_result"] == {"executed": True}
-                await Agent.finalize_abandoned_turn(manager)
-                assert (await manager.load()).interrupt_data is None
-            finally:
-                await manager.close()
-        finally:
-            release.set()
-            await asyncio.gather(result, closing)
-            await stream.aclose()
-    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("committing", [False, True])

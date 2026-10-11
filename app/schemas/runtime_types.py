@@ -32,13 +32,11 @@ class SessionPhase(str, Enum):
         IDLE (SessionPhase): 空闲，协议值为 idle。
         RUNNING (SessionPhase): 轮次运行中，协议值为 running。
         PENDING_INTERRUPT (SessionPhase): 等待人工审批，协议值为 pending_interrupt。
-        PENDING_EXECUTION (SessionPhase): 等待桌面执行结果，协议值为 pending_execution。
         ERROR (SessionPhase): 本轮错误，协议值为 error。
     """
     IDLE = "idle"
     RUNNING = "running"
     PENDING_INTERRUPT = "pending_interrupt"
-    PENDING_EXECUTION = "pending_execution"
     ERROR = "error"
 
 
@@ -125,21 +123,10 @@ class InterruptKind(str, Enum):
 
     Attributes:
         AUTHORIZATION_REQUEST (InterruptKind): 人工审批，协议值为 authorization_request。
-        CONTINUATION_REQUEST (InterruptKind): 桌面执行续跑，协议值为 continuation_request。
     """
     AUTHORIZATION_REQUEST = "authorization_request"
-    CONTINUATION_REQUEST = "continuation_request"
 
 
-class DesktopExecutionKind(str, Enum):
-    """表示 Electron 主进程支持的屏幕请求类别。
-
-    Attributes:
-        CAPTURE_SCREEN (DesktopExecutionKind): 截取屏幕，协议值为 capture_screen。
-        PERFORM_SCREEN_ACTION (DesktopExecutionKind): 执行屏幕动作并截屏，协议值为 perform_screen_action。
-    """
-    CAPTURE_SCREEN = "capture_screen"
-    PERFORM_SCREEN_ACTION = "perform_screen_action"
 
 
 class ApprovalDecisionKind(str, Enum):

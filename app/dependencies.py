@@ -4,6 +4,10 @@ from functools import lru_cache
 from app.crud.chat_history_dao import ChatHistoryDao
 from app.crud.chat_settings_dao import ChatSettingsDao
 from app.crud.mcp_settings_dao import MCPSettingsDao
+from app.crud.desktop_settings_dao import DesktopSettingsDao
+from app.services.desktop_settings_service import DesktopSettingsService
+from app.schemas.runtime_types import RuntimePhase
+from app.services.desktop_controller import DesktopController
 from app.services.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.services.interaction_event_hub import InteractionEventHub
 from app.services.interaction_contract import InteractionEvent
@@ -22,6 +26,39 @@ from app.agent.tools.authorization.catalog import (
     MCPToolCatalogAdapter,
     UnifiedToolCatalog,
 )
+
+
+@lru_cache(maxsize=1)
+def get_desktop_settings_dao() -> DesktopSettingsDao:
+    """提供进程内共享桌面配置 DAO，测试路径由 runtime 校验。
+
+    Returns:
+        DesktopSettingsDao: 当前进程唯一的 YAML 原子存储对象。
+    """
+    return DesktopSettingsDao()
+
+
+@lru_cache(maxsize=1)
+def get_desktop_controller() -> DesktopController:
+    """装配应用唯一的桌面模块，不在工具执行时临时创建线程或锁。
+
+    Returns:
+        DesktopController: 由应用生命周期统一启动与关闭的共享实例。
+    """
+    return DesktopController(get_desktop_settings_dao().load)
+
+
+@lru_cache(maxsize=1)
+def get_desktop_settings_service() -> DesktopSettingsService:
+    """装配桌面设置接口，使用现有 Scheduler 的关闭状态作为门禁。
+
+    Returns:
+        DesktopSettingsService: 使用共享 DAO 和退出状态的全局配置服务。
+    """
+    return DesktopSettingsService(
+        get_desktop_settings_dao(),
+        lambda: get_runtime_scheduler().phase not in {RuntimePhase.STOPPING, RuntimePhase.STOPPED},
+    )
 
 
 @lru_cache(maxsize=1)
@@ -114,6 +151,7 @@ def get_runtime_scheduler() -> AgentRuntimeScheduler:
     mcp_manager = get_mcp_connection_manager()
     authorization = get_tool_authorization()
     supervisor = get_task_supervisor()
+    desktop = get_desktop_controller()
     # 1. 进程级缓存持有唯一调度器，Agent 工厂每次运行才读取会话配置。
     scheduler = AgentRuntimeScheduler(
         InteractionEventHub(),
@@ -122,8 +160,10 @@ def get_runtime_scheduler() -> AgentRuntimeScheduler:
             mcp_manager,
             authorization,
             supervisor,
+            desktop,
         ),
         task_supervisor=supervisor,
+        desktop=desktop,
     )
     # 2. 任务终态只通知已激活会话，初始化和关闭期间保留事实，不自行启动 Agent。
     supervisor.on_terminal = scheduler.notify_task_terminal

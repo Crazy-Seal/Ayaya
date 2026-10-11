@@ -14,8 +14,6 @@ import type {
   MotionConfig as SharedMotionConfig,
   MotionSettingType as SharedMotionSettingType,
   PluginItem as SharedPluginItem,
-  ScreenActionRequest as SharedScreenActionRequest,
-  ScreenActionResult as SharedScreenActionResult,
   ToolItem as SharedToolItem,
 } from "../shared-types.js";
 
@@ -31,8 +29,6 @@ export type ModelChangedPayload = ModelInfo;
 export type ModelTransformChangedPayload = ModelTransformData;
 export type FrontendSettings = SharedFrontendSettings;
 export type ImportPreview = SharedImportPreview;
-export type ScreenActionRequest = SharedScreenActionRequest;
-export type ScreenActionResult = SharedScreenActionResult;
 
 export type ModelSource = "builtin" | "custom";
 

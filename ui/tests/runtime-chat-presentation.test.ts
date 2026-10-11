@@ -592,7 +592,6 @@ async (t) => {
     assert.deepEqual(view.motions, []);
 
     // 2. 同 run 的工具恢复不重播旧标签，新 run 则允许再次播放。
-    await view.emit("interrupt", { value: { type: "continuation_request", request_id: "screen-1" } }, 7);
     await view.emit("run_started", { resumed: true }, 8);
     await view.emit("text_chunk", { value: "<惊讶>恢复。" }, 9);
     assert.deepEqual(view.motions, []);
@@ -608,8 +607,8 @@ async (t) => {
   }
 });
 
-test("历史只在初始化、人工审批和终态读取，重复审批及自动桌面操作不重复查询", /**
- * 验证历史只在初始化、人工审批和终态读取，重复审批及自动桌面操作不重复查询。
+test("历史只在初始化、人工审批和终态读取，重复审批及后端工具操作不重复查询", /**
+ * 验证后端直接执行工具期间不额外读取聊天历史。
  */
 async () => {
   const view = createPresentation();
@@ -634,9 +633,9 @@ async () => {
     await view.emit("interrupt", approval, 8);
     await view.emit("authorization_resolved", {}, 9);
     assert.equal(view.historyReads.calls, 2);
-    // 3. 自动桌面等待和恢复不查询；完成统一载入保存的最终结果。
+    // 3. 审批恢复后工具直接在后端执行；完成统一载入保存的最终结果。
     await view.emit("run_started", { resumed: true }, 10);
-    await view.emit("interrupt", { value: { type: "continuation_request", request_id: "screen" } }, 11);
+    await view.emit("tool_call", { value: "control_screen" }, 11);
     assert.equal(view.historyReads.calls, 2);
     await view.emit("run_started", { resumed: true }, 12);
     await view.emit("text_chunk", { value: "完整结果。" }, 13);

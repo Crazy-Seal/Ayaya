@@ -9,6 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { setTimeout as pause } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { spawn } from "node:child_process";
 
 const uiRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const output = path.join(uiRoot, ".test-dist", "desktop-smoke");
@@ -96,6 +97,10 @@ async (input, init = {}) => {
   const url = new URL(String(input));
   const route = url.pathname;
   requests.push(route);
+  if (route === "/internal/desktop-windows") return json({ accepted: true,
+    window_restore_path: path.join(isolated, "desktop", "window_restore.json") });
+  if (route === "/desktop_settings") return json({ code: 200, data: init.method === "PUT"
+    ? JSON.parse(init.body) : { hide_on_screenshot: true } });
   if (route.startsWith("/agent/events/")) {
     subscriptions++;
     currentSession = decodeURIComponent(route.split("/").at(-1));
@@ -138,7 +143,9 @@ const windows = await import("../dist-electron/electron/window-manager.js");
 const { registerIpcHandlers } = await import("../dist-electron/electron/ipc-handlers.js");
 const { configureBackendClient } = await import("../dist-electron/electron/backend-client.js");
 const { stopDesktopSession } = await import("../dist-electron/electron/interaction-adapter.js");
-const { hideDesktopWindows } = await import("../dist-electron/electron/desktop-window-visibility.js");
+const { desktopWindowRegistry } = await import("../dist-electron/electron/desktop-window-runtime.js");
+const { desktopWindowHandle } = await import("../dist-electron/electron/desktop-window-registration.js");
+const { createBackendPythonResolver, buildBackendPythonEnvironment } = await import("../dist-electron/electron/backend-python.js");
 const { createEmptyChatSettings } = await import("../dist-electron/electron/chat-settings.js");
 const { getActiveModelRecord, loadModelConfig, saveModelConfig } = await import("../dist-electron/electron/model-manager.js");
 const { registerLive2DProtocol, initLive2DProtocolHandler } = await import("../dist-electron/electron/live2d-protocol.js");
@@ -194,6 +201,35 @@ const capture = async (win, name) => {
   fs.writeFileSync(path.join(output, `${name}.png`), (await win.webContents.capturePage()).toPNG());
 };
 
+/**
+ * 启动真实 Python 桌面模块，Electron 保持事件循环以接收异步显隐。
+ * Args:
+ *     pet (BrowserWindow): 唯一桌宠窗口。
+ *     chat (BrowserWindow): 唯一聊天窗口。
+ *     extras (object): 仅用于断言未隐藏窗口的角色与句柄。
+ *     options (object): 是否隐藏和独立输入窗口句柄。
+ * Returns:
+ *     Promise<object>: 捕获时真实显隐状态及输入执行结果。
+ */
+const probeDesktop = async (pet, chat, extras = {}, options = {}) => {
+  const resolved = await createBackendPythonResolver().resolve();
+  const handles = { pet: desktopWindowHandle(pet), chat: desktopWindowHandle(chat) };
+  return new Promise(/** 等真实 Python 清理并退出后才允许下一个桌面场景。 */ (resolve, reject) => {
+    const child = spawn(resolved.executable, ["-B", path.join(uiRoot, "scripts", "backend-desktop-probe.py")], {
+      cwd: path.dirname(uiRoot), windowsHide: true, env: buildBackendPythonEnvironment(process.env, resolved, process.platform),
+    });
+    let stdout = "", stderr = "";
+    child.stdout.on("data", /** 收集小型验证结果，不输出屏幕图片。 */ value => { stdout += value; });
+    child.stderr.on("data", /** 保存 Python 失败原因。 */ value => { stderr += value; });
+    child.once("error", reject);
+    child.once("close", /** 正常退出已完成清理；显式崩溃场景保留记录由 Electron 恢复。 */ code => {
+      if (code !== 0 && !(options.crash && code === 23)) reject(new Error(`原生桌面验证失败：${stderr}`));
+      else { try { resolve(JSON.parse(stdout)); } catch (error) { reject(new Error(`${error}: ${stdout}`)); } }
+    });
+    child.stdin.end(JSON.stringify({ owner_pid: process.pid, windows: handles, observed: { ...handles, ...extras }, ...options }));
+  });
+};
+
 /** 等 Electron 就绪后运行验证，避免顶层 await 阻止 ready 事件。 */
 const run = async () => {
 try {
@@ -215,6 +251,7 @@ try {
   registerLogIpcHandlers({ policy: windows.getTrustedRendererPolicy(), openLogWindow: windows.openLogWindow, sendBatch: windows.sendLogBatch });
   const pet = windows.createMainWindow();
   const chat = windows.openChatWindow();
+  await desktopWindowRegistry.connect();
   await waitFor(chat, "document.querySelectorAll('.message-item').length >= 2 && !document.getElementById('send-btn').disabled");
   if (process.argv.includes("--composer-check")) {
     const layout = await chat.webContents.executeJavaScript(`({
@@ -280,7 +317,11 @@ try {
   assert.equal(chat.isDestroyed(), false); assert.equal(chat.isMinimized(), true);
   screen.emit("display-metrics-changed", {}, screen.getPrimaryDisplay(), ["workArea"]);
   assert.equal(chat.isMinimized(), true);
-  const visibility = hideDesktopWindows([pet, chat]); visibility.restore();
+  const minimizedProbe = await probeDesktop(pet, chat);
+  assert.equal(minimizedProbe.observed[0].pet.visible, false);
+  assert.equal(minimizedProbe.observed[0].chat.minimized, true);
+  assert.equal(chat.isMinimized(), true);
+  // 临时显隐行为由后端桌面模块和隔离 Win32 验证覆盖，聊天最小化仍保留前端验证。
   assert.equal(chat.isMinimized(), true);
   assert.deepEqual(pet.getBounds(), originalPet);
   emit(event("run_started", {}, { run_id: "run-demo" }));
@@ -382,13 +423,52 @@ try {
   assert.ok(preview);
   await waitFor(preview, "document.getElementById('preview-image').complete && document.getElementById('preview-image').naturalWidth > 0");
   await capture(preview, "image-preview");
+  // 3. 实际截图只隐藏两个登记窗口；位置、置顶、草稿和共享订阅保持。
+  const beforeProbe = { pet: pet.getBounds(), chat: chat.getBounds(), pinned: chat.isAlwaysOnTop() };
+  const extras = { settings: desktopWindowHandle(settingsWindow), logs: desktopWindowHandle(logs), preview: desktopWindowHandle(preview) };
+  const nativeProbe = await probeDesktop(pet, chat, extras);
+  assert.equal(nativeProbe.observed[0].pet.visible, false); assert.equal(nativeProbe.observed[0].chat.visible, false);
+  for (const role of ["settings", "logs", "preview"]) assert.equal(nativeProbe.observed[0][role].visible, true);
+  assert.equal(pet.isVisible(), true); assert.equal(chat.isVisible(), true);
+  assert.deepEqual(pet.getBounds(), beforeProbe.pet); assert.deepEqual(chat.getBounds(), beforeProbe.chat);
+  assert.equal(chat.isAlwaysOnTop(), beforeProbe.pinned); assert.equal(subscriptions, 1);
+  const shownProbe = await probeDesktop(pet, chat, extras, { hide: false });
+  assert.equal(shownProbe.observed[0].pet.visible, true); assert.equal(shownProbe.observed[0].chat.visible, true);
+  // 3.1. 后端在真实隐藏期间直接死亡，Electron 按已登记身份及死亡 PID 恢复两个窗口。
+  const focusBeforeCrash = BrowserWindow.getFocusedWindow()?.id;
+  const crashProbe = await probeDesktop(pet, chat, extras, { crash: true });
+  assert.equal(pet.isVisible(), false); assert.equal(chat.isVisible(), false);
+  desktopWindowRegistry.recoverIfBackendExited();
+  assert.equal(pet.isVisible(), true); assert.equal(chat.isVisible(), true);
+  assert.equal(BrowserWindow.getFocusedWindow()?.id, focusBeforeCrash);
+  assert.deepEqual(chat.getBounds(), beforeProbe.chat); assert.equal(chat.isAlwaysOnTop(), beforeProbe.pinned);
+  assert.equal(subscriptions, 1);
+  await desktopWindowRegistry.connect();
+  // 3.2. 鼠标输入仅使用独立置顶测试窗口中心，绝不点击聊天或用户应用。
+  const target = new BrowserWindow({ x: area.x + 150, y: area.y + 150, width: 400, height: 220,
+    alwaysOnTop: true, frame: false, webPreferences: { contextIsolation: true, nodeIntegration: false } });
+  await target.loadURL("data:text/html;charset=utf-8," + encodeURIComponent('<input id="probe" style="position:fixed;inset:0;width:100%;height:100%;font-size:20px">'));
+  target.show(); target.focus(); await pause(200);
+  const inputProbe = await probeDesktop(pet, chat, {}, { target: desktopWindowHandle(target) });
+  assert.equal(inputProbe.status, "completed", inputProbe.error ?? "");
+  assert.equal(await target.webContents.executeJavaScript("document.activeElement.id"), "probe");
+  const chineseProbe = await probeDesktop(pet, chat, {}, { target: desktopWindowHandle(target), text: "后端中文输入验证" });
+  if (chineseProbe.status === "not_started" && chineseProbe.error?.includes("剪贴板包含文件或无法可靠恢复的格式")) {
+    assert.equal(await target.webContents.executeJavaScript("document.getElementById('probe').value"), "");
+    console.log("真实中文粘贴受到当前未知剪贴板格式保护，未改变用户剪贴板；中文路径由隔离 adapter 测试覆盖。");
+  } else {
+    assert.equal(chineseProbe.status, "completed", chineseProbe.error ?? "");
+    assert.equal(await target.webContents.executeJavaScript("document.getElementById('probe').value"), "后端中文输入验证");
+  }
+  target.destroy();
+  fs.writeFileSync(path.join(output, "backend-desktop.json"), JSON.stringify({ nativeProbe, minimizedProbe, shownProbe, crashProbe, inputProbe, chineseProbe }, null, 2));
   preview.close(); logs.close(); settingsWindow.close();
   assert.equal(chat.isDestroyed(), false);
   await pause(250);
   const saved = JSON.parse(fs.readFileSync(path.join(isolated, "frontend_settings.json"), "utf8"));
   assert.equal(saved.chat_window_pinned, true);
   assert.deepEqual(saved.chat_window_bounds, chat.getContentBounds());
-  assert.equal(saved.hide_on_screenshot, true); assert.equal(subscriptions, 1);
+  assert.equal("hide_on_screenshot" in saved, false); assert.equal(subscriptions, 1);
   // 3. 检查实际模型与页面脚本，外部字体连接失败单独报告。
   const modelStatus = await chat.webContents.executeJavaScript("document.getElementById('model-status').textContent");
   assert.equal(modelStatus, "");
@@ -428,6 +508,7 @@ try {
 } finally {
   if (developmentServer) await developmentServer.close();
   stopDesktopSession(); windows.beginWindowShutdown();
+  desktopWindowRegistry.disconnect();
   for (const win of BrowserWindow.getAllWindows()) win.destroy();
   app.exit(process.exitCode ?? 0);
 }

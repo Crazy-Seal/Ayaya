@@ -113,6 +113,14 @@ class TurnControl:
             reason = self.reason.value if isinstance(self.reason, TurnInterruptReason) else self.reason
             raise TurnInterrupted(reason)
 
+    def is_interrupted(self) -> bool:
+        """向工具提供只读打断状态，线程不得取消 worker 或推进轮次阶段。
+
+        Returns:
+            bool: 停止或引导请求已经受理时为 True。
+        """
+        return self.reason is not None
+
     def start_llm(self) -> None:
         """检查打断信号并重置当前模型步骤的可见片段。"""
         self.check()

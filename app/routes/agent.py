@@ -7,7 +7,6 @@ from app.dependencies import get_chat_settings_dao, get_runtime_scheduler, get_t
 from app.schemas.result import Result
 from app.schemas.interaction import (
     ChannelCommandRequest, ChannelSubscriptionRequest,
-    DesktopExecutionIdentity, DesktopExecutionResult,
 )
 from app.crud.chat_settings_dao import ChatSettingsDao
 from app.services.agent_runtime_scheduler import AgentRuntimeScheduler
@@ -64,7 +63,7 @@ async def subscribe_events(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    # 1. 两条长期订阅共用分钟心跳和 JSON 投影，心跳不占业务事件序号。
+    # 1. 会话长期订阅共用分钟心跳和 JSON 投影，心跳不占业务事件序号。
     return StreamingResponse(stream_sse_json(
         scheduler.events.subscribe(session_id, channel),
         heartbeat_interval=SSE_HEARTBEAT_SECONDS,
@@ -116,61 +115,10 @@ async def update_channel_subscription(
     return {"channels": await scheduler.events.list_subscriptions(session_id)}
 
 
-@router.get("/desktop-executor/requests")
-async def desktop_execution_requests(
-    scheduler: AgentRuntimeScheduler = Depends(get_runtime_scheduler),
-) -> StreamingResponse:
-    """提供独立于聊天视图的桌面主进程执行请求流。
-
-    Args:
-        scheduler (AgentRuntimeScheduler): 进程级会话调度器。
-
-    Returns:
-        StreamingResponse: 供 Electron 读取待执行桌面请求的事件流响应。
-    """
-    # 1. 空闲执行器同样需要响应体心跳，断线仍只释放订阅，不重放已领取动作。
-    return StreamingResponse(stream_sse_json(
-        scheduler.desktop_executor.subscribe(),
-        heartbeat_interval=SSE_HEARTBEAT_SECONDS,
-    ), media_type="text/event-stream")
 
 
-@router.post("/desktop-executor/claim")
-async def desktop_execution_claim(
-    identity: DesktopExecutionIdentity,
-    scheduler: AgentRuntimeScheduler = Depends(get_runtime_scheduler),
-) -> dict:
-    """执行前复核并持久领取当前屏幕请求。
-
-    Args:
-        identity (DesktopExecutionIdentity): 屏幕执行请求身份。
-        scheduler (AgentRuntimeScheduler): 进程级会话调度器。
-
-    Returns:
-        dict: claimed 布尔值，不表示屏幕动作已经执行。
-    """
-    return {"claimed": await scheduler.desktop_executor.claim(
-        identity.session_id, identity.request_id,
-    )}
 
 
-@router.post("/desktop-executor/result")
-async def desktop_execution_result(
-    payload: DesktopExecutionResult,
-    scheduler: AgentRuntimeScheduler = Depends(get_runtime_scheduler),
-) -> dict:
-    """受理已领取屏幕请求的真实结果并触发后端恢复。
-
-    Args:
-        payload (DesktopExecutionResult): HTTP 请求内容。
-        scheduler (AgentRuntimeScheduler): 进程级会话调度器。
-
-    Returns:
-        dict: accepted 布尔值，表示后端已保存首个有效结果。
-    """
-    return {"accepted": await scheduler.desktop_executor.submit_result(
-        payload.session_id, payload.request_id, payload.result,
-    )}
 
 
 @router.get("/tasks/{session_id}/records")

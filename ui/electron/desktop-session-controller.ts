@@ -20,6 +20,10 @@ export interface DesktopSessionDependencies {
   /** 记录当前订阅的断线或恢复，不记录心跳。 */
   log: (level: "info" | "warn", message: string, error?: unknown) => void;
   reconnectDelayMs?: number;
+  /** 首次连接与重连后同步窗口身份，完成前不交付新的快照。 */
+  onConnected?: () => Promise<void>;
+  /** 断线后检查本机恢复记录，网络波动不能直接显示仍在执行的窗口。 */
+  onDisconnected?: () => void;
 }
 
 /**
@@ -122,6 +126,9 @@ export class DesktopSessionController {
     let reconnecting = false;
     while (this.isCurrent(controller, generation)) {
       try {
+        // 1.1. 登记先于建立 SSE；登记失败重试不能留下无人消费的后端订阅。
+        if (this.dependencies.onConnected) await this.dependencies.onConnected();
+        if (!this.isCurrent(controller, generation)) return;
         // 1. 请求完成和每次读取后都核对归属，旧连接迟到的快照与文字一律不转发。
         const response = await this.dependencies.fetchBackend(
           `/agent/events/${encodeURIComponent(sessionId)}?channel=desktop`,
@@ -142,6 +149,7 @@ export class DesktopSessionController {
         }
         if (this.isCurrent(controller, generation)) throw new Error("交互事件订阅意外结束");
       } catch (error) {
+        if (this.isCurrent(controller, generation)) this.dependencies.onDisconnected?.();
         // 3. 同一次断线只记录首次失败；正常取消不写日志，也不取消 Agent。
         if (this.isCurrent(controller, generation) && !reconnecting) {
           this.dependencies.log("warn", "交互事件流断开，将重新订阅", error);

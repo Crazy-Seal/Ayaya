@@ -4,7 +4,6 @@
 export type {
   ApiResponse,
   ApprovalDecision,
-  ControlScreenActionData,
   ChatHistoryItem,
   ChannelCommand,
   ChannelSubscription,
@@ -22,9 +21,6 @@ export type {
   ModelTransformData,
   MotionConfig,
   MotionSettingType,
-  ScreenActionRequest,
-  ScreenActionPoint,
-  ScreenActionResult,
   ToolItem,
   ToolPolicy,
   ToolPolicyView,

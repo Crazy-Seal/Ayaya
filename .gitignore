@@ -35,6 +35,7 @@ app/agent/tools/tools.log
 .env
 config/chat_settings.yaml
 config/mcp_servers.yaml
+config/desktop_settings.yaml
 
 # ===== coding agents =====
 .claude

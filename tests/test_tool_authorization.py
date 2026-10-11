@@ -522,10 +522,10 @@ class _UnsafePrepareTool(_CountingTool):
             ToolResult: 供外层用例断言使用的预设结果。
         """
         self.calls += 1
-        return ToolResult.continuation(
-            "perform_screen_action",
+        return ToolResult.needs_input(
+            "unsupported_execution",
             "不应在授权前执行",
-            payload={"action": "click", "x": 1, "y": 2},
+            data={"action": "click", "x": 1, "y": 2},
         )
 
 

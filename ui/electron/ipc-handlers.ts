@@ -8,9 +8,10 @@ import path from "node:path";
 
 import { FRONTEND_SETTINGS_PATH } from "./config.js";
 import { readFrontendSettings, saveFrontendSettings } from "./frontend-settings-store.js";
+import { getDesktopSettings, updateDesktopSettings } from "./desktop-settings.js";
 import { backendFetch } from "./backend-client.js";
 import { submitInteractionCommand, subscribeDesktopSession } from "./interaction-adapter.js";
-import type { ChannelCommand, ChatAttentionUpdate } from "../shared-types.js";
+import type { ChannelCommand, ChatAttentionUpdate, DesktopSettings } from "../shared-types.js";
 import { DESKTOP_CHANNEL } from "../shared-types.js";
 import type {
   ChatSettingsData,
@@ -18,8 +19,6 @@ import type {
   ToolItem,
   ModelChangedPayload,
   ModelTransformChangedPayload,
-  ScreenActionRequest,
-  ScreenActionResult,
   FrontendSettings,
 } from "./types.js";
 import {
@@ -55,8 +54,6 @@ import { getMainWindow, getChatWindow, getSettingsWindow, getTrustedRendererPoli
 import { isWindowGesture } from "./window-gesture.js";
 import { applicationOperations, SHUTDOWN_STATE_CHANNEL } from "./application-operations.js";
 import { createTrustedIpcRegistrar } from "./ipc-security.js";
-import { resolveScreenActionPoint } from "./screen-action-coordinates.js";
-import { pasteScreenActionText } from "./screen-action-input.js";
 import { appendFrontendLog } from "./logging/app-logger.js";
 import {
   createMcpServer,
@@ -122,119 +119,6 @@ const notifyModelTransformChanged = (model: {
   };
 
   mainWindow.webContents.send("desktop-pet:model-transform-changed", payload);
-};
-
-/**
- * 按已校验参数执行桌面鼠标及文字输入，再等待界面稳定。
- *
- * Args:
- *     payload (ScreenActionRequest): 已经过入口校验的桌面动作参数。
- *
- * Returns:
- *     Promise<ScreenActionResult>: 桌面动作执行结束后的完成结果。
- */
-export const performScreenAction = async (payload: ScreenActionRequest): Promise<ScreenActionResult> => {
-  const coordinates = payload.coordinates;
-  if (!coordinates || typeof coordinates.x_ratio !== "number" || typeof coordinates.y_ratio !== "number") {
-    return { executed: false, error: "缺少有效的屏幕坐标" };
-  }
-
-  try {
-    const nut = await import("@nut-tree-fork/nut-js");
-    const display = screen.getPrimaryDisplay();
-    const bounds = display.bounds;
-    const { x, y } = resolveScreenActionPoint(coordinates, bounds, display.scaleFactor);
-    const point = new nut.Point(x, y);
-
-    await nut.mouse.setPosition(point);
-    if (payload.operation === "click") {
-      await nut.mouse.click(nut.Button.LEFT);
-    } else if (payload.operation === "double") {
-      await nut.mouse.doubleClick(nut.Button.LEFT);
-    } else if (payload.operation === "right") {
-      await nut.mouse.click(nut.Button.RIGHT);
-    } else if (payload.operation === "scroll") {
-      if (payload.scroll_direction === "up") {
-        await nut.mouse.scrollUp(6);
-      } else if (payload.scroll_direction === "down") {
-        await nut.mouse.scrollDown(6);
-      } else {
-        return { executed: false, error: "滚动操作缺少方向" };
-      }
-    } else {
-      return { executed: false, error: `不支持的操作方式: ${payload.operation}` };
-    }
-
-    if (payload.text) {
-      await pasteScreenActionText({
-        text: payload.text,
-        pressEnter: payload.press_enter,
-        clipboard: {
-          /**
-           * 通过 Electron 读取当前剪贴板纯文本，供执行前保存。
-           *
-           * Returns:
-           *     string: 剪贴板原文本。
-           */
-          readText: () => clipboard.readText(),
-          /**
-           * 临时向剪贴板写入需要粘贴的文本，或恢复原纯文本。
-           *
-           * Args:
-           *     text (string): 需要显示、输入或转换的文本。
-           */
-          writeText: (text) => clipboard.writeText(text),
-          /**
-           * 读取剪贴板所有格式，供判断是否可以可靠恢复。
-           *
-           * Returns:
-           *     string[]: 当前剪贴板格式名称列表。
-           */
-          availableFormats: () => clipboard.availableFormats(),
-          /**
-           * 读取剪贴板 HTML，供动作结束后恢复富文本。
-           *
-           * Returns:
-           *     string: 原 HTML 内容。
-           */
-          readHTML: () => clipboard.readHTML(),
-          /**
-           * 读取剪贴板 RTF，供动作结束后恢复富文本。
-           *
-           * Returns:
-           *     string: 原 RTF 内容。
-           */
-          readRTF: () => clipboard.readRTF(),
-          /**
-           * 读取剪贴板图片，供动作结束后恢复。
-           *
-           * Returns:
-           *     NativeImage: 原剪贴板图片。
-           */
-          readImage: () => clipboard.readImage(),
-          /**
-           * 将动作前保存的文字、富文本和图片一并恢复到剪贴板。
-           *
-           * Args:
-           *     data (ClipboardWriteData): 调用方提供的页面或接口数据。
-           */
-          write: (data) => clipboard.write(data as Electron.Data),
-        },
-        keyboard: nut.keyboard,
-        keys: {
-          leftControl: nut.Key.LeftControl,
-          v: nut.Key.V,
-          enter: nut.Key.Enter,
-        },
-      });
-    }
-
-    return { executed: true };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    appendFrontendLog("error", "control-screen", "屏幕操作失败", error);
-    return { executed: false, error: message };
-  }
 };
 
 /**
@@ -1140,21 +1024,12 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
     return readFrontendSettings();
   });
 
-  // 更新前端设置
-  trustedIpc.handle("desktop-pet:update-frontend-settings", /**
-   * 页面修改前端配置时合并原设置并写入本地文件。
-   *
-   * Args:
-   *     _event (IpcMainInvokeEvent): Electron 传入的事件对象，不作为业务载荷使用。
-   *     settings (Partial<FrontendSettings>): 当前会话或桌面界面的设置。
-   *
-   * Returns:
-   *     { hide_on_screenshot: boolean; }: 保存后的前端设置。
-   */
-  (_event, settings: Partial<FrontendSettings>) => {
-    // 设置页面只能更新截图隐藏选项，窗口位置与置顶由对应入口管理。
-    return saveFrontendSettings({ hide_on_screenshot: settings.hide_on_screenshot !== false });
-  });
+  /** 可信设置页读取已保存后端配置，退出门禁由统一 IPC 入口检查。 */
+  trustedIpc.handle("desktop-pet:get-desktop-settings", /** 返回后端 YAML 配置。 */
+  () => getDesktopSettings());
+  /** 可信设置页只提交后端定义的完整桌面设置。 */
+  trustedIpc.handle("desktop-pet:update-desktop-settings", /** 保存配置并返回后端确认值。 */
+  (_event, settings: DesktopSettings) => updateDesktopSettings(settings));
 
   // 获取模型动作配置
   trustedIpc.handle("desktop-pet:get-motion-config", /**

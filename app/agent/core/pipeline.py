@@ -10,10 +10,11 @@ tool_call_id/tool_args/resume_state）写入 state.interrupt_data，使恢复能
 
 import logging
 from typing import Any, AsyncIterator, Awaitable, Callable, Protocol
+from app.schemas.desktop import DesktopOperations, StopRequested
 
 from app.schemas.runtime_types import (
     AUTHORIZATION_GRANTED_KIND, ApprovalDecisionKind, DESKTOP_CHANNEL,
-    DesktopExecutionKind, InterruptKind,
+    InterruptKind,
 )
 from app.agent.context import ModelInputCoordinator, RuntimeContext
 from app.agent.runtime.turn_control import TurnInterrupted
@@ -114,6 +115,7 @@ class ExecutionPipeline:
         emit_event: EventEmitter,
         tool_authorization: ToolAuthorization | None = None,
         task_launcher: TaskLauncher | None = None,
+        desktop: DesktopOperations | None = None,
     ) -> None:
         """装配模型输入、授权和任务启动端口，管道不持有渠道连接。
 
@@ -126,6 +128,7 @@ class ExecutionPipeline:
             emit_event (EventEmitter): Agent 内部事件通知回调。
             tool_authorization (ToolAuthorization | None): 工具单次授权验证器。
             task_launcher (TaskLauncher | None): 工具使用的共享进程启动端口。
+            desktop (DesktopOperations | None): 应用共享桌面接口，管道只注入、不负责关闭。
         """
         self._prompt_source = prompt_source
         self._llm_client = llm_client
@@ -136,6 +139,7 @@ class ExecutionPipeline:
         self._model_input = model_input
         self._tool_authorization = tool_authorization
         self._task_launcher = task_launcher
+        self._desktop = desktop
 
     # ==================== 主入口 ====================
 
@@ -178,7 +182,7 @@ class ExecutionPipeline:
 
         Args:
             state (AgentState): 当前 Agent 状态。
-            resume_data (dict): 审批决定或桌面执行的实际结果。
+            resume_data (dict): 当前等待工具的人工审批决定。
             checkpoint (CheckpointCallback | None): 持久化管道进度的异步回调。
             runtime_context (RuntimeContext | None): 本轮临时上下文，不写入持久消息。
 
@@ -212,6 +216,8 @@ class ExecutionPipeline:
                 resume_state=interrupt_data.get("resume_state", {}),
                 origin_run_id=runtime_context.turn_control.run_id
                 if runtime_context and runtime_context.turn_control else "",
+                stop_requested=runtime_context.turn_control.is_interrupted
+                if runtime_context and runtime_context.turn_control else None,
             )
 
             # 恢复执行时又触发了新的中断
@@ -243,6 +249,8 @@ class ExecutionPipeline:
                 state, tool_call,
                 origin_run_id=runtime_context.turn_control.run_id
                 if runtime_context and runtime_context.turn_control else "",
+                stop_requested=runtime_context.turn_control.is_interrupted
+                if runtime_context and runtime_context.turn_control else None,
             )
             if result.interrupt:
                 yield await self._commit_interrupt(
@@ -405,6 +413,8 @@ class ExecutionPipeline:
 
                 result = await self._execute_tool(
                     state, tool_call,
+                    stop_requested=runtime_context.turn_control.is_interrupted
+                    if runtime_context.turn_control else None,
                     origin_run_id=runtime_context.turn_control.run_id
                     if runtime_context.turn_control else "",
                 )
@@ -518,18 +528,20 @@ class ExecutionPipeline:
         resume_data: dict | None = None,
         resume_state: dict | None = None,
         origin_run_id: str = "",
+        stop_requested: StopRequested | None = None,
     ) -> ToolResult:
         """复核工具及调用授权，注入任务启动上下文并执行一次工具。
 
         Args:
             state (AgentState): 当前 Agent 状态。
             tool_call (ToolCall): 当前执行的工具调用。
-            resume_data (dict | None): 审批决定或桌面执行的实际结果。
+            resume_data (dict | None): 当前等待工具的人工审批决定。
             resume_state (dict | None): 中断前保存的工具中间状态。
             origin_run_id (str): 发起进程任务的运行轮次标识。
+            stop_requested (StopRequested | None): 当前轮次已受理停止或引导时返回 True。
 
         Returns:
-            ToolResult: 当前工具执行、授权等待或桌面继续请求的结果。
+            ToolResult: 当前工具直接执行的结果或统一授权等待。
         """
         # 1. 查找当前工具，缺失时返回可闭合调用的错误结果。
         tool = self._tool_manager.get(tool_call.name)
@@ -544,7 +556,7 @@ class ExecutionPipeline:
         descriptor = descriptor_for_tool(tool)
         hooks_started = False
 
-        # 2. 根据当前调用身份复核授权，新调用、审批恢复和 continuation 恢复使用各自快照。
+        # 2. 使用既有统一授权：首次调用按配置决定，审批恢复核对已保存的动作快照。
         if self._tool_authorization is not None:
             envelope = resume_state or {}
             hooks_started = bool(envelope.get("hooks_started"))
@@ -580,12 +592,6 @@ class ExecutionPipeline:
                     if prepared_action is not None
                     else None
                 )
-            # 2.2. 桌面结果回传时仍复核单次 grant，执行前授权不代表恢复时仍有效。
-            elif "continuation" in envelope:
-                grant = envelope.get("authorization_grant")
-                if not self._tool_authorization.validate_grant(invocation, grant):
-                    return ToolResult(content="错误: 工具授权已失效，请重新发起调用")
-                tool_resume_state = envelope.get("tool_resume_state") or {}
             else:
                 outcome = self._tool_authorization.authorize(invocation)
                 if isinstance(outcome, ToolResult):
@@ -613,6 +619,8 @@ class ExecutionPipeline:
             resume_state=tool_resume_state,
             authorization_grant=grant,
             task_launcher=self._task_launcher,
+            desktop=self._desktop,
+            stop_requested=stop_requested,
             origin_run_id=origin_run_id,
             origin_tool_call_id=tool_call.id,
         )
@@ -656,29 +664,14 @@ class ExecutionPipeline:
                 tool,
                 result.resume_state,
                 grant,
+                stop_requested=stop_requested,
+                origin_run_id=origin_run_id,
             )
             prepared_action = prepared_invocation.prepared_action
 
-        # 7. continuation 保存单次 grant、准备动作和钩子状态，交给独立屏幕通道等待。
-        if result.interrupt and result.interrupt.type == InterruptKind.CONTINUATION_REQUEST:
-            continuation_kind = result.interrupt.data.get("kind")
-            if (
-                self._tool_authorization is not None
-                and descriptor.authorization_timing == "after_prepare"
-                and prepared_action is None
-                and continuation_kind != DesktopExecutionKind.CAPTURE_SCREEN
-            ):
-                return ToolResult(
-                    content="错误: after_prepare 工具在授权前只能请求只读准备数据"
-                )
-            result.resume_state = {
-                "continuation": continuation_kind,
-                "tool_resume_state": result.resume_state,
-                "authorization_grant": grant,
-                "prepared_action": prepared_action,
-                "hooks_started": hooks_started,
-            }
-            return result
+        # 7. 已退役的执行中断不能重新进入等待；当前公开协议只支持统一审批。
+        if result.interrupt and result.interrupt.type != InterruptKind.AUTHORIZATION_REQUEST:
+            return ToolResult(content="错误: 工具返回不支持的中断；准备阶段只能请求只读准备数据")
 
         # 8. 只有工具实际完成才运行 AFTER_TOOL，等待中断不提前触发完成钩子。
         await self._plugin_manager.run_hooks(
@@ -724,8 +717,10 @@ class ExecutionPipeline:
         tool: BaseTool,
         resume_state: dict,
         grant: dict | None,
+        stop_requested: StopRequested | None = None,
+        origin_run_id: str = "",
     ) -> ToolResult:
-        """使用已准备动作和当前授权重入工具，屏幕副作用仍交给桌面执行通道。
+        """使用已准备动作和当前授权重入工具，屏幕动作由注入的共享后端桌面接口直接执行。
 
         Args:
             state (AgentState): 当前 Agent 状态。
@@ -733,9 +728,11 @@ class ExecutionPipeline:
             tool (BaseTool): 当前准备或执行的工具实例。
             resume_state (dict): 中断前保存的工具中间状态。
             grant (dict | None): 绑定本次调用的授权快照。
+            stop_requested (StopRequested | None): 当前轮次的只读停止检查。
+            origin_run_id (str): 当前运行标识，保留后台任务的来源关联。
 
         Returns:
-            ToolResult: 准备后授权通过的工具执行结果，或新的继续请求。
+            ToolResult: 准备后获准的工具执行结果。
         """
         # 1. 使用已获准的具体动作和中间态重入工具，仍传入共享任务端口。
         context = ToolContext(
@@ -748,6 +745,10 @@ class ExecutionPipeline:
             resume_state=resume_state,
             authorization_grant=grant,
             task_launcher=self._task_launcher,
+            origin_run_id=origin_run_id,
+            origin_tool_call_id=tool_call.id,
+            desktop=self._desktop,
+            stop_requested=stop_requested,
         )
         # 2. 普通工具异常转换为可展示结果，随后执行统一结果规范化。
         try:
@@ -781,35 +782,6 @@ class ExecutionPipeline:
             else ApprovalDecisionKind.REJECT
         }
 
-    def validate_pending_continuation(self, interrupt_data: dict[str, Any]) -> bool:
-        """在前端执行 continuation 前复核当前策略、契约和单次授权。
-
-        Args:
-            interrupt_data (dict[str, Any]): 当前等待审批或桌面执行的恢复信息。
-        """
-        if self._tool_authorization is None:
-            return False
-        tool = self._tool_manager.get(str(interrupt_data.get("tool_name") or ""))
-        if tool is None:
-            return False
-        envelope = interrupt_data.get("resume_state") or {}
-        continuation = interrupt_data.get("data") or {}
-        if (
-            envelope.get("continuation") != continuation.get("kind")
-            or "continuation" not in envelope
-        ):
-            return False
-        invocation = ToolInvocation(
-            session_id=str(interrupt_data.get("session_id") or ""),
-            tool_call_id=str(interrupt_data.get("tool_call_id") or ""),
-            descriptor=descriptor_for_tool(tool),
-            arguments=interrupt_data.get("tool_args") or {},
-            prepared_action=envelope.get("prepared_action"),
-        )
-        return self._tool_authorization.validate_grant(
-            invocation,
-            envelope.get("authorization_grant"),
-        )
 
     async def _commit_completed_tool_call(
         self,

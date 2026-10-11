@@ -17,13 +17,13 @@ import {
 } from "./window-manager.js";
 import { startCursorTracking, stopCursorTracking } from "./cursor-tracker.js";
 import { registerIpcHandlers } from "./ipc-handlers.js";
-import { startDesktopExecutor } from "./desktop-executor.js";
+import { desktopWindowRegistry, setDesktopBackendExitListener } from "./desktop-window-runtime.js";
 import { stopDesktopSession } from "./interaction-adapter.js";
 import { clearChatSettingsCache } from "./chat-settings.js";
 import { initAyayaImageProtocolHandler } from "./ayaya-image-protocol.js";
 import {
   onBackendUnexpectedExit,
-  startBackend,
+  startBackend as startBackendProcess,
   stopBackend,
 } from "./backend-process.js";
 import {
@@ -70,7 +70,11 @@ const showBackendRecoveryDialog = async (
 };
 
 const backendRecoveryCoordinator = createBackendRecoveryCoordinator({
-  startBackend,
+  /** 重启后端后重新登记两个存活窗口，旧请求回报不能推进本次连接。 */
+  startBackend: async () => {
+    await startBackendProcess();
+    if (!applicationShutdownCoordinator.isShuttingDown()) await desktopWindowRegistry.connect();
+  },
   showDialog: showBackendRecoveryDialog,
   clearSettingsCache: clearChatSettingsCache,
   /**
@@ -116,20 +120,24 @@ onBackendUnexpectedExit(/**
  *     event (BackendUnexpectedExit): 调用方或浏览器触发的当前事件。
  */
 (event) => {
+  desktopWindowRegistry.disconnect();
+  desktopWindowRegistry.recoverWindows();
   backendRecoveryCoordinator.handleUnexpectedExit(event);
 });
+
+setDesktopBackendExitListener(/** 外部后端死亡已确认并尝试恢复窗口后，沿用相同的恢复对话框。 */
+() => backendRecoveryCoordinator.handleUnexpectedExit({ exitCode: null, signal: null, message: "外部后端进程意外退出" }));
 
 /**
  * 先关闭界面操作并通知页面，再停止两条桌面订阅，最后由统一协调器释放应用资源。
  */
 const requestApplicationShutdown = (): void => {
   beginWindowShutdown();
-  stopDesktopExecutor?.();
+  desktopWindowRegistry.disconnect();
   stopDesktopSession();
   void applicationShutdownCoordinator.requestShutdown();
 };
 
-let stopDesktopExecutor: (() => void) | undefined;
 
 process.on("SIGINT", requestApplicationShutdown);
 process.on("SIGTERM", requestApplicationShutdown);
@@ -173,7 +181,7 @@ async () => {
   appendFrontendLog("info", "startup", "日志控制台已启动，正在启动后端");
 
   try {
-    await startBackend();
+    await startBackendProcess();
   } catch (error) {
     if (applicationShutdownCoordinator.isShuttingDown()) return;
     const recent = getRecentLogs("backend", 50)
@@ -201,7 +209,6 @@ async () => {
   appendFrontendLog("info", "startup", "后端已就绪");
   // 创建主窗口
   const mainWindow = createMainWindow();
-  stopDesktopExecutor = startDesktopExecutor();
   mainWindow.once("closed", requestApplicationShutdown);
 
   // 初始化 Live2D 协议处理器
@@ -209,6 +216,11 @@ async () => {
   initAyayaImageProtocolHandler();
 
   openChatWindow();
+  try {
+    await desktopWindowRegistry.connect();
+  } catch (error) {
+    appendFrontendLog("error", "desktop-windows", "首次窗口登记失败", error);
+  }
 
   // 开始光标追踪
   startCursorTracking();

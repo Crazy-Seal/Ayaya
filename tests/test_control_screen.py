@@ -97,55 +97,8 @@ def test_invalid_bbox_is_rejected(bbox: object) -> None:
         normalize_bbox(bbox)
 
 
-def test_initial_call_directly_requests_execution() -> None:
-    """验证直接定位工具首次调用直接请求执行。"""
-    async def run():
-        """由外层测试调用，完成“直接定位工具首次调用直接请求执行”的异步步骤。"""
-        return await control_screen().execute(
-            _args(
-                operation="click",
-                text="hello",
-                press_enter=False,
-                wait_seconds=1,
-            ),
-            _context(),
-        )
-
-    result = asyncio.run(run())
-
-    assert result.interrupt is not None
-    assert result.interrupt.type == "continuation_request"
-    assert result.interrupt.data["kind"] == "perform_screen_action"
-    payload = result.interrupt.data["payload"]
-    assert payload["target"] == "search box"
-    assert payload["operation"] == "click"
-    assert payload["text"] == "hello"
-    assert payload["press_enter"] is False
-    assert payload["coordinates"] == {
-        "bbox": [400, 200, 600, 400],
-        "x_ratio": 0.5,
-        "y_ratio": 0.3,
-    }
-    assert result.resume_state == {"phase": "awaiting_execution"}
 
 
-def test_initial_call_does_not_reorder_xyxy_coordinates() -> None:
-    """验证首次调用不会重排 xyxy 坐标。"""
-    async def run():
-        """由外层测试调用，完成“首次调用不会重排 xyxy 坐标”的异步步骤。"""
-        return await control_screen().execute(
-            _args(bbox=[200, 400, 400, 600]),
-            _context(),
-        )
-
-    result = asyncio.run(run())
-
-    assert result.interrupt is not None
-    assert result.interrupt.data["payload"]["coordinates"] == {
-        "bbox": [200, 400, 400, 600],
-        "x_ratio": 0.3,
-        "y_ratio": 0.5,
-    }
 
 
 def test_invalid_bbox_does_not_create_interrupt() -> None:
@@ -163,19 +116,6 @@ def test_invalid_bbox_does_not_create_interrupt() -> None:
     assert result.content.startswith("错误:")
 
 
-def test_control_screen_defaults_scroll_direction_to_down() -> None:
-    """验证滚轮方向默认向下。"""
-    async def run():
-        """由外层测试调用，完成“滚轮方向默认向下”的异步步骤。"""
-        return await control_screen().execute(
-            _args(operation="scroll"),
-            _context(),
-        )
-
-    result = asyncio.run(run())
-
-    assert result.interrupt is not None
-    assert result.interrupt.data["payload"]["scroll_direction"] == "down"
 
 
 def test_control_screen_rejects_invalid_scroll_direction() -> None:
@@ -191,83 +131,3 @@ def test_control_screen_rejects_invalid_scroll_direction() -> None:
 
     assert result.interrupt is None
     assert "scroll_direction" in result.content
-
-
-def test_control_screen_execution_resume_injects_screenshot() -> None:
-    """验证执行恢复后向模型注入截图。"""
-    async def run():
-        """由外层测试调用，完成“执行恢复后向模型注入截图”的异步步骤。"""
-        return await control_screen().execute(
-            _args(),
-            _context(
-                resume_data={
-                    "approved": True,
-                    "executed": True,
-                    "screenshot_data": "data:image/png;base64,BBB",
-                },
-                resume_state={"phase": "awaiting_execution"},
-            ),
-        )
-
-    result = asyncio.run(run())
-
-    assert result.content == "屏幕操作完成，已收到操作后的截图。"
-    assert result.image_url == "data:image/png;base64,BBB"
-
-
-def test_control_screen_execution_resume_requires_frontend_result() -> None:
-    """验证执行恢复必须提供前端结果。"""
-    async def run():
-        """由外层测试调用，完成“执行恢复必须提供前端结果”的异步步骤。"""
-        return await control_screen().execute(
-            _args(),
-            _context(
-                resume_data={},
-                resume_state={"phase": "awaiting_execution"},
-            ),
-        )
-
-    result = asyncio.run(run())
-
-    assert result.content == "屏幕操作失败: 前端未完成屏幕操作。"
-    assert result.image_url is None
-
-
-def test_control_screen_execution_resume_reports_frontend_failure() -> None:
-    """验证前端动作失败在工具结果中明确报告。"""
-    async def run():
-        """由外层测试调用，完成“前端动作失败在工具结果中明确报告”的异步步骤。"""
-        return await control_screen().execute(
-            _args(),
-            _context(
-                resume_data={
-                    "approved": True,
-                    "executed": False,
-                    "error": "mouse unavailable",
-                },
-                resume_state={"phase": "awaiting_execution"},
-            ),
-        )
-
-    result = asyncio.run(run())
-
-    assert result.content == "屏幕操作失败: mouse unavailable"
-    assert result.image_url is None
-
-
-def test_control_screen_rejects_legacy_resume_phase() -> None:
-    """验证旧恢复阶段标记被拒绝。"""
-    async def run():
-        """由外层测试调用，完成“旧恢复阶段标记被拒绝”的异步步骤。"""
-        return await control_screen().execute(
-            _args(),
-            _context(
-                resume_data={"screenshot_data": "legacy"},
-                resume_state={"phase": "awaiting_capture"},
-            ),
-        )
-
-    result = asyncio.run(run())
-
-    assert result.interrupt is None
-    assert "恢复状态无效" in result.content

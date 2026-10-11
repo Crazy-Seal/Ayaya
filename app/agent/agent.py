@@ -30,6 +30,7 @@ from app.agent.state import AgentState
 from app.agent.state.manager import StateManager
 from app.agent.runtime.session_inbox import InboxEnvelope
 from app.agent.runtime.turn_control import TurnControl, TurnInterrupted
+from app.schemas.desktop import DesktopOperations
 from app.agent.state.messages import AssistantMessage, HumanMessage, ToolCall, ToolMessage, RuntimeInputMessage
 from app.agent.tools.base import BaseTool, TaskLauncher
 from app.agent.tools.authorization.manager import ToolAuthorization
@@ -100,6 +101,7 @@ class Agent:
         chat_settings: "ChatSettings | None" = None,
         tool_authorization: ToolAuthorization | None = None,
         task_launcher: TaskLauncher | None = None,
+        desktop: DesktopOperations | None = None,
     ):
         """装配 Agent 执行依赖，将后台任务启动端口注入工具管道。
 
@@ -112,6 +114,7 @@ class Agent:
             chat_settings (ChatSettings | None): 会话模型和插件配置。
             tool_authorization (ToolAuthorization | None): 工具单次授权验证器。
             task_launcher (TaskLauncher | None): 工具使用的共享进程启动端口。
+            desktop (DesktopOperations | None): 应用所有的共享桌面接口，Agent 仅传给 Pipeline。
         """
         self.config = config
         self.mcp_connection_manager = mcp_connection_manager
@@ -161,6 +164,7 @@ class Agent:
             emit_event=self.event_router.emit,
             tool_authorization=self.tool_authorization,
             task_launcher=task_launcher,
+            desktop=desktop,
         )
 
         # 初始化标志
@@ -394,17 +398,6 @@ class Agent:
         ):
             yield event
 
-    async def validate_pending_continuation(self, interrupt_data: dict) -> bool:
-        """初始化当前工具目录，并在前端副作用发生前复核 continuation。
-
-        Args:
-            interrupt_data (dict): 当前等待审批或桌面执行的恢复信息。
-        """
-        await self.initialize()
-        return self.pipeline.validate_pending_continuation({
-            **interrupt_data,
-            "session_id": self.config.session_id,
-        })
 
     async def run_runtime_input(
         self, message: RuntimeInputMessage, *,

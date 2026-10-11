@@ -4,9 +4,10 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Protocol
+from app.schemas.desktop import DesktopOperations, StopRequested
 
 from app.schemas.runtime_types import (
-    DesktopExecutionKind, InterruptKind,
+    InterruptKind,
 )
 from app.agent.tools._schema import normalize_tool_schema_for_model
 
@@ -105,12 +106,14 @@ class ToolContext:
         emit_event (Callable[[str, Any], Awaitable[None]]): 通知 Agent 内部事件的异步回调，不直接编码 SSE。
         get_checkpoint (Callable[[], dict]): 读取工具恢复中间态的回调。
         set_checkpoint (Callable[[dict], None]): 更新工具恢复中间态的回调。
-        resume_data (dict | None): 审批决定或桌面执行的实际结果。
+        resume_data (dict | None): 当前工具的人工审批决定。
         resume_state (dict | None): 中断前保存的工具中间状态。
         authorization_grant (dict | None): 绑定当前调用的单次授权快照。
         task_launcher ('TaskLauncher | None'): 工具使用的共享进程启动端口。
         origin_run_id (str): 发起进程任务的运行轮次标识。
         origin_tool_call_id (str): 发起任务的工具调用标识。
+        desktop (DesktopOperations | None): 应用共享桌面接口，单个工具与 Agent 不关闭它。
+        stop_requested (StopRequested | None): 当前轮次已受理停止或引导的只读检查。
     """
     session_id: str
     state: Any  # AgentState（避免循环引用，使用 Any）
@@ -123,6 +126,8 @@ class ToolContext:
     task_launcher: "TaskLauncher | None" = None
     origin_run_id: str = ""
     origin_tool_call_id: str = ""
+    desktop: DesktopOperations | None = None
+    stop_requested: StopRequested | None = None
 
 
 class TaskLauncher(Protocol):
@@ -219,32 +224,6 @@ class ToolResult:
             resume_state=resume_state or {},
         )
 
-    @classmethod
-    def continuation(
-        cls,
-        kind: DesktopExecutionKind,
-        message: str,
-        *,
-        payload: dict | None = None,
-        resume_state: dict | None = None,
-    ) -> "ToolResult":
-        """请求独立桌面执行器补充屏幕数据或执行已获授权的动作。
-
-        Args:
-            kind (DesktopExecutionKind): 截屏或屏幕动作类别。
-            message (str): 展示给用户的工具状态。
-            payload (dict | None): 执行所需的数据。
-            resume_state (dict | None): 后端恢复工具所需的中间态。
-
-        Returns:
-            ToolResult: 不包含实际副作用的 continuation 请求。
-        """
-        return cls.needs_input(
-            type=InterruptKind.CONTINUATION_REQUEST,
-            message=message,
-            data={"kind": kind, "payload": payload or {}},
-            resume_state=resume_state,
-        )
 
     @classmethod
     def prepared(

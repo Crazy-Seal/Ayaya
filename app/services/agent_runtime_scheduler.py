@@ -13,6 +13,7 @@ from app.agent.agent import Agent
 from app.agent.core.event_router import AgentEvent, EventType
 from app.agent.runtime.session_inbox import InboxEnvelope, SessionInbox
 from app.agent.runtime.turn_control import TurnControl
+from app.services.desktop_controller import DesktopController
 from app.agent.state.manager import StateManager
 from app.agent.state.model import AgentState
 from app.agent.state.messages import HumanMessage, TaskResultMessage
@@ -25,9 +26,7 @@ from app.services.interaction_contract import (
     ChannelCommand, CommandReceipt, InteractionEvent,
 )
 from app.services.interaction_event_hub import InteractionEventHub
-from app.services.desktop_execution_broker import (
-    DesktopExecutionBroker, DesktopExecutionRequest,
-)
+
 from app.services.task_supervisor import TaskSupervisor
 
 
@@ -61,7 +60,7 @@ class AgentRuntimeScheduler:
         _inbox_factory (Callable[[str], SessionInbox]): 创建该会话的输入队列访问对象，读取同一数据库。
         _state_manager_factory (Callable[[str], StateManager]): 创建数据库访问对象，读取会话消息、审批和桌面结果。
         task_supervisor (TaskSupervisor | None): 启动、停止并记录进程任务，由所有会话共用。
-        desktop_executor (DesktopExecutionBroker): 所有会话共用的桌面请求管理器，动作由 Electron 执行。
+        desktop (DesktopController | None): 应用共享的后端桌面模块，执行线程不属于单个会话。
         _tasks (dict[str, asyncio.Task[None]]): 每个会话运行 _drain 的后台异步任务，回答结束后仍保留等待。
         _wakeups (dict[str, asyncio.Event]): 新消息、审批决定、桌面回报或后台任务通知到达时，让对应 worker 结束等待、重新检查。
         _run_ids (dict[str, str]): 当前或下一轮回答的编号，用于确认停止、引导命令没有指向另一轮。
@@ -87,8 +86,9 @@ class AgentRuntimeScheduler:
         inbox_factory: Callable[[str], SessionInbox] = SessionInbox,
         state_manager_factory: Callable[[str], StateManager] = StateManager,
         task_supervisor: TaskSupervisor | None = None,
+        desktop: DesktopController | None = None,
     ) -> None:
-        """保存依赖和会话运行信息，创建桌面请求管理器；此时不创建 worker。
+        """保存依赖和会话运行信息，保存共享桌面模块；此时不创建 worker。
 
         Args:
             event_hub (InteractionEventHub): 按来源路由的事件中心。
@@ -96,12 +96,14 @@ class AgentRuntimeScheduler:
             inbox_factory (Callable[[str], SessionInbox]): 根据会话创建数据库输入队列访问对象的函数。
             state_manager_factory (Callable[[str], StateManager]): 根据会话创建 checkpoint 数据库访问对象的函数。
             task_supervisor (TaskSupervisor | None): 所有会话共用的进程任务管理器。
+            desktop (DesktopController | None): 应用共享桌面模块，Scheduler 负责启动、停止与关闭。
         """
         self.events = event_hub
         self._agent_factory = agent_factory
         self._inbox_factory = inbox_factory
         self._state_manager_factory = state_manager_factory
         self.task_supervisor = task_supervisor
+        self.desktop = desktop
         # 1. 按 session_id 保存各会话数据；聊天连接断开不删除它们。
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._wakeups: dict[str, asyncio.Event] = {}
@@ -114,18 +116,11 @@ class AgentRuntimeScheduler:
         # 2. 用户操作和 Agent 输出都可能修改会话信息，分别保护审批决定和运行状态。
         self._decision_locks: dict[str, asyncio.Lock] = {}
         self._turn_locks: dict[str, asyncio.Lock] = {}
-        # 3. Electron 结果保存后通知 resume_desktop_result；客户端连接时通过 snapshot 读取状态。
-        self.desktop_executor = DesktopExecutionBroker(
-            state_manager_factory=state_manager_factory,
-            agent_factory=agent_factory,
-            on_result=self.resume_desktop_result,
-        )
         self._lock = asyncio.Lock()
         self.phase = RuntimePhase.INITIALIZING
         self._activated_sessions: set[str] = set()
         self._lifecycle_lock = asyncio.Lock()
         self._shutdown_partials: dict[str, tuple[str, bool, str, str | None]] = {}
-        self.desktop_executor.begin_shutdown()
         self.events.set_snapshot_provider(self.snapshot)
 
     async def start(self) -> None:
@@ -148,7 +143,8 @@ class AgentRuntimeScheduler:
             if self.task_supervisor is not None:
                 await self.task_supervisor.recover_orphaned()
             # 3. 数据库清理全部成功后才允许执行，前面任何异常都不会走到这里。
-            self.desktop_executor.start()
+            if self.desktop is not None:
+                self.desktop.start()
             self.phase = RuntimePhase.RUNNING
 
     async def _reset_inbox(self) -> None:
@@ -200,7 +196,8 @@ class AgentRuntimeScheduler:
                 return
             # 1. 等已经开始受理的用户命令保存完成，再标记关闭；后来到达的命令会被拒绝。
             self.phase = RuntimePhase.STOPPING
-            self.desktop_executor.begin_shutdown()
+            if self.desktop is not None:
+                self.desktop.begin_shutdown()
             # 2. worker 退出会移除 TurnControl，先保存文字和消息编号，稍后才能写入聊天历史。
             for session_id, control in self._controls.items():
                 self._shutdown_partials[session_id] = (
@@ -232,7 +229,7 @@ class AgentRuntimeScheduler:
         # 1.1. 在首次数据库等待前取得完整内存状态；空闲时的预分配编号只供命令回执使用。
         # EventHub 调用本方法时已持发布锁，状态事件会在快照发送后再提交。
         run_id = self._run_ids.get(session_id) if phase in {
-            SessionPhase.RUNNING, SessionPhase.PENDING_INTERRUPT, SessionPhase.PENDING_EXECUTION,
+            SessionPhase.RUNNING, SessionPhase.PENDING_INTERRUPT,
         } else None
         # 2. 桌面可以查看整个会话；其他渠道只查看自己发起的回答和自己提交的输入。
         visible = channel == DESKTOP_CHANNEL or channel == origin
@@ -406,7 +403,7 @@ class AgentRuntimeScheduler:
             committing = control is not None and control.phase == TurnPhase.COMMITTING
             # 2.1. 只有已有回答正在运行或等待审批、桌面结果时才有排队的对象。
             if command.kind == CommandKind.QUEUE_TURN and phase not in {
-                SessionPhase.RUNNING, SessionPhase.PENDING_INTERRUPT, SessionPhase.PENDING_EXECUTION,
+                SessionPhase.RUNNING, SessionPhase.PENDING_INTERRUPT,
             }:
                 return CommandReceipt(False, "当前没有可排队的活动轮次")
             # 2.1.1. 已开始最终保存时不再接受排队，用户可以把这条消息直接作为下一轮输入。
@@ -423,7 +420,7 @@ class AgentRuntimeScheduler:
                 # 2.3. 引导指向的回答已过期时不能打断另一个回答，有活动轮次则转成排队。
                 # 2.4. 空闲、出错或正在最终保存时，保留为下一次普通输入，而不是继续旧轮次。
                 if not target_is_active and not committing and phase in {
-                    SessionPhase.RUNNING, SessionPhase.PENDING_INTERRUPT, SessionPhase.PENDING_EXECUTION,
+                    SessionPhase.RUNNING, SessionPhase.PENDING_INTERRUPT,
                 }:
                     queued = True
             # 3. 先把输入保存到 Inbox，才请求停止当前回答；保存失败时原回答继续运行。
@@ -564,35 +561,6 @@ class AgentRuntimeScheduler:
         await self._ensure_running(command.session_id)
         return CommandReceipt(True, run_id=self._run_ids.get(command.session_id))
 
-    async def resume_desktop_result(
-        self, session_id: str, request_id: str, result: dict
-    ) -> None:
-        """桌面结果已保存后，通知 worker 把结果交给原轮次的 Agent。
-
-        Args:
-            session_id (str): 共享 Ayaya 会话标识。
-            request_id (str): checkpoint 中的持久中断标识。
-            result (dict): Electron 回报并已保存的截图、动作成功或失败信息。
-
-        Raises:
-            ValueError: 桌面执行请求已过期。
-        """
-        if self.phase != RuntimePhase.RUNNING:
-            return
-        # 1. 确认结果对应数据库中的当前桌面请求，不能让旧结果接到新工具调用上。
-        manager = self._state_manager_factory(session_id)
-        try:
-            state = await manager.load()
-            interrupt = state.interrupt_data or {}
-            if (interrupt.get("request_id") != request_id
-                    or interrupt.get("type") != InterruptKind.CONTINUATION_REQUEST):
-                raise ValueError("桌面执行请求已过期")
-            origin = str(interrupt.get("origin_channel") or DESKTOP_CHANNEL)
-        finally:
-            await manager.close()
-        # 2. Broker 已保存结果；这里只把待处理数据记在内存，并通知 worker 结束等待。
-        self._resumes[session_id] = {"decision": result, "origin": origin}
-        await self._ensure_running(session_id)
 
     async def _ensure_running(self, session_id: str) -> None:
         """为有新真人输入的会话创建 worker；已经存在时只通知它检查新工作。
@@ -634,10 +602,7 @@ class AgentRuntimeScheduler:
         # 2. 等待请求和审批解除同步修改展示状态，持久保存仍由调用方先完成。
         elif event.kind == InteractionEventKind.INTERRUPT:
             interrupt = event.payload["value"]
-            self._phases[session_id] = (
-                SessionPhase.PENDING_EXECUTION if interrupt.get("type") == InterruptKind.CONTINUATION_REQUEST
-                else SessionPhase.PENDING_INTERRUPT
-            )
+            self._phases[session_id] = SessionPhase.PENDING_INTERRUPT
             self._interrupts[session_id] = interrupt
         elif event.kind == InteractionEventKind.AUTHORIZATION_RESOLVED:
             self._interrupts.pop(session_id, None)
@@ -686,13 +651,6 @@ class AgentRuntimeScheduler:
                     request_id=(event.data or {}).get("request_id")
                     if event.type == EventType.INTERRUPT else None,
                 ))
-                # 3. 桌面入队可能等待数据库或 Broker 的锁，必须在上面的短发布操作之外执行。
-                if event.type == EventType.INTERRUPT and event.data.get("type") == InterruptKind.CONTINUATION_REQUEST:
-                    await self.desktop_executor.enqueue(DesktopExecutionRequest(
-                        session_id, event.data["request_id"],
-                        str((event.data.get("data") or {}).get("kind")),
-                        (event.data.get("data") or {}).get("payload") or {},
-                    ))
         # 4. 执行出错时记录错误并告知界面，已经写入数据库的消息和工具结果不删除。
         except Exception as exc:
             logger.exception("会话 %s 的运行失败", session_id)
@@ -755,7 +713,7 @@ class AgentRuntimeScheduler:
         inbox = self._inbox_factory(session_id)
         try:
             while True:
-                # 1. 用户已作出审批决定，或 Electron 已回报桌面结果时，先继续原工具调用。
+                # 1. 用户已作出审批决定时先继续原工具调用，桌面输入在后端直接返回结果。
                 # 1.1. pop 取走待处理数据，防止下一次循环再次处理同一决定或结果。
                 resume = self._resumes.pop(session_id, None)
                 if resume is not None:
@@ -788,10 +746,7 @@ class AgentRuntimeScheduler:
         Returns:
             tuple[InboxEnvelope, ...]: 当前领取的输入；没有可处理输入时为空。
         """
-        # 1. Electron 尚未回报桌面动作结果时，不能用新输入插入未结束的工具调用。
-        if phase == SessionPhase.PENDING_EXECUTION:
-            return ()
-        # 2. 等待审批时，只有直接发送的新真人消息可以取代审批；排队消息和任务通知继续等。
+        # 1. 等待审批时，只有直接发送的新真人消息可以取代审批；排队消息和任务通知继续等。
         return await inbox.claim_activation_batch(
             kind=InboxKind.HUMAN if phase == SessionPhase.PENDING_INTERRUPT else None,
             include_queued=phase != SessionPhase.PENDING_INTERRUPT,
@@ -996,10 +951,11 @@ class AgentRuntimeScheduler:
         async with self._lifecycle_lock:
             if self.phase == RuntimePhase.STOPPED:
                 return
-            # 1. 等 worker 和 Broker 的数据库写入都结束，才能读取最后状态、保存终止记录。
+            # 1. 等 worker 和桌面线程的清理都结束，才能读取最后状态、保存终止记录。
             if self._tasks:
                 await asyncio.gather(*self._tasks.values(), return_exceptions=True)
-            await self.desktop_executor.close()
+            if self.desktop is not None:
+                await self.desktop.close()
             # 2. 停止后台进程并保存结果；已经处于 STOPPING，通知到达也不会再创建 Agent。
             # 2.1. 保存刚捕获的回答文字和旧工具终止结果，删除剩余真人输入，任务通知继续留存。
             if self.task_supervisor is not None:

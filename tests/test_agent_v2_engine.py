@@ -64,7 +64,6 @@ class _FakeScreenshotTool(BaseTool):
     name = "screenshot"
     description = "截屏"
     parameters_schema = {"type": "object", "properties": {}}
-    is_resumable = True
 
     async def execute(self, args, context):
         """管道或插件管理器调用时执行本用例预设的结果、状态修改或异常分支。
@@ -73,11 +72,9 @@ class _FakeScreenshotTool(BaseTool):
             args (dict[str, Any]): 当前工具调用或被包装函数的参数。
             context (Any): 执行管道提供的工具运行上下文。
         """
-        if context.resume_data is None:
-            return ToolResult.continuation("capture_screen", "获取截屏")
         return ToolResult.success(
             "截屏成功",
-            image_url=context.resume_data.get("screenshot_data"),
+            image_url="data:image/png;base64,iVBORw0KGgpwYXlsb2Fk",
             image_message_name=SCREENSHOT_MESSAGE_NAME,
         )
 
@@ -457,10 +454,10 @@ def test_tool_call_extra_content_roundtrips_into_followup_request():
 
 # ==================== 可恢复工具与图片注入 ====================
 
-def test_resumable_screenshot_roundtrip():
-    """验证截图工具可以经过中断与恢复完成。"""
+def test_direct_screenshot_roundtrip():
+    """验证直接截图结果在一次模型工具循环中提交并形成截图消息。"""
     async def run():
-        """由外层测试调用，完成“截图工具可以经过中断与恢复完成”的异步步骤。"""
+        """从统一 Pipeline 入口消费截图与后续回复，确认不产生执行等待。"""
         llm = _FakeLLM(scripts=[
             # 第 1 次：模型请求截屏
             [StreamChunk(tool_call=ToolCall(id="c1", name="screenshot", args={}))],
@@ -472,22 +469,10 @@ def test_resumable_screenshot_roundtrip():
         state.add_user_message("看看我的屏幕")
 
         events1 = await _drain(agent.pipeline.execute(state))
-        assert events1[-1].type == EventType.INTERRUPT
-        # 中断路由信息已持久化
-        assert state.interrupt_data["tool_name"] == "screenshot"
-        assert state.interrupt_data["tool_call_id"] == "c1"
-        assert "resume_state" in state.interrupt_data
-        # 发给前端的只有路由字段和必要的 continuation 类型
-        client_payload = events1[-1].data
-        assert set(client_payload.keys()) == {"type", "request_id", "message", "data"}
-        assert client_payload["type"] == "continuation_request"
-        assert client_payload["data"]["kind"] == "capture_screen"
-
-        events2 = await _drain(agent.pipeline.resume_tools(
-            state, {"screenshot_data": "data:image/png;base64,iVBORw0KGgpwYXlsb2Fk"}
-        ))
-        assert events2[-1].type == EventType.TEXT_CHUNK
-        assert events2[-1].data == "我看到一只猫"
+        assert not any(event.type == EventType.INTERRUPT for event in events1)
+        assert state.interrupt_data is None
+        assert events1[-1].type == EventType.TEXT_CHUNK
+        assert events1[-1].data == "我看到一只猫"
         return state
 
     state = asyncio.run(run())

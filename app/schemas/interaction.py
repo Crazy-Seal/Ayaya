@@ -32,23 +32,3 @@ class ChannelSubscriptionRequest(BaseModel):
         enabled (bool): 渠道是否参与该会话的双向互通。
     """
     enabled: bool
-
-
-class DesktopExecutionIdentity(BaseModel):
-    """使用会话和持久 request_id 定位一次桌面执行请求。
-
-    Attributes:
-        session_id (str): 共享 Ayaya 会话标识。
-        request_id (str): checkpoint 中的持久中断标识。
-    """
-    session_id: str
-    request_id: str
-
-
-class DesktopExecutionResult(DesktopExecutionIdentity):
-    """携带桌面执行身份和实际截屏或动作结果。
-
-    Attributes:
-        result (dict): 桌面执行结果或任务终态输出摘要。
-    """
-    result: dict

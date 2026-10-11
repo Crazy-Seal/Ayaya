@@ -420,3 +420,29 @@ async () => {
     await flush();
   }
 });
+
+test("每次 SSE 重连先登记窗口，登记失败不创建额外订阅", /** 验证窗口身份更新与订阅重试的顺序。 */
+async () => {
+  let registrations = 0, requests = 0, disconnections = 0;
+  const controller = new DesktopSessionController({
+    /** 首次登记失败，下一次及重连登记成功。 */ onConnected: async () => {
+      registrations++;
+      if (registrations === 1) throw new Error("登记失败");
+    },
+    /** 断线后仅通知检查恢复记录。 */ onDisconnected: () => { disconnections++; },
+    /** 首个流立即结束，第二个保持到测试取消，观察自动重连先重新登记。 */ fetchBackend: async (_path, init) => {
+      requests++;
+      if (requests === 1) return new Response("");
+      const connection = new TestConnection(init.signal as AbortSignal);
+      connection.send(event("session_snapshot", 0, { phase: "idle" }));
+      return connection.response;
+    },
+    /** 本用例只验证连接和登记数量。 */ deliverEvent: () => {},
+    /** 模拟失败不写生产日志。 */ log: () => {},
+    reconnectDelayMs: 1,
+  });
+  try {
+    await controller.subscribe("s");
+    assert.equal(registrations, 3); assert.equal(requests, 2); assert.equal(disconnections, 2);
+  } finally { controller.stop(); await flush(); }
+});

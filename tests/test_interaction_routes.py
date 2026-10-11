@@ -15,7 +15,6 @@ from app.agent.state.messages import ToolCall
 from app.agent.tools.base import InterruptEvent
 from app.routes.agent import subscribe_events
 from app.routes import agent as agent_routes
-from app.services.desktop_execution_broker import DesktopExecutionRequest
 from app.services.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.services.interaction_event_hub import InteractionEventHub
 
@@ -55,8 +54,7 @@ def test_unknown_command_keeps_http_200_business_rejection() -> None:
     assert response.json() == {"accepted": False, "reason": "当前命令尚未接入运行时", "run_id": None}
 
 
-@pytest.mark.parametrize("execution", [False, True])
-def test_idle_sse_heartbeats_preserve_pending_event_and_close_source(monkeypatch, execution: bool) -> None:
+def test_idle_sse_heartbeats_preserve_pending_event_and_close_source(monkeypatch) -> None:
     """验证两条空闲 SSE 发送注释心跳，既不取消等待事件也不泄漏订阅。
 
     Args:
@@ -98,12 +96,11 @@ def test_idle_sse_heartbeats_preserve_pending_event_and_close_source(monkeypatch
                     identity (tuple): 会话展示流的身份；执行流不需要参数。
 
                 Yields:
-                    InteractionEvent | DesktopExecutionRequest: 放行后的实际业务数据。
+                    InteractionEvent: 放行后的实际业务数据。
                 """
                 try:
                     await release.wait()
-                    yield (DesktopExecutionRequest("s", "screen", "capture_screen", {})
-                           if execution else InteractionEvent("s", "text_chunk", {"value": "继续"}))
+                    yield InteractionEvent("s", "text_chunk", {"value": "继续"})
                     await asyncio.Event().wait()
                 except asyncio.CancelledError:
                     cancelled.set()
@@ -112,9 +109,8 @@ def test_idle_sse_heartbeats_preserve_pending_event_and_close_source(monkeypatch
                     closed.set()
 
         source = Source()
-        scheduler = SimpleNamespace(events=source, desktop_executor=source)
-        response = (await agent_routes.desktop_execution_requests(scheduler)
-                    if execution else await subscribe_events("s", "desktop", scheduler))
+        scheduler = SimpleNamespace(events=source)
+        response = await subscribe_events("s", "desktop", scheduler)
         stream = response.body_iterator
         try:
             # 1. 连续空闲周期只发送注释，不生成假事件，也不能取消来源的 queue.get。
@@ -125,7 +121,7 @@ def test_idle_sse_heartbeats_preserve_pending_event_and_close_source(monkeypatch
             release.set()
             frame = await asyncio.wait_for(anext(stream), 0.5)
             data = json.loads(frame[6:])
-            assert data["kind"] == ("capture_screen" if execution else "text_chunk")
+            assert data["kind"] == "text_chunk"
             # 3. 再进入空闲后关闭响应，必须取消等待并释放来源订阅。
             assert await asyncio.wait_for(anext(stream), 0.5) == ": ping\n\n"
         finally:

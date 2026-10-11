@@ -9,6 +9,7 @@ from app.schemas.chat_settings import (
 from app.services.mcp_connection_manager import MCPConnectionManager
 from app.agent.tools.authorization.manager import ToolAuthorization
 from app.agent.tools.base import TaskLauncher
+from app.schemas.desktop import DesktopOperations
 
 
 def _plugin_config(chat_settings: ChatSettings, name: str, defaults: dict) -> dict:
@@ -34,6 +35,7 @@ def build_agent(
     mcp_connection_manager: MCPConnectionManager | None = None,
     tool_authorization: ToolAuthorization | None = None,
     task_launcher: TaskLauncher | None = None,
+    desktop: DesktopOperations | None = None,
 ) -> Agent:
     """按会话设置创建 Agent，并注入共享授权与任务启动端口。
 
@@ -42,6 +44,7 @@ def build_agent(
         mcp_connection_manager (MCPConnectionManager | None): 共享 MCP 连接管理器。
         tool_authorization (ToolAuthorization | None): 工具单次授权验证器。
         task_launcher (TaskLauncher | None): 工具使用的共享进程启动端口。
+        desktop (DesktopOperations | None): 应用共享桌面接口，各会话使用同一实例。
 
     Returns:
         Agent: 按最新会话设置装配的 Agent，尚未开始模型轮次。
@@ -72,6 +75,7 @@ def build_agent(
             chat_settings=chat_settings,
             tool_authorization=tool_authorization,
             task_launcher=task_launcher,
+            desktop=desktop,
         )
     return Agent(
         config,
@@ -80,4 +84,5 @@ def build_agent(
         chat_settings=chat_settings,
         tool_authorization=tool_authorization,
         task_launcher=task_launcher,
+        desktop=desktop,
     )

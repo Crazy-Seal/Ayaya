@@ -7,9 +7,9 @@
 from typing import Annotated, Literal
 
 from app.schemas.runtime_types import (
-    AUTHORIZATION_GRANTED_KIND, DesktopExecutionKind,
+    AUTHORIZATION_GRANTED_KIND,
 )
-from app.agent.state.messages import SCREENSHOT_MESSAGE_NAME
+from app.agent.tools._screen_result import screen_action, screen_tool_result
 from app.agent.tools.base import ToolContext, ToolResult
 from app.agent.models.vlm import VLMService, clamp_bbox
 from app.agent.tools.decorator import tool
@@ -148,74 +148,25 @@ async def control_screen_with_vlm(
     if context is None:
         return ToolResult(content="错误: 缺少工具上下文。")
 
-    # 2. 首次调用只请求 Electron 截图，工具在截图回报后才调用视觉模型定位。
-    if context.resume_data is None:
-        return ToolResult.continuation(
-            DesktopExecutionKind.CAPTURE_SCREEN,
-            "正在截取屏幕以定位要操作的位置。",
-            resume_state={
-                "phase": "awaiting_capture",
-                "action": action_state,
-            },
-        )
-
-    phase = (context.resume_state or {}).get("phase")
-
-    # 3. 动作执行回报只形成结果和新截图，不再次执行动作。
-    if phase == "awaiting_execution":
-        if not context.resume_data.get("executed", False):
-            error_message = context.resume_data.get("error") or "前端未完成屏幕操作。"
-            return ToolResult.success(f"屏幕操作失败: {error_message}")
-
-        screenshot_data = context.resume_data.get("screenshot_data")
-        if not screenshot_data:
-            return ToolResult.success("屏幕操作完成，但未收到操作后的截图。")
-        return ToolResult.success(
-            "屏幕操作完成，已收到操作后的截图。",
-            image_url=screenshot_data,
-            image_message_name=SCREENSHOT_MESSAGE_NAME,
-        )
-
-    # 4. 定位后的准备动作通过统一授权检查后，才允许发出实际鼠标及文字输入请求。
-    if phase == "awaiting_authorization":
+    # 2. 获准重入只使用持久准备动作，不重新截图定位或另行复核授权。
+    if context.desktop is None:
+        return ToolResult(content="错误: 未装配后端桌面模块")
+    if context.resume_data is not None:
         if context.resume_data.get("kind") != AUTHORIZATION_GRANTED_KIND:
             return ToolResult(content="错误: 屏幕操作授权恢复状态无效。")
-        execute_data = {
-            **action_state,
-            "coordinates": (context.resume_state or {}).get("coordinates"),
-        }
-        return ToolResult.continuation(
-            DesktopExecutionKind.PERFORM_SCREEN_ACTION,
-            f"正在对“{resolved_target}”执行 {resolved_operation} 操作。",
-            payload=execute_data,
-            resume_state={
-                "phase": "awaiting_execution",
-                "action": action_state,
-                "coordinates": execute_data["coordinates"],
-            },
-        )
+        saved = context.resume_state or {}
+        execute_data = {**saved.get("action", action_state), "coordinates": saved.get("coordinates")}
+        result = await context.desktop.perform_action(screen_action(execute_data), stop_requested=context.stop_requested)
+        return screen_tool_result(result)
 
-    # 5. 截图回报必须提供图片和尺寸，视觉模型定位成功后只返回准备动作，继续等待授权。
-    screenshot_data = context.resume_data.get("screenshot_data")
-    width = context.resume_data.get("width")
-    height = context.resume_data.get("height")
-    if not screenshot_data:
-        return ToolResult(content="错误: 未收到用于定位的屏幕截图。")
-    if not isinstance(width, int) or not isinstance(height, int):
-        return ToolResult(content="错误: 未收到有效的截图尺寸。")
-
-    bbox = await VLMService().locate(resolved_target, screenshot_data)
-    coordinates = restore_vlm_point(bbox, width, height)
-    execute_data = {
-        **action_state,
-        "coordinates": coordinates,
-    }
-
-    return ToolResult.prepared(
-        execute_data,
-        resume_state={
-            "phase": "awaiting_authorization",
-            "action": action_state,
-            "coordinates": coordinates,
-        },
-    )
+    # 3. 截图调用结束已恢复窗口，VLM 等待和审批期间不隐藏聊天。
+    image = await context.desktop.capture_screen(stop_requested=context.stop_requested)
+    bbox = await VLMService().locate(resolved_target, image.data_url)
+    # 3.1. 定位等待中收到停止时不再创建审批；窗口在截图完成时已经恢复。
+    if context.stop_requested and context.stop_requested():
+        return ToolResult(content="屏幕操作未执行：定位期间已停止")
+    coordinates = restore_vlm_point(bbox, image.width, image.height)
+    execute_data = {**action_state, "coordinates": coordinates}
+    return ToolResult.prepared(execute_data, resume_state={
+        "phase": "awaiting_authorization", "action": action_state, "coordinates": coordinates,
+    })

@@ -129,12 +129,35 @@ def test_tool_media_defaults_to_generic_type() -> None:
 def test_screen_tools_explicitly_classify_returned_images_as_screenshots() -> None:
     """验证屏幕工具明确将返回图片标记为截图。"""
     image = "data:image/png;base64,QQ=="
+    from app.schemas.desktop import ScreenCapture, ScreenActionResult
+
+    class Desktop:
+        """提供直接执行的桌面 seam，不访问真实屏幕。"""
+        async def capture_screen(self, *, stop_requested=None):
+            """首次调用直接返回后端图片。
+
+            Args:
+                stop_requested (StopRequested | None): 当前轮次已受理停止或引导时返回 True 的只读回调。
+            """
+            return ScreenCapture(image, 100, 100)
+
+        async def perform_action(self, _action, *, stop_requested=None):
+            """已批准动作直接返回图片，不使用前端恢复回报。
+
+            Args:
+                _action (ScreenAction): 工具已经准备并获准的动作，本替身只提供结果。
+                stop_requested (StopRequested | None): 当前轮次已受理停止或引导时返回 True 的只读回调。
+            """
+            return ScreenActionResult("completed", ScreenCapture(image, 100, 100))
+
     screenshot_context = SimpleNamespace(
-        resume_data={"approved": True, "screenshot_data": image},
+        desktop=Desktop(), stop_requested=None,
     )
     action_context = SimpleNamespace(
-        resume_data={"approved": True, "executed": True, "screenshot_data": image},
-        resume_state={"phase": "awaiting_execution"},
+        desktop=Desktop(), stop_requested=None,
+        resume_data={"kind": "authorization_granted"},
+        resume_state={"action": {"operation": "click", "text": "", "press_enter": False, "wait_seconds": 0,
+                                 "scroll_direction": "down"}, "coordinates": {"x_ratio": 0.5, "y_ratio": 0.5}},
     )
 
     async def scenario():

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fitChatBounds, stabilizeChatBounds } from "../electron/chat-window-state.js";
-import { hideDesktopWindows, type DesktopWindow } from "../electron/desktop-window-visibility.js";
 
 test("聊天默认尺寸在带偏移的显示器工作区居中", /** 验证多显示器坐标不假设从零开始。 */
 () => {
@@ -31,53 +30,4 @@ test("显示缩放的一像素取整不累计到重启配置，真实缩放仍�
   assert.deepEqual(stable, saved);
   const resized = { x: 200, y: 100, width: 700, height: 800 };
   assert.deepEqual(stabilizeChatBounds(resized, stable), resized);
-});
-
-/** 模拟窗口的可见、最小化与释放状态，记录截图恢复是否抢焦点。 */
-class TestWindow implements DesktopWindow {
-  destroyed = false;
-  hides = 0;
-  shows = 0;
-  /**
-   * 建立截图前窗口状态。
-   * Args:
-   *     visible (boolean): 当前可见状态。
-   *     minimized (boolean): 当前最小化状态。
-   */
-  constructor(public visible = true, public minimized = false) {}
-  /** 返回窗口释放状态。 */
-  isDestroyed(): boolean { return this.destroyed; }
-  /** 返回窗口可见状态。 */
-  isVisible(): boolean { return this.visible; }
-  /** 返回窗口最小化状态。 */
-  isMinimized(): boolean { return this.minimized; }
-  /** 记录临时隐藏但不改变最小化状态。 */
-  hide(): void { this.hides++; this.visible = false; }
-  /** 记录不聚焦的可见状态恢复。 */
-  showInactive(): void { this.shows++; this.visible = true; }
-}
-
-test("截图隐藏角色和聊天但不弹出最小化或原本隐藏的窗口", /** 验证同时处理两窗口且保持原有状态。 */
-() => {
-  const pet = new TestWindow(); const chat = new TestWindow();
-  const minimized = new TestWindow(true, true); const invisible = new TestWindow(false);
-  const visibility = hideDesktopWindows([pet, chat, pet, minimized, invisible, null]);
-  assert.equal(visibility.hidden, true);
-  assert.equal(pet.hides, 1); assert.equal(chat.hides, 1);
-  visibility.restore(); visibility.restore();
-  assert.equal(pet.shows, 1); assert.equal(chat.shows, 1);
-  assert.equal(minimized.hides, 0); assert.equal(minimized.shows, 0);
-  assert.equal(invisible.shows, 0);
-});
-
-test("截图失败时 finally 恢复存活窗口，已释放或后来最小化的窗口不恢复", /** 验证异常和用户中途操作不会错误显示窗口。 */
-() => {
-  const pet = new TestWindow(); const chat = new TestWindow(); const laterMinimized = new TestWindow();
-  const visibility = hideDesktopWindows([pet, chat, laterMinimized]);
-  try {
-    chat.destroyed = true; laterMinimized.minimized = true;
-    throw new Error("截图失败");
-  } catch { /* 当前用例只检查窗口清理行为。 */ }
-  finally { visibility.restore(); }
-  assert.equal(pet.shows, 1); assert.equal(chat.shows, 0); assert.equal(laterMinimized.shows, 0);
 });

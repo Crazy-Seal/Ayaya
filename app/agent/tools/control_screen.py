@@ -1,15 +1,11 @@
 """屏幕控制工具。
 
-后端负责标准化模型给出的坐标并编排恢复；实际鼠标键盘操作由前端在用户批准后执行，
-执行结果和操作后的截图会回传给 Agent。
+后端标准化模型坐标并直接执行已获准动作，结果与截图由现有 Pipeline 保存。
 """
 
 from typing import Annotated, Literal
 
-from app.schemas.runtime_types import (
-    DesktopExecutionKind,
-)
-from app.agent.state.messages import SCREENSHOT_MESSAGE_NAME
+from app.agent.tools._screen_result import screen_action, screen_tool_result
 from app.agent.tools.base import ToolContext, ToolResult
 from app.agent.tools.decorator import tool
 
@@ -20,12 +16,17 @@ NORMALIZED_CANVAS_SIZE = 1000
 
 
 def normalize_bbox(bbox: object) -> list[int]:
-    """校验并返回 canonical ``[x1, y1, x2, y2]``。
+    """校验并返回标准 ``[x1, y1, x2, y2]`` 边界框。
 
     Args:
         bbox (object): 归一化画布中的 xyxy 边界框。
+    Returns:
+        list[int]: 保持原 xyxy 顺序的四个整数坐标。
+    Raises:
+        ValueError: 参数类型、长度、范围或边界顺序不符合约束。
     """
-    if not isinstance(bbox, list) or len(bbox) != 4:
+    # 1. Pipeline 的不可变 ToolCall 会把 JSON 数组固定为 tuple，仍按同一四整数约束校验。
+    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
         raise ValueError("bbox 必须是包含四个整数的数组。")
     if any(type(value) is not int for value in bbox):
         raise ValueError("bbox 坐标必须是整数。")
@@ -40,7 +41,7 @@ def normalize_bbox(bbox: object) -> list[int]:
 
 
 def _coordinates_from_bbox(bbox: list[int]) -> dict:
-    """保留模型提供的 xyxy 框，并计算 Electron 执行动作需要的框中心比例。
+    """保留模型提供的 xyxy 框，并计算后端物理像素定位使用的中心比例。
 
     Args:
         bbox (list[int]): 归一化画布中的 xyxy 边界框。
@@ -114,7 +115,7 @@ def _validate_args(
     )
 
 
-@tool(is_resumable=True, compressible=True)
+@tool(compressible=True)
 async def control_screen(
     bbox: Annotated[list[int], "目标元素边界框 [x1, y1, x2, y2]，坐标相对于当前屏幕归一化到 0 至 1000。必须输入。"],
     target: Annotated[str, "操作时的光标位置描述，例如‘页面上方的搜索框’。必须输入。"],
@@ -176,29 +177,8 @@ async def control_screen(
         "coordinates": coordinates,
     }
 
-    # 2. 恢复阶段只消费 Electron 已返回的执行结果，不再发起同一鼠标动作。
-    if context.resume_data is not None:
-        phase = (context.resume_state or {}).get("phase")
-        if phase != "awaiting_execution":
-            return ToolResult(content="错误: 屏幕操作恢复状态无效。")
-        if not context.resume_data.get("executed", False):
-            error_message = context.resume_data.get("error") or "前端未完成屏幕操作。"
-            return ToolResult.success(f"屏幕操作失败: {error_message}")
-
-        # 2.1. 动作完成与截图返回分开判断，缺少截图不能伪造视觉结果。
-        screenshot_data = context.resume_data.get("screenshot_data")
-        if not screenshot_data:
-            return ToolResult.success("屏幕操作完成，但未收到操作后的截图。")
-        return ToolResult.success(
-            "屏幕操作完成，已收到操作后的截图。",
-            image_url=screenshot_data,
-            image_message_name=SCREENSHOT_MESSAGE_NAME,
-        )
-
-    # 3. 首次执行只返回桌面请求；审批、领取及持久保存由管道和桌面请求管理器继续处理。
-    return ToolResult.continuation(
-        DesktopExecutionKind.PERFORM_SCREEN_ACTION,
-        f"正在对“{resolved_target}”执行 {resolved_operation} 操作。",
-        payload=action_state,
-        resume_state={"phase": "awaiting_execution"},
-    )
+    # 2. Pipeline 已完成授权，结果由原管道保存。
+    if context.desktop is None:
+        return ToolResult(content="错误: 未装配后端桌面模块")
+    result = await context.desktop.perform_action(screen_action(action_state), stop_requested=context.stop_requested)
+    return screen_tool_result(result)

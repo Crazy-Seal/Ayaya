@@ -13,14 +13,12 @@ export const DESKTOP_CHANNEL = "desktop";
  *     IDLE (string): 空闲，协议值为 idle。
  *     RUNNING (string): 轮次运行中，协议值为 running。
  *     PENDING_INTERRUPT (string): 等待人工审批，协议值为 pending_interrupt。
- *     PENDING_EXECUTION (string): 等待桌面执行结果，协议值为 pending_execution。
  *     ERROR (string): 本轮错误，协议值为 error。
  */
 export const SessionPhase = {
   IDLE: "idle",
   RUNNING: "running",
   PENDING_INTERRUPT: "pending_interrupt",
-  PENDING_EXECUTION: "pending_execution",
   ERROR: "error",
 } as const;
 export type SessionPhase = typeof SessionPhase[keyof typeof SessionPhase];
@@ -86,26 +84,11 @@ export type InteractionEventKind = typeof InteractionEventKind[keyof typeof Inte
  *
  * Attributes:
  *     AUTHORIZATION_REQUEST (string): 人工审批，协议值为 authorization_request。
- *     CONTINUATION_REQUEST (string): 桌面执行续跑，协议值为 continuation_request。
  */
 export const InterruptKind = {
   AUTHORIZATION_REQUEST: "authorization_request",
-  CONTINUATION_REQUEST: "continuation_request",
 } as const;
 export type InterruptKind = typeof InterruptKind[keyof typeof InterruptKind];
-
-/**
- * 表示 Electron 主进程支持的屏幕请求类别。
- *
- * Attributes:
- *     CAPTURE_SCREEN (string): 截取屏幕，协议值为 capture_screen。
- *     PERFORM_SCREEN_ACTION (string): 执行屏幕动作并截屏，协议值为 perform_screen_action。
- */
-export const DesktopExecutionKind = {
-  CAPTURE_SCREEN: "capture_screen",
-  PERFORM_SCREEN_ACTION: "perform_screen_action",
-} as const;
-export type DesktopExecutionKind = typeof DesktopExecutionKind[keyof typeof DesktopExecutionKind];
 
 /**
  * 表示用户能够提交的审批决定，不包含系统取消通知。
@@ -479,25 +462,6 @@ export type CursorSyncData = {
   insideWindow: boolean;
 };
 
-export type ControlScreenOperation = "click" | "double" | "right" | "scroll";
-export type ControlScreenScrollDirection = "none" | "down" | "up";
-
-export type ControlScreenCoordinates = {
-  bbox: [number, number, number, number];
-  x_ratio: number;
-  y_ratio: number;
-};
-
-export type ControlScreenActionData = {
-  target: string;
-  operation: ControlScreenOperation;
-  text: string;
-  press_enter: boolean;
-  wait_seconds: number;
-  scroll_direction: ControlScreenScrollDirection;
-  coordinates: ControlScreenCoordinates;
-};
-
 export type ApprovalDecision =
   | { kind: typeof ApprovalDecisionKind.APPROVE }
   | { kind: typeof ApprovalDecisionKind.REJECT }
@@ -508,8 +472,10 @@ export type FrontendSettings = {
   chat_window_bounds?: { x: number; y: number; width: number; height: number };
   /** 用户是否要求聊天窗口置顶，默认关闭。 */
   chat_window_pinned?: boolean;
-  hide_on_screenshot: boolean;
 };
+
+/** 全部会话共享的后端桌面 YAML 配置。 */
+export type DesktopSettings = { hide_on_screenshot: boolean };
 
 export type LogSide = "frontend" | "backend";
 
@@ -534,18 +500,6 @@ export type LogSnapshot = {
 
 export type LogBatch = {
   records: LogRecord[];
-};
-
-export type ScreenActionRequest = ControlScreenActionData;
-
-export type ScreenActionPoint = {
-  x: number;
-  y: number;
-};
-
-export type ScreenActionResult = {
-  executed: boolean;
-  error?: string;
 };
 
 export type ImportPreview = {
@@ -772,7 +726,8 @@ export interface DesktopPetApi {
   onModelChanged?: (callback: (model: ModelInfo) => void) => () => void;
   onModelTransformChanged?: (callback: (data: ModelTransformData) => void) => () => void;
   getFrontendSettings: () => Promise<FrontendSettings>;
-  updateFrontendSettings: (settings: Partial<FrontendSettings>) => Promise<FrontendSettings>;
+  getDesktopSettings: () => Promise<DesktopSettings>;
+  updateDesktopSettings: (settings: DesktopSettings) => Promise<DesktopSettings>;
   getMotionConfig: (modelId: string) => Promise<MotionConfig[]>;
   updateModelMotionConfig: (payload: { modelId: string; motionConfig: MotionConfig[] }) => Promise<void>;
   playMotion: (motionName: string) => void;

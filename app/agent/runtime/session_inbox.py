@@ -207,7 +207,12 @@ class SessionInbox:
         Raises:
             Exception: 清理失败时回滚全部变更，由生命周期入口终止启动。
         """
-        async with aiosqlite.connect(str(db_path or get_checkpoint_db())) as db:
+        database = str(db_path or get_checkpoint_db())
+        # 1. 新环境第一次启动时尚未创建 SQLite 目录，清理不能依赖先运行另一条 DAO 路径。
+        directory = os.path.dirname(database)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        async with aiosqlite.connect(database) as db:
             await ensure_inbox_schema(db)
             await db.commit()
             try:

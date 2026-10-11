@@ -20,7 +20,9 @@ from app.routes.chat_history import router as memory_router
 from app.routes.tools import router as tools_router
 from app.routes.plugins import router as plugins_router
 from app.routes.mcp import router as mcp_router
+from app.routes.desktop import router as desktop_router
 from app.dependencies import get_mcp_connection_manager, get_runtime_scheduler, get_task_supervisor
+from app.dependencies import get_desktop_controller, get_desktop_settings_service, get_desktop_settings_dao
 from app.security.local_api import install_local_api_security, load_api_token
 
 # 控制台日志基础配置：让 Agent 的收发日志在本地启动时可见
@@ -59,6 +61,9 @@ async def lifespan(_app: FastAPI):
             # 3. 生命周期结束后不能复用旧对象；收尾失败也必须释放 MCP 连接。
             get_runtime_scheduler.cache_clear()
             get_task_supervisor.cache_clear()
+            get_desktop_controller.cache_clear()
+            get_desktop_settings_service.cache_clear()
+            get_desktop_settings_dao.cache_clear()
             await mcp_manager.close()
 
 
@@ -73,6 +78,7 @@ app.include_router(memory_router)
 app.include_router(tools_router)
 app.include_router(plugins_router)
 app.include_router(mcp_router)
+app.include_router(desktop_router)
 
 # 静态文件服务：用于访问保存的图片
 IMAGES_DIR = get_images_dir()

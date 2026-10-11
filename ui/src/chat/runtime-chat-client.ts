@@ -631,8 +631,7 @@ export class RuntimeChatClient {
       if (epochChanged || this.runId !== restoredRun) this.playedLabels.clear();
       this.runId = restoredRun;
       this.runOrigin = String(snapshot.origin_channel || DESKTOP_CHANNEL);
-      if (this.phase === SessionPhase.RUNNING || this.phase === SessionPhase.PENDING_INTERRUPT
-          || this.phase === SessionPhase.PENDING_EXECUTION) {
+      if (this.phase === SessionPhase.RUNNING || this.phase === SessionPhase.PENDING_INTERRUPT) {
         this.deferredRuns.add(this.replyKey(this.runId));
       }
       const historyLoaded = await this.refreshHistory();
@@ -744,7 +743,7 @@ export class RuntimeChatClient {
     } else if (event.kind === InteractionEventKind.INTERRUPT) {
       this.finishStreaming();
       const value = event.payload.value as Record<string, unknown>;
-      this.phase = value.type === InterruptKind.AUTHORIZATION_REQUEST ? SessionPhase.PENDING_INTERRUPT : SessionPhase.PENDING_EXECUTION;
+      this.phase = SessionPhase.PENDING_INTERRUPT;
       // 6.2. 自动桌面操作只更新状态；人工审批先显示已保存说明，同请求成功刷新一次。
       if (this.phase === SessionPhase.PENDING_INTERRUPT) {
         this.attentionApprovalId = String(value.request_id);
