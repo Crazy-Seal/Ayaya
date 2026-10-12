@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 
 import type {
   DesktopPetApi,
+  AiNameChangedPayload,
   ModelInfo,
   ModelTransformData,
   MotionConfig,
@@ -272,6 +273,13 @@ const desktopPetApi: DesktopPetApi = {
    */
   getModelConfig: () => ipcRenderer.invoke("desktop-pet:get-model-config"),
   /**
+   * 查询本地模型各会话的 AI 名字，不向页面传递其他会话的凭据。
+   *
+   * Returns:
+   *     Promise<Record<string, string>>: 会话编号与显示名字的对应关系。
+   */
+  getAiNames: (sessionIds) => ipcRenderer.invoke("desktop-pet:get-ai-names", sessionIds),
+  /**
    * 页面按会话读取后端模型与插件设置。
    *
    * Returns:
@@ -503,6 +511,17 @@ const desktopPetApi: DesktopPetApi = {
    */
   onModelChanged: (listener) =>
     subscribe<ModelInfo>("desktop-pet:model-changed", listener),
+  /**
+   * 配置已保存后订阅 AI 名字变化，供聊天和模型列表更新显示。
+   *
+   * Args:
+   *     listener ((payload: AiNameChangedPayload) => void): 接收已保存会话名字的回调。
+   *
+   * Returns:
+   *     () => void: 取消当前名字监听的函数。
+   */
+  onAiNameChanged: (listener) =>
+    subscribe<AiNameChangedPayload>("desktop-pet:ai-name-changed", listener),
   /**
    * 页面订阅模型显示参数变化，供更新缩放与位置。
    *

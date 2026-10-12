@@ -11,10 +11,7 @@
   <body>
     <main class="log-window ui-window-frame">
       <header class="settings-titlebar log-titlebar">
-        <div class="log-heading">
-          <div class="settings-title log-title">Ayaya 日志控制台</div>
-          <div id="log-status" class="log-status" role="status">正在连接日志流…</div>
-        </div>
+        <div class="settings-title">Ayaya 日志控制台</div>
         <div class="window-actions">
           <button id="log-min-btn" class="window-btn ui-button ui-button--secondary ui-button--icon" type="button" aria-label="最小化"><span data-icon="minimize"></span></button>
           <button id="log-close-btn" class="window-btn window-btn-close ui-button ui-button--danger ui-button--icon" type="button" aria-label="关闭"><span data-icon="close"></span></button>
@@ -31,6 +28,8 @@
           打开日志目录
         </button>
       </section>
+
+      <div id="log-status" class="log-status" role="status" hidden></div>
 
       <section class="log-panels">
         <article class="log-panel ui-surface" data-side="frontend">

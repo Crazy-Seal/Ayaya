@@ -8,6 +8,7 @@ import { setupApplicationShutdownUi, lockApplicationShutdownUi } from "../ui/app
 
 import { ConfirmDialog } from "./components/confirm-dialog.js";
 import { SettingsToast, appendErrorMessage } from "./components/settings-toast.js";
+import { buildSystemPrompt } from "./utils/prompt-builder.js";
 import { ModelPage } from "./pages/model-page.js";
 import { LlmPage } from "./pages/llm-page.js";
 import { ToolsPage } from "./pages/tools-page.js";
@@ -165,6 +166,7 @@ class SettingsApp {
       this.getElement("#background-task-output"),
       this.getElement("#background-task-more"),
       this.getElement("#refresh-background-tasks"),
+      this.toast,
     );
 
     // 注册页面到映射
@@ -658,7 +660,7 @@ class SettingsApp {
 
     // 构建系统提示词
     const expressionLabels = this.getExpressionLabels();
-    const system_prompt = this.buildSystemPrompt(llmData, expressionLabels);
+    const system_prompt = buildSystemPrompt(llmData, expressionLabels);
 
     const newState: ChatSettingsState = {
       ...this.savedState,
@@ -805,85 +807,13 @@ class SettingsApp {
   }
 
   /**
-   * 构建系统提示词
-   *
-   * Args:
-   *     llmData (NonNullable<EditingState["llm"]>): 模型设置页正在编辑的模型参数和角色字段。
-   *     expressionLabels (string[]): 当前模型允许使用的表情标签名称。
-   */
-  private buildSystemPrompt(
-    llmData: NonNullable<EditingState["llm"]>,
-    expressionLabels: string[]
-  ): string {
-    const name = llmData.name || "日和";
-    const feature = llmData.feature || "可爱";
-    const character = llmData.character || "AI少女";
-    const address = llmData.address || "主人";
-
-    let prompt = `你是${name}，一个${feature}的${character}，称呼用户为${address}。`;
-    if (llmData.characteristic) {
-      prompt += `\n${llmData.characteristic}`;
-    }
-    if (llmData.constraint) {
-      prompt += `\n${llmData.constraint}`;
-    }
-
-    if (expressionLabels.length > 0) {
-      const tagsList = expressionLabels.map(/**
-       * 将编辑中的表情名称转换为系统提示词使用的标签。
-       *
-       * Args:
-       *     l (string): 当前可用于提示词的表情名称。
-       *
-       * Returns:
-       *     string: 带尖括号的标签。
-       */
-      (l) => `<${l}>`).join("");
-      prompt += `\n你可以在对话中使用以下表情标签:${tagsList}使用时必须像示例一样使用尖括号<>包裹`;
-    }
-
-    return prompt;
-  }
-
-  /**
    * 从已保存状态构建系统提示词
    *
    * Args:
    *     expressionLabels (string[]): 当前模型允许使用的表情标签名称。
    */
   private buildSystemPromptFromSaved(expressionLabels: string[]): string {
-    if (!this.savedState) {
-      return "";
-    }
-
-    const name = this.savedState.name || "日和";
-    const feature = this.savedState.feature || "可爱";
-    const character = this.savedState.character || "AI少女";
-    const address = this.savedState.address || "主人";
-
-    let prompt = `你是${name}，一个${feature}的${character}，称呼用户为${address}。`;
-    if (this.savedState.characteristic) {
-      prompt += `\n${this.savedState.characteristic}`;
-    }
-    if (this.savedState.constraint) {
-      prompt += `\n${this.savedState.constraint}`;
-    }
-
-    if (expressionLabels.length > 0) {
-      const tagsList = expressionLabels.map(/**
-       * 将已保存的表情名称转换为系统提示词使用的标签。
-       *
-       * Args:
-       *     l (string): 当前可用于提示词的表情名称。
-       *
-       * Returns:
-       *     string: 带尖括号的标签。
-       */
-      (l) => `<${l}>`).join("");
-      prompt += `\n你可以在对话中使用以下表情标签:${tagsList}使用时必须像示例一样使用尖括号<>包裹`;
-    }
-
-    return prompt;
+    return this.savedState ? buildSystemPrompt(this.savedState, expressionLabels) : "";
   }
 
   /**

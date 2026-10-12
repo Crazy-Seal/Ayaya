@@ -9,9 +9,6 @@ body {
 }
 
 .log-window {
-  --color-info: #60a5fa;
-  --color-debug: #a78bfa;
-
   width: 100%;
   height: 100%;
   display: flex;
@@ -22,20 +19,15 @@ body {
   min-width: 0;
 }
 
-.log-heading {
-  min-width: 0;
-}
-
-.log-title {
-  line-height: 1.1;
-}
-
 .log-status {
-  margin-top: 2px;
+  /* 暂停或操作失败时才显示提示，不占用总标题栏，也不显示固定连接成功文案。 */
+  flex-shrink: 0;
+  padding: var(--spacing-sm) var(--spacing-lg);
   overflow: hidden;
   color: var(--color-text-muted);
-  font-size: 11px;
-  line-height: 1.2;
+  background: var(--color-bg-base);
+  border-bottom: 1px solid var(--color-border-subtle);
+  font-size: var(--font-size-helper);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -56,7 +48,7 @@ body {
   flex-direction: column;
   gap: var(--spacing-xs);
   color: var(--color-text-secondary);
-  font-size: 13px;
+  font-size: var(--font-size-label);
 }
 
 .search-field input {
@@ -82,6 +74,7 @@ body {
 }
 
 .panel-header {
+  background: var(--color-bg-elevated);
   padding: var(--spacing-md) var(--spacing-lg) 10px;
   display: flex;
   align-items: center;
@@ -96,7 +89,7 @@ body {
 .panel-header h2 {
   margin: 0;
   font-family: "Fredoka", "Microsoft YaHei", sans-serif;
-  font-size: 16px;
+  font-size: var(--font-size-window-title);
   font-weight: 600;
 }
 
@@ -104,7 +97,7 @@ body {
   margin: 2px 0 0;
   overflow: hidden;
   color: var(--color-text-muted);
-  font-size: 12px;
+  font-size: var(--font-size-helper);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -112,15 +105,16 @@ body {
 .panel-count {
   flex: 0 0 auto;
   padding: 3px 9px;
-  border: 1px solid rgba(249, 115, 22, 0.18);
+  border: 1px solid var(--color-border-default);
   border-radius: 999px;
-  color: var(--color-primary-light);
-  background: rgba(249, 115, 22, 0.12);
-  font-size: 12px;
+  color: var(--color-text-accent);
+  background: var(--color-bg-base);
+  font-size: var(--font-size-helper);
   font-variant-numeric: tabular-nums;
 }
 
 .panel-controls {
+  background: var(--color-bg-elevated);
   padding: 0 var(--spacing-md) var(--spacing-md);
   display: flex;
   align-items: end;
@@ -133,11 +127,11 @@ body {
   flex-direction: column;
   gap: var(--spacing-xs);
   color: var(--color-text-secondary);
-  font-size: 13px;
+  font-size: var(--font-size-label);
 }
 
 .panel-controls select {
-  font-size: 13px;
+  font-size: var(--font-size-label);
 }
 
 .panel-controls select[id$="-level"] {
@@ -187,7 +181,7 @@ body {
 }
 
 .log-row:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: color-mix(in srgb, var(--color-bg-elevated) 15%, transparent);
 }
 
 .log-time,

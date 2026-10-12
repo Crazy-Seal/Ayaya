@@ -593,7 +593,9 @@ const setupControls = (): void => {
     model.setPaused(paused);
     pauseButton.textContent = paused ? "继续刷新" : "暂停刷新";
     pauseButton.setAttribute("aria-pressed", String(paused));
-    status.textContent = paused ? "界面已暂停，日志仍在持续写入文件" : "实时日志流已连接";
+    // 1. 暂停是本页真实状态；恢复刷新时隐藏提示，不据此声称日志流始终已连接。
+    status.textContent = paused ? "界面已暂停，日志仍在持续写入文件" : "";
+    status.hidden = !paused;
     if (!paused) rebuildAll();
   });
   getElement("#open-log-directory-btn").addEventListener("click", /**
@@ -608,6 +610,7 @@ const setupControls = (): void => {
      */
     (error: unknown) => {
       status.textContent = error instanceof Error ? error.message : "无法打开日志目录";
+      status.hidden = false;
     });
   });
   getElement("#log-min-btn").addEventListener("click", /**
@@ -660,6 +663,7 @@ const setupControls = (): void => {
        */
       (error: unknown) => {
         status.textContent = error instanceof Error ? error.message : "清空日志视图失败";
+        status.hidden = false;
       });
     });
   }
@@ -704,7 +708,6 @@ const start = async (): Promise<void> => {
   acceptingEarly = false;
   setupControls();
   rebuildAll();
-  status.textContent = "实时日志流已连接";
 };
 
 setupApplicationShutdownUi();
@@ -716,6 +719,7 @@ void start().catch(/**
  */
 (error: unknown) => {
   status.textContent = error instanceof Error ? error.message : "日志控制台初始化失败";
+  status.hidden = false;
 });
 
 initializeIcons();

@@ -1,3 +1,5 @@
+import { initializeWindowTheme } from "./window-theme.js";
+
 /** 全部应用窗口共用的线框 SVG 图标；正文和模型资源不经过此入口。 */
 const linePaths = { check: "m5 12 4 4L19 6", close: "m6 6 12 12M18 6 6 18" } as const;
 const paths = {
@@ -46,14 +48,19 @@ export const iconMarkup = (name: IconName): string =>
  *     root (ParentNode): 当前页面或新加入页面的控件容器。
  */
 export const initializeIcons = (root: ParentNode = document): void => {
+  initializeWindowTheme();
   for (const element of root.querySelectorAll<HTMLElement>("[data-icon]")) {
     const name = element.dataset.icon as IconName;
     if (Object.hasOwn(paths, name)) element.innerHTML = iconMarkup(name);
   }
   for (const name of ["chevron", "check"] as const) {
+    // 1. SVG 背景资源不能继承外部 currentColor，因此读取组件正在使用的主题颜色。
+    const color = getComputedStyle(document.documentElement).getPropertyValue(
+      name === "check" ? "--color-on-primary" : "--color-text-accent",
+    ).trim();
     document.documentElement.style.setProperty(
       `--icon-${name}`,
-      `url("data:image/svg+xml,${encodeURIComponent(iconMarkup(name).replace("currentColor", name === "check" ? "white" : "#FB923C"))}")`,
+      `url("data:image/svg+xml,${encodeURIComponent(iconMarkup(name).replace("currentColor", color))}")`,
     );
   }
 };

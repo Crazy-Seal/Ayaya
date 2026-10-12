@@ -17,6 +17,7 @@ import {
   LOG_WINDOW_MIN_HEIGHT,
 } from "./config.js";
 import type { LogBatch, ChatAttentionUpdate, WindowGesture } from "../shared-types.js";
+import { WINDOW_PALETTE } from "../window-palette.js";
 import { WindowGestureController } from "./window-gesture.js";
 import { applicationOperations } from "./application-operations.js";
 import { appendFrontendLog, captureRendererLogs } from "./logging/app-logger.js";
@@ -506,7 +507,7 @@ export const openSettingsWindow = (page?: "tasks"): void => {
     resizable: false,
     show: false,
     fullscreenable: false,
-    backgroundColor: "#1c1917",
+    backgroundColor: WINDOW_PALETTE["bg-base"],
     webPreferences: {
       preload: path.resolve(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -641,7 +642,7 @@ export const openImagePreviewWindow = (imageSrc: string): void => {
     resizable: true,
     show: false,
     fullscreenable: false,
-    backgroundColor: "#1c1917",
+    backgroundColor: WINDOW_PALETTE["bg-base"],
     webPreferences: {
       preload: path.resolve(__dirname, "preload.cjs"),
       contextIsolation: true,

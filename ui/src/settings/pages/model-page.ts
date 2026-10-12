@@ -3,6 +3,7 @@
  */
 
 import type { ModelConfig, ImportPreview } from "../types.js";
+import { resolveAiName } from "../../../ai-identity.js";
 import { ConfirmDialog } from "../components/confirm-dialog.js";
 import {
   appendErrorMessage,
@@ -10,7 +11,12 @@ import {
 } from "../components/settings-toast.js";
 
 /**
- * 模型管理页面管理器
+ * 展示 Live2D 模型目录及各会话已保存的 AI 名字，管理模型导入、切换和显示参数。
+ *
+ * Attributes:
+ *     aiNames (Map<string, string>): 按会话编号缓存的已保存 AI 名字。
+ *     nameVersions (Map<string, number>): 各会话收到名字保存通知的次数，用于忽略较早发起的名字查询。
+ *     configRevision (number): 模型目录查询次数，旧查询不能覆盖后来切换后的目录。
  */
 export class ModelPage {
   private modelList: HTMLDivElement;
@@ -31,6 +37,9 @@ export class ModelPage {
   private currentConfig: ModelConfig | null = null;
   private pendingImport: ImportPreview | null = null;
   private syncingSliders = false;
+  private readonly aiNames = new Map<string, string>();
+  private readonly nameVersions = new Map<string, number>();
+  private configRevision = 0;
 
   /**
    * 绑定模型列表、导入预览和显示参数控件，接入提示与删除确认依赖。
@@ -91,6 +100,20 @@ export class ModelPage {
    * 设置事件监听
    */
   private setupEventListeners(): void {
+    const unsubscribeName = window.desktopPetApi.onAiNameChanged?.(/**
+     * LLM 配置保存成功后更新对应会话的模型卡片；同时标记正在等待的旧名字查询已过期。
+     *
+     * Args:
+     *     payload (AiNameChangedPayload): 主进程通知的已保存会话编号与 AI 名字。
+     */
+    (payload) => {
+      this.aiNames.set(payload.sessionId, payload.name);
+      this.nameVersions.set(payload.sessionId, (this.nameVersions.get(payload.sessionId) ?? 0) + 1);
+      if (this.currentConfig) this.renderModelList(this.currentConfig);
+    });
+    window.addEventListener("beforeunload", /** 页面卸载时取消 AI 名字监听，避免关闭设置窗口后继续更新模型列表。 */
+    () => unsubscribeName?.());
+
     // 导入模型按钮
     this.importModelBtn.addEventListener("click", /**
      * 用户选择导入目录后展示名称、类别和入口预览；取消选择则不改变当前模型。
@@ -251,7 +274,7 @@ export class ModelPage {
   }
 
   /**
-   * 渲染模型列表
+   * 渲染模型列表，主名称显示会话的 AI 名字，右上角显示 Live2D 资源名字。
    *
    * Args:
    *     config (ModelConfig): 当前服务、模型或动作配置。
@@ -267,7 +290,20 @@ export class ModelPage {
       button.type = "button";
       button.className = `model-item ui-surface ui-surface--compact ${model.id === config.activeModelId ? "active" : ""}`;
       button.dataset.modelId = model.id;
-      button.innerHTML = `<div class="model-name">${model.name}</div><div class="model-session">session_id: ${model.sessionId}</div>`;
+      // 1. AI 名字来自已保存 LLM 配置；所有名称按纯文本显示，避免用户输入被解释成 HTML。
+      const heading = document.createElement("div");
+      heading.className = "model-heading";
+      const aiName = document.createElement("span");
+      aiName.className = "model-name";
+      aiName.textContent = this.aiNames.get(model.sessionId) ?? "AI";
+      const modelName = document.createElement("span");
+      modelName.className = "model-resource-name";
+      modelName.textContent = model.name;
+      heading.append(aiName, modelName);
+      const session = document.createElement("div");
+      session.className = "model-session";
+      session.textContent = `session_id: ${model.sessionId}`;
+      button.append(heading, session);
 
       const deleteButton = document.createElement("button");
       deleteButton.type = "button";
@@ -313,13 +349,36 @@ export class ModelPage {
   }
 
   /**
-   * 刷新模型配置
+   * 先显示本地模型目录，再读取各会话的 AI 名字；名字查询失败时保留可操作的模型列表。
+   *
+   * Returns:
+   *     Promise<ModelConfig>: 本次读取的模型目录；过期查询不会覆盖当前显示。
    */
   async refreshModelConfig(): Promise<ModelConfig> {
+    // 1. 每次切换或刷新记录查询次数，较早返回的目录不覆盖后来发起的查询。
+    const revision = ++this.configRevision;
     const config = await window.desktopPetApi.getModelConfig();
+    if (revision !== this.configRevision) return config;
     this.currentConfig = config;
     this.renderModelList(config);
     this.renderTransformSliders(config);
+
+    // 2. 名字独立加载，等待期间仍能切换或删除模型；新保存的名字优先于旧查询结果。
+    const versions = new Map(this.nameVersions);
+    try {
+      const names = await window.desktopPetApi.getAiNames();
+      if (revision !== this.configRevision) return config;
+      for (const [sessionId, name] of Object.entries(names)) {
+        if (versions.get(sessionId) === this.nameVersions.get(sessionId)) {
+          this.aiNames.set(sessionId, resolveAiName(name));
+        }
+      }
+      this.renderModelList(config);
+    } catch (error) {
+      if (revision === this.configRevision) {
+        this.notifier.error(appendErrorMessage("读取 AI 名字失败", error));
+      }
+    }
     return config;
   }
 

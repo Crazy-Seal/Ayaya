@@ -10,11 +10,13 @@ import { setupDropHandler } from "./drop-handler.js";
 import { setupWindowGestures } from "../ui/window-gestures.js";
 import { setupApplicationShutdownUi } from "../ui/application-shutdown.js";
 import type { ModelInfo } from "../types.js";
+import { DEFAULT_AI_NAME, resolveAiName } from "../../ai-identity.js";
 
 /**
  * 装配独立聊天窗口的输入、附件、会话与标题栏。
  * Attributes:
  *     cleanup (() => void)[]: 页面卸载时释放的图片、模型和窗口监听。
+ *     aiNameRevision (number): 当前 AI 名字查询次数；切换会话或保存新名字后，旧查询不能覆盖标题。
  */
 class ChatApp {
   private readonly elements = getMainUiElements();
@@ -25,6 +27,7 @@ class ChatApp {
   private readonly cleanup: Array<() => void> = [];
   private model: ModelInfo | null = null;
   private modelRevision = 0;
+  private aiNameRevision = 0;
   private lastModelError = "";
 
   /** 初始化图标和聊天客户端，随后绑定输入；会话在 init 中独立查询。 */
@@ -76,7 +79,8 @@ class ChatApp {
     }
     // 2. 先更新界面身份，再让客户端查询对应会话快照和历史。
     this.model = model;
-    document.getElementById("chat-title")!.textContent = model.name;
+    this.showAiName(DEFAULT_AI_NAME);
+    void this.refreshAiName(model.sessionId);
     this.client.setSessionId(model.sessionId);
     // 3. 动作规则读取可以晚于聊天初始化；旧模型的迟到结果不能覆盖新模型。
     const revision = ++this.modelRevision;
@@ -99,6 +103,42 @@ class ChatApp {
     button.setAttribute("aria-pressed", String(pinned));
     button.setAttribute("aria-label", pinned ? "取消聊天窗口置顶" : "置顶聊天窗口");
     button.title = pinned ? "取消聊天窗口置顶" : "置顶聊天窗口";
+  }
+
+  /**
+   * 更新聊天页面标题，使用 LLM 配置的 AI 名字，不使用 Live2D 资源名。
+   *
+   * Args:
+   *     name (string): 当前会话已保存的 AI 名字。
+   */
+  private showAiName(name: string): void {
+    const displayName = resolveAiName(name);
+    document.getElementById("chat-title")!.textContent = displayName;
+    document.title = `${displayName} 聊天`;
+  }
+
+  /**
+   * 模型切换后读取会话对应的已保存 AI 名字，忽略切换会话或新名字保存后的迟到结果。
+   *
+   * Args:
+   *     sessionId (string): 本次标题查询所属的会话编号。
+   *
+   * Returns:
+   *     Promise<void>: 查询完成；失败时保留默认标题并显示错误提示。
+   */
+  private async refreshAiName(sessionId: string): Promise<void> {
+    const revision = ++this.aiNameRevision;
+    try {
+      const names = await window.desktopPetApi.getAiNames([sessionId]);
+      // 1. 保存名字的通知也会增加次数，因此晚到的旧查询不会把新名字改回去。
+      if (this.model?.sessionId === sessionId && revision === this.aiNameRevision) {
+        if (names[sessionId]) this.showAiName(names[sessionId]);
+      }
+    } catch (error) {
+      if (this.model?.sessionId === sessionId && revision === this.aiNameRevision) {
+        this.history.showErrorMessage(`读取 AI 名字失败：${String(error)}`);
+      }
+    }
   }
 
   /** 绑定窗口、输入法和附件操作，所有发送共用客户端命令入口。 */
@@ -208,6 +248,18 @@ class ChatApp {
      */
     (model) => this.applyModel(model));
     if (unsubscribeModel) this.cleanup.push(unsubscribeModel);
+    const unsubscribeName = window.desktopPetApi.onAiNameChanged?.(/**
+     * LLM 设置保存成功后立即更新当前会话的聊天标题，并使较早的名字查询失效。
+     *
+     * Args:
+     *     payload (AiNameChangedPayload): 已保存名字及其会话编号。
+     */
+    (payload) => {
+      if (this.model?.sessionId !== payload.sessionId) return;
+      ++this.aiNameRevision;
+      this.showAiName(payload.name);
+    });
+    if (unsubscribeName) this.cleanup.push(unsubscribeName);
     const unsubscribeMotion = window.desktopPetApi.onMotionConfigChanged?.(/**
      * 设置修改当前模型动作规则后更新标签清单。
      * Args:
@@ -240,10 +292,11 @@ class ChatApp {
     () => { for (const cleanup of this.cleanup) cleanup(); });
   }
 
-  /** 随草稿内容调整输入框高度，限制到 120px 并保留内部滚动。 */
+  /** 随草稿内容调整输入框高度，最小和最大高度由共享控件及聊天页面 CSS 决定。 */
   private resizeInput(): void {
     this.elements.input.style.height = "auto";
-    this.elements.input.style.height = `${Math.min(120, Math.max(40, this.elements.input.scrollHeight))}px`;
+    const style = getComputedStyle(this.elements.input);
+    this.elements.input.style.height = `${Math.min(parseFloat(style.maxHeight), Math.max(parseFloat(style.minHeight), this.elements.input.scrollHeight))}px`;
   }
 
   /** 按附件编号重建预览，单项删除统一使用 SVG 和危险操作样式。 */

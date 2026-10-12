@@ -1,3 +1,6 @@
+import { DEFAULT_AI_NAME } from "../../../ai-identity.js";
+import { buildSystemPrompt } from "../utils/prompt-builder.js";
+
 /**
  * LLM 配置页面
  */
@@ -75,6 +78,7 @@ export class LlmPage implements ISettingsPage {
     this.systemPromptInput = systemPromptInput;
     this.confirmBtn = confirmBtn;
     this.nameInput = nameInput;
+    this.nameInput.placeholder = DEFAULT_AI_NAME;
     this.featureInput = featureInput;
     this.characterInput = characterInput;
     this.addressInput = addressInput;
@@ -198,37 +202,14 @@ export class LlmPage implements ISettingsPage {
    * 根据模板字段拼装系统提示词
    */
   private buildSystemPrompt(): string {
-    const name = this.nameInput.value.trim() || "日和";
-    const feature = this.featureInput.value.trim() || "可爱";
-    const character = this.characterInput.value.trim() || "AI少女";
-    const address = this.addressInput.value.trim() || "主人";
-    const characteristic = this.characteristicInput.value.trim();
-    const constraint = this.constraintInput.value.trim();
-
-    let prompt = `你是${name}，一个${feature}的${character}，称呼用户为${address}。`;
-    if (characteristic) {
-      prompt += `\n${characteristic}`;
-    }
-    if (constraint) {
-      prompt += `\n${constraint}`;
-    }
-
-    // 添加表情标签说明
-    if (this.expressionLabels.length > 0) {
-      const tagsList = this.expressionLabels.map(/**
-       * 把当前可用表情标签转成模型可输出的标签格式。
-       *
-       * Args:
-       *     l (string): 当前可用于提示词的表情名称。
-       *
-       * Returns:
-       *     string: 带尖括号的表情标签。
-       */
-      (l) => `<${l}>`).join("");
-      prompt += `\n你可以在对话中使用以下表情标签:${tagsList}使用时必须像示例一样使用尖括号<>包裹`;
-    }
-
-    return prompt;
+    return buildSystemPrompt({
+      name: this.nameInput.value.trim(),
+      feature: this.featureInput.value.trim(),
+      character: this.characterInput.value.trim(),
+      address: this.addressInput.value.trim(),
+      characteristic: this.characteristicInput.value.trim(),
+      constraint: this.constraintInput.value.trim(),
+    }, this.expressionLabels);
   }
 
   /**

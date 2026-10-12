@@ -206,6 +206,15 @@ export type ChatSettingsData = {
   constraint?: string | null;
 };
 
+/**
+ * 保存 LLM 配置成功后，通知聊天与模型卡片更新指定会话的 AI 名字。
+ *
+ * Attributes:
+ *     sessionId (string): 已保存配置所属的会话编号。
+ *     name (string): 已保存 AI 名字；未填写时使用默认称呼。
+ */
+export type AiNameChangedPayload = { sessionId: string; name: string };
+
 export type ToolPolicy = "allow" | "ask" | "deny";
 
 export type MCPModelSettings = {
@@ -680,6 +689,16 @@ export interface DesktopPetApi {
   openImagePreview: (imageSrc: string) => void;
   getActiveModel: () => Promise<ModelInfo>;
   getModelConfig: () => Promise<ModelConfigView>;
+  /**
+   * 查询本地模型对应会话的 AI 名字，仅返回显示字段。
+   *
+   * Args:
+   *     sessionIds (string[] | undefined): 需要查询的模型会话；未指定时查询整个本地模型列表。
+   *
+   * Returns:
+   *     Promise<Record<string, string>>: 会话编号到已保存 AI 名字的对应关系。
+   */
+  getAiNames: (sessionIds?: string[]) => Promise<Record<string, string>>;
   getChatSettings: () => Promise<ChatSettingsData>;
   getLatestAiMessage: (sessionId?: string) => Promise<{
     sessionId: string;
@@ -724,6 +743,16 @@ export interface DesktopPetApi {
   deleteModel: (modelId: string) => Promise<{ activeModelId: string }>;
   onCursor?: (callback: (data: CursorSyncData) => void) => () => void;
   onModelChanged?: (callback: (model: ModelInfo) => void) => () => void;
+  /**
+   * 订阅 AI 名字保存结果，供聊天标题和模型卡片及时更新。
+   *
+   * Args:
+   *     callback ((payload: AiNameChangedPayload) => void): 配置已保存后接收会话编号和名字的回调。
+   *
+   * Returns:
+   *     () => void: 取消当前订阅的函数。
+   */
+  onAiNameChanged?: (callback: (payload: AiNameChangedPayload) => void) => () => void;
   onModelTransformChanged?: (callback: (data: ModelTransformData) => void) => () => void;
   getFrontendSettings: () => Promise<FrontendSettings>;
   getDesktopSettings: () => Promise<DesktopSettings>;

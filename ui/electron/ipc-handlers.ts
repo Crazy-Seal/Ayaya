@@ -52,6 +52,7 @@ import {
 import { getMainWindow, getChatWindow, getSettingsWindow, getTrustedRendererPolicy, openSettingsWindow, openImagePreviewWindow, setChatPinned, updateChatAttention, deliverModelError,
   beginWindowGesture, endWindowGesture, setPetPointerInteractive } from "./window-manager.js";
 import { isWindowGesture } from "./window-gesture.js";
+import { forgetAiName, readAiNames, rememberAiName } from "./ai-names.js";
 import { applicationOperations, SHUTDOWN_STATE_CHANNEL } from "./application-operations.js";
 import { createTrustedIpcRegistrar } from "./ipc-security.js";
 import { appendFrontendLog } from "./logging/app-logger.js";
@@ -240,6 +241,42 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
     };
   });
 
+  trustedIpc.handle("desktop-pet:get-ai-names", /**
+   * 只读取本地模型已有会话的名字；聊天按当前会话查询，模型列表按需查询全部。
+   *
+   * Args:
+   *     _event (IpcMainInvokeEvent): 来源已经通过验证的窗口请求。
+   *     sessionIds (unknown): 可选会话编号列表，必须全部属于本地模型目录。
+   *
+   * Returns:
+   *     Promise<Record<string, string>>: 查询成功的名字；单项失败不丢弃其他有效结果。
+   */
+  async (_event, sessionIds: unknown) => {
+    // 1. 页面不能查询模型目录之外的会话；未指定时使用整个目录。
+    const known = new Set(loadModelConfig().models.map(/**
+     * 从本地模型目录提取允许查询的会话编号。
+     *
+     * Args:
+     *     model (ModelRecord): 当前本地模型记录。
+     *
+     * Returns:
+     *     string: 当前模型对应会话编号。
+     */
+    (model) => model.sessionId));
+    if (sessionIds === undefined) return readAiNames([...known]);
+    if (!Array.isArray(sessionIds) || sessionIds.some(/**
+     * 拒绝类型错误或不属于本地模型的名字查询，避免页面扩大查询范围。
+     *
+     * Args:
+     *     sessionId (unknown): 页面请求的单个会话编号。
+     *
+     * Returns:
+     *     boolean: 查询不合法时为 true。
+     */
+    (sessionId) => typeof sessionId !== "string" || !known.has(sessionId))) throw new Error("无效的模型会话编号");
+    return readAiNames([...new Set(sessionIds as string[])]);
+  });
+
   // 获取聊天设置
   trustedIpc.handle("desktop-pet:get-chat-settings", /**
    * 页面查询模型设置时等待主进程加载缓存或后端设置。
@@ -322,7 +359,14 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
    *     Promise<ChatSettingsData>: 规范化并保存后的会话设置。
    */
   async (_event, payload: ChatSettingsData) => {
-    return await updateChatSettings(payload);
+    // 1. 后端校验和保存成功后才通知名字变化，失败时不把未保存名字显示给其他窗口。
+    const settings = await updateChatSettings(payload);
+    const update = { sessionId: settings.session_id, name: rememberAiName(settings.session_id, settings.name) };
+    // 2. 只广播显示所需的会话编号和名字，不把 API Key 等设置交给聊天页面。
+    for (const window of [getChatWindow(), getSettingsWindow()]) {
+      if (window && !window.isDestroyed()) window.webContents.send("desktop-pet:ai-name-changed", update);
+    }
+    return settings;
   });
 
   // 获取可用工具
@@ -655,6 +699,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
     }
 
     await deleteChatSettingsBySessionId(target.sessionId);
+    forgetAiName(target.sessionId);
 
     if (target.rootDir) {
       fs.rmSync(resolveRootDirAbsolute(target.rootDir), { recursive: true, force: true });

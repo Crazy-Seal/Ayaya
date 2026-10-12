@@ -1,3 +1,5 @@
+import { buildSystemPrompt } from "../utils/prompt-builder.js";
+
 /**
  * 表情控制页面
  */
@@ -407,22 +409,7 @@ export class MotionPage implements ISettingsPage {
    *     motionConfigs (MotionConfig[]): 当前模型动作规则列表。
    */
   private updateSystemPromptPreview(saved: PageRenderData["saved"], motionConfigs: MotionConfig[]): void {
-    const name = saved.name || "日和";
-    const feature = saved.feature || "可爱";
-    const character = saved.character || "AI少女";
-    const address = saved.address || "主人";
-    const characteristic = saved.characteristic || "";
-    const constraint = saved.constraint || "";
-
-    let prompt = `你是${name}，一个${feature}的${character}，称呼用户为${address}。`;
-    if (characteristic) {
-      prompt += `\n${characteristic}`;
-    }
-    if (constraint) {
-      prompt += `\n${constraint}`;
-    }
-
-    // 添加表情标签说明
+    // 1. 先提取当前模型允许输出的表情标签，再交给共享提示词构建器。
     const expressionLabels = motionConfigs
       .filter(/**
        * 仅保留已声明为表情且填写标签的动作，供提示词预览。
@@ -445,20 +432,6 @@ export class MotionPage implements ISettingsPage {
        */
       (c) => c.label!);
 
-    if (expressionLabels.length > 0) {
-      const tagsList = expressionLabels.map(/**
-       * 把表情名称转换为模型输出可使用的标签。
-       *
-       * Args:
-       *     l (string): 当前可用于提示词的表情名称。
-       *
-       * Returns:
-       *     string: 带尖括号的表情标签。
-       */
-      (l) => `<${l}>`).join("");
-      prompt += `\n你可以在对话中使用以下表情标签:${tagsList}使用时必须像示例一样使用尖括号<>包裹`;
-    }
-
-    this.systemPromptPreview.value = prompt;
+    this.systemPromptPreview.value = buildSystemPrompt(saved, expressionLabels);
   }
 }

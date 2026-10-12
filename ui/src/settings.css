@@ -1,12 +1,6 @@
 /**
- * Settings Panel - Claymorphism Design System (Dark Theme)
- * Matched with Main UI warm orange theme
- *
- * Design Principles:
- * - Soft 3D, bubbly aesthetic with clay depth
- * - Multi-layer shadows for depth perception
- * - Spring physics animations
- * - Warm orange primary with dark background
+ * 设置页面沿用共享的淡蓝显示区、天蓝操作区和明黄按钮配色。
+ * 统一设置页内容边距，并用边缘阴影提示隐藏滚动条后的可滚动内容。
  */
 
 @import "./window-components.css";
@@ -59,13 +53,13 @@
 }
 
 .settings-toast[data-variant="success"] {
-  background: rgba(16, 185, 129, 0.94);
-  border-color: rgba(110, 231, 183, 0.7);
+  background: color-mix(in srgb, var(--color-bg-base) 98%, transparent);
+  border-color: color-mix(in srgb, var(--color-success) 40%, transparent);
 }
 
 .settings-toast[data-variant="error"] {
-  background: rgba(239, 68, 68, 0.94);
-  border-color: rgba(252, 165, 165, 0.7);
+  background: color-mix(in srgb, var(--color-primary) 98%, transparent);
+  border-color: color-mix(in srgb, var(--color-danger) 40%, transparent);
 }
 
 @keyframes settingsToastIn {
@@ -89,25 +83,32 @@
 
 /* ==================== Sidebar ==================== */
 .settings-sidebar {
-  width: 180px;
+  /* 1. 原宽度连同内边距和边框约 205px，改为 123px，整体缩窄约 40%。 */
+  box-sizing: border-box;
+  width: 123px;
+  flex: 0 0 123px;
+  min-width: 0;
   background: var(--color-bg-elevated);
   border-right: 1px solid var(--color-border-subtle);
   display: flex;
   flex-direction: column;
   min-height: 0;
-  padding: var(--spacing-md);
+  padding: var(--spacing-sm);
   gap: var(--spacing-sm);
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  /* 2. 只让导航列表滚动，避免侧栏和导航列表同时出现滚动条。 */
+  overflow: hidden;
 }
 
 .settings-tab {
   position: relative;
   padding-block: var(--spacing-sm);
+  padding-inline: var(--spacing-sm);
+  white-space: nowrap;
 }
 
 .settings-utility-section {
   display: flex;
+  flex-direction: column;
   gap: var(--spacing-sm);
   margin-top: auto;
   padding-top: var(--spacing-md);
@@ -133,22 +134,66 @@
 .settings-content {
   flex: 1;
   display: flex;
+  min-width: 0;
   min-height: 0;
   overflow: hidden;
   background: var(--color-bg-base);
 }
 
 .settings-page {
+  box-sizing: border-box;
   width: 100%;
   height: 100%;
+  /* 1. 全部设置页统一在此留出 16px 外边距，标题和子块不再直接贴住窗口。 */
+  padding: var(--spacing-lg);
   display: none;
-  font-size: 14px;
+  font-size: var(--font-size-body);
   color: var(--color-text-primary);
   overflow: auto;
 }
 
 .settings-page.active {
   display: block;
+}
+
+.settings-page h2 {
+  margin: 0;
+  /* 1. 所有子页面都预留与右侧操作按钮相同的标题高度，首个表格或子框从同一位置开始。 */
+  min-height: var(--control-height-medium);
+  flex-shrink: 0;
+  font-family: var(--font-family-display);
+  font-size: var(--font-size-page-title);
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+/* 设置页数字框保留数值校验和键盘操作，仅取消浏览器自带的加减箭头。 */
+.settings-window input[type="number"] {
+  appearance: textfield;
+}
+
+.settings-window input[type="number"]::-webkit-inner-spin-button,
+.settings-window input[type="number"]::-webkit-outer-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+}
+
+/* 全部设置页使用同一个布局类；页面类只声明自己的业务布局，不覆盖统一间距。 */
+.settings-page-layout {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-lg);
+}
+
+.settings-page-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+  min-height: var(--control-height-medium);
 }
 
 .page-placeholder {
@@ -158,18 +203,10 @@
   align-items: center;
   justify-content: center;
   color: var(--color-text-muted);
-  font-size: 15px;
+  font-size: var(--font-size-section-title);
 }
 
 /* ==================== Model Manager ==================== */
-.model-manager {
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  padding: var(--spacing-lg);
-  gap: var(--spacing-md);
-  box-sizing: border-box;
-}
 
 .import-model-btn {
   align-self: flex-start;
@@ -187,19 +224,21 @@
   grid-template-columns: 80px 1fr 40px;
   align-items: center;
   gap: var(--spacing-md);
-  font-size: 13px;
+  font-size: var(--font-size-label);
   color: var(--color-text-secondary);
 }
 
 .slider-row .ui-range {
   width: 100%;
+  background: var(--color-bg-elevated);
+  box-shadow: inset 0 0 0 1px var(--color-border-strong);
 }
 
 .checkbox-row {
   display: flex;
   align-items: center;
   gap: var(--spacing-md);
-  font-size: 13px;
+  font-size: var(--font-size-label);
   color: var(--color-text-secondary);
   cursor: pointer;
 }
@@ -217,14 +256,14 @@
 }
 
 .preview-title {
-  font-size: 15px;
+  font-size: var(--font-size-section-title);
   font-weight: 600;
   font-family: "Fredoka", "Microsoft YaHei", sans-serif;
   color: var(--color-text-primary);
 }
 
 .preview-line {
-  font-size: 13px;
+  font-size: var(--font-size-label);
   color: var(--color-text-secondary);
 }
 
@@ -237,7 +276,8 @@
 /* ==================== Model List ==================== */
 .model-list {
   flex: 1;
-  overflow: auto;
+  /* 1. 模型列表随外层设置页滚动，不在列表边界裁剪卡片下方和两侧的外阴影。 */
+  overflow: visible;
   display: flex;
   flex-direction: column;
   gap: var(--spacing-sm);
@@ -250,40 +290,52 @@
 
 .model-item {
   flex: 1;
-  border: none;
-  border-radius: var(--radius-md);
   padding: var(--spacing-md) var(--spacing-lg);
   text-align: left;
-  background: var(--color-bg-elevated);
-  color: var(--color-text-primary);
   font-family: inherit;
   cursor: pointer;
-  box-shadow: var(--shadow-clay-elevated);
   transition: transform var(--transition-fast), box-shadow var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
 }
 
 .model-item:hover {
   transform: translateX(2px);
-  box-shadow: var(--shadow-clay-dark);
 }
 
 .model-item.active {
-  background: linear-gradient(135deg, rgba(249, 115, 22, 0.15) 0%, rgba(249, 115, 22, 0.08) 100%);
-  box-shadow:
-    var(--shadow-clay-dark),
-    inset 2px 2px 4px rgba(249, 115, 22, 0.08);
+  /* 1. 选中模型通过天蓝底色与较深边框区分，不再叠加另一层内阴影。 */
+  background: var(--color-bg-elevated);
+  border-color: var(--color-border-strong);
 }
 
 .model-name {
-  font-size: 14px;
+  font-size: var(--font-size-control);
   font-weight: 500;
 }
 
-.model-session {
-  margin-top: var(--spacing-xs);
-  font-size: 12px;
-  color: var(--color-text-muted);
+.model-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--spacing-md);
 }
+
+.model-heading > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.model-resource-name {
+  text-align: right;
+}
+
+.model-resource-name,
+.model-session {
+  font-size: var(--font-size-helper);
+  color: var(--color-text-muted);
+  font-weight: 400;
+}
+
+.model-session { margin-top: var(--spacing-xs); }
 
 .delete-model-btn {
   width: 60px;
@@ -291,20 +343,12 @@
 }
 
 /* ==================== LLM Config Panel ==================== */
-.llm-config-panel {
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-md);
-  padding: var(--spacing-lg);
-  box-sizing: border-box;
-}
 
 .llm-field {
   display: flex;
   flex-direction: column;
   gap: var(--spacing-sm);
-  font-size: 13px;
+  font-size: var(--font-size-label);
   color: var(--color-text-secondary);
 }
 
@@ -358,7 +402,7 @@
 }
 
 .llm-prompt-title {
-  font-size: 16px;
+  font-size: var(--font-size-window-title);
   font-weight: 600;
   font-family: "Fredoka", "Microsoft YaHei", sans-serif;
   color: var(--color-text-primary);
@@ -369,14 +413,6 @@
 }
 
 /* ==================== Tools Panel ==================== */
-.tools-panel {
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-md);
-  padding: var(--spacing-lg);
-  box-sizing: border-box;
-}
 
 .tools-table-wrap {
   flex: 1;
@@ -387,7 +423,6 @@
   width: 100%;
   min-width: 680px;
   table-layout: fixed;
-  font-size: 13px;
 }
 
 .tools-col-source {
@@ -409,8 +444,7 @@
 .tools-table thead th {
   position: sticky;
   top: 0;
-  background: var(--color-bg-surface);
-  font-size: 12px;
+  background: var(--color-bg-elevated);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -421,8 +455,8 @@
 
 .tool-permission-group th {
   padding-top: var(--spacing-md);
-  color: var(--text-secondary);
-  font-size: 0.8rem;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-table-body);
   text-align: left;
 }
 
@@ -454,14 +488,6 @@
 }
 
 /* ==================== Plugins Panel ==================== */
-.plugins-panel {
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-md);
-  padding: var(--spacing-lg);
-  box-sizing: border-box;
-}
 
 .plugins-list {
   display: flex;
@@ -482,7 +508,7 @@
 }
 
 .plugin-card-title {
-  font-size: 15px;
+  font-size: var(--font-size-section-title);
   font-weight: 700;
   color: var(--color-text-primary);
 }
@@ -490,7 +516,7 @@
 .plugin-card-desc {
   margin-top: var(--spacing-xs);
   color: var(--color-text-secondary);
-  font-size: 12px;
+  font-size: var(--font-size-helper);
 }
 
 .plugin-toggle,
@@ -500,7 +526,7 @@
   justify-content: space-between;
   gap: var(--spacing-md);
   color: var(--color-text-secondary);
-  font-size: 13px;
+  font-size: var(--font-size-label);
 }
 
 .plugin-config-grid {
@@ -524,13 +550,6 @@
 }
 
 /* ==================== Confirm Dialog ==================== */
-.confirm-modal {
-  width: min(420px, calc(100% - 32px));
-  padding: var(--spacing-xl);
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-md);
-}
 
 .confirm-icon {
   width: 24px;
@@ -544,30 +563,10 @@
   fill: none;
 }
 
-.confirm-title {
-  font-size: 17px;
-  font-weight: 600;
-  font-family: "Fredoka", "Microsoft YaHei", sans-serif;
-  color: var(--color-text-primary);
-}
 
-.confirm-message {
-  font-size: 13px;
-  line-height: 1.6;
-  color: var(--color-text-secondary);
-}
 
-.confirm-actions {
-  margin-top: var(--spacing-sm);
-}
 
 /* ==================== Multimodal Panel ==================== */
-.multimodal-panel {
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-xl);
-  padding: var(--spacing-lg);
-}
 
 .multimodal-section {
   display: flex;
@@ -577,42 +576,32 @@
 }
 
 .multimodal-section-title {
-  font-size: 15px;
+  font-size: var(--font-size-section-title);
   font-weight: 600;
   font-family: "Fredoka", "Microsoft YaHei", sans-serif;
   color: var(--color-text-primary);
 }
 
 .multimodal-hint {
-  font-size: 12px;
+  font-size: var(--font-size-helper);
   color: var(--color-text-secondary);
   margin-top: var(--spacing-xs);
 }
 
 /* ==================== Motion Panel ==================== */
-.motion-panel {
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-md);
-  padding: var(--spacing-lg);
-  box-sizing: border-box;
-}
 
 .motion-table-wrap {
   flex: 1;
   overflow: auto;
 }
 
-.motion-table {
-  font-size: 13px;
-}
+
+
 
 .motion-table thead th {
   position: sticky;
   top: 0;
-  background: var(--color-bg-surface);
-  font-size: 12px;
+  background: var(--color-bg-elevated);
 }
 
 .motion-table tr:last-child td {
@@ -664,10 +653,6 @@
   min-height: 100%;
   height: auto;
   box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-lg);
-  padding: var(--spacing-lg);
 }
 
 .mcp-page > .page-placeholder {
@@ -677,7 +662,6 @@
   box-sizing: border-box;
 }
 
-.mcp-toolbar,
 .mcp-server-header,
 .mcp-card-actions,
 .mcp-editor-actions {
@@ -687,9 +671,6 @@
   gap: var(--spacing-md);
 }
 
-.mcp-toolbar {
-  flex-shrink: 0;
-}
 
 .mcp-toolbar h2,
 .mcp-editor h3 {
@@ -700,7 +681,7 @@
 .mcp-toolbar p {
   margin: 4px 0 0;
   color: var(--color-text-muted);
-  font-size: 13px;
+  font-size: var(--font-size-label);
 }
 
 .mcp-server-list {
@@ -735,7 +716,7 @@
   padding: 4px 8px;
   border-radius: 999px;
   background: var(--color-bg-surface);
-  font-size: 12px;
+  font-size: var(--font-size-helper);
 }
 
 .mcp-status-available {
@@ -753,7 +734,7 @@
 .mcp-error {
   margin-top: var(--spacing-sm);
   color: var(--color-danger);
-  font-size: 12px;
+  font-size: var(--font-size-helper);
   white-space: pre-wrap;
 }
 
@@ -816,7 +797,7 @@
   flex-direction: column;
   gap: 6px;
   color: var(--color-text-secondary);
-  font-size: 13px;
+  font-size: var(--font-size-label);
 }
 
 .mcp-editor .mcp-checkbox {
@@ -856,11 +837,11 @@
 
 .mcp-test-result {
   padding: 10px;
-  border: 1px solid rgba(16, 185, 129, 0.35);
+  border: 1px solid color-mix(in srgb, var(--color-success) 35%, transparent);
   border-radius: var(--radius-sm);
   color: var(--color-success);
-  background: rgba(16, 185, 129, 0.1);
-  font-size: 13px;
+  background: color-mix(in srgb, var(--color-success) 10%, transparent);
+  font-size: var(--font-size-label);
 }
 
 @media (max-width: 720px) {
@@ -869,8 +850,8 @@
     grid-template-columns: 1fr;
   }
 }
-/* 渠道订阅页沿用窗口共享控件，只在此定义行布局。 */
-.channel-subscriptions-panel { padding: 20px; }
+/* 交互方式页沿用窗口共享控件，卡片内边距与 MCP 等设置页保持一致。 */
+.channel-subscriptions-panel { padding: var(--spacing-lg); }
 .channel-subscription-row {
   display: flex;
   align-items: center;
@@ -880,7 +861,7 @@
 .channel-subscription-row span:first-child { flex: 1; font-weight: 700; }
 
 /* 任务输出保留换行并限制高度，避免持续日志撑开设置窗口。 */
-.background-tasks-panel { padding: 20px; }
+.background-tasks-panel { padding: var(--spacing-lg); }
 .background-task-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 8px 0; }
 .background-task-row span { flex: 1; overflow-wrap: anywhere; }
 #background-task-output { max-height: 280px; overflow: auto; white-space: pre-wrap; }
@@ -894,9 +875,27 @@
 }
 
 /** 日志和退出占用侧栏底部同样大小的按钮，不扩大设置窗口。 */
-.settings-nav { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: var(--spacing-sm); overflow-y: auto; overscroll-behavior: contain; }
+.settings-nav { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; gap: var(--spacing-sm); overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
 .settings-nav .settings-tab { flex-shrink: 0; }
 .settings-utility-section { flex-shrink: 0; }
-.settings-utility-section > .ui-button { flex: 1; min-width: 0; padding-inline: var(--spacing-sm); justify-content: center; }
+.settings-utility-section > .ui-button { flex: 0 0 auto; min-width: 0; padding-inline: var(--spacing-sm); justify-content: center; }
 .settings-utility-section .ui-icon { width: 16px; height: 16px; }
 .settings-toast-icon { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+/* 1. 隐藏导航和设置页的滚动条，保留滚轮、触控板与键盘滚动。 */
+.settings-nav,
+.settings-page {
+  scrollbar-width: none;
+  --scroll-surface: var(--color-bg-base);
+  /* 2. 上下遮盖层随内容滚动；未到边界时露出阴影，滚动到底后遮住下方阴影。 */
+  background:
+    linear-gradient(var(--scroll-surface) 30%, transparent) center top / 100% 32px local no-repeat,
+    linear-gradient(transparent, var(--scroll-surface) 70%) center bottom / 100% 32px local no-repeat,
+    radial-gradient(farthest-side at 50% 0, color-mix(in srgb, var(--color-text-primary) 24%, transparent), transparent) center top / 100% 12px scroll no-repeat,
+    radial-gradient(farthest-side at 50% 100%, color-mix(in srgb, var(--color-text-primary) 24%, transparent), transparent) center bottom / 100% 12px scroll no-repeat;
+  background-color: var(--scroll-surface);
+}
+
+.settings-nav { --scroll-surface: var(--color-bg-elevated); }
+.settings-nav::-webkit-scrollbar,
+.settings-page::-webkit-scrollbar { display: none; }

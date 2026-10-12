@@ -33,15 +33,15 @@
       <div class="settings-layout">
         <aside class="settings-sidebar" id="settings-sidebar">
           <nav class="settings-nav" aria-label="设置分类">
-          <button class="settings-tab ui-nav-item active" type="button" data-page="model">模型管理</button>
+          <button class="settings-tab ui-nav-item active" type="button" data-page="model">Live2D管理</button>
           <button class="settings-tab ui-nav-item" type="button" data-page="llm">LLM配置</button>
           <button class="settings-tab ui-nav-item" type="button" data-page="motion">表情控制</button>
           <button class="settings-tab ui-nav-item" type="button" data-page="memory">插件管理</button>
           <button class="settings-tab ui-nav-item" type="button" data-page="contextStrategy">上下文策略</button>
-          <button class="settings-tab ui-nav-item" type="button" data-page="tools">工具调用</button>
-          <button class="settings-tab ui-nav-item" type="button" data-page="mcp">MCP</button>
+          <button class="settings-tab ui-nav-item" type="button" data-page="tools">工具权限</button>
+          <button class="settings-tab ui-nav-item" type="button" data-page="mcp">MCP服务器</button>
           <button class="settings-tab ui-nav-item" type="button" data-page="multimodal">多模态</button>
-          <button class="settings-tab ui-nav-item" type="button" data-page="channels">渠道订阅</button>
+          <button class="settings-tab ui-nav-item" type="button" data-page="channels">交互方式</button>
           <button class="settings-tab ui-nav-item" type="button" data-page="tasks">后台任务</button>
           </nav>
           <div class="settings-utility-section">
@@ -60,8 +60,11 @@
         </aside>
         <section class="settings-content">
           <div class="settings-page active" data-page="model">
-            <div class="model-manager">
-              <button id="import-model-btn" class="import-model-btn ui-button ui-button--primary ui-button--medium" type="button">导入模型文件夹</button>
+            <div class="settings-page-layout model-manager">
+              <div class="settings-page-toolbar">
+                <h2>Live2D管理</h2>
+                <button id="import-model-btn" class="import-model-btn ui-button ui-button--primary ui-button--medium" type="button">导入模型文件夹</button>
+              </div>
               <div class="transform-controls ui-surface">
                 <label class="slider-row" for="slider-offset-x">
                   <span>水平位置</span>
@@ -92,7 +95,8 @@
             </div>
           </div>
           <div class="settings-page" data-page="llm">
-            <div class="llm-config-panel">
+            <div class="settings-page-layout llm-config-panel">
+              <h2>LLM配置</h2>
               <label class="llm-field">
                 <span>URL</span>
                 <input id="llm-base-url" class="ui-control" type="text" placeholder="请输入模型服务 URL" />
@@ -128,7 +132,7 @@
                 <div class="llm-row-two">
                   <label class="llm-field llm-field-main">
                     <span>AI名字</span>
-                    <input id="llm-name" class="ui-control" type="text" placeholder="日和" />
+                    <input id="llm-name" class="ui-control" type="text" placeholder="AI 名字" />
                   </label>
                   <label class="llm-field llm-field-side">
                     <span>对用户称呼</span>
@@ -160,7 +164,8 @@
             </div>
           </div>
           <div class="settings-page" data-page="motion">
-            <div class="motion-panel">
+            <div class="settings-page-layout motion-panel">
+              <h2>表情控制</h2>
               <div class="motion-table-wrap ui-surface">
                 <table class="motion-table ui-table">
                   <thead>
@@ -183,14 +188,16 @@
             </div>
           </div>
           <div class="settings-page" data-page="memory">
-            <div class="plugins-panel">
+            <div class="settings-page-layout plugins-panel">
+              <h2>插件管理</h2>
               <div id="plugins-list" class="plugins-list"></div>
               <div id="plugins-empty" class="plugins-empty ui-empty-state" hidden>未发现可用插件</div>
               <button id="plugins-confirm-btn" type="button" class="plugins-confirm-btn ui-button ui-button--primary ui-button--medium">保存插件配置</button>
             </div>
           </div>
           <div class="settings-page" data-page="contextStrategy">
-            <div class="llm-config-panel">
+            <div class="settings-page-layout llm-config-panel">
+              <h2>上下文策略</h2>
               <label class="llm-field">
                 <span>上下文压缩触发阈值（K Token）</span>
                 <input id="context-compression-trigger-tokens-k" class="ui-control" type="number" min="10" step="1" placeholder="例如 100" />
@@ -207,7 +214,8 @@
             </div>
           </div>
           <div class="settings-page" data-page="tools">
-            <div class="tools-panel">
+            <div class="settings-page-layout tools-panel">
+              <h2>工具权限</h2>
               <div class="tools-table-wrap ui-surface">
                 <table class="tools-table ui-table">
                   <colgroup>
@@ -232,11 +240,10 @@
             </div>
           </div>
           <div class="settings-page" data-page="mcp">
-            <div id="mcp-page" class="mcp-page">
-              <div class="mcp-toolbar">
+            <div id="mcp-page" class="settings-page-layout mcp-page">
+              <div class="settings-page-toolbar mcp-toolbar">
                 <div>
-                  <h2>MCP 服务</h2>
-                  <p>全局管理连接和当前模型是否启用服务；逐工具权限请在“工具调用”中设置。</p>
+                  <h2>MCP服务器</h2>
                 </div>
                 <button id="mcp-add-btn" type="button" class="mcp-primary-btn ui-button ui-button--primary ui-button--medium">添加服务</button>
               </div>
@@ -274,7 +281,8 @@
             </div>
           </div>
           <div class="settings-page" data-page="multimodal">
-            <div class="multimodal-panel">
+            <div class="settings-page-layout multimodal-panel">
+              <h2>多模态</h2>
               <div class="multimodal-section ui-surface">
                 <div class="multimodal-section-title">截图设置</div>
                 <label class="checkbox-row" for="checkbox-hide-on-screenshot">
@@ -287,32 +295,37 @@
           </div>
           <!-- 当前会话的渠道配置和任务记录分别查询，不复用模型设置提交。 -->
           <div class="settings-page" data-page="channels">
-            <div class="ui-surface channel-subscriptions-panel">
-              <h2>交互渠道</h2>
-              <p>桌面始终显示共享会话。未来接入的渠道可在这里选择是否参与收发。</p>
-              <div id="channel-subscriptions-list"></div>
+            <div class="settings-page-layout">
+              <h2>交互方式</h2>
+              <div class="ui-surface channel-subscriptions-panel">
+                <div id="channel-subscriptions-list"></div>
+              </div>
             </div>
           </div>
           <div class="settings-page" data-page="tasks">
-            <div class="ui-surface background-tasks-panel">
-              <h2>后台任务</h2>
-              <button id="refresh-background-tasks" type="button" class="ui-button ui-button--secondary ui-button--small">刷新</button>
-              <div id="background-tasks-list"></div>
-              <pre id="background-task-output" hidden></pre>
-              <button id="background-task-more" type="button" hidden>加载更多输出</button>
+            <div class="settings-page-layout">
+              <div class="settings-page-toolbar">
+                <h2>后台任务</h2>
+                <button id="refresh-background-tasks" type="button" class="ui-button ui-button--secondary ui-button--small">刷新</button>
+              </div>
+              <div class="ui-surface background-tasks-panel">
+                <div id="background-tasks-list"></div>
+                <pre id="background-task-output" hidden></pre>
+                <button id="background-task-more" type="button" hidden>加载更多输出</button>
+              </div>
             </div>
           </div>
         </section>
       </div>
       <div id="delete-confirm-dialog" class="confirm-overlay ui-dialog-overlay" hidden aria-hidden="true">
-        <div class="confirm-modal ui-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-confirm-title">
+        <div class="confirm-modal ui-confirm-modal ui-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-confirm-title">
           <div class="confirm-header ui-dialog-heading">
             <div class="confirm-icon" aria-hidden="true">
               <span data-icon="warning"></span>
             </div>
-            <div id="delete-confirm-title" class="confirm-title">删除模型确认</div>
+            <div id="delete-confirm-title" class="ui-window-title">删除模型确认</div>
           </div>
-          <div id="delete-confirm-message" class="confirm-message">将删除该模型所有的配置文件和会话记忆，请谨慎操作</div>
+          <div id="delete-confirm-message" class="ui-confirm-message">将删除该模型所有的配置文件和会话记忆，请谨慎操作</div>
           <div class="confirm-actions ui-dialog-actions">
             <button id="delete-confirm-cancel" type="button" class="confirm-btn confirm-btn-ghost ui-button ui-button--secondary ui-button--small">取消</button>
             <button id="delete-confirm-ok" type="button" class="confirm-btn confirm-btn-danger ui-button ui-button--danger ui-button--small">确认删除</button>

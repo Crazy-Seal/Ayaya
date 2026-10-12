@@ -1,6 +1,7 @@
 import type { BackgroundTaskRecord } from "../../types.js";
 import { CommandKind, DESKTOP_CHANNEL, TaskStatus } from "../../../shared-types.js";
 import { TASK_REFRESH_INTERVAL_MS } from "../../../runtime-constants.js";
+import { appendErrorMessage, type SettingsNotifier } from "../components/settings-toast.js";
 
 /**
  * 在设置页查询任务记录和完整输出，并提交独立停止命令。
@@ -12,6 +13,7 @@ import { TASK_REFRESH_INTERVAL_MS } from "../../../runtime-constants.js";
  *     active (boolean): 任务页是否可见，仅可见页刷新运行时长和最近输出。
  *     revision (number): 查询代次，防止事件刷新和轮询结果互相覆盖。
  *     timer (ReturnType<typeof setInterval> | null): 可见页运行任务的刷新计时器。
+ *     refreshFeedbackSession (string | null): 用户已点击刷新、但尚未得到最新查询结果的会话编号。
  */
 export class BackgroundTasksPage {
   private sessionId = "";
@@ -20,6 +22,7 @@ export class BackgroundTasksPage {
   private active = false;
   private revision = 0;
   private timer: ReturnType<typeof setInterval> | null = null;
+  private refreshFeedbackSession: string | null = null;
 
   /**
    * 装配 BackgroundTasksPage 的依赖并初始化本地视图状态。
@@ -29,17 +32,19 @@ export class BackgroundTasksPage {
    *     output (HTMLElement): 分页任务输出容器。
    *     more (HTMLButtonElement): 继续读取输出的按钮。
    *     refresh (HTMLButtonElement): 手动刷新任务记录的按钮。
+   *     notifier (SettingsNotifier | undefined): 手动刷新成功或失败时显示设置页提示；自动轮询不弹提示。
    */
   constructor(
     private readonly list: HTMLElement,
     private readonly output: HTMLElement,
     private readonly more: HTMLButtonElement,
     refresh: HTMLButtonElement,
+    private readonly notifier?: SettingsNotifier,
   ) {
     refresh.addEventListener("click", /**
-     * 任务页可见时定时刷新当前会话任务记录。
+     * 用户手动刷新任务记录后显示成功或失败提示；自动轮询继续保持安静。
      */
-    () => { void this.render(this.sessionId); });
+    () => { void this.render(this.sessionId, true); });
     more.addEventListener("click", /**
      * 已选择任务时定时读取新输出，继续读取位置由返回偏移决定。
      */
@@ -54,6 +59,7 @@ export class BackgroundTasksPage {
    */
   setActive(active: boolean): void {
     this.active = active;
+    if (!active) this.refreshFeedbackSession = null;
     if (!active && this.timer) {
       clearInterval(this.timer);
       this.timer = null;
@@ -65,13 +71,15 @@ export class BackgroundTasksPage {
    *
    * Args:
    *     sessionId (string): 共享 Ayaya 会话标识。
+   *     notify (boolean): 是否为本次手动刷新显示结果，默认不为页面加载和自动轮询弹提示。
    *
    * Returns:
    *     Promise<void>: 当前异步处理完成的等待结果。
    */
-  async render(sessionId: string): Promise<void> {
+  async render(sessionId: string, notify = false): Promise<void> {
     // 1. 会话切换清除旧任务输出，事件与轮询请求用代次防止迟到覆盖。
     if (sessionId !== this.sessionId) {
+      this.refreshFeedbackSession = null;
       this.selectedTask = "";
       this.outputOffset = 0;
       this.output.textContent = "";
@@ -79,11 +87,18 @@ export class BackgroundTasksPage {
       this.more.hidden = true;
     }
     this.sessionId = sessionId;
+    // 1.1. 手动刷新提示跟随本会话的最新查询，避免后来的轮询让用户点击后没有反馈。
+    if (notify) this.refreshFeedbackSession = sessionId;
     const revision = ++this.revision;
     try {
       const records = await window.desktopPetApi.getBackgroundTasks(sessionId);
       if (this.sessionId !== sessionId || revision !== this.revision) return;
       this.show(records);
+      // 1.2. 只有最新查询已显示到页面后才完成手动刷新提示，普通轮询不会新建提示请求。
+      if (this.refreshFeedbackSession === sessionId) {
+        this.refreshFeedbackSession = null;
+        this.notifier?.success("刷新成功");
+      }
       // 2. 只为可见页中的运行任务刷新耗时和输出摘要，终态或切页后释放计时器。
       const running = records.some(/**
        * 检查是否仍有运行任务，全部结束后停止任务状态轮询。
@@ -107,6 +122,10 @@ export class BackgroundTasksPage {
     } catch (error) {
       if (this.sessionId === sessionId && revision === this.revision) {
         this.list.textContent = `读取任务失败: ${String(error)}`;
+        if (this.refreshFeedbackSession === sessionId) {
+          this.refreshFeedbackSession = null;
+          this.notifier?.error(appendErrorMessage("刷新失败", error));
+        }
       }
     }
   }

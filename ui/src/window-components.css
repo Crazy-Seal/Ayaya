@@ -6,7 +6,7 @@
 
 @import "./window-theme.css";
 
-/* 1. 原生窗口与页面底色都透明，圆角之外才能露出桌面，而非留下方形深色底板。 */
+/* 1. 原生窗口与页面底色都透明，圆角之外才能露出桌面，而非留下方形底板。 */
 html.ui-transparent-window,
 html.ui-transparent-window body { background: transparent; }
 .ui-window-frame {
@@ -88,7 +88,7 @@ button {
 }
 
 .ui-button:focus-visible {
-  outline: 2px solid var(--color-primary);
+  outline: 2px solid var(--color-text-accent);
   outline-offset: 2px;
 }
 
@@ -101,24 +101,24 @@ button {
 }
 
 .ui-button--primary {
-  border-color: rgba(251, 146, 60, 0.72);
+  border-color: var(--color-border-default);
   color: var(--color-on-primary);
   background: var(--gradient-primary);
 }
 
 .ui-button--primary:hover:not(:disabled) {
-  border-color: var(--color-primary-light);
+  border-color: var(--color-text-accent);
   background: var(--gradient-primary-hover);
 }
 
 .ui-button--danger {
-  border-color: rgba(248, 113, 113, 0.72);
+  border-color: var(--color-border-default);
   color: var(--color-on-primary);
   background: var(--gradient-danger);
 }
 
 .ui-button--danger:hover:not(:disabled) {
-  border-color: #fca5a5;
+  border-color: var(--color-border-strong);
   background: var(--gradient-danger-hover);
 }
 
@@ -129,14 +129,14 @@ button {
 }
 
 .ui-button--secondary:hover:not(:disabled) {
-  border-color: rgba(249, 115, 22, 0.45);
+  border-color: var(--color-border-strong);
   color: var(--color-text-primary);
-  background: #48423e;
+  background: var(--color-bg-elevated);
 }
 
 .ui-button--warning {
-  border-color: rgba(255, 209, 102, 0.8);
-  color: #1a1400;
+  border-color: var(--color-border-default);
+  color: var(--color-on-primary);
   background: var(--gradient-warning);
 }
 
@@ -160,7 +160,7 @@ button {
   height: var(--control-height-small);
   padding: 0;
   border-radius: var(--radius-sm);
-  font-size: 12px;
+  font-size: var(--font-size-helper);
 }
 
 .ui-nav-item {
@@ -170,7 +170,7 @@ button {
   color: var(--color-text-secondary);
   background: transparent;
   font-family: var(--font-family-display);
-  font-size: 14px;
+  font-size: var(--font-size-body);
   font-weight: var(--font-weight-control);
   text-align: left;
   cursor: pointer;
@@ -188,12 +188,12 @@ button {
 }
 
 .ui-nav-item.active {
-  color: var(--color-primary-light);
+  color: var(--color-text-accent);
   background:
-    linear-gradient(135deg, rgba(249, 115, 22, 0.2) 0%, rgba(249, 115, 22, 0.1) 100%);
+    linear-gradient(135deg, color-mix(in srgb, var(--color-primary) 20%, transparent) 0%, color-mix(in srgb, var(--color-primary) 10%, transparent) 100%);
   box-shadow:
-    inset 2px 2px 4px rgba(249, 115, 22, 0.1),
-    inset -1px -1px 3px rgba(255, 255, 255, 0.03);
+    inset 2px 2px 4px color-mix(in srgb, var(--color-primary) 10%, transparent),
+    inset -1px -1px 3px color-mix(in srgb, var(--color-highlight) 3%, transparent);
 }
 
 .ui-control {
@@ -204,7 +204,7 @@ button {
   border-radius: var(--radius-md);
   padding: 0 var(--spacing-lg);
   color: var(--color-text-primary);
-  background: var(--color-bg-elevated);
+  background: var(--color-bg-base);
   font-family: var(--font-family-body);
   font-size: var(--font-size-label);
   outline: none;
@@ -224,7 +224,7 @@ select.ui-control:hover:not(:disabled) {
 
 .ui-control:focus,
 .ui-control:focus-visible {
-  border-color: var(--color-primary);
+  border-color: var(--color-text-accent);
   box-shadow:
     var(--shadow-clay-elevated),
     var(--focus-ring);
@@ -256,7 +256,31 @@ textarea.ui-control {
   height: auto;
   min-height: 100px;
   padding-block: var(--spacing-md);
-  resize: vertical;
+  /* 1. 文本框尺寸由页面布局决定，隐藏右下角缩放柄；长文本仍可在框内滚动。 */
+  resize: none;
+}
+
+/* 2. 横纵滚动条相交处沿用文本框底色，避免右下角出现默认的小方块。 */
+textarea.ui-control::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* 1. 滚动条两端留出圆角空间，滑块内缩到文本框边框以内，避免贴到外侧。 */
+textarea.ui-control::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+  background: transparent;
+}
+
+textarea.ui-control::-webkit-scrollbar-track {
+  margin: var(--spacing-sm);
+  background: transparent;
+}
+
+textarea.ui-control::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
 }
 
 .ui-select {
@@ -271,7 +295,7 @@ textarea.ui-control {
 
 .ui-select option {
   color: var(--color-text-primary);
-  background-color: var(--color-bg-elevated);
+  background-color: var(--color-bg-base);
   font-family: var(--font-family-body);
   font-size: var(--font-size-label);
 }
@@ -307,7 +331,7 @@ textarea.ui-control {
     align-self: center;
     display: block;
     content: "";
-    color: var(--color-primary-light);
+    color: var(--color-text-accent);
     background: currentColor;
     mask: var(--icon-chevron) center / contain no-repeat;
     transform-origin: center;
@@ -330,7 +354,7 @@ textarea.ui-control {
     border: 1px solid var(--color-border-default);
     border-radius: var(--radius-md);
     color: var(--color-text-primary);
-    background: var(--color-bg-elevated);
+    background: var(--color-bg-base);
     box-shadow: var(--shadow-clay-dark);
     font-family: var(--font-family-body);
     font-size: var(--font-size-label);
@@ -359,15 +383,15 @@ textarea.ui-control {
 
   .ui-select option:hover:not(:disabled),
   .ui-select option:focus {
-    outline: 1px solid rgba(249, 115, 22, 0.32);
+    outline: 1px solid var(--color-border-primary);
     outline-offset: -1px;
     color: var(--color-text-primary);
     background: var(--color-bg-surface);
   }
 
   .ui-select option:checked {
-    color: var(--color-primary-light);
-    background: rgba(249, 115, 22, 0.14);
+    color: var(--color-text-accent);
+    background: color-mix(in srgb, var(--color-primary) 14%, transparent);
     font-weight: 600;
   }
 
@@ -385,7 +409,7 @@ textarea.ui-control {
     order: 1;
     margin-left: auto;
     content: "";
-    color: var(--color-primary-light);
+    color: var(--color-text-accent);
     background: currentColor;
     mask: var(--icon-check) center / contain no-repeat;
   }
@@ -409,7 +433,7 @@ textarea.ui-control {
 }
 
 .ui-checkbox:hover:not(:disabled) {
-  border-color: var(--color-primary-light);
+  border-color: var(--color-text-accent);
 }
 
 .ui-checkbox:checked {
@@ -425,7 +449,7 @@ textarea.ui-control {
 }
 
 .ui-checkbox:focus-visible {
-  outline: 2px solid var(--color-primary);
+  outline: 2px solid var(--color-text-accent);
   outline-offset: 2px;
 }
 
@@ -466,22 +490,26 @@ textarea.ui-control {
 }
 
 .ui-surface {
+  color: var(--color-text-primary);
   border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-lg);
-  background: var(--color-bg-elevated);
+  background: var(--color-bg-base);
   box-shadow: var(--shadow-clay-dark);
 }
 
 .ui-surface--compact {
   border-radius: var(--radius-md);
-  box-shadow: var(--shadow-clay-elevated);
 }
 
 .ui-table {
   width: 100%;
   border-collapse: collapse;
   color: var(--color-text-primary);
+  font-size: var(--font-size-table-body);
 }
+
+/* 表内编辑控件使用共同正文字号，不被普通表单控件的字号覆盖。 */
+.ui-table .ui-control { font-size: var(--font-size-table-body); }
 
 .ui-table th,
 .ui-table td {
@@ -492,8 +520,8 @@ textarea.ui-control {
 
 .ui-table th {
   color: var(--color-text-secondary);
-  background: rgba(255, 255, 255, 0.02);
-  font-size: var(--font-size-label);
+  background: var(--color-bg-elevated);
+  font-size: var(--font-size-table-header);
   font-weight: 600;
 }
 
@@ -502,30 +530,35 @@ textarea.ui-control {
 }
 
 .ui-table tbody tr:hover {
-  background: rgba(249, 115, 22, 0.06);
+  background: color-mix(in srgb, var(--color-primary) 6%, transparent);
 }
 
 .ui-dialog {
+  box-sizing: border-box;
   border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-xl);
+  /* 1. 退出、工具审批和模型删除确认共用天蓝底色，避免标题与操作区像两条独立色带。 */
   background: var(--color-bg-elevated);
   box-shadow:
-    0 20px 50px rgba(0, 0, 0, 0.5),
+    0 20px 50px color-mix(in srgb, var(--color-text-primary) 18%, transparent),
     var(--shadow-clay-dark);
   animation: ui-dialog-in var(--transition-normal);
 }
 
 /** 所有模态框共用遮罩、标题与动作区，页面只决定内容宽度和排版。 */
-.ui-dialog-overlay { position: absolute; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center; background: var(--color-bg-overlay); backdrop-filter: blur(4px); }
+.ui-dialog-overlay { position: absolute; inset: 0; z-index: var(--layer-modal); display: flex; align-items: center; justify-content: center; background: var(--color-bg-overlay); backdrop-filter: blur(4px); }
+.ui-dialog-overlay[data-modal-priority="exit"] { z-index: var(--layer-exit-confirmation); }
 .ui-dialog-overlay[hidden] { display: none !important; }
 .ui-shutdown-overlay { position: absolute; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; padding: var(--spacing-xl); background: var(--color-bg-overlay); backdrop-filter: blur(4px); outline: none; cursor: wait; touch-action: none; -webkit-app-region: no-drag; }
 .ui-shutdown-message { max-width: 100%; padding: var(--spacing-xl); text-align: center; }
 .ui-shutdown-message p { margin-bottom: 0; color: var(--color-text-secondary); }
 [data-application-shutdown="true"] .ui-button { opacity: var(--control-disabled-opacity); transform: none; pointer-events: none; }
-.ui-dialog-heading { display: flex; align-items: center; gap: var(--spacing-md); }
+.ui-dialog-heading { display: flex; align-items: center; gap: var(--spacing-md); background: var(--color-bg-elevated); }
 .ui-dialog-heading .ui-icon { width: 24px; height: 24px; color: var(--color-warning); }
-.ui-dialog-heading .ui-window-title { font-size: 17px; }
-.ui-dialog-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: var(--spacing-sm); }
+.ui-dialog-heading .ui-window-title { font-size: var(--font-size-dialog-title); }
+.ui-dialog-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: var(--spacing-sm); background: var(--color-bg-elevated); }
+.ui-confirm-modal { width: min(var(--dialog-confirm-width), calc(100% - 32px)); max-height: 100%; overflow-y: auto; overscroll-behavior: contain; padding: var(--spacing-xl); display: flex; flex-direction: column; gap: var(--spacing-md); }
+.ui-confirm-message { color: var(--color-text-secondary); font-size: var(--font-size-label); line-height: 1.6; }
 @keyframes ui-dialog-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
 
 .ui-toast {
@@ -569,5 +602,5 @@ textarea.ui-control {
 /** 功能图标和按钮选中状态由全部页面共用。 */
 .ui-icon { display: inline-block; width: 20px; height: 20px; flex-shrink: 0; vertical-align: middle; fill: none; stroke: currentColor; stroke-width: 2; }
 [data-icon] { display: inline-flex; align-items: center; justify-content: center; }
-.ui-button[aria-pressed="true"] { color: var(--color-primary-light); border-color: var(--color-primary); background: var(--color-bg-message-human); }
+.ui-button[aria-pressed="true"] { color: var(--color-text-accent); border-color: var(--color-primary); background: var(--color-bg-message-human); }
 .ui-button[aria-busy="true"] { cursor: progress; }
