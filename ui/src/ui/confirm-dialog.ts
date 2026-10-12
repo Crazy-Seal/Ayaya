@@ -1,4 +1,4 @@
-import { createDialogFocus } from "../../ui/dialog-focus.js";
+import { createDialogFocus, DIALOG_PRIORITY, type DialogPriority } from "./dialog-focus.js";
 /**
  * 确认对话框组件
  */
@@ -14,18 +14,11 @@ export type ConfirmDialogOptions = {
   confirmText: string;
   cancelText: string;
   variant: ConfirmDialogVariant;
-};
-
-const DELETE_MODEL_DEFAULTS: ConfirmDialogOptions = {
-  title: "删除模型确认",
-  message: "将删除该模型所有的配置文件和会话记忆，请谨慎操作",
-  confirmText: "确认删除",
-  cancelText: "取消",
-  variant: "danger",
+  priority?: DialogPriority;
 };
 
 /**
- * 管理设置页确认提示，每次打开返回 Promise，用户确认或取消后结束等待。
+ * 管理聊天和设置窗口的确认提示，每次打开返回 Promise，用户确认或取消后结束等待。
  */
 export class ConfirmDialog {
   private dialog: HTMLDivElement;
@@ -59,7 +52,7 @@ export class ConfirmDialog {
     this.title = title;
     this.message = message;
 
-    this.focus = createDialogFocus(this.dialog, /** 用户按 Escape 时取消当前设置确认。 */
+    this.focus = createDialogFocus(this.dialog, /** 用户按 Escape 时取消当前确认操作。 */
     () => this.close(false));
     this.setupEventListeners();
   }
@@ -99,7 +92,7 @@ export class ConfirmDialog {
    * 关闭对话框
    *
    * Args:
-   *     confirmed (boolean): 用户是否确认本次设置操作。
+   *     confirmed (boolean): 用户是否确认调用方请求的操作。
    */
   private close(confirmed: boolean): void {
     this.dialog.hidden = true;
@@ -117,9 +110,12 @@ export class ConfirmDialog {
    * 打开确认对话框
    *
    * Args:
-   *     options (ConfirmDialogOptions): 调用方提供的配置或运行选项。
+   *     options (ConfirmDialogOptions): 提示文字、按钮样式及当前操作的对话框优先级。
+   *
+   * Returns:
+   *     Promise<boolean>: 用户确认时返回 true，取消时返回 false。
    */
-  open(options: ConfirmDialogOptions = DELETE_MODEL_DEFAULTS): Promise<boolean> {
+  open(options: ConfirmDialogOptions): Promise<boolean> {
     this.title.textContent = options.title;
     this.message.textContent = options.message;
     this.cancelBtn.textContent = options.cancelText;
@@ -132,10 +128,9 @@ export class ConfirmDialog {
     );
     this.okBtn.classList.add(`confirm-btn-${options.variant}`);
     this.okBtn.classList.add(`ui-button--${options.variant}`);
-    this.focus.activate();
     this.dialog.hidden = false;
     this.dialog.setAttribute("aria-hidden", "false");
-    this.cancelBtn.focus();
+    this.focus.activate(this.cancelBtn, options.priority ?? DIALOG_PRIORITY.NORMAL);
     return new Promise<boolean>(/**
      * Promise 创建时保存当前确认操作的完成函数，由用户选择结束等待。
      *

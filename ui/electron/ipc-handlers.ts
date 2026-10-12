@@ -125,7 +125,7 @@ const notifyModelTransformChanged = (model: {
 /**
  * 注册受信任 Renderer 的 IPC 入口，将运行时命令、事件和任务查询接入主进程。
  * Args:
- *     options ({ requestApplicationExit: () => void }): 设置确认后调用的统一应用清理入口。
+ *     options ({ requestApplicationExit: () => void }): 聊天或设置页确认退出后调用的统一应用清理入口。
  */
 export const registerIpcHandlers = (options: { requestApplicationExit: () => void }): void => {
   const trustedIpc = createTrustedIpcRegistrar(getTrustedRendererPolicy());
@@ -857,12 +857,18 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
     if (value.approvalId === null || (typeof value.approvalId === "string" && value.approvalId.length <= 256)) update.approvalId = value.approvalId;
     updateChatAttention(update);
   });
-  trustedIpc.on("desktop-pet:exit-application", /**
-   * 设置页面确认后进入统一应用退出流程，不把窗口关闭当作退出。
+  trustedIpc.handle("desktop-pet:exit-application", /**
+   * 聊天或设置页面确认后进入统一应用退出流程，不把普通窗口关闭当作退出。
    * Args:
-   *     event (IpcMainEvent): 可信设置页面的请求。
+   *     event (IpcMainInvokeEvent): 来源验证已通过的页面请求，仍需核对它属于聊天或设置窗口。
    */
-  (event) => { if (BrowserWindow.fromWebContents(event.sender) === getSettingsWindow()) options.requestApplicationExit(); });
+  (event) => {
+    // 1. 只接受聊天或设置窗口的明确退出操作，其他辅助窗口仍不能退出整个应用。
+    const sender = BrowserWindow.fromWebContents(event.sender);
+    if (!sender || (sender !== getSettingsWindow() && sender !== getChatWindow())) throw new Error("当前窗口不允许退出应用");
+    // 2. 两个入口共用原有应用清理流程，由主进程关闭新业务并停止对话和任务。
+    options.requestApplicationExit();
+  });
   trustedIpc.on("desktop-pet:play-expression", /**
    * 核对当前模型的表情标签后交给 Live2D 页面播放。
    * Args:

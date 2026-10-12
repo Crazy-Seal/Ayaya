@@ -17,8 +17,11 @@ export const createApplicationShutdownUi = (target: Window, api: ShutdownApi) =>
   let installed = false;
   let disposed = false;
   let unsubscribe: (() => void) | null = null;
+  let observer: MutationObserver | null = null;
+  let shutdownOverlay: HTMLElement | null = null;
   const events = ["click", "dblclick", "pointerdown", "pointerup", "keydown", "keyup",
-    "beforeinput", "input", "change", "submit", "wheel", "drop", "paste", "contextmenu"];
+    "pointermove", "mousedown", "mouseup", "mousemove", "touchstart", "touchmove", "touchend",
+    "beforeinput", "input", "change", "submit", "wheel", "dragstart", "dragover", "drop", "paste", "contextmenu"];
   /**
    * 在现有页面回调之前拦截退出期间的事件，包括不经过 IPC 的搜索与导航。
    * Args:
@@ -36,12 +39,30 @@ export const createApplicationShutdownUi = (target: Window, api: ShutdownApi) =>
     doc.body.dataset.applicationShutdown = "true";
     const root = doc.querySelector<HTMLElement>(".ui-window-frame") ?? doc.body;
     // 1. 先锁定现有控件与焦点；异步回调即使重新启用按钮，事件门禁仍不允许操作。
-    for (const control of doc.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>("button, input, textarea, select")) control.disabled = true;
-    for (const child of root.children) (child as HTMLElement).inert = true;
+    /** 退出控制器首次锁定或 DOM 更新后禁用全部功能控件，退出提示自身保持可显示。 */
+    const disableControls = (): void => {
+      // 1. 异步返回或重绘后出现的新控件也必须禁用，不能仅锁定退出瞬间已有的按钮。
+      for (const control of doc.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>("button, input, textarea, select")) {
+        if (!control.disabled) control.disabled = true;
+      }
+      // 2. 禁止页面内容获得焦点；退出等待提示保持可显示和可聚焦。
+      for (const child of root.children) {
+        if (child !== shutdownOverlay && !(child as HTMLElement).inert) (child as HTMLElement).inert = true;
+      }
+    };
+    disableControls();
     (doc.activeElement as HTMLElement | null)?.blur();
-    // 2. 角色透明页面只停止交互，带标题栏的功能窗口显示共用的退出提示。
+    // 2. 继续约束迟到的 UI 更新；事件捕获负责立即阻止操作，观察器负责维持禁用外观和焦点权限。
+    const Observer = (target as Window & typeof globalThis).MutationObserver;
+    if (typeof Observer === "function") {
+      observer = new Observer(/** DOM 新增控件或异步回调重新启用控件时，重新应用退出禁用状态。 */
+      disableControls);
+      observer.observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ["disabled", "inert"] });
+    }
+    // 3. 角色透明页面只停止交互，带标题栏的功能窗口显示共用的退出提示。
     if (!doc.querySelector(".ui-titlebar, .settings-titlebar")) return;
     const overlay = doc.createElement("div"); overlay.className = "ui-shutdown-overlay";
+    shutdownOverlay = overlay;
     overlay.setAttribute("role", "status"); overlay.setAttribute("aria-live", "polite"); overlay.tabIndex = -1;
     const card = doc.createElement("div"); card.className = "ui-surface ui-shutdown-message";
     const title = doc.createElement("div"); title.className = "ui-window-title"; title.textContent = "正在退出…";
@@ -51,7 +72,7 @@ export const createApplicationShutdownUi = (target: Window, api: ShutdownApi) =>
   /** 仅在页面真正卸载时取消退出通知和事件监听，不恢复已经确认退出的界面。 */
   const dispose = (): void => {
     if (disposed) return;
-    disposed = true; unsubscribe?.();
+    disposed = true; unsubscribe?.(); observer?.disconnect();
     for (const name of events) target.removeEventListener(name, blockInteraction, true);
     target.removeEventListener("beforeunload", dispose);
   };
@@ -84,7 +105,7 @@ export const setupApplicationShutdownUi = (): void => {
   current.install();
 };
 
-/** 设置确认退出后立即锁定本窗口，不等待往返主进程的退出通知。 */
+/** 主进程受理退出后补充锁定本窗口，与收到退出通知时使用同一入口。 */
 export const lockApplicationShutdownUi = (): void => {
   setupApplicationShutdownUi(); current!.lock();
 };

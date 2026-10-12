@@ -9,6 +9,8 @@ import { ImageManager } from "./image-manager.js";
 import { setupDropHandler } from "./drop-handler.js";
 import { setupWindowGestures } from "../ui/window-gestures.js";
 import { setupApplicationShutdownUi } from "../ui/application-shutdown.js";
+import { confirmApplicationExit } from "../ui/application-exit.js";
+import { ConfirmDialog } from "../ui/confirm-dialog.js";
 import type { ModelInfo } from "../types.js";
 import { DEFAULT_AI_NAME, resolveAiName } from "../../ai-identity.js";
 
@@ -17,6 +19,7 @@ import { DEFAULT_AI_NAME, resolveAiName } from "../../ai-identity.js";
  * Attributes:
  *     cleanup (() => void)[]: 页面卸载时释放的图片、模型和窗口监听。
  *     aiNameRevision (number): 当前 AI 名字查询次数；切换会话或保存新名字后，旧查询不能覆盖标题。
+ *     exitDialog (ConfirmDialog): 聊天窗口独立的退出确认框，与工具审批框分别处理用户选择。
  */
 class ChatApp {
   private readonly elements = getMainUiElements();
@@ -24,6 +27,7 @@ class ChatApp {
   private readonly history = new ChatHistoryManager(this.elements.chatHistoryList);
   private readonly bubble = new BubbleManager(this.elements.bubble);
   private readonly client: RuntimeChatClient;
+  private readonly exitDialog: ConfirmDialog;
   private readonly cleanup: Array<() => void> = [];
   private model: ModelInfo | null = null;
   private modelRevision = 0;
@@ -33,6 +37,13 @@ class ChatApp {
   /** 初始化图标和聊天客户端，随后绑定输入；会话在 init 中独立查询。 */
   constructor() {
     initializeIcons();
+    this.exitDialog = new ConfirmDialog(
+      document.getElementById("chat-exit-dialog") as HTMLDivElement,
+      document.getElementById("chat-exit-cancel") as HTMLButtonElement,
+      document.getElementById("chat-exit-confirm") as HTMLButtonElement,
+      document.getElementById("chat-exit-title")!,
+      document.getElementById("chat-exit-message")!,
+    );
     this.client = new RuntimeChatClient({
       bubble: this.bubble, chatHistory: this.history,
       sendBtn: this.elements.sendBtn, input: this.elements.input, sessionId: "",
@@ -149,6 +160,10 @@ class ChatApp {
     () => window.desktopPetApi.openSettingsWindow());
     document.getElementById("chat-min-btn")!.addEventListener("click", /** 请求主进程最小化当前聊天窗口。 */
     () => window.desktopPetApi.minimizeCurrentWindow());
+    document.getElementById("chat-exit-btn")!.addEventListener("click", /**
+     * 用户点击退出图标后执行与设置页相同的确认流程；确认才锁定窗口并停止整个应用。
+     */
+    async () => { await confirmApplicationExit(this.exitDialog); });
     document.getElementById("chat-pin-btn")!.addEventListener("click", /** 保存成功后刷新置顶状态，失败时保留原状态并展示原因。 */
     async () => {
       const button = document.getElementById("chat-pin-btn") as HTMLButtonElement;

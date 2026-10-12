@@ -4,9 +4,10 @@
 
 import "../settings.css";
 import { initializeIcons } from "../ui/icons.js";
-import { setupApplicationShutdownUi, lockApplicationShutdownUi } from "../ui/application-shutdown.js";
+import { setupApplicationShutdownUi } from "../ui/application-shutdown.js";
+import { confirmApplicationExit } from "../ui/application-exit.js";
 
-import { ConfirmDialog } from "./components/confirm-dialog.js";
+import { ConfirmDialog } from "../ui/confirm-dialog.js";
 import { SettingsToast, appendErrorMessage } from "./components/settings-toast.js";
 import { buildSystemPrompt } from "./utils/prompt-builder.js";
 import { ModelPage } from "./pages/model-page.js";
@@ -269,15 +270,7 @@ class SettingsApp {
      * 用户确认退出后停止整个应用；取消保留当前聊天与设置状态。
      */
     async () => {
-      const confirmed = await this.confirmDialog.open({
-        title: "退出 Ayaya", message: "退出会停止当前对话和后台任务，是否继续？",
-        confirmText: "退出", cancelText: "取消", variant: "danger",
-      });
-      if (confirmed) {
-        // 1. 确认后同步锁定本窗口，再通知主进程关闭所有业务入口，避免等待期间再次点击。
-        lockApplicationShutdownUi();
-        window.desktopPetApi.requestApplicationExit();
-      }
+      await confirmApplicationExit(this.confirmDialog);
     });
 
     this.closeBtn.addEventListener("click", /**

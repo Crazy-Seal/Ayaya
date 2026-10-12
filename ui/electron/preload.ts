@@ -210,8 +210,13 @@ const desktopPetApi: DesktopPetApi = {
    *     update (ChatAttentionUpdate): 当前消息与审批变化。
    */
   reportChatAttention: (update) => ipcRenderer.send("desktop-pet:chat-attention", update),
-  /** 设置确认退出后请求应用清理。 */
-  requestApplicationExit: () => ipcRenderer.send("desktop-pet:exit-application"),
+  /**
+   * 请求主进程开始全应用退出，等待受理结果，避免只锁定当前页却未发起退出。
+   *
+   * Returns:
+   *     Promise<void>: 主进程已关闭新业务并通知全部窗口进入退出状态。
+   */
+  requestApplicationExit: () => ipcRenderer.invoke("desktop-pet:exit-application"),
   /** 查询主进程退出状态，此查询在退出等待期间仍允许执行。 */
   getApplicationShutdownState: () => ipcRenderer.invoke("desktop-pet:get-shutdown-state"),
   /**

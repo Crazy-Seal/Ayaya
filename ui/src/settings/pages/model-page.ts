@@ -4,7 +4,7 @@
 
 import type { ModelConfig, ImportPreview } from "../types.js";
 import { resolveAiName } from "../../../ai-identity.js";
-import { ConfirmDialog } from "../components/confirm-dialog.js";
+import { ConfirmDialog } from "../../ui/confirm-dialog.js";
 import {
   appendErrorMessage,
   type SettingsNotifier,
@@ -172,7 +172,13 @@ export class ModelPage {
           return;
         }
 
-        const confirmed = await this.confirmDialog.open();
+        const confirmed = await this.confirmDialog.open({
+          title: "删除模型确认",
+          message: "将删除该模型所有的配置文件和会话记忆，请谨慎操作",
+          confirmText: "确认删除",
+          cancelText: "取消",
+          variant: "danger",
+        });
         if (!confirmed) {
           return;
         }

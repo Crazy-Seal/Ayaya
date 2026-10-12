@@ -14,6 +14,7 @@
           <button id="settings-btn" class="ui-button ui-button--secondary ui-button--icon" type="button" aria-label="打开设置" title="设置"><span data-icon="settings"></span></button>
           <button id="chat-pin-btn" class="ui-button ui-button--secondary ui-button--icon" type="button" aria-label="置顶聊天窗口" title="置顶聊天窗口" aria-pressed="false"><span data-icon="pin"></span></button>
           <button id="chat-min-btn" class="ui-button ui-button--secondary ui-button--icon" type="button" aria-label="最小化" title="最小化"><span data-icon="minimize"></span></button>
+          <button id="chat-exit-btn" class="ui-button ui-button--danger ui-button--icon" type="button" aria-label="退出 Ayaya" title="退出 Ayaya"><span data-icon="exit"></span></button>
         </div>
       </header>
       <div id="bubble" class="chat-status" role="status" aria-live="polite" hidden></div>
@@ -41,6 +42,19 @@
           <button id="queue-btn" class="ui-button ui-button--secondary ui-button--small" type="button" title="排队到下一轮" aria-label="排队到下一轮" hidden>排队</button>
         </form>
       </section>
+      <div id="chat-exit-dialog" class="chat-exit-overlay ui-dialog-overlay" hidden aria-hidden="true">
+        <div class="ui-confirm-modal ui-dialog" role="dialog" aria-modal="true" aria-labelledby="chat-exit-title">
+          <div class="ui-dialog-heading">
+            <div class="dialog-icon" data-icon="warning"></div>
+            <div id="chat-exit-title" class="ui-window-title">退出 Ayaya</div>
+          </div>
+          <div id="chat-exit-message" class="ui-confirm-message"></div>
+          <div class="ui-dialog-actions">
+            <button id="chat-exit-cancel" class="ui-button ui-button--secondary ui-button--small" type="button">取消</button>
+            <button id="chat-exit-confirm" class="ui-button ui-button--danger ui-button--small" type="button">退出</button>
+          </div>
+        </div>
+      </div>
       <div id="drag-overlay" class="drag-overlay" hidden><div class="ui-surface">释放以添加图片</div></div>
       <div id="screenshot-confirm-dialog" class="screenshot-confirm-overlay ui-dialog-overlay" hidden aria-hidden="true">
         <div class="screenshot-confirm-modal ui-dialog" role="dialog" aria-modal="true" aria-labelledby="screenshot-confirm-title">

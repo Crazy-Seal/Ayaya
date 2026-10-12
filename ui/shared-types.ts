@@ -652,8 +652,13 @@ export interface DesktopPetApi {
    *     update (ChatAttentionUpdate): 已通过事件水位校验的消息与审批变化。
    */
   reportChatAttention: (update: ChatAttentionUpdate) => void;
-  /** 设置页确认退出后请求主进程清理整个应用。 */
-  requestApplicationExit: () => void;
+  /**
+   * 聊天或设置页确认退出后，请求主进程统一锁定窗口并清理应用。
+   *
+   * Returns:
+   *     Promise<void>: 主进程已受理退出请求；窗口来源无效或接口未更新时拒绝。
+   */
+  requestApplicationExit: () => Promise<void>;
   /** 页面首次加载时查询是否正在退出，补齐早于页面加载完成的通知。 */
   getApplicationShutdownState: () => Promise<boolean>;
   /** 监听应用开始退出，调用方立即锁定本页面的功能操作。 */

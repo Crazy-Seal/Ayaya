@@ -5,7 +5,7 @@ import type {
   MCPToolInfo,
 } from "../../../shared-types.js";
 import type { ISettingsPage, PageEditingData, PageEventCallback, PageRenderData } from "../types.js";
-import type { ConfirmDialog } from "../components/confirm-dialog.js";
+import type { ConfirmDialog } from "../../ui/confirm-dialog.js";
 import { appendErrorMessage, type SettingsToast } from "../components/settings-toast.js";
 import { authorizeBaseUrlChange, classifyHttpEndpoint } from "../url-security.js";
 import { buildEnabledServerPolicy, fingerprintMcpConfig } from "../mcp-config.js";

@@ -129,10 +129,9 @@ export class ToolApprovalDialog {
     this.steerBtn.textContent = "引导";
     this.allowBtn.textContent = "批准";
     this.denyBtn.textContent = "拒绝";
-    this.focus.activate();
     this.dialog.hidden = false;
     this.dialog.setAttribute("aria-hidden", "false");
-    this.allowBtn.focus();
+    this.focus.activate(this.allowBtn);
     return new Promise(/**
      * Promise 创建时保存当前审批的完成函数，批准、拒绝、引导或关闭时结束等待。
      *
