@@ -1,3 +1,6 @@
+from app.agent.models.openai_message_names import CONTEXT_SUMMARY_MESSAGE_NAME, MCP_TOOL_IMAGE_MESSAGE_NAME, SCREENSHOT_COMPRESSED_NAME, SCREENSHOT_MESSAGE_NAME
+from tests.model_capture import capture_input
+from app.agent.state.messages import text_content
 import asyncio
 import json
 import pytest
@@ -14,21 +17,7 @@ from app.agent.context._compaction import (
     ContextCompressionPolicy,
 )
 from app.agent.context._projection import append_transient_context
-from app.agent.state.messages import (
-    AssistantMessage,
-    AvailableMedia,
-    CompactedMedia,
-    CONTEXT_SUMMARY_MESSAGE_NAME,
-    ContextSummaryMessage,
-    HumanMessage,
-    MCP_TOOL_IMAGE_MESSAGE_NAME,
-    SystemMessage,
-    SCREENSHOT_COMPRESSED_NAME,
-    SCREENSHOT_MESSAGE_NAME,
-    ToolCall,
-    ToolMediaMessage,
-    ToolMessage,
-)
+from app.agent.state.messages import (AssistantMessage, ImageContent, ContextSummaryMessage, HumanMessage, SystemMessage, ToolCall, ToolMessage)
 from app.agent.context.coordinator import (
     CONTEXT_SUMMARY_SCHEMA,
     SUMMARY_SYSTEM_PROMPT,
@@ -76,7 +65,7 @@ def _tool_call(message_id: str, tool_call_id: str) -> AssistantMessage:
     return AssistantMessage(
         message_id=message_id,
         created_at=datetime(2026, 8, 29, tzinfo=timezone.utc),
-        text="",
+        content=text_content(""),
         tool_calls=(ToolCall(id=tool_call_id, name="read_file", args={}),),
     )
 
@@ -102,42 +91,11 @@ def _tool_result(
         created_at=datetime(2026, 8, 29, 0, 0, 1, tzinfo=timezone.utc),
         tool_name="read_file",
         tool_call_id=f"call-{index}",
-        content=content if content is not None else f"result-{index}",
+        content=text_content(content if content is not None else f"result-{index}"),
         compressible=compressible,
     )
 
 
-def _tool_image(
-    associated_message_id: str | None,
-    *,
-    name: str = SCREENSHOT_MESSAGE_NAME,
-    image_count: int = 1,
-) -> ToolMediaMessage:
-    """构造与工具结果关联的测试图片消息。
-
-    Args:
-        associated_message_id (str | None): 工具图片应关联的文本结果消息编号。
-        name (str): 当前对象的名称。
-        image_count (int): 当前用例构造的图片数量。
-
-    Returns:
-        ToolMediaMessage: 供外层用例断言使用的预设结果。
-    """
-    media_kind = {
-        SCREENSHOT_MESSAGE_NAME: "screenshot",
-        MCP_TOOL_IMAGE_MESSAGE_NAME: "mcp",
-    }.get(name, "tool")
-    return ToolMediaMessage(
-        message_id=f"image-{associated_message_id}-{name}",
-        created_at=datetime(2026, 8, 29, 0, 0, 2, tzinfo=timezone.utc),
-        tool_name="screenshot" if media_kind == "screenshot" else "read_file",
-        media_kind=media_kind,
-        text="[系统消息]工具返回图片",
-        payload=AvailableMedia(
-            urls=tuple("data:image/png;base64,AAAA" for _ in range(image_count)),
-        ),
-        associated_message_id=associated_message_id,
-    )
 
 
 def _human(index: int) -> HumanMessage:
@@ -152,7 +110,7 @@ def _human(index: int) -> HumanMessage:
     return HumanMessage(
         message_id=f"human-{index}",
         created_at=datetime(2026, 8, 29, 0, 0, index, tzinfo=timezone.utc),
-        text=f"human-{index}",
+        content=text_content(f"human-{index}"),
     )
 
 
@@ -172,401 +130,48 @@ def _state(session_id: str, messages) -> AgentState:
     return AgentState.from_checkpoint(checkpoint)
 
 
-def test_screenshot_policy_expires_after_two_real_human_messages() -> None:
-    """验证截图在后续两条真人输入到达后过期。"""
-    screenshot_message = replace(
-        _tool_image("tool-0"),
-        payload=AvailableMedia(
-            urls=("data:image/png;base64,AAAA",),
-            storage_refs=("screenshot/shot.png",),
-        ),
-    )
-    messages = [
-        screenshot_message,
-        SystemMessage(text="系统提示"),
-        ToolMessage(content="工具结果", tool_name="read_file", tool_call_id="call-0"),
-        _tool_image("tool-mcp", name=MCP_TOOL_IMAGE_MESSAGE_NAME),
-        _human(1),
-        _tool_image("tool-1"),
-        _human(2),
-    ]
+def test_screenshot_policy_expires_group_without_rehydrating_files() -> None:
+    """TTL 只计真人输入，同一结果图片共同压缩并保留历史引用。"""
+    result = _tool_result(0)
+    result = replace(result, content=(*result.content, ImageContent("data:image/png;base64,AAAA", media_kind="screenshot", storage_ref="screenshot/a.png")))
+    messages = (result, _human(1), _human(2))
+    candidate, changed = ContextCompressionPolicy.compress_screenshots(messages, ttl_human_messages=2, max_screenshots=2)
+    assert changed == 1 and candidate[0].content[-1].context_state == "compacted"
+    assert candidate[0].content[-1].url == "" and candidate[0].content[-1].storage_ref == "screenshot/a.png"
+    assert result.content[-1].url.startswith("data:")
+    assert ContextCompressionPolicy.compress_screenshots(candidate, ttl_human_messages=2, max_screenshots=2)[1] == 0
 
-    candidate, changed = ContextCompressionPolicy().compress_screenshots(
-        messages,
-        ttl_human_messages=2,
-        max_screenshots=10,
-    )
 
+def test_screenshot_policy_counts_results_and_keeps_latest_two() -> None:
+    """同一工具返回多图仍是一个观察，保留最近两组截图。"""
+    messages = [replace(_tool_result(i), content=(*text_content("图"), *(ImageContent("data:image/png;base64,AAAA", media_kind="screenshot") for _ in range(2)))) for i in range(3)]
+    candidate, changed = ContextCompressionPolicy.compress_screenshots(messages, ttl_human_messages=20, max_screenshots=2)
     assert changed == 1
-    assert isinstance(candidate[0].payload, CompactedMedia)
-    assert candidate[0].payload.storage_refs == ("screenshot/shot.png",)
-    assert isinstance(candidate[5].payload, AvailableMedia)
+    assert all(part.context_state == "compacted" for part in candidate[0].content if isinstance(part, ImageContent))
+    assert candidate[-1].content[-1].context_state == "available"
 
 
-def test_screenshot_policy_ignores_system_tool_and_injected_user_messages() -> None:
-    """验证系统、工具和内部通知不消耗截图保留次数。"""
-    messages = [
-        _tool_image("tool-0"),
-        SystemMessage(text="系统提示"),
-        ToolMessage(content="工具结果", tool_name="read_file", tool_call_id="call-0"),
-        _tool_image("tool-mcp", name=MCP_TOOL_IMAGE_MESSAGE_NAME),
-        _tool_image("tool-1"),
-        _human(1),
-    ]
-
-    candidate, changed = ContextCompressionPolicy().compress_screenshots(
-        messages,
-        ttl_human_messages=2,
-        max_screenshots=10,
-    )
-
-    assert changed == 0
-    assert candidate == tuple(messages)
-    assert all(
-        isinstance(message.payload, AvailableMedia)
-        for message in candidate
-        if isinstance(message, ToolMediaMessage)
-    )
+def test_first_layer_protects_pending_batch_and_keeps_latest_five() -> None:
+    """未闭合批次与最近五项旧观察保持完整，其余长正文可压缩。"""
+    messages = [replace(_tool_result(i, content="x" * 300), content=(*text_content("x" * 300), ImageContent("data:image/png;base64,AAAA", media_kind="tool"))) for i in range(7)]
+    candidate, changed = ContextCompressionPolicy.compress_old_tool_results(messages, protected_tool_call_ids=("call-0",))
+    assert changed == 1 and candidate[0] == messages[0]
+    assert candidate[1].text == COMPRESSED_TOOL_RESULT and len(candidate[1].content) == 1
+    assert candidate[-1] == messages[-1]
 
 
-def test_screenshot_policy_keeps_only_two_latest_in_long_task() -> None:
-    """验证长任务只保留最近两张未压缩截图。"""
-    messages = [_tool_image(f"tool-{index}") for index in range(3)]
-
-    candidate, changed = ContextCompressionPolicy().compress_screenshots(
-        messages,
-        ttl_human_messages=2,
-        max_screenshots=2,
-    )
-
-    assert changed == 1
-    assert [type(message.payload) for message in candidate] == [
-        CompactedMedia,
-        AvailableMedia,
-        AvailableMedia,
-    ]
-
-
-@pytest.mark.parametrize(
-    ("ttl_human_messages", "max_screenshots"),
-    [(0, 2), (2, 0)],
-)
-def test_screenshot_policy_zero_compresses_immediately_and_is_idempotent(
-    ttl_human_messages: int,
-    max_screenshots: int,
-) -> None:
-    """验证零保留配置立即压缩且重复操作无变化。
-
-    Args:
-        ttl_human_messages (int): 截图过期前允许出现的后续真人消息数量。
-        max_screenshots (int): 最多保留的未压缩截图数量。
-    """
-    messages = [_tool_image("tool-0")]
-
-    first, first_changed = ContextCompressionPolicy().compress_screenshots(
-        messages,
-        ttl_human_messages=ttl_human_messages,
-        max_screenshots=max_screenshots,
-    )
-    second, second_changed = ContextCompressionPolicy().compress_screenshots(
-        first,
-        ttl_human_messages=ttl_human_messages,
-        max_screenshots=max_screenshots,
-    )
-
-    assert first_changed == 1
-    assert second_changed == 0
-    assert isinstance(first[0].payload, CompactedMedia)
-    assert second == first
-
-
-def test_screenshot_policy_removes_large_payload_from_production_shape() -> None:
-    """验证真实消息结构中的大截图内容确实被移除。"""
-    image_payload = "data:image/png;base64," + "A" * 100_000
-    messages = []
-    for index in range(16):
-        messages.append(replace(
-            _tool_image(f"tool-{index}"),
-            payload=AvailableMedia(urls=(image_payload,)),
-        ))
-    before_size = len(json.dumps([message.to_storage_format() for message in messages], ensure_ascii=False))
-
-    candidate, changed = ContextCompressionPolicy().compress_screenshots(
-        messages,
-        ttl_human_messages=2,
-        max_screenshots=2,
-    )
-    after_json = json.dumps([message.to_storage_format() for message in candidate], ensure_ascii=False)
-
-    assert changed == 14
-    assert sum(
-        isinstance(message.payload, AvailableMedia) for message in candidate
-    ) == 2
-    assert "data:image/png;base64" in after_json
-    assert after_json.count("data:image/png;base64") == 2
-    assert len(after_json) < before_size * 0.2
-
-
-def test_screenshot_compaction_runs_below_token_threshold_and_marks_state_changed() -> None:
-    """验证低于 token 阈值也压缩过期截图并标记状态变化。"""
-    async def scenario():
-        """由外层测试调用，完成“低于 token 阈值也压缩过期截图并标记状态变化”的异步步骤。"""
-        screenshots = [_tool_image(f"tool-{index}") for index in range(3)]
-        state = _state("session-screenshot-limit", [*screenshots, _human(1)])
-        coordinator = ModelInputCoordinator(
-            ContextStrategyConfig(
-                compression_trigger_tokens_k=100,
-                screenshot_ttl_human_messages=2,
-                max_screenshots_in_context=2,
-            ),
-            SimpleNamespace(),
-        )
-
-        prepared = await coordinator.prepare(
-            state=state,
-            system_prompt="fixed",
-            tools=[],
-            turn_context=RuntimeContext(
-                latest_human_message_id="human-1",
-                captured_at=datetime(2026, 8, 29, tzinfo=timezone.utc),
-            ),
-        )
-        return state, prepared
-
-    state, prepared = asyncio.run(scenario())
-
-    assert prepared.state_changed is True
-    assert prepared.estimated_tokens < 100_000
-    assert [type(message.payload) for message in state.messages[:3]] == [
-        CompactedMedia, AvailableMedia, AvailableMedia,
-    ]
-    compressed = state.messages[0]
-    assert isinstance(compressed, ToolMediaMessage)
-    assert isinstance(compressed.payload, CompactedMedia)
-    assert "base64" not in json.dumps(compressed.to_storage_format())
-    assert prepared.messages[0]["role"] == "system"
-    assert any(
-        message.get("name") == SCREENSHOT_COMPRESSED_NAME
-        for message in prepared.messages
-    )
+@pytest.mark.parametrize("text,expected", [("a" * 200, COMPRESSED_TOOL_RESULT), ("短文", "短文")])
+def test_first_layer_preserves_short_text_and_removes_only_own_images(text, expected) -> None:
+    """沿用文本权重阈值，图片与所属结果一起回收。"""
+    result = replace(_tool_result(0), content=(*text_content(text), ImageContent("data:image/png;base64,AAAA", media_kind="tool")))
+    candidate, changed = ContextCompressionPolicy.compress_old_tool_results((result,), keep_latest=0)
+    assert changed == 1 and candidate[0].text == expected
+    assert len(candidate[0].content) == 1
 
 
 def test_screen_tools_allow_old_results_to_be_compacted() -> None:
-    """验证屏幕工具允许旧结果参与上下文压缩。"""
-    assert screenshot.compressible is True
-    assert control_screen.compressible is True
-    assert control_screen_with_vlm.compressible is True
-
-
-def test_first_layer_keeps_latest_five_compressible_tool_results() -> None:
-    """验证第一层保留最近五条允许压缩的工具结果。"""
-    messages: list[dict] = []
-    contents = [f"{index}-" + "中" * 50 for index in range(7)]
-    for index in range(7):
-        messages.extend([
-            _tool_call(f"ai-{index}", f"call-{index}"),
-            _tool_result(index, content=contents[index]),
-        ])
-    messages.extend([_tool_call("ai-write", "call-write"), _tool_result(8, compressible=False)])
-
-    candidate, changed = ContextCompressionPolicy().compress_old_tool_results(messages)
-
-    assert changed == 2
-    assert candidate[1].content == COMPRESSED_TOOL_RESULT
-    assert candidate[3].content == COMPRESSED_TOOL_RESULT
-    assert [
-        message.content
-        for message in candidate
-        if isinstance(message, ToolMessage) and message.compressible
-    ][-5:] == contents[2:]
-    assert candidate[-1].content == "result-8"
-
-
-def test_first_layer_never_compresses_pending_tool_batch() -> None:
-    """验证未完成工具批次的结果不会被压缩。"""
-    messages: list[dict] = []
-    for index in range(7):
-        messages.extend([
-            _tool_call(f"ai-{index}", f"call-{index}"),
-            _tool_result(index, content="中" * 50),
-            _tool_image(f"tool-{index}"),
-        ])
-
-    candidate, changed = ContextCompressionPolicy().compress_old_tool_results(
-        messages,
-        keep_latest=0,
-        protected_tool_call_ids={"call-0", "call-1"},
-    )
-
-    assert changed == 10
-    protected_tools = [
-        message for message in candidate
-        if isinstance(message, ToolMessage) and message.tool_call_id in {"call-0", "call-1"}
-    ]
-    assert [message.content for message in protected_tools] == ["中" * 50, "中" * 50]
-    assert {
-        message.associated_message_id
-        for message in candidate
-        if isinstance(message, ToolMediaMessage)
-    } == {"tool-0", "tool-1"}
-
-
-@pytest.mark.parametrize(
-    ("content", "should_compress"),
-    [
-        ("中" * 49, False),
-        ("中" * 50, True),
-        ("x" * 196, False),
-        ("x" * 200, True),
-    ],
-)
-def test_first_layer_uses_weighted_fifty_character_text_threshold(
-    content: str,
-    should_compress: bool,
-) -> None:
-    """验证第一层按五十加权字符阈值判断文本。
-
-    Args:
-        content (str): 当前处理的正文。
-        should_compress (bool): 当前截图输入按用例预期是否应该压缩。
-    """
-    messages = [_tool_result(0, content=content)]
-
-    candidate, changed = ContextCompressionPolicy().compress_old_tool_results(messages, keep_latest=0)
-
-    assert changed == int(should_compress)
-    assert candidate[0].content == (
-        COMPRESSED_TOOL_RESULT if should_compress else content
-    )
-
-
-def test_first_layer_removes_old_tool_image_but_keeps_short_text() -> None:
-    """验证旧工具图片被删除但短文本保留。"""
-    messages: list[dict] = []
-    for index in range(6):
-        messages.extend([
-            _tool_result(index, content="截屏成功"),
-            _tool_image(f"tool-{index}"),
-        ])
-
-    candidate, changed = ContextCompressionPolicy().compress_old_tool_results(messages)
-
-    assert changed == 1
-    assert next(message for message in candidate if message.message_id == "tool-0").content == "截屏成功"
-    assert {
-        message.associated_message_id
-        for message in candidate
-        if isinstance(message, ToolMediaMessage)
-    } == {f"tool-{index}" for index in range(1, 6)}
-
-
-def test_first_layer_removes_only_strongly_associated_tool_images() -> None:
-    """验证只删除明确关联到目标结果的工具图片。"""
-    target = _tool_result(0, content="中" * 50)
-    associated_screenshot = _tool_image("tool-0")
-    associated_compressed_screenshot = replace(
-        _tool_image("tool-0"), payload=CompactedMedia(),
-    )
-    associated_mcp_image = _tool_image("tool-0", name=MCP_TOOL_IMAGE_MESSAGE_NAME)
-    real_user_image = HumanMessage(text="user image", image_urls=("data:image/png;base64,AAAA",))
-    context_summary = ContextSummaryMessage(
-        content="summary", summary_schema_version=1,
-        covered_through_message_id="tool-0", covered_effective_date="2026-08-29",
-        compression_ratio=0.5,
-    )
-    unassociated_image = _tool_image(None)
-    wrong_association = _tool_image("tool-other")
-    noncompressible = _tool_result(1, compressible=False, content="中" * 50)
-    noncompressible_image = _tool_image("tool-1")
-    messages = [
-        target,
-        associated_screenshot,
-        associated_compressed_screenshot,
-        associated_mcp_image,
-        real_user_image,
-        context_summary,
-        unassociated_image,
-        wrong_association,
-        noncompressible,
-        noncompressible_image,
-    ]
-    candidate, changed = ContextCompressionPolicy().compress_old_tool_results(messages, keep_latest=0)
-
-    assert changed == 4
-    assert next(message for message in candidate if message.message_id == target.message_id).content == COMPRESSED_TOOL_RESULT
-    assert associated_screenshot not in candidate
-    assert associated_compressed_screenshot not in candidate
-    assert associated_mcp_image not in candidate
-    assert real_user_image in candidate
-    assert context_summary in candidate
-    assert unassociated_image in candidate
-    assert wrong_association in candidate
-    assert noncompressible_image in candidate
-
-
-def test_first_layer_cleans_images_from_already_compressed_result_idempotently() -> None:
-    """验证已经压缩结果的残留图片清理可以重复执行。"""
-    messages = [
-        _tool_result(0, content=COMPRESSED_TOOL_RESULT),
-        _tool_image("tool-0"),
-    ]
-
-    first, first_changed = ContextCompressionPolicy().compress_old_tool_results(
-        messages,
-        keep_latest=0,
-    )
-    second, second_changed = ContextCompressionPolicy().compress_old_tool_results(
-        first,
-        keep_latest=0,
-    )
-
-    assert first_changed == 1
-    assert second_changed == 0
-    assert first == (_tool_result(0, content=COMPRESSED_TOOL_RESULT),)
-    assert second == first
-
-
-def test_image_only_compaction_marks_prepared_state_as_changed() -> None:
-    """验证仅图片变化也标记模型准备结果需要保存。"""
-    async def scenario():
-        """由外层测试调用，完成“仅图片变化也标记模型准备结果需要保存”的异步步骤。"""
-        messages = []
-        for index in range(6):
-            messages.extend([
-                _tool_call(f"ai-{index}", f"call-{index}"),
-                _tool_result(index, content="截屏成功"),
-            ])
-            if index == 0:
-                messages.append(_tool_image("tool-0", image_count=6))
-        messages.append(HumanMessage(
-            message_id="human-latest",
-            created_at=datetime(2026, 8, 29, 0, 0, 3, tzinfo=timezone.utc),
-            text="继续",
-        ))
-        state = _state("session-image-only", messages)
-        config = ContextStrategyConfig(compression_trigger_tokens_k=10)
-        coordinator = ModelInputCoordinator(config, SimpleNamespace())
-
-        prepared = await coordinator.prepare(
-            state=state,
-            system_prompt="fixed",
-            tools=[],
-            turn_context=RuntimeContext(
-                latest_human_message_id="human-latest",
-                captured_at=datetime(2026, 8, 29, tzinfo=timezone.utc),
-            ),
-        )
-        return state, prepared
-
-    state, prepared = asyncio.run(scenario())
-
-    assert prepared.state_changed is True
-    assert prepared.estimated_tokens < 10_000
-    assert not any(
-        isinstance(message, ToolMediaMessage)
-        and message.associated_message_id == "tool-0"
-        for message in state.messages
-    )
+    """截图和屏幕工具仍标记为可压缩旧观察。"""
+    assert screenshot().compressible and control_screen().compressible and control_screen_with_vlm().compressible
 
 
 def test_diary_coverage_port_removes_only_covered_context_summaries() -> None:
@@ -798,11 +403,11 @@ def test_compression_trigger_is_configured_directly_in_k_tokens() -> None:
 def test_protocol_blocks_never_split_tool_call_from_results() -> None:
     """验证工具请求和结果不会被压缩边界拆开。"""
     messages = [
-        HumanMessage(text="one"),
+        HumanMessage(content=text_content("one")),
         _tool_call("ai-1", "call-1"),
         _tool_result(1),
-        AssistantMessage(text="done"),
-        HumanMessage(text="latest"),
+        AssistantMessage(content=text_content("done")),
+        HumanMessage(content=text_content("latest")),
     ]
 
     blocks = ContextCompressionPolicy.protocol_blocks(messages)
@@ -813,7 +418,7 @@ def test_protocol_blocks_never_split_tool_call_from_results() -> None:
 def test_transient_context_is_appended_to_copy_of_latest_human_message() -> None:
     """验证临时背景只追加到最新真人消息副本。"""
     original = (HumanMessage(
-        text="问题",
+        content=text_content("问题"),
         message_id="human-1",
         created_at=datetime(2026, 8, 29, tzinfo=timezone.utc),
     ),)
@@ -860,6 +465,7 @@ class _SummaryClient:
             schema (dict): 当前要检查或转换的 JSON Schema。
             kwargs (dict[str, Any]): 传递给被调用函数的其他关键字参数。
         """
+        messages = capture_input(messages)
         self.calls.append({"messages": messages, "schema": schema, "kwargs": kwargs})
         return self.result
 
@@ -958,7 +564,7 @@ class _RatioBudget:
         Returns:
             TokenAssessment: 供外层用例断言使用的预设结果。
         """
-        marker = " ".join(str(message.get("content", "")) for message in messages)
+        marker = " ".join(message.text for message in messages)
         if "candidate-75" in marker and self.accept_75:
             raw = 10
         else:
@@ -1047,11 +653,11 @@ def test_model_input_coordinator_replaces_old_turns_with_state_only_summary() ->
         for index in range(12):
             messages.extend([
                 HumanMessage(
-                    text=f"第{index}轮问题：" + "中" * 600,
+                    content=text_content(f"第{index}轮问题：" + "中" * 600),
                     message_id=f"human-{index}", created_at=created_at,
                 ),
                 AssistantMessage(
-                    text=f"第{index}轮回答：" + "答" * 600,
+                    content=text_content(f"第{index}轮回答：" + "答" * 600),
                     message_id=f"assistant-{index}", created_at=created_at,
                 ),
             ])
@@ -1111,7 +717,7 @@ def test_model_input_coordinator_replaces_old_turns_with_state_only_summary() ->
     assert any(message.message_id == "human-11" for message in state.messages)
     assert all("仅存在于本轮输入的召回记忆" not in message.text for message in state.messages)
     assert all(extraction_prompt not in message.text for message in state.messages)
-    assert any("仅存在于本轮输入的召回记忆" in str(message.get("content")) for message in prepared.messages)
+    assert any("仅存在于本轮输入的召回记忆" in message.text for message in prepared.messages)
     assert prepared.estimated_tokens < config.compression_trigger_tokens
 
 
@@ -1136,8 +742,8 @@ def test_context_summary_persona_is_built_directly_from_optional_chat_settings()
             ),
         )
         frozen = (
-            HumanMessage(text="旧消息", message_id="human-old", created_at=datetime(2026, 8, 28, tzinfo=timezone.utc)),
-            HumanMessage(text="最新消息", message_id="human-latest", created_at=datetime(2026, 8, 29, tzinfo=timezone.utc)),
+            HumanMessage(content=text_content("旧消息"), message_id="human-old", created_at=datetime(2026, 8, 28, tzinfo=timezone.utc)),
+            HumanMessage(content=text_content("最新消息"), message_id="human-latest", created_at=datetime(2026, 8, 29, tzinfo=timezone.utc)),
         )
         await coordinator.summarize_candidate(frozen, 1.0)
         return client.calls[0]["messages"]
@@ -1163,9 +769,9 @@ def test_repeated_compaction_advances_coverage_from_old_summary_to_latest_raw_me
                 covered_effective_date="2026-08-28", compression_ratio=0.5,
                 created_at=datetime(2026, 8, 29, tzinfo=timezone.utc),
             ),
-            HumanMessage(text="继续处理", message_id="human-work", created_at=datetime(2026, 8, 29, 5, tzinfo=timezone.utc)),
-            AssistantMessage(text="取得新进展", message_id="assistant-work", created_at=datetime(2026, 8, 29, 5, 10, tzinfo=timezone.utc)),
-            HumanMessage(text="最新消息", message_id="human-latest", created_at=datetime(2026, 8, 29, 6, tzinfo=timezone.utc)),
+            HumanMessage(content=text_content("继续处理"), message_id="human-work", created_at=datetime(2026, 8, 29, 5, tzinfo=timezone.utc)),
+            AssistantMessage(content=text_content("取得新进展"), message_id="assistant-work", created_at=datetime(2026, 8, 29, 5, 10, tzinfo=timezone.utc)),
+            HumanMessage(content=text_content("最新消息"), message_id="human-latest", created_at=datetime(2026, 8, 29, 6, tzinfo=timezone.utc)),
         )
         client = _SummaryClient()
         coordinator = ContextCompactionCoordinator(
@@ -1195,7 +801,7 @@ def test_summary_coverage_reuses_existing_summary_cursor() -> None:
                 covered_effective_date="2026-08-28", compression_ratio=0.5,
                 created_at=datetime(2026, 8, 29, tzinfo=timezone.utc),
             ),
-            HumanMessage(text="最新消息", message_id="human-latest", created_at=datetime(2026, 8, 29, 6, tzinfo=timezone.utc)),
+            HumanMessage(content=text_content("最新消息"), message_id="human-latest", created_at=datetime(2026, 8, 29, 6, tzinfo=timezone.utc)),
         )
         coordinator = ContextCompactionCoordinator(
             ContextBudgetService(ContextStrategyConfig()),
@@ -1226,8 +832,8 @@ def test_context_summary_accepts_valid_structure_regardless_of_estimated_size() 
         "summary": "概" * 2_000,
     })
     frozen = (
-        HumanMessage(text="旧消息", message_id="human-old", created_at=datetime(2026, 8, 28, tzinfo=timezone.utc)),
-        HumanMessage(text="最新消息", message_id="human-latest", created_at=datetime(2026, 8, 29, tzinfo=timezone.utc)),
+        HumanMessage(content=text_content("旧消息"), message_id="human-old", created_at=datetime(2026, 8, 28, tzinfo=timezone.utc)),
+        HumanMessage(content=text_content("最新消息"), message_id="human-latest", created_at=datetime(2026, 8, 29, tzinfo=timezone.utc)),
     )
     coordinator = ContextCompactionCoordinator(
         ContextBudgetService(ContextStrategyConfig()),
@@ -1253,8 +859,8 @@ def test_invalid_structured_summary_does_not_replace_state_messages() -> None:
         messages = []
         for index in range(12):
             messages.extend([
-                HumanMessage(text=f"第{index}轮问题：" + "中" * 600, message_id=f"human-{index}", created_at=datetime(2026, 8, 29, tzinfo=timezone.utc)),
-                AssistantMessage(text=f"第{index}轮回答：" + "答" * 600, message_id=f"assistant-{index}", created_at=datetime(2026, 8, 29, 0, 1, tzinfo=timezone.utc)),
+                HumanMessage(content=text_content(f"第{index}轮问题：" + "中" * 600), message_id=f"human-{index}", created_at=datetime(2026, 8, 29, tzinfo=timezone.utc)),
+                AssistantMessage(content=text_content(f"第{index}轮回答：" + "答" * 600), message_id=f"assistant-{index}", created_at=datetime(2026, 8, 29, 0, 1, tzinfo=timezone.utc)),
             ])
         state = _state("session-invalid-summary", messages)
         original = state.to_checkpoint()
@@ -1294,8 +900,8 @@ def test_model_input_expands_from_frozen_source_to_75_percent() -> None:
             accept_75 (bool): 是否让百分之七十五摘要候选通过预算检查。
         """
         state = _state("session-expand", (
-            HumanMessage(text="old", message_id="human-old", created_at=datetime(2026, 8, 28, tzinfo=timezone.utc)),
-            HumanMessage(text="latest", message_id="human-latest", created_at=datetime(2026, 8, 29, tzinfo=timezone.utc)),
+            HumanMessage(content=text_content("old"), message_id="human-old", created_at=datetime(2026, 8, 28, tzinfo=timezone.utc)),
+            HumanMessage(content=text_content("latest"), message_id="human-latest", created_at=datetime(2026, 8, 29, tzinfo=timezone.utc)),
         ))
         config = ContextStrategyConfig(compression_trigger_tokens_k=10)
         coordinator = ModelInputCoordinator(config, _SummaryClient())
@@ -1326,8 +932,8 @@ def test_model_input_stops_before_main_model_when_75_percent_is_still_over_budge
     async def scenario():
         """由外层测试调用，完成“百分之七十五摘要仍过大时停止主模型调用”的异步步骤。"""
         state = _state("session-overflow", (
-            HumanMessage(text="old", message_id="human-old", created_at=datetime(2026, 8, 28, tzinfo=timezone.utc)),
-            HumanMessage(text="latest", message_id="human-latest", created_at=datetime(2026, 8, 29, tzinfo=timezone.utc)),
+            HumanMessage(content=text_content("old"), message_id="human-old", created_at=datetime(2026, 8, 28, tzinfo=timezone.utc)),
+            HumanMessage(content=text_content("latest"), message_id="human-latest", created_at=datetime(2026, 8, 29, tzinfo=timezone.utc)),
         ))
         original = state.to_checkpoint()
         config = ContextStrategyConfig(compression_trigger_tokens_k=10)

@@ -3,9 +3,8 @@
 from app.agent.state.model import AgentState, CHECKPOINT_SCHEMA_VERSION, TokenBaseline
 from app.agent.state.messages import (
     AssistantMessage,
-    AvailableMedia,
     BaseMessage,
-    CompactedMedia,
+    ImageContent, TextContent, ProviderData, text_content,
     ContextSummaryMessage,
     EnvironmentPerceptionMessage,
     HumanMessage,
@@ -16,17 +15,18 @@ from app.agent.state.messages import (
     SystemMessage,
     TaskResultMessage,
     ToolCall,
-    ToolMediaMessage,
     ToolMessage,
 )
 
 __all__ = [
     "AgentState",
     "AssistantMessage",
-    "AvailableMedia",
     "BaseMessage",
+    "ImageContent",
+    "TextContent",
+    "ProviderData",
+    "text_content",
     "CHECKPOINT_SCHEMA_VERSION",
-    "CompactedMedia",
     "ContextSummaryMessage",
     "EnvironmentPerceptionMessage",
     "HumanMessage",
@@ -38,6 +38,5 @@ __all__ = [
     "TaskResultMessage",
     "TokenBaseline",
     "ToolCall",
-    "ToolMediaMessage",
     "ToolMessage",
 ]

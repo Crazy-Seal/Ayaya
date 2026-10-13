@@ -1,3 +1,6 @@
+from app.agent.models.openai_message_names import SCREENSHOT_COMPRESSED_NAME, SCREENSHOT_MESSAGE_NAME
+from tests.model_capture import result_parts
+from app.agent.state.messages import ProviderData
 """agent 引擎回归测试（离线，无需网络）。
 
 覆盖以下核心行为：
@@ -5,6 +8,8 @@
 - 流式工具调用在流末仅产出一次
 - 中断恢复可重入同一工具并注入截屏图片
 """
+from tests.model_capture import capture_input
+from app.agent.state.messages import text_content
 
 import asyncio
 import types
@@ -18,14 +23,7 @@ from app.agent.core.event_router import EventRouter, EventType
 from app.agent.core.pipeline import ExecutionPipeline
 from app.agent.core.plugin_manager import PluginManager
 from app.agent.core.tool_manager import ToolManager
-from app.agent.state.messages import (
-    SCREENSHOT_COMPRESSED_NAME,
-    SCREENSHOT_MESSAGE_NAME,
-    AssistantMessage,
-    ToolMediaMessage,
-    ToolMessage,
-    ToolCall,
-)
+from app.agent.state.messages import (AssistantMessage, HumanMessage, ImageContent, ToolMessage, ToolMessage, ToolCall)
 from app.agent.state import AgentState
 from app.agent.models.llm_client import LLMClient, LLMConfig, StreamChunk
 from app.agent.tools.base import BaseTool, ToolResult
@@ -75,7 +73,7 @@ class _FakeScreenshotTool(BaseTool):
         return ToolResult.success(
             "截屏成功",
             image_url="data:image/png;base64,iVBORw0KGgpwYXlsb2Fk",
-            image_message_name=SCREENSHOT_MESSAGE_NAME,
+            media_kind="screenshot",
         )
 
 
@@ -123,6 +121,7 @@ class _FakeLLM:
             messages (list[dict]): 按对话顺序排列的消息集合。
             tools (list[dict] | None): 当前向模型公开的工具定义。
         """
+        messages = capture_input(messages)
         self.messages.append(messages)
         script = self.scripts[self.calls]
         self.calls += 1
@@ -199,8 +198,8 @@ def test_astream_emits_each_tool_call_once():
                 yield _delta(finish_reason="tool_calls")
             return gen()
 
-        client._client.chat.completions.create = fake_create
-        chunks = [c async for c in client.astream([{"role": "user", "content": "hi"}], tools=[{}])]
+        client._adapter._client.chat.completions.create = fake_create
+        chunks = [c async for c in client.astream([HumanMessage(content=text_content("hi"))], tools=[])]
         await client.close()
         return chunks
 
@@ -251,11 +250,11 @@ def test_astream_accumulates_fragmented_arguments_and_signature():
                 yield _delta(finish_reason="tool_calls")
             return gen()
 
-        client._client.chat.completions.create = fake_create
+        client._adapter._client.chat.completions.create = fake_create
         try:
             return [
                 chunk async for chunk in client.astream(
-                    [{"role": "user", "content": "hi"}], tools=[{}]
+                    [HumanMessage(content=text_content("hi"))], tools=[]
                 )
             ]
         finally:
@@ -265,7 +264,7 @@ def test_astream_accumulates_fragmented_arguments_and_signature():
     tool_calls = [chunk.tool_call for chunk in chunks if chunk.tool_call is not None]
     assert len(tool_calls) == 1
     assert tool_calls[0].args == {"query": "代码优化"}
-    assert tool_calls[0].extra_content == {
+    assert tool_calls[0].provider_data.to_dict()["payload"]["extra_content"] == {
         "google": {"thought_signature": "signature-value"}
     }
 
@@ -315,11 +314,11 @@ def test_astream_separates_different_calls_that_reuse_index():
                 yield _delta(finish_reason="tool_calls")
             return gen()
 
-        client._client.chat.completions.create = fake_create
+        client._adapter._client.chat.completions.create = fake_create
         try:
             return [
                 chunk async for chunk in client.astream(
-                    [{"role": "user", "content": "测试多个工具"}], tools=[{}]
+                    [HumanMessage(content=text_content("测试多个工具"))], tools=[]
                 )
             ]
         finally:
@@ -335,10 +334,10 @@ def test_astream_separates_different_calls_that_reuse_index():
             {"end": "2026-06-19", "start": "2026-06-15"},
         ),
     ]
-    assert tool_calls[0].extra_content == {
+    assert tool_calls[0].provider_data.to_dict()["payload"]["extra_content"] == {
         "google": {"thought_signature": "screenshot-signature"}
     }
-    assert tool_calls[1].extra_content is None
+    assert tool_calls[1].provider_data is None
 
 
 @pytest.mark.parametrize(
@@ -379,11 +378,11 @@ def test_astream_rejects_invalid_tool_arguments(raw_arguments):
                 yield _delta(finish_reason="tool_calls")
             return gen()
 
-        client._client.chat.completions.create = fake_create
+        client._adapter._client.chat.completions.create = fake_create
         try:
             return [
                 chunk async for chunk in client.astream(
-                    [{"role": "user", "content": "hi"}], tools=[{}]
+                    [HumanMessage(content=text_content("hi"))], tools=[]
                 )
             ]
         finally:
@@ -398,12 +397,12 @@ def test_astream_rejects_invalid_tool_arguments(raw_arguments):
 def test_assistant_message_with_tools_serializes():
     """验证带工具请求的助手消息可序列化。"""
     msg = AssistantMessage(
-        text="",
+        content=text_content(""),
         tool_calls=(ToolCall(id="c1", name="screenshot", args={}),),
     )
-    d = msg.to_openai_format()
-    assert d["role"] == "assistant"
-    assert d["tool_calls"][0]["function"]["name"] == "screenshot"
+    d = msg.to_storage_format()
+    assert d["message_type"] == "assistant"
+    assert d["tool_calls"][0]["name"] == "screenshot"
 
 
 def test_tool_call_extra_content_roundtrips_into_followup_request():
@@ -416,7 +415,7 @@ def test_tool_call_extra_content_roundtrips_into_followup_request():
                 id="c1",
                 name="search_memory",
                 args={"query": "测试"},
-                extra_content=signature,
+                provider_data=ProviderData("openai_chat_completions", "https://api.openai.com/v1", "test-model", {"extra_content": signature}),
             ))],
             [StreamChunk(content="搜索功能正常")],
         ])
@@ -447,7 +446,7 @@ def test_tool_call_extra_content_roundtrips_into_followup_request():
         message for message in restored.messages
         if isinstance(message, AssistantMessage) and message.tool_calls
     )
-    assert restored_call.tool_calls[0].to_dict()["extra_content"] == {
+    assert restored_call.tool_calls[0].provider_data.to_dict()["payload"]["extra_content"] == {
         "google": {"thought_signature": "signature-value"}
     }
 
@@ -477,15 +476,15 @@ def test_direct_screenshot_roundtrip():
 
     state = asyncio.run(run())
     msgs = state.messages
-    # 工具槽位只留文本
-    assert any(isinstance(m, ToolMessage) and m.content == "截屏成功" for m in msgs)
-    # 截图作为 user 消息注入，带 system_screenshot 名
+    # 工具结果同时保留文字与截图
+    assert any(isinstance(m, ToolMessage) and m.text == "截屏成功" for m in msgs)
+    # 截图类别保存在结果内容块中
     shot = [
         m for m in msgs
-        if isinstance(m, ToolMediaMessage) and m.media_kind == "screenshot"
+        if isinstance(m, ToolMessage) and any(isinstance(part, ImageContent) and part.media_kind == "screenshot" for part in m.content)
     ]
-    assert shot, "应注入一条 system_screenshot 用户消息"
-    assert "image_url" in str(shot[0].to_openai_format()["content"])
+    assert shot, "应保留截图内容块"
+    assert "image_url" in str(shot[0].to_storage_format()["content"])
     # 模型最终基于截图作答
     assistant_texts = [m.text for m in msgs if isinstance(m, AssistantMessage)]
     assert "我看到一只猫" in assistant_texts
@@ -505,12 +504,7 @@ def test_pipeline_checkpoints_screenshot_compaction_before_llm_call():
         for index in range(3):
             call = ToolCall(id=f"shot-{index}", name="screenshot", args={})
             state.record_assistant_step("", (call,))
-            state.record_tool_result(
-                call,
-                "完成",
-                image_urls=("data:image/png;base64,c2hvdA==",),
-                image_message_name=SCREENSHOT_MESSAGE_NAME,
-            )
+            state.record_tool_result(call, result_parts('完成', ('data:image/png;base64,c2hvdA==',), 'screenshot'))
         state.add_user_message("继续")
         snapshots: list[dict] = []
 
@@ -537,9 +531,9 @@ def test_pipeline_checkpoints_screenshot_compaction_before_llm_call():
     checkpoint_messages = snapshots[0]["messages"]
     checkpoint_screenshots = [
         message for message in checkpoint_messages
-        if message.get("_message_type") == "tool_media"
+        if message.get("message_type") == "tool" and any(part.get("context_state")=="compacted" for part in message.get("content",[]))
     ]
-    assert checkpoint_screenshots[0]["name"] == SCREENSHOT_COMPRESSED_NAME
+    assert checkpoint_screenshots[0]["content"][-1]["context_state"] == "compacted"
     assert "base64" not in str(checkpoint_screenshots[0]["content"])
     assert [
         message.get("name")
@@ -789,6 +783,7 @@ def test_pipeline_flushes_unmatched_prefix_candidate_before_stream_error():
                 messages (list[dict]): 按对话顺序排列的消息集合。
                 tools (list[dict] | None): 当前向模型公开的工具定义。
             """
+            messages = capture_input(messages)
             yield StreamChunk(content="[发送")
             raise RuntimeError("流式连接中断")
 
@@ -860,7 +855,7 @@ def test_pipeline_keeps_content_filter_error():
     async def run():
         """由外层测试调用，完成“内容过滤错误保持原语义”的异步步骤。"""
         agent = _PipelineHarness(
-            _FakeLLM(scripts=[[StreamChunk(finish_reason="content_filter")]]),
+            _FakeLLM(scripts=[[StreamChunk(finish_reason="refused")]]),
             tools=[],
         )
         state = AgentState.create_new("t")

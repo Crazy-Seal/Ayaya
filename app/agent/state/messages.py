@@ -1,9 +1,9 @@
-"""与 Provider 无关的不可变消息值及持久化 Adapter。"""
+"""Ayaya 业务消息、不可变内容块及独立 JSON 编码。"""
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, replace
 from datetime import datetime
 import json
 from types import MappingProxyType
@@ -11,13 +11,6 @@ from typing import Any, ClassVar, Iterator, Literal, Mapping, Sequence, cast, ge
 from uuid import uuid4
 
 from app.schemas.runtime_types import DESKTOP_CHANNEL, TaskResultStatus
-from app.agent.state.message_names import (
-    CONTEXT_SUMMARY_MESSAGE_NAME,
-    MCP_TOOL_IMAGE_MESSAGE_NAME,
-    SCREENSHOT_COMPRESSED_NAME,
-    SCREENSHOT_MESSAGE_NAME,
-    TOOL_IMAGE_MESSAGE_NAME,
-)
 from app.agent.state.time import normalize_utc, utc_now
 
 
@@ -26,8 +19,7 @@ MessageType = Literal[
     "system",
     "assistant",
     "tool",
-    "tool_media",
-    "context_summary",
+        "context_summary",
     "task_result",
     "environment_perception",
     "subagent",
@@ -215,526 +207,409 @@ def _require_string(value: object, field_name: str, *, allow_empty: bool = True)
 
 
 @dataclass(frozen=True, slots=True)
-class ToolCall:
-    """保存模型请求的一次工具调用，审批、恢复与结果配对都使用同一编号和不可变参数。
+class TextContent:
+    """保存一段原始业务文字。
 
     Attributes:
-        id (str): 模型工具调用编号，不允许为空。
-        name (str): 注册的工具名称。
-        args (Mapping[str, Any]): 递归不可变的调用参数。
-        extra_content (Mapping[str, Any] | None): 模型服务要求原样带回的附加协议内容。
+        text (str): 正文；不包含模型投影加入的时间或来源。
     """
+    text: str
 
+    def __post_init__(self) -> None:
+        """拒绝非字符串正文，避免存储时隐式改变工具结果。"""
+        if not isinstance(self.text, str):
+            raise TypeError("TextContent.text 必须是字符串")
+
+    def to_dict(self) -> dict[str, Any]:
+        """返回独立的文字内容块 JSON 对象。
+
+        Returns:
+            dict[str, Any]: 供下一处理阶段使用的独立 JSON 对象。
+        """
+        return {"type": "text", "text": self.text}
+
+
+@dataclass(frozen=True, slots=True)
+class ImageContent:
+    """保存图片及其在本地历史和当前上下文中的状态。
+
+    Attributes:
+        url (str): 图片地址、data URL 或历史中的相对文件路径。
+        detail (str | None): 图片处理提示，模型适配器决定如何使用。
+        media_kind (str): human、tool、screenshot 或 mcp。
+        storage_ref (str | None): 已保存的本地相对路径。
+        context_state (str): available 表示可以发送；compacted 表示不能重载图片。
+    """
+    url: str
+    detail: str | None = None
+    media_kind: str = "human"
+    storage_ref: str | None = None
+    context_state: str = "available"
+
+    def __post_init__(self) -> None:
+        """检查图片来源和压缩状态，已压缩截图不得保留可发送地址。"""
+        if self.media_kind not in {"human", "tool", "screenshot", "mcp"}:
+            raise ValueError("未知图片类别")
+        if self.context_state not in {"available", "compacted"}:
+            raise ValueError("未知图片上下文状态")
+        if not isinstance(self.url, str) or self.context_state == "available" and not self.url:
+            raise ValueError("可用图片必须有地址")
+        if self.context_state == "compacted" and (self.media_kind != "screenshot" or self.url):
+            raise ValueError("压缩截图不能保留模型图片地址")
+        if self.storage_ref is not None and (not isinstance(self.storage_ref, str) or not self.storage_ref):
+            raise ValueError("图片文件引用必须是非空字符串")
+        if self.detail is not None and not isinstance(self.detail, str):
+            raise ValueError("图片 detail 必须是字符串")
+
+    def to_dict(self) -> dict[str, Any]:
+        """导出图片结构和业务字段，不在此读取图片文件。
+
+        Returns:
+            dict[str, Any]: 供下一处理阶段使用的独立 JSON 对象。
+        """
+        image = {"url": self.url}
+        if self.detail is not None:
+            image["detail"] = self.detail
+        return {"type": "image_url", "image_url": image, "media_kind": self.media_kind,
+                "storage_ref": self.storage_ref, "context_state": self.context_state}
+
+
+ContentPart = TextContent | ImageContent
+
+
+def text_content(text: str) -> tuple[ContentPart, ...]:
+    """把纯文本转换为有序业务正文，不创建新的消息身份。
+
+    Args:
+        text (str): 用户、助手或工具提供的文字。
+    Returns:
+        tuple[ContentPart, ...]: 一个文字块。
+    """
+    return (TextContent(text),)
+
+
+def content_from_json(value: object) -> tuple[ContentPart, ...]:
+    """严格读取新协议的内容块数组，不接受旧字符串正文。
+
+    Args:
+        value (object): JSON 数组。
+    Returns:
+        tuple[ContentPart, ...]: 已校验的不可变内容。
+    Raises:
+        MessageContractError: 内容类型、图片字段或业务状态无效。
+    """
+    if not isinstance(value, list):
+        raise MessageContractError("消息 content 必须是内容块数组")
+    parts: list[ContentPart] = []
+    for item in value:
+        block = _require_mapping(item, "content[]")
+        if block.get("type") == "text":
+            parts.append(TextContent(_require_string(block.get("text"), "content[].text")))
+        elif block.get("type") == "image_url":
+            image = _require_mapping(block.get("image_url"), "content[].image_url")
+            parts.append(ImageContent(url=_require_string(image.get("url"), "image_url.url"),
+                detail=image.get("detail"), media_kind=block.get("media_kind", "human"),
+                storage_ref=block.get("storage_ref"), context_state=block.get("context_state", "available")))
+        else:
+            raise MessageContractError("未知内容块类型")
+    return tuple(parts)
+
+
+def content_text(content: Sequence[ContentPart]) -> str:
+    """按原顺序读取文字块，图片不被解释为真人文字。
+
+    Args:
+        content (Sequence[ContentPart]): 按顺序排列的业务文字或图片内容块。
+
+    Returns:
+        str: 供历史、记忆和日志使用的业务文字。
+    """
+    return "\n".join(part.text for part in content if isinstance(part, TextContent))
+
+
+def format_tool_arguments(call: ToolCall) -> str:
+    """把业务参数写入日记和记忆文本，不构造或保存供应商调用结构。
+
+    Args:
+        call (ToolCall): 包含对象参数的业务工具调用。
+
+    Returns:
+        str: 供历史、记忆和日志使用的业务文字。
+    """
+    return json.dumps(to_json_value(call.args), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def validate_content(content: Sequence[ContentPart]) -> tuple[ContentPart, ...]:
+    """复制内容序列为元组，拒绝混入 SDK 对象或可变字典。
+
+    Args:
+        content (Sequence[ContentPart]): 按顺序排列的业务文字或图片内容块。
+
+    Returns:
+        tuple[ContentPart, ...]: 复制并校验后的不可变内容集合。
+    """
+    result = tuple(content)
+    if not all(isinstance(part, (TextContent, ImageContent)) for part in result):
+        raise TypeError("content 只能包含 Ayaya 内容块")
+    return result
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderData:
+    """保存仅由所属模型适配器解释的恢复材料。
+
+    Attributes:
+        api_format (str): 原调用协议。
+        endpoint (str): 原服务地址；不含凭据。
+        model (str): 原模型标识。
+        payload (Mapping[str, Any]): 不透明、不可变的专用数据。
+    """
+    api_format: str
+    endpoint: str
+    model: str
+    payload: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        """复制专用材料并要求明确归属，不能猜测旧数据属于哪个供应商。"""
+        if not all(isinstance(value, str) and value for value in (self.api_format, self.endpoint, self.model)):
+            raise ValueError("供应商恢复材料必须有协议、地址和模型")
+        object.__setattr__(self, "endpoint", self.endpoint.rstrip("/"))
+        object.__setattr__(self, "payload", _freeze(_require_mapping(self.payload, "provider_data.payload")))
+
+    def to_dict(self) -> dict[str, Any]:
+        """返回可持久化的材料副本，不执行供应商转换。
+
+        Returns:
+            dict[str, Any]: 供下一处理阶段使用的独立 JSON 对象。
+        """
+        return {"api_format": self.api_format, "endpoint": self.endpoint, "model": self.model,
+                "payload": to_json_value(self.payload)}
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> ProviderData:
+        """从已标明归属的存储对象恢复专用材料。
+
+        Args:
+            data (Mapping[str, Any]): 新协议存储的业务对象。
+
+        Returns:
+            ProviderData: 经过业务字段校验的不可变对象。
+        """
+        return cls(**dict(data))
+
+
+@dataclass(frozen=True, slots=True)
+class ToolCall:
+    """保存一次不可变业务调用，参数是对象而非供应商 JSON 字符串。
+
+    Attributes:
+        id (str): 调用编号。
+        name (str): 工具名称。
+        args (Mapping[str, Any]): 审批与执行共享的不可变参数。
+        provider_data (ProviderData | None): 所属模型的专用恢复材料。
+    """
     id: str
     name: str
     args: Mapping[str, Any]
-    extra_content: Mapping[str, Any] | None = None
+    provider_data: ProviderData | None = None
 
     def __post_init__(self) -> None:
-        """dataclass 创建工具调用后校验编号、名称和对象字段，再递归固定参数。
-
-        Raises:
-            ValueError: 调用编号或工具名称为空。
-            TypeError: 参数或附加协议内容不是映射对象。
-        """
-        if not isinstance(self.id, str) or not self.id:
-            raise ValueError("ToolCall.id 不能为空")
-        if not isinstance(self.name, str) or not self.name:
-            raise ValueError("ToolCall.name 不能为空")
-        if not isinstance(self.args, Mapping):
-            raise TypeError("ToolCall.args 必须是对象")
-        if self.extra_content is not None and not isinstance(self.extra_content, Mapping):
-            raise TypeError("ToolCall.extra_content 必须是对象")
-        object.__setattr__(self, "args", _freeze(self.args))
-        if self.extra_content is not None:
-            object.__setattr__(self, "extra_content", _freeze(self.extra_content))
+        """固定参数和恢复材料，拒绝没有身份的工具请求。"""
+        if not all(isinstance(value, str) and value for value in (self.id, self.name)):
+            raise ValueError("工具调用编号和名称不能为空")
+        object.__setattr__(self, "args", _freeze(_require_mapping(self.args, "tool_call.args")))
+        if self.provider_data is not None and not isinstance(self.provider_data, ProviderData):
+            raise TypeError("provider_data 必须是 ProviderData")
 
     def to_dict(self) -> dict[str, Any]:
-        """把工具调用转换为模型消息格式，参数按稳定键序编码为 JSON 字符串。
+        """导出独立业务调用 JSON，参数保持对象形式。
 
         Returns:
-            dict[str, Any]: 包含 function 和可选 extra_content 的工具调用副本。
+            dict[str, Any]: 供下一处理阶段使用的独立 JSON 对象。
         """
-        result: dict[str, Any] = {
-            "id": self.id,
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "arguments": json.dumps(
-                    _thaw(self.args),
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ),
-            },
-        }
-        if self.extra_content:
-            result["extra_content"] = _thaw(self.extra_content)
-        return result
+        return {"id": self.id, "name": self.name, "args": to_json_value(self.args),
+                "provider_data": self.provider_data.to_dict() if self.provider_data else None}
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> "ToolCall":
-        """从模型工具调用或 checkpoint 中解析参数，并构造经过校验的不可变调用。
+    def from_dict(cls, data: Mapping[str, Any]) -> ToolCall:
+        """严格恢复业务调用；旧 function 格式必须先迁移。
 
         Args:
-            data (Mapping[str, Any]): 包含 id、function 和可选 extra_content 的工具调用记录。
+            data (Mapping[str, Any]): 新协议存储的业务对象。
 
         Returns:
-            ToolCall: 恢复出的工具调用对象。
-
-        Raises:
-            ValueError: 必需字段缺失、为空，参数 JSON 无效或参数不是对象。
+            ToolCall: 经过业务字段校验的不可变对象。
         """
-        function = _require_mapping(data.get("function"), "tool_call.function")
-        raw_arguments = function.get("arguments", "{}")
-        args = json.loads(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
-        if not isinstance(args, Mapping):
-            raise ValueError("工具调用参数必须是 JSON 对象")
-        return cls(
-            id=_require_string(data.get("id"), "tool_call.id", allow_empty=False),
-            name=_require_string(function.get("name"), "tool_call.function.name", allow_empty=False),
-            args=args,
-            extra_content=(
-                _require_mapping(data["extra_content"], "tool_call.extra_content")
-                if data.get("extra_content") is not None
-                else None
-            ),
-        )
+        return cls(id=_require_string(data.get("id"), "tool_call.id", allow_empty=False),
+                   name=_require_string(data.get("name"), "tool_call.name", allow_empty=False),
+                   args=_require_mapping(data.get("args"), "tool_call.args"),
+                   provider_data=ProviderData.from_dict(data["provider_data"]) if data.get("provider_data") else None)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class BaseMessage(ABC):
-    """约定所有领域消息的编号、UTC 时间及模型/存储转换接口。
+    """约定业务身份、UTC 时间及供应商无关的 JSON 编码。
 
     Attributes:
-        message_type (ClassVar[MessageType]): 子类声明的领域消息类型。
-        message_id (str): 用于持久保存和界面去重的稳定消息编号。
-        created_at (datetime): 消息创建时间，构造后统一为 UTC。
+        message_id (str): 持久化与去重使用的稳定编号。
+        created_at (datetime): 创建时间。
     """
-
     message_type: ClassVar[MessageType]
     message_id: str = field(default_factory=lambda: uuid4().hex)
     created_at: datetime = field(default_factory=utc_now)
 
-    def __post_init__(self) -> None:
-        """dataclass 创建消息后统一 UTC 时间，并拒绝缺少稳定编号的消息。
-
-        Raises:
-            ValueError: 消息编号为空或时间无法解析。
-        """
-        object.__setattr__(self, "created_at", normalize_utc(self.created_at))
-        if not self.message_id:
-            raise ValueError("message_id 不能为空")
-
+    @property
     @abstractmethod
-    def to_openai_format(self) -> dict[str, Any]:
-        """由具体消息类型实现模型请求格式转换，不包含内部存储字段。
-
-        Returns:
-            dict[str, Any]: 该消息对应的模型协议字典。
-
-        Raises:
-            NotImplementedError: 子类未实现转换方法。
-        """
+    def message_type(self) -> MessageType:
+        """要求具体业务类型声明自己的存储标识。"""
         raise NotImplementedError
 
-    def _storage_fields(self) -> dict[str, Any]:
-        """提供子类追加专用存储字段的入口，基础消息没有附加字段。
-
-        Returns:
-            dict[str, Any]: 空字典，子类可覆盖以保存领域元数据。
-        """
-        return {}
+    def __post_init__(self) -> None:
+        """统一 UTC 时间并校验身份；构造不写数据库。"""
+        object.__setattr__(self, "created_at", normalize_utc(self.created_at))
+        if not isinstance(self.message_id, str) or not self.message_id:
+            raise ValueError("message_id 不能为空")
 
     def to_storage_format(self) -> dict[str, Any]:
-        """在模型正文之外加入领域类型、稳定编号、UTC 时间和子类元数据，供 checkpoint 保存。
+        """逐字段编码业务值；模型角色、工具 function 和时间前缀均不参与存储。
 
         Returns:
-            dict[str, Any]: 包含完整恢复材料的消息字典。
+            dict[str, Any]: 包含身份、时间与完整业务字段的独立 JSON 对象。
         """
-        return {
-            **self.to_openai_format(),
-            "_message_type": self.message_type,
-            "_message_id": self.message_id,
-            "_created_at": self.created_at.isoformat(),
-            **self._storage_fields(),
-        }
+        result: dict[str, Any] = {"message_type": self.message_type}
+        for item in fields(self):
+            value = getattr(self, item.name)
+            if item.name == "created_at":
+                value = value.isoformat()
+            elif item.name == "content" and isinstance(value, tuple):
+                value = [part.to_dict() for part in value]
+            elif item.name == "tool_calls":
+                value = [call.to_dict() for call in value]
+            elif isinstance(value, ProviderData):
+                value = value.to_dict()
+            else:
+                value = to_json_value(value)
+            result[item.name] = value
+        return result
 
     @property
     def enters_protocol_log(self) -> bool:
-        """告知 StateManager 该消息是否需要写入长期保留的对话协议日志。
+        """告知存储层是否归档原始业务消息。
 
         Returns:
-            bool: 基础实现为 True，系统提示词和上下文摘要由子类排除。
+            bool: 满足该业务条件时返回 True。
         """
         return True
 
     @property
     def text(self) -> str:
-        """提供纯文本读取接口，正文由具体消息子类定义。
+        """提供统一纯文本读取接口，具体类型实现正文含义。
 
         Returns:
-            str: 基础实现返回空串。
+            str: 按顺序拼接的可见文字，不包含图片和供应商材料。
         """
         return ""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class HumanMessage(BaseMessage):
-    """保存不可变真人输入及渠道来源，模型 wire 与存储元数据分别投影。
-
-    Attributes:
-        message_type (ClassVar[MessageType]): 该消息对应的领域类型常量。
-        text (str): 需要保存或追加的文本。
-        image_urls (tuple[str, ...]): 真人附件的模型图片地址。
-        image_filenames (tuple[str, ...]): 已外置保存的附件路径。
-        origin_channel (str): 输入或本轮回复所属的渠道。
-    """
+    """保存真人发送的完整有序正文和入口渠道。"""
     message_type: ClassVar[MessageType] = "human"
-    text: str
-    image_urls: tuple[str, ...] = ()
-    image_filenames: tuple[str, ...] = ()
+    content: tuple[ContentPart, ...]
     origin_channel: str = DESKTOP_CHANNEL
 
     def __post_init__(self) -> None:
-        """校验真人正文、渠道来源和附件数量，规范化不可变附件集合。
-
-        Raises:
-            TypeError: HumanMessage.text 必须是字符串。
-            ValueError: HumanMessage.origin_channel 不能为空。
-        """
+        """固定正文并校验来源，图片文件引用位于图片块中。"""
         BaseMessage.__post_init__(self)
-        if not isinstance(self.text, str):
-            raise TypeError("HumanMessage.text 必须是字符串")
-        if not isinstance(self.origin_channel, str) or not self.origin_channel:
-            raise ValueError("HumanMessage.origin_channel 不能为空")
-        object.__setattr__(self, "image_urls", tuple(self.image_urls))
-        object.__setattr__(self, "image_filenames", tuple(self.image_filenames))
-        if not all(isinstance(item, str) and item for item in self.image_urls):
-            raise ValueError("HumanMessage.image_urls 必须是非空字符串")
-        if not all(isinstance(item, str) and item for item in self.image_filenames):
-            raise ValueError("HumanMessage.image_filenames 必须是非空字符串")
-        if self.image_filenames and len(self.image_filenames) != len(self.image_urls):
-            raise ValueError("真人消息的图片引用数量必须与图片数量一致")
-
-    def to_openai_format(self) -> dict[str, Any]:
-        """把真人输入转换为 user 消息；有附件时同时发送正文和图片地址。
-
-        Returns:
-            dict[str, Any]: 只包含模型需要的正文和附件的 user 消息，不含渠道元数据。
-        """
-        if not self.image_urls:
-            return {"role": "user", "content": self.text}
-        content: list[dict[str, Any]] = [{"type": "text", "text": self.text}]
-        content.extend(
-            {"type": "image_url", "image_url": {"url": url}}
-            for url in self.image_urls
-        )
-        return {"role": "user", "content": content}
-
-    def _storage_fields(self) -> dict[str, Any]:
-        """保存真人附件的文件引用和输入来源，用于历史展示及重启恢复。
-
-        Returns:
-            dict[str, Any]: 以 _human 为键的附件和来源元数据。
-        """
-        return {"_human": {
-            "image_filenames": list(self.image_filenames),
-            "origin_channel": self.origin_channel,
-        }}
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class SystemMessage(BaseMessage):
-    """表示只在构造模型请求时使用的系统提示词，不进入对话协议日志。
-
-    Attributes:
-        text (str): 模型系统提示词正文。
-    """
-    message_type: ClassVar[MessageType] = "system"
-    text: str
-
-    def __post_init__(self) -> None:
-        """创建系统提示词消息后统一时间和编号，确认正文为字符串。
-
-        Raises:
-            TypeError: 系统提示词正文不是字符串。
-        """
-        BaseMessage.__post_init__(self)
-        if not isinstance(self.text, str):
-            raise TypeError("SystemMessage.text 必须是字符串")
-
-    def to_openai_format(self) -> dict[str, Any]:
-        """将系统提示词转换为 system 消息，供临时模型输入使用。
-
-        Returns:
-            dict[str, Any]: 角色为 system 的文本消息。
-        """
-        return {"role": "system", "content": self.text}
+        object.__setattr__(self, "content", validate_content(self.content))
+        if not self.origin_channel:
+            raise ValueError("真人来源不能为空")
 
     @property
-    def enters_protocol_log(self) -> bool:
-        """排除临时系统提示词，避免将提示词作为聊天历史保存。
+    def text(self) -> str:
+        """供历史、召回和日志读取真人文字，忽略图片地址。
 
         Returns:
-            bool: 始终为 False。
+            str: 按顺序拼接的可见文字，不包含图片和供应商材料。
         """
-        return False
+        return content_text(self.content)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AssistantMessage(BaseMessage):
-    """保存不可变 Assistant 文本、工具调用及所属轮次的入口来源。
-
-    Attributes:
-        message_type (ClassVar[MessageType]): 该消息对应的领域类型常量。
-        text (str): 需要保存或追加的文本。
-        tool_calls (tuple[ToolCall, ...]): 本步模型请求的工具调用。
-        origin_channel (str): 输入或本轮回复所属的渠道。
-    """
+    """保存模型正文、工具调用和可持久恢复材料。"""
     message_type: ClassVar[MessageType] = "assistant"
-    text: str = ""
+    content: tuple[ContentPart, ...] = ()
     tool_calls: tuple[ToolCall, ...] = ()
     origin_channel: str = DESKTOP_CHANNEL
+    provider_data: ProviderData | None = None
 
     def __post_init__(self) -> None:
-        """校验 Assistant 正文和来源，将工具调用转为不可变集合。
-
-        Raises:
-            TypeError: AssistantMessage.text 必须是字符串。
-            ValueError: AssistantMessage.origin_channel 不能为空。
-        """
+        """固定模型输出，正文和调用都不能被外部改变。"""
         BaseMessage.__post_init__(self)
-        if not isinstance(self.text, str):
-            raise TypeError("AssistantMessage.text 必须是字符串")
-        if not isinstance(self.origin_channel, str) or not self.origin_channel:
-            raise ValueError("AssistantMessage.origin_channel 不能为空")
+        object.__setattr__(self, "content", validate_content(self.content))
         object.__setattr__(self, "tool_calls", tuple(self.tool_calls))
-        if not all(isinstance(call, ToolCall) for call in self.tool_calls):
-            raise TypeError("AssistantMessage.tool_calls 只能包含 ToolCall")
+        if not all(isinstance(call, ToolCall) for call in self.tool_calls) or not self.origin_channel:
+            raise ValueError("助手调用或来源无效")
+        if self.provider_data is not None and not isinstance(self.provider_data, ProviderData):
+            raise TypeError("助手恢复材料必须是 ProviderData")
 
-    def to_openai_format(self) -> dict[str, Any]:
-        """转换模型回复正文，并在模型请求工具时附上对应的工具调用列表。
-
-        Returns:
-            dict[str, Any]: 包含正文和可选 tool_calls 的 assistant 消息。
-        """
-        result: dict[str, Any] = {"role": "assistant", "content": self.text}
-        if self.tool_calls:
-            result["tool_calls"] = [call.to_dict() for call in self.tool_calls]
-        return result
-
-    def _storage_fields(self) -> dict[str, Any]:
-        """单独保存本轮回答的来源渠道，供历史展示和恢复时识别归属。
+    @property
+    def text(self) -> str:
+        """读取模型可见文字，不暴露供应商恢复材料。
 
         Returns:
-            dict[str, Any]: 以 _assistant 为键的来源元数据。
+            str: 按顺序拼接的可见文字，不包含图片和供应商材料。
         """
-        return {"_assistant": {"origin_channel": self.origin_channel}}
+        return content_text(self.content)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ToolMessage(BaseMessage):
-    """保存一次工具调用的文本结果，通过调用编号与模型请求配对。
-
-    Attributes:
-        content (str): 工具结果正文或明确的取消/错误说明。
-        tool_name (str): 实际调用的工具名称。
-        tool_call_id (str): 对应模型工具请求的编号。
-        compressible (bool): 后续历史压缩是否允许缩短该结果。
-    """
+    """保存一次工具调用的完整文字、图片和结果压缩许可。"""
     message_type: ClassVar[MessageType] = "tool"
-    content: str
+    content: tuple[ContentPart, ...]
     tool_name: str
     tool_call_id: str
     compressible: bool = False
 
     def __post_init__(self) -> None:
-        """创建工具结果后校验正文、工具名称和调用编号，禁止无法与请求配对的结果。
-
-        Raises:
-            TypeError: 结果正文不是字符串。
-            ValueError: 工具名称或调用编号为空。
-        """
+        """固定完整结果并要求能与原请求准确配对。"""
         BaseMessage.__post_init__(self)
-        if not isinstance(self.content, str):
-            raise TypeError("ToolMessage.content 必须是字符串")
-        if not isinstance(self.tool_name, str) or not self.tool_name:
-            raise ValueError("ToolMessage.tool_name 不能为空")
-        if not isinstance(self.tool_call_id, str) or not self.tool_call_id:
-            raise ValueError("ToolMessage.tool_call_id 不能为空")
+        object.__setattr__(self, "content", validate_content(self.content))
+        if not self.tool_name or not self.tool_call_id:
+            raise ValueError("工具名称和调用编号不能为空")
 
     @property
     def text(self) -> str:
-        """让历史展示和记忆读取统一取得工具结果正文。
+        """读取工具文字，图片仍保存在本条结果内。
 
         Returns:
-            str: content 中的工具结果文本。
+            str: 按顺序拼接的可见文字，不包含图片和供应商材料。
         """
-        return self.content
-
-    def to_openai_format(self) -> dict[str, Any]:
-        """把工具结果转换为 tool 消息，保留对应调用编号供模型继续回答。
-
-        Returns:
-            dict[str, Any]: 包含正文、工具名称和 tool_call_id 的模型消息。
-        """
-        result: dict[str, Any] = {
-            "role": "tool",
-            "content": self.content,
-            "name": self.tool_name,
-        }
-        result["tool_call_id"] = self.tool_call_id
-        return result
-
-    def _storage_fields(self) -> dict[str, Any]:
-        """保存该工具结果是否允许压缩，不把此内部标记发送给模型。
-
-        Returns:
-            dict[str, Any]: 以 _tool 为键的压缩许可元数据。
-        """
-        return {"_tool": {"compressible": self.compressible}}
+        return content_text(self.content)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class AvailableMedia:
-    """保存仍可发送给模型的工具图片，以及已外置保存的历史文件引用。
-
-    Attributes:
-        urls (tuple[str, ...]): 模型可读取的图片地址，至少一项。
-        storage_refs (tuple[str, ...]): 与图片一一对应的历史文件引用，尚未保存时为空。
-    """
-    kind: ClassVar[Literal["available"]] = "available"
-    urls: tuple[str, ...]
-    storage_refs: tuple[str, ...] = ()
-
-    def __post_init__(self) -> None:
-        """将图片集合固定为元组，校验非空地址及历史文件引用数量。
-
-        Raises:
-            ValueError: 没有图片、引用为空字符串，或文件引用数量与图片数量不一致。
-        """
-        object.__setattr__(self, "urls", tuple(self.urls))
-        object.__setattr__(self, "storage_refs", tuple(self.storage_refs))
-        if not self.urls:
-            raise ValueError("AvailableMedia 至少需要一张图片")
-        if not all(isinstance(item, str) and item for item in self.urls):
-            raise ValueError("AvailableMedia.urls 必须是非空字符串")
-        if not all(isinstance(item, str) and item for item in self.storage_refs):
-            raise ValueError("AvailableMedia.storage_refs 必须是非空字符串")
-        if self.storage_refs and len(self.storage_refs) != len(self.urls):
-            raise ValueError("媒体文件引用数量必须与图片数量一致")
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class CompactedMedia:
-    """表示截图已从模型输入移除，仍保留可供聊天历史读取的文件引用。
-
-    Attributes:
-        storage_refs (tuple[str, ...]): 压缩前已保存的截图文件引用。
-    """
-    kind: ClassVar[Literal["compacted"]] = "compacted"
-    storage_refs: tuple[str, ...] = ()
-
-    def __post_init__(self) -> None:
-        """固定压缩截图的文件引用集合，并拒绝无效引用。
-
-        Raises:
-            ValueError: 文件引用不是非空字符串。
-        """
-        object.__setattr__(self, "storage_refs", tuple(self.storage_refs))
-        if not all(isinstance(item, str) and item for item in self.storage_refs):
-            raise ValueError("CompactedMedia.storage_refs 必须是非空字符串")
-
-
-MediaPayload = AvailableMedia | CompactedMedia
-
-
-_MEDIA_NAMES: dict[MediaKind, str] = {
-    "screenshot": SCREENSHOT_MESSAGE_NAME,
-    "tool": TOOL_IMAGE_MESSAGE_NAME,
-    "mcp": MCP_TOOL_IMAGE_MESSAGE_NAME,
-}
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class ToolMediaMessage(BaseMessage):
-    """在工具文本结果之后向模型提供图片，或表示旧截图已经被压缩。
-
-    Attributes:
-        tool_name (str): 返回图片的工具名称。
-        media_kind (MediaKind): 区分截图、本地工具图片和 MCP 图片。
-        text (str): 图片的文字说明。
-        payload (MediaPayload): 可用图片地址或已压缩截图的历史引用。
-        associated_message_id (str | None): 对应工具文本结果的消息编号。
-    """
-    message_type: ClassVar[MessageType] = "tool_media"
-    tool_name: str
-    media_kind: MediaKind
+class SystemMessage(BaseMessage):
+    """保存临时系统提示词，不进入 AgentState 和历史。"""
+    message_type: ClassVar[MessageType] = "system"
     text: str
-    payload: MediaPayload
-    associated_message_id: str | None = None
 
     def __post_init__(self) -> None:
-        """创建图片消息后检查工具、媒体类型和内容，只允许截图使用压缩占位。
-
-        Raises:
-            ValueError: 工具名为空、媒体类型未知，或普通图片使用压缩内容。
-            TypeError: 图片说明不是字符串或 payload 类型无效。
-        """
+        """校验临时提示词，保持纯文本配置接口。"""
         BaseMessage.__post_init__(self)
-        if not isinstance(self.tool_name, str) or not self.tool_name:
-            raise ValueError("ToolMediaMessage.tool_name 不能为空")
-        if self.media_kind not in _MEDIA_NAMES:
-            raise ValueError(f"未知工具媒体类型: {self.media_kind!r}")
         if not isinstance(self.text, str):
-            raise TypeError("ToolMediaMessage.text 必须是字符串")
-        if not isinstance(self.payload, (AvailableMedia, CompactedMedia)):
-            raise TypeError("ToolMediaMessage.payload 类型无效")
-        if isinstance(self.payload, CompactedMedia) and self.media_kind != "screenshot":
-            raise ValueError("只有截图媒体支持压缩 payload")
+            raise TypeError("SystemMessage.text 必须是字符串")
 
-    def to_openai_format(self) -> dict[str, Any]:
-        """将可用工具图片转成多模态 user 消息，已压缩截图则转成明确的文字占位。
+    @property
+    def enters_protocol_log(self) -> bool:
+        """阻止系统提示词作为对话事实归档。
 
         Returns:
-            dict[str, Any]: 带媒体类别名称的图片消息或截图压缩占位。
+            bool: 满足该业务条件时返回 True。
         """
-        if isinstance(self.payload, CompactedMedia):
-            return {
-                "role": "user",
-                "name": SCREENSHOT_COMPRESSED_NAME,
-                "content": "[系统消息]已被压缩的旧截图",
-            }
-        content: list[dict[str, Any]] = [{"type": "text", "text": self.text}]
-        content.extend(
-            {"type": "image_url", "image_url": {"url": url}}
-            for url in self.payload.urls
-        )
-        return {
-            "role": "user",
-            "name": _MEDIA_NAMES[self.media_kind],
-            "content": content,
-        }
-
-    def _storage_fields(self) -> dict[str, Any]:
-        """保存工具图片类别、结果关联和历史文件引用，图片正文由模型消息格式承载。
-
-        Returns:
-            dict[str, Any]: 以 _tool_media 为键的媒体恢复材料。
-        """
-        payload: dict[str, Any] = {
-            "kind": self.payload.kind,
-            "storage_refs": list(self.payload.storage_refs),
-        }
-        return {
-            "_tool_media": {
-                "tool_name": self.tool_name,
-                "media_kind": self.media_kind,
-                "associated_message_id": self.associated_message_id,
-                "payload": payload,
-            }
-        }
+        return False
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -779,32 +654,7 @@ class ContextSummaryMessage(BaseMessage):
         """
         return self.content
 
-    def to_openai_format(self) -> dict[str, Any]:
-        """把内部摘要转换为带专用名称的 user 消息，供模型理解前段历史。
 
-        Returns:
-            dict[str, Any]: 包含摘要正文的模型消息。
-        """
-        return {
-            "role": "user",
-            "name": CONTEXT_SUMMARY_MESSAGE_NAME,
-            "content": self.content,
-        }
-
-    def _storage_fields(self) -> dict[str, Any]:
-        """保存摘要版本、覆盖边界和压缩比例，供后续摘要合并与日记清理。
-
-        Returns:
-            dict[str, Any]: 以 _context_summary 为键的摘要元数据。
-        """
-        return {
-            "_context_summary": {
-                "schema_version": self.summary_schema_version,
-                "covered_through_message_id": self.covered_through_message_id,
-                "covered_effective_date": self.covered_effective_date,
-                "compression_ratio": self.compression_ratio,
-            }
-        }
 
     @property
     def enters_protocol_log(self) -> bool:
@@ -863,38 +713,7 @@ class TaskResultMessage(RuntimeInputMessage):
         """
         return self.result
 
-    def to_openai_format(self) -> dict[str, Any]:
-        """把后台任务结果转为内部 user 通知，用明确标签区分完成、失败、取消和未知。
 
-        Returns:
-            dict[str, Any]: 名称为 runtime_task_result 的任务通知消息。
-        """
-        status_label = {
-            TaskResultStatus.COMPLETED: "完成",
-            TaskResultStatus.FAILED: "失败",
-            TaskResultStatus.CANCELLED: "取消",
-            TaskResultStatus.ORPHANED: "状态未知",
-            TaskResultStatus.MIXED: "状态汇总",
-        }[self.status]
-        return {
-            "role": "user",
-            "name": "runtime_task_result",
-            "content": f"[后台任务{status_label}] {self.task_name}\n{self.result}",
-        }
-
-    def _storage_fields(self) -> dict[str, Any]:
-        """保存后台任务编号、名称和终态，便于协议日志恢复准确任务事实。
-
-        Returns:
-            dict[str, Any]: 以 _task 为键的任务元数据。
-        """
-        return {
-            "_task": {
-                "task_id": self.task_id,
-                "task_name": self.task_name,
-                "status": self.status.value,
-            }
-        }
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -926,25 +745,7 @@ class EnvironmentPerceptionMessage(RuntimeInputMessage):
         """
         return self.description
 
-    def to_openai_format(self) -> dict[str, Any]:
-        """将环境变化转为带类别标签的内部 user 通知。
 
-        Returns:
-            dict[str, Any]: 名称为 runtime_environment_perception 的模型消息。
-        """
-        return {
-            "role": "user",
-            "name": "runtime_environment_perception",
-            "content": f"[环境变化：{self.perception_kind}]\n{self.description}",
-        }
-
-    def _storage_fields(self) -> dict[str, Any]:
-        """保存环境变化类别，恢复时不依赖从正文猜测类别。
-
-        Returns:
-            dict[str, Any]: 以 _environment 为键的变化类别元数据。
-        """
-        return {"_environment": {"perception_kind": self.perception_kind}}
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -977,400 +778,136 @@ class SubagentMessage(RuntimeInputMessage):
         """
         return self.result
 
-    def to_openai_format(self) -> dict[str, Any]:
-        """把子 Agent 返回值转为带来源名称的内部 user 通知。
 
-        Returns:
-            dict[str, Any]: 名称为 runtime_subagent 的模型消息。
-        """
-        return {
-            "role": "user",
-            "name": "runtime_subagent",
-            "content": f"[子 Agent 返回：{self.subagent_name}]\n{self.result}",
-        }
-
-    def _storage_fields(self) -> dict[str, Any]:
-        """保存子 Agent 编号和名称，用于恢复结果的真实来源。
-
-        Returns:
-            dict[str, Any]: 以 _subagent 为键的来源元数据。
-        """
-        return {
-            "_subagent": {
-                "subagent_id": self.subagent_id,
-                "subagent_name": self.subagent_name,
-            }
-        }
-
-
-def _common_fields(data: Mapping[str, Any]) -> dict[str, Any]:
-    """从 checkpoint 消息中读取必需编号和创建时间，并将时间统一为 UTC。
-
-    Args:
-        data (Mapping[str, Any]): 需要解析或保存的结构化数据。
-
-    Returns:
-        dict[str, Any]: 构造领域消息使用的 message_id 和 created_at 参数。
-
-    Raises:
-        ValueError: 必需字段缺失、为空或时间无效。
-    """
-    return {
-        "message_id": _require_string(data.get("_message_id"), "_message_id", allow_empty=False),
-        "created_at": normalize_utc(_require_string(data.get("_created_at"), "_created_at", allow_empty=False)),
-    }
-
-
-def _decode_human_content(content: object) -> tuple[str, tuple[str, ...]]:
-    """解析真人或工具图片消息的正文结构，分离文本和图片地址。
-
-    Args:
-        content (object): 当前处理的正文。
-
-    Returns:
-        tuple[str, tuple[str, ...]]: 按出现顺序合并的文本及图片地址元组。
-
-    Raises:
-        ValueError: 内容类型、分段类型或图片地址结构无效。
-    """
-    if isinstance(content, str):
-        return content, ()
-    if not isinstance(content, list):
-        raise ValueError("HumanMessage.content 必须是字符串或多模态数组")
-    texts: list[str] = []
-    images: list[str] = []
-    for part in content:
-        mapping = _require_mapping(part, "content[]")
-        if mapping.get("type") == "text":
-            texts.append(_require_string(mapping.get("text", ""), "content[].text"))
-        elif mapping.get("type") == "image_url":
-            image_url = _require_mapping(mapping.get("image_url"), "content[].image_url")
-            images.append(_require_string(image_url.get("url"), "content[].image_url.url", allow_empty=False))
-        else:
-            raise ValueError(f"不支持的 HumanMessage content part: {mapping.get('type')!r}")
-    return "".join(texts), tuple(images)
 
 
 def message_from_storage_format(data: Mapping[str, Any]) -> BaseMessage:
-    """按领域消息类型恢复 checkpoint 值，缺少渠道字段的旧消息解释为 desktop。
+    """按新业务类型严格恢复消息，拒绝旧协议和未知字段。
 
     Args:
-        data (Mapping[str, Any]): 待还原的领域存储值。
-
+        data (Mapping[str, Any]): 新消息 JSON 对象。
     Returns:
-        BaseMessage: 按存储类型恢复的领域消息，包含原编号、时间及专属元数据。
-
+        BaseMessage: 完整业务消息。
     Raises:
-        MessageContractError: 未知或缺失的 _message_type: {message_type}；数据库与当前消息契约不兼容。
-        ValueError: _human.image_filenames 必须是字符串数组。
+        MessageContractError: 类型、字段或正文不合法。
     """
-
-    message_type = data.get("_message_type")
-    if not isinstance(message_type, str) or message_type not in _STORAGE_MESSAGE_TYPES:
-        raise MessageContractError(
-            f"未知或缺失的 _message_type: {message_type!r}；数据库与当前消息契约不兼容"
-        )
-    common = _common_fields(data)
-    content = data.get("content", "")
-    # 1. 真人来源从领域元数据读取，旧记录省略字段时按 desktop 恢复。
-    if message_type == "human":
-        text, images = _decode_human_content(content)
-        human = _require_mapping(data.get("_human"), "_human")
-        refs = human.get("image_filenames") or []
-        if not isinstance(refs, list) or not all(isinstance(item, str) for item in refs):
-            raise ValueError("_human.image_filenames 必须是字符串数组")
-        return HumanMessage(
-            text=text, image_urls=images, image_filenames=tuple(refs),
-            origin_channel=_require_string(human.get("origin_channel", DESKTOP_CHANNEL), "_human.origin_channel", allow_empty=False),
-            **common,
-        )
-    if message_type == "system":
-        return SystemMessage(text=_require_string(content, "content"), **common)
-    # 2. Assistant 来源从专用存储字段恢复，模型 wire 仍只包含文本和工具调用。
-    if message_type == "assistant":
-        raw_calls = data.get("tool_calls") or []
-        if not isinstance(raw_calls, list):
-            raise ValueError("AssistantMessage.tool_calls 必须是数组")
-        return AssistantMessage(
-            text=_require_string(content, "content"),
-            tool_calls=tuple(ToolCall.from_dict(call) for call in raw_calls),
-            origin_channel=_require_string(
-                _require_mapping(data.get("_assistant", {}), "_assistant").get("origin_channel", DESKTOP_CHANNEL),
-                "_assistant.origin_channel", allow_empty=False,
-            ),
-            **common,
-        )
-    if message_type == "tool":
-        tool = _require_mapping(data.get("_tool"), "_tool")
-        return ToolMessage(
-            content=_require_string(content, "content"),
-            tool_name=_require_string(data.get("name"), "name", allow_empty=False),
-            tool_call_id=_require_string(
-                data.get("tool_call_id"), "tool_call_id", allow_empty=False
-            ),
-            compressible=bool(tool.get("compressible", False)),
-            **common,
-        )
-    if message_type == "tool_media":
-        media = _require_mapping(data.get("_tool_media"), "_tool_media")
-        payload_data = _require_mapping(media.get("payload"), "_tool_media.payload")
-        refs = payload_data.get("storage_refs") or []
-        if not isinstance(refs, list) or not all(isinstance(item, str) for item in refs):
-            raise ValueError("_tool_media.payload.storage_refs 必须是字符串数组")
-        text, urls = _decode_human_content(content)
-        if payload_data.get("kind") == "available":
-            payload: MediaPayload = AvailableMedia(urls=urls, storage_refs=tuple(refs))
-        elif payload_data.get("kind") == "compacted":
-            payload = CompactedMedia(storage_refs=tuple(refs))
-        else:
-            raise ValueError("未知的工具媒体 payload kind")
-        return ToolMediaMessage(
-            tool_name=_require_string(media.get("tool_name", ""), "_tool_media.tool_name"),
-            media_kind=_require_string(media.get("media_kind"), "_tool_media.media_kind", allow_empty=False),  # type: ignore[arg-type]
-            text=text,
-            payload=payload,
-            associated_message_id=(
-                str(media["associated_message_id"])
-                if media.get("associated_message_id")
-                else None
-            ),
-            **common,
-        )
-    if message_type == "context_summary":
-        summary = _require_mapping(data.get("_context_summary"), "_context_summary")
-        return ContextSummaryMessage(
-            content=_require_string(content, "content"),
-            summary_schema_version=int(summary.get("schema_version", 0)),
-            covered_through_message_id=_require_string(summary.get("covered_through_message_id"), "_context_summary.covered_through_message_id", allow_empty=False),
-            covered_effective_date=_require_string(summary.get("covered_effective_date"), "_context_summary.covered_effective_date", allow_empty=False),
-            compression_ratio=float(summary.get("compression_ratio", 0.0)),
-            **common,
-        )
-    if message_type == "task_result":
-        task = _require_mapping(data.get("_task"), "_task")
-        rendered = _require_string(content, "content")
-        result = rendered.split("\n", 1)[1] if "\n" in rendered else rendered
-        return TaskResultMessage(
-            task_id=_require_string(task.get("task_id"), "_task.task_id", allow_empty=False),
-            task_name=_require_string(task.get("task_name"), "_task.task_name", allow_empty=False),
-            status=_require_string(task.get("status"), "_task.status", allow_empty=False),  # type: ignore[arg-type]
-            result=result,
-            **common,
-        )
-    if message_type == "environment_perception":
-        environment = _require_mapping(data.get("_environment"), "_environment")
-        rendered = _require_string(content, "content")
-        description = rendered.split("\n", 1)[1] if "\n" in rendered else rendered
-        return EnvironmentPerceptionMessage(
-            perception_kind=_require_string(environment.get("perception_kind"), "_environment.perception_kind", allow_empty=False),
-            description=description,
-            **common,
-        )
-    if message_type == "subagent":
-        subagent = _require_mapping(data.get("_subagent"), "_subagent")
-        rendered = _require_string(content, "content")
-        result = rendered.split("\n", 1)[1] if "\n" in rendered else rendered
-        return SubagentMessage(
-            subagent_id=_require_string(subagent.get("subagent_id"), "_subagent.subagent_id", allow_empty=False),
-            subagent_name=_require_string(subagent.get("subagent_name"), "_subagent.subagent_name", allow_empty=False),
-            result=result,
-            **common,
-        )
-    raise MessageContractError(
-        f"未知或缺失的 _message_type: {message_type!r}；数据库与当前消息契约不兼容"
-    )
+    constructors = {"human": HumanMessage, "assistant": AssistantMessage, "tool": ToolMessage,
+        "system": SystemMessage, "context_summary": ContextSummaryMessage,
+        "task_result": TaskResultMessage, "environment_perception": EnvironmentPerceptionMessage,
+        "subagent": SubagentMessage}
+    kind = data.get("message_type")
+    if kind not in constructors:
+        raise MessageContractError(f"未知或缺失的 message_type: {kind!r}；需要先迁移旧格式")
+    constructor = constructors[kind]
+    values = dict(data)
+    del values["message_type"]
+    try:
+        if kind in {"human", "assistant", "tool"}:
+            values["content"] = content_from_json(values.get("content"))
+        if kind == "assistant":
+            values["tool_calls"] = tuple(ToolCall.from_dict(call) for call in values.get("tool_calls", []))
+            if values.get("provider_data"):
+                values["provider_data"] = ProviderData.from_dict(values["provider_data"])
+        values["message_id"] = _require_string(values.get("message_id"), "message_id", allow_empty=False)
+        values["created_at"] = normalize_utc(values.get("created_at"))
+        return constructor(**values)
+    except (TypeError, ValueError, KeyError) as exc:
+        raise MessageContractError(f"{kind} 消息不符合业务协议: {exc}") from exc
 
 
-def message_from_protocol_format(
-    *,
-    message_type: str | None,
-    message_json: Mapping[str, Any],
-    message_id: str,
-    created_at: str | datetime,
-    domain_json: Mapping[str, Any] | None = None,
-    associated_message_id: str | None = None,
-) -> BaseMessage:
-    """从协议正文和领域元数据恢复强类型消息，保留真人及回复的入口来源。
+def notification_text(message: BaseMessage) -> str:
+    """以项目语义描述后台通知，供临时模型输入和记忆使用。
 
     Args:
-        message_type (str | None): 协议行的领域消息类型。
-        message_json (Mapping[str, Any]): 模型协议正文。
-        message_id (str): 领域消息稳定标识。
-        created_at (str | datetime): 原消息 UTC 创建时间。
-        domain_json (Mapping[str, Any] | None): 领域专用存储元数据。
-        associated_message_id (str | None): 工具媒体关联的消息标识。
+        message (BaseMessage): 待读取或转换的业务消息。
 
     Returns:
-        BaseMessage: 由协议正文和领域元数据恢复的强类型消息。
-
-    Raises:
-        MessageContractError: 协议日志 message_type={message_type} 非法；数据库与当前消息契约不兼容。
-        ValueError: 协议日志 assistant.tool_calls 必须是数组。
+        str: 供历史、记忆和日志使用的业务文字。
     """
-    if not isinstance(message_type, str) or message_type not in PROTOCOL_MESSAGE_TYPES:
-        raise MessageContractError(
-            f"协议日志 message_type={message_type!r} 非法；数据库与当前消息契约不兼容"
-        )
-    wire = dict(message_json)
-    domain = dict(domain_json or {})
-    common = {"message_id": message_id, "created_at": normalize_utc(created_at)}
-    content = wire.get("content", "")
-    # 1. 使用协议正文恢复真人内容，来源保存在 domain_json 而非供应商 wire。
-    if message_type == "human":
-        text, images = _decode_human_content(content)
-        human = domain.get("human") if isinstance(domain.get("human"), Mapping) else {}
-        refs = human.get("image_filenames") or []
-        return HumanMessage(
-            text=text,
-            image_urls=images,
-            image_filenames=tuple(str(item) for item in refs),
-            origin_channel=_require_string(human.get("origin_channel", DESKTOP_CHANNEL), "human.origin_channel", allow_empty=False),
-            **common,
-        )
-    # 2. 同样从 Assistant 领域字段取来源，旧协议记录缺字段时使用 desktop。
-    if message_type == "assistant":
-        calls = wire.get("tool_calls") or []
-        if not isinstance(calls, list):
-            raise ValueError("协议日志 assistant.tool_calls 必须是数组")
-        return AssistantMessage(
-            text=_require_string(content, "content"),
-            tool_calls=tuple(ToolCall.from_dict(item) for item in calls),
-            origin_channel=_require_string(
-                (domain.get("assistant") if isinstance(domain.get("assistant"), Mapping) else {}).get("origin_channel", DESKTOP_CHANNEL),
-                "assistant.origin_channel", allow_empty=False,
-            ),
-            **common,
-        )
-    if message_type == "tool":
-        tool = domain.get("tool") if isinstance(domain.get("tool"), Mapping) else {}
-        return ToolMessage(
-            content=_require_string(content, "content"),
-            tool_name=_require_string(wire.get("name"), "name", allow_empty=False),
-            tool_call_id=_require_string(
-                wire.get("tool_call_id"), "tool_call_id", allow_empty=False
-            ),
-            compressible=bool(tool.get("compressible", False)),
-            **common,
-        )
-    if message_type == "tool_media":
-        text, urls = _decode_human_content(content)
-        payload_kind = domain.get("payload_kind")
-        refs = domain.get("storage_refs") or []
-        payload: MediaPayload
-        if payload_kind == "compacted":
-            payload = CompactedMedia(storage_refs=tuple(str(item) for item in refs))
-        elif payload_kind == "available":
-            payload = AvailableMedia(
-                urls=urls,
-                storage_refs=tuple(str(item) for item in refs),
-            )
-        else:
-            raise ValueError("协议日志 tool_media.payload_kind 无效")
-        media_kind = _require_string(domain.get("media_kind"), "domain.media_kind", allow_empty=False)
-        return ToolMediaMessage(
-            tool_name=str(domain.get("tool_name") or ""),
-            media_kind=media_kind,  # type: ignore[arg-type]
-            text=text,
-            payload=payload,
-            associated_message_id=(
-                associated_message_id
-                or (str(domain["associated_message_id"]) if domain.get("associated_message_id") else None)
-            ),
-            **common,
-        )
-    storage = {
-        **wire,
-        "_message_type": message_type,
-        "_message_id": message_id,
-        "_created_at": normalize_utc(created_at).isoformat(),
-        **{f"_{key}": value for key, value in domain.items()},
-    }
-    return message_from_storage_format(storage)
+    if isinstance(message, TaskResultMessage):
+        labels = {"completed": "完成", "failed": "失败", "cancelled": "取消", "orphaned": "状态未知", "mixed": "状态汇总"}
+        return f"[后台任务{labels[message.status.value]}] {message.task_name}\n{message.result}"
+    if isinstance(message, EnvironmentPerceptionMessage):
+        return f"[环境感知：{message.perception_kind}]\n{message.description}"
+    if isinstance(message, SubagentMessage):
+        return f"[子 Agent 返回：{message.subagent_name}]\n{message.result}"
+    return message.text
 
 
-def messages_to_openai_format(messages: Sequence[BaseMessage]) -> list[dict[str, Any]]:
-    """按领域消息顺序生成模型协议消息，不附加 checkpoint 的内部元数据。
+def message_from_history(*, message_json: Mapping[str, Any], message_type: str, message_id: str, created_at: str) -> BaseMessage:
+    """使用统一解码器恢复历史并校验查询列，防止损坏索引指向另一条消息。
 
     Args:
-        messages (Sequence[BaseMessage]): 按对话顺序排列的消息集合。
+        message_json (Mapping[str, Any]): 持久化的完整新协议业务消息。
+        message_type (str): 历史行保存的业务类型，用于校验 JSON。
+        message_id (str): 历史行保存的稳定消息编号。
+        created_at (str): 历史行保存的 UTC 创建时间。
 
     Returns:
-        list[dict[str, Any]]: 与原消息逐项对应的模型消息列表。
+        BaseMessage: 经过业务字段校验的不可变对象。
     """
-    return [message.to_openai_format() for message in messages]
+    message = message_from_storage_format(message_json)
+    if message.message_type != message_type or message.message_id != message_id or message.created_at != normalize_utc(created_at):
+        raise MessageContractError("历史索引与消息身份不一致")
+    return message
 
 
 def is_real_human_message(message: BaseMessage) -> bool:
-    """判断消息是否为真人输入，截图和后台通知不会被当作真人输入。
+    """只把真人输入识别为真人消息。
 
     Args:
-        message (BaseMessage): 当前需要读取或追加的消息。
+        message (BaseMessage): 待读取或转换的业务消息。
 
     Returns:
-        bool: 消息为 HumanMessage 时为 True。
+        bool: 满足该业务条件时返回 True。
     """
     return isinstance(message, HumanMessage)
 
 
 def is_screenshot_message(message: BaseMessage) -> bool:
-    """识别工具截图消息，包含仍可用与已压缩的截图。
+    """识别包含屏幕截图的工具结果，包括已压缩截图。
 
     Args:
-        message (BaseMessage): 当前需要读取或追加的消息。
+        message (BaseMessage): 待读取或转换的业务消息。
 
     Returns:
-        bool: 消息为 screenshot 类别的 ToolMediaMessage 时为 True。
+        bool: 满足该业务条件时返回 True。
     """
-    return isinstance(message, ToolMediaMessage) and message.media_kind == "screenshot"
+    return isinstance(message, ToolMessage) and any(isinstance(part, ImageContent) and part.media_kind == "screenshot" for part in message.content)
 
 
 def is_system_injected_user_message(message: BaseMessage) -> bool:
-    """识别以 user 角色发给模型的内部信息，区别于真人发送的消息。
+    """识别内部通知与摘要，不依赖供应商角色。
 
     Args:
-        message (BaseMessage): 当前需要读取或追加的消息。
+        message (BaseMessage): 待读取或转换的业务消息。
 
     Returns:
-        bool: 工具图片、上下文摘要或运行时通知为 True。
+        bool: 满足该业务条件时返回 True。
     """
-    return isinstance(message, (ToolMediaMessage, ContextSummaryMessage, RuntimeInputMessage))
+    return isinstance(message, (ContextSummaryMessage, RuntimeInputMessage))
 
 
 def is_user_message(message: BaseMessage) -> bool:
-    """判断领域消息在模型请求中是否采用 user 角色。
+    """识别真人或内部输入；工具图片属于 ToolMessage。
 
     Args:
-        message (BaseMessage): 当前需要读取或追加的消息。
+        message (BaseMessage): 待读取或转换的业务消息。
 
     Returns:
-        bool: 真人输入、工具图片、上下文摘要或运行时通知为 True。
+        bool: 满足该业务条件时返回 True。
     """
-    return isinstance(message, (HumanMessage, ToolMediaMessage, ContextSummaryMessage, RuntimeInputMessage))
+    return isinstance(message, (HumanMessage, ContextSummaryMessage, RuntimeInputMessage))
 
 
-__all__ = [
-    "AssistantMessage",
-    "AvailableMedia",
-    "BaseMessage",
-    "CompactedMedia",
-    "ContextSummaryMessage",
-    "EnvironmentPerceptionMessage",
-    "HumanMessage",
-    "MessageContractError",
-    "PROTOCOL_MESSAGE_TYPES",
-    "RuntimeInputMessage",
-    "SubagentMessage",
-    "SystemMessage",
-    "TaskResultMessage",
-    "ToolCall",
-    "ToolMediaMessage",
-    "ToolMessage",
-    "is_real_human_message",
-    "is_screenshot_message",
-    "is_system_injected_user_message",
-    "is_user_message",
-    "message_from_storage_format",
-    "message_from_protocol_format",
-    "to_json_value",
-    "messages_to_openai_format",
-]
+def with_text(message: HumanMessage | AssistantMessage | ToolMessage, text: str) -> BaseMessage:
+    """替换消息文字并保留图片及身份，供打断后缀和临时上下文使用。
+
+    Args:
+        message (HumanMessage | AssistantMessage | ToolMessage): 待读取或转换的业务消息。
+        text (str): 替换或读取的业务文字。
+
+    Returns:
+        BaseMessage: 经过业务字段校验的不可变对象。
+    """
+    return replace(message, content=(*text_content(text), *(part for part in message.content if isinstance(part, ImageContent))))

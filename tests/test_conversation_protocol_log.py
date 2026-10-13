@@ -1,3 +1,4 @@
+from tests.model_capture import result_parts
 import asyncio
 import json
 from pathlib import Path
@@ -10,13 +11,10 @@ from app.agent.context._compaction import ContextCompressionPolicy
 from app.agent.state.manager import StateManager
 from app.agent.state import AgentState
 from app.agent.state.messages import (
-    AvailableMedia,
-    CompactedMedia,
     MessageContractError,
-    ToolCall,
-    ToolMediaMessage,
+    ToolCall, ToolMessage, ImageContent, TextContent, text_content,
 )
-from app.agent.state.message_names import (
+from app.agent.models.openai_message_names import (
     SCREENSHOT_COMPRESSED_NAME,
     SCREENSHOT_MESSAGE_NAME,
 )
@@ -46,11 +44,11 @@ def test_checkpoint_and_protocol_log_are_saved_atomically(tmp_path: Path) -> Non
 
             db = await manager._get_db()
             rows = await db.execute_fetchall(
-                "SELECT role, message_json FROM conversation_messages ORDER BY id"
+                "SELECT message_type, message_json FROM conversation_messages ORDER BY id"
             )
-            assert [row[0] for row in rows] == ["user", "assistant", "tool", "assistant"]
+            assert [row[0] for row in rows] == ["human", "assistant", "tool", "assistant"]
             assistant = json.loads(rows[1][1])
-            assert assistant["content"] == "我来读取"
+            assert assistant["content"] == [{"type":"text","text":"我来读取"}]
             assert assistant["tool_calls"][0]["id"] == "call-1"
 
             await db.execute("""
@@ -160,153 +158,50 @@ def test_history_dao_keeps_projection_order_across_small_query_chunks(tmp_path: 
     ]
 
 
-def test_tool_image_protocol_row_references_its_tool_message(tmp_path: Path) -> None:
-    """验证工具图片协议行引用对应文本结果。
-
-    Args:
-        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
-    """
-    async def scenario() -> tuple[str, str | None]:
-        """由外层测试调用，完成“工具图片协议行引用对应文本结果”的异步步骤。
-
-        Returns:
-            tuple[str, str | None]: 供外层用例断言使用的预设结果。
-        """
-        db_path = tmp_path / "agent.sqlite3"
-        manager = StateManager("session", db_path=str(db_path))
+def test_tool_image_is_archived_inside_its_tool_result(tmp_path: Path) -> None:
+    """历史只保存完整工具结果，图片带文件引用并继承调用身份。"""
+    async def scenario() -> None:
+        """通过保存及历史接口验证图片归属，不产生独立媒体行。"""
+        manager=StateManager("s",str(tmp_path/"state.sqlite"))
+        state=AgentState.create_new("s")
+        call=ToolCall("c","read_image",{})
+        state.record_assistant_step("",(call,))
+        result=state.record_tool_result(call,(TextContent("完成"),ImageContent("data:image/png;base64,AA==",media_kind="tool")))
         try:
-            state = AgentState.create_new("session")
-            call = ToolCall(id="call-shot", name="screenshot", args={})
-            state.record_assistant_step("", (call,))
-            tool_message = state.record_tool_result(
-                call,
-                "截屏成功",
-                image_urls=("data:image/png;base64,AAA",),
-                image_message_name=SCREENSHOT_MESSAGE_NAME,
-            )
-            tool_message_id = tool_message.message_id
-            await manager.save(state, checkpoint_type="completed")
-
-            db = await manager._get_db()
-            row = (await db.execute_fetchall(
-                """
-                SELECT record_kind, associated_message_id
-                FROM conversation_messages
-                WHERE record_kind = 'tool_image'
-                """
-            ))[0]
-            assert row[0] == "tool_image"
-            return tool_message_id, row[1]
+            await manager.save(state,checkpoint_type="completed")
+            restored=await manager.load()
+            assert restored.messages[-1].message_id==result.message_id
+            assert restored.messages[-1].content[-1].storage_ref.startswith("tool/")
+            history=await ChatHistoryDao(db_path=tmp_path/"state.sqlite").list_chat_history_async("s")
+            assert history[-1]["id"]==f"{result.message_id}:images"
         finally:
             await manager.close()
-
-    tool_message_id, associated_message_id = asyncio.run(scenario())
-    assert associated_message_id == tool_message_id
+    asyncio.run(scenario())
 
 
-def test_compressed_checkpoint_preserves_externalized_screenshot_history(
-    tmp_path: Path,
-) -> None:
-    """验证截图从 checkpoint 压缩后历史仍保留外置文件。
 
-    Args:
-        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
-    """
-    async def scenario() -> tuple[dict, dict, AgentState]:
-        """由外层测试调用，完成“截图从 checkpoint 压缩后历史仍保留外置文件”的异步步骤。
-
-        Returns:
-            tuple[dict, dict, AgentState]: 供外层用例断言使用的预设结果。
-        """
-        db_path = tmp_path / "agent.sqlite3"
-        manager = StateManager("session", db_path=str(db_path))
+def test_screenshot_compaction_preserves_original_history(tmp_path: Path) -> None:
+    """checkpoint 图片被压缩后，历史仍保留原文件引用和图片气泡。"""
+    async def scenario() -> None:
+        """在隔离 SQLite 中比较压缩前后可见历史。"""
+        manager=StateManager("s",str(tmp_path/"state.sqlite"))
+        state=AgentState.create_new("s")
+        call=ToolCall("c","screenshot",{})
+        state.record_assistant_step("",(call,))
+        state.record_tool_result(call,(TextContent("完成"),ImageContent("data:image/png;base64,AA==",media_kind="screenshot")),compressible=True)
         try:
-            state = AgentState.create_new("session")
-            call = ToolCall(id="call-shot", name="screenshot", args={})
-            state.record_assistant_step("", (call,))
-            state.record_tool_result(
-                call,
-                "截屏成功",
-                image_urls=(
-                    "data:image/png;base64,"
-                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
-                    "AAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
-                ),
-                image_message_name=SCREENSHOT_MESSAGE_NAME,
-            )
-            screenshot_id = state.messages[-1].message_id
-            await manager.save(state, checkpoint_type="completed")
-
-            db = await manager._get_db()
-            before_row = (await db.execute_fetchall(
-                """
-                SELECT message_json, attachments_json
-                FROM conversation_messages
-                WHERE message_id = ?
-                """,
-                (screenshot_id,),
-            ))[0]
-
-            candidate, changed = ContextCompressionPolicy().compress_screenshots(
-                state.messages,
-                ttl_human_messages=0,
-                max_screenshots=2,
-            )
-            assert changed == 1
+            await manager.save(state,checkpoint_type="completed")
+            dao=ChatHistoryDao(db_path=tmp_path/"state.sqlite")
+            before=await dao.list_chat_history_async("s")
+            candidate,changed=ContextCompressionPolicy.compress_screenshots(state.messages,ttl_human_messages=0,max_screenshots=2)
+            assert changed==1
             state.commit_compaction(candidate)
-            await manager.save(state, checkpoint_type="intermediate")
-
-            after_row = (await db.execute_fetchall(
-                """
-                SELECT message_json, attachments_json
-                FROM conversation_messages
-                WHERE message_id = ?
-                """,
-                (screenshot_id,),
-            ))[0]
-            restored = await manager.load()
-            return (
-                {
-                    "message": json.loads(before_row[0]),
-                    "attachments": json.loads(before_row[1]),
-                },
-                {
-                    "message": json.loads(after_row[0]),
-                    "attachments": json.loads(after_row[1]),
-                },
-                restored,
-            )
+            await manager.save(state,checkpoint_type="intermediate")
+            assert await dao.list_chat_history_async("s")==before
+            assert (await manager.load()).messages[-1].content[-1].context_state=="compacted"
         finally:
             await manager.close()
-
-    before, after, restored = asyncio.run(scenario())
-
-    assert before == after
-    assert before["message"]["name"] == SCREENSHOT_MESSAGE_NAME
-    assert before["attachments"][0].startswith("screenshot/")
-    restored_screenshot = next(
-        message
-        for message in restored.messages
-        if isinstance(message, ToolMediaMessage)
-        and isinstance(message.payload, CompactedMedia)
-    )
-    assert "base64" not in json.dumps(restored_screenshot.to_storage_format())
-
-
-def test_tool_image_without_tool_call_id_is_not_misassociated() -> None:
-    """验证缺少调用编号的图片不会误关联其他工具。"""
-    state = AgentState.create_new("session")
-    message = ToolMediaMessage(
-        tool_name="unknown",
-        media_kind="mcp",
-        text="[系统消息]工具返回图片",
-        payload=AvailableMedia(urls=("data:image/png;base64,AAA",)),
-    )
-    checkpoint = state.to_checkpoint()
-    checkpoint["messages"] = [message.to_storage_format()]
-    state = AgentState.from_checkpoint(checkpoint)
-
-    assert state.messages[-1].associated_message_id is None
+    asyncio.run(scenario())
 
 
 def test_history_dao_raises_for_missing_message_type_but_keeps_legacy_notice(
@@ -330,15 +225,14 @@ def test_history_dao_raises_for_missing_message_type_but_keeps_legacy_notice(
             await db.execute(
                 """
                 INSERT INTO conversation_messages (
-                    session_id, message_id, created_at, role, message_json,
+                    session_id, message_id, created_at, message_json,
                     record_kind, fidelity, message_type
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+                ) VALUES (?, ?, ?, ?, ?, ?, NULL)
                 """,
                 (
                     "broken",
                     "missing-type",
                     "2026-09-20T00:00:00+00:00",
-                    "user",
                     json.dumps({"role": "user", "content": "坏记录"}),
                     "protocol",
                     "exact",
@@ -347,15 +241,14 @@ def test_history_dao_raises_for_missing_message_type_but_keeps_legacy_notice(
             await db.execute(
                 """
                 INSERT INTO conversation_messages (
-                    session_id, message_id, created_at, role, message_json,
+                    session_id, message_id, created_at, message_json,
                     record_kind, fidelity, message_type
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+                ) VALUES (?, ?, ?, ?, ?, ?, NULL)
                 """,
                 (
                     "legacy",
                     "legacy-notice",
                     "2026-09-20T00:00:00+00:00",
-                    "assistant",
                     json.dumps({"role": "assistant", "content": "旧工具提示"}),
                     "legacy_tool_notice",
                     "projected",
@@ -375,7 +268,7 @@ def test_history_dao_raises_for_missing_message_type_but_keeps_legacy_notice(
         return error, await dao.list_chat_history_async("legacy")
 
     error, legacy = asyncio.run(scenario())
-    assert "数据库与当前消息契约不兼容" in str(error)
+    assert "需要先迁移旧格式" in str(error)
     assert [(item["role"], item["content"]) for item in legacy] == [
         ("AI_Tool_Calling", "旧工具提示")
     ]
@@ -401,7 +294,7 @@ def test_chat_history_routes_map_contract_errors_to_explicit_500(route) -> None:
             Args:
                 _kwargs (dict[str, Any]): 传递给被调用函数的其他关键字参数。
             """
-            raise MessageContractError("数据库与当前消息契约不兼容")
+            raise MessageContractError("需要先迁移旧格式")
 
         async def get_chat_history_last_n(self, **_kwargs):
             """返回用例指定的最近历史或异常，替代真实历史读取。
@@ -411,7 +304,7 @@ def test_chat_history_routes_map_contract_errors_to_explicit_500(route) -> None:
             Args:
                 _kwargs (dict[str, Any]): 传递给被调用函数的其他关键字参数。
             """
-            raise MessageContractError("数据库与当前消息契约不兼容")
+            raise MessageContractError("需要先迁移旧格式")
 
     async def invoke() -> None:
         """调用当前测试路由，供外层检查状态码或异常转换。

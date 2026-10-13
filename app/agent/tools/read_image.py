@@ -6,7 +6,6 @@ import base64
 from pathlib import Path
 from typing import Annotated
 
-from app.agent.state.messages import TOOL_IMAGE_MESSAGE_NAME
 from app.agent.tools.base import ToolResult
 from app.agent.tools.decorator import tool
 from app.agent.tools.result_limits import MAX_IMAGE_BYTES
@@ -54,5 +53,5 @@ async def read_image(
     return ToolResult.success(
         summary,
         image_urls=images,
-        image_message_name=TOOL_IMAGE_MESSAGE_NAME,
+        media_kind="tool",
     )

@@ -1,6 +1,5 @@
 """在屏幕工具与桌面模块之间转换明确动作和副作用结果。"""
 
-from app.agent.state.messages import SCREENSHOT_MESSAGE_NAME
 from app.agent.tools.base import ToolResult
 from app.schemas.desktop import ScreenAction, ScreenActionResult
 
@@ -35,4 +34,4 @@ def screen_tool_result(result: ScreenActionResult) -> ToolResult:
     if result.screenshot is None and result.status == "completed":
         content += "；未取得操作后的截图"
     return ToolResult.success(content, image_url=result.screenshot.data_url if result.screenshot else None,
-                              image_message_name=SCREENSHOT_MESSAGE_NAME)
+                              media_kind="screenshot")

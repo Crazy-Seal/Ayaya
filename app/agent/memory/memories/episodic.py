@@ -10,7 +10,8 @@ from pydantic import BaseModel, Field
 from app.agent.memory.base import MemoryItem
 from app.agent.memory.materials import compress_tool_results
 from app.agent.state.messages import (
-    AssistantMessage, BaseMessage, HumanMessage, RuntimeInputMessage, ToolMediaMessage, ToolMessage,
+    notification_text, text_content, format_tool_arguments,
+    AssistantMessage, BaseMessage, HumanMessage, RuntimeInputMessage, ToolMessage,
 )
 from app.agent.state.time import render_timed_text
 from app.agent.utils.domain.token_estimation import RoughTokenEstimator
@@ -388,7 +389,7 @@ class EpisodicMemory:
         # 1. 只发送已构造的请求，模型失败或结构化结果无效时沿用空结果处理。
         try:
             result = await self.llm.ainvoke_structured(
-                messages=[{"role": "user", "content": prompt}],
+                messages=[HumanMessage(content=text_content(prompt))],
                 schema=EPISODIC_MEMORY_SCHEMA,
             )
 
@@ -426,14 +427,14 @@ class EpisodicMemory:
         lines = []
         # 1. 跳过媒体原文，按消息类型保留真人来源、回复目标和消息时间。
         for msg in messages:
-            if isinstance(msg, ToolMediaMessage):
+            if isinstance(msg, ToolMessage) and not msg.text:
                 continue
             if isinstance(msg, HumanMessage):
                 role = user_name if msg.origin_channel == DESKTOP_CHANNEL else f"{user_name}（来自 {msg.origin_channel}）"
                 content = msg.text
             elif isinstance(msg, RuntimeInputMessage):
                 lines.append(
-                    f"运行时输入: {render_timed_text(msg.to_openai_format()['content'], msg.created_at)}"
+                    f"运行时输入: {render_timed_text(notification_text(msg), msg.created_at)}"
                 )
                 continue
             elif isinstance(msg, AssistantMessage):
@@ -445,7 +446,7 @@ class EpisodicMemory:
                     else:
                         lines.extend(
                             f"AI：调用工具 {tc.name}，参数："
-                            f"{tc.to_dict()['function']['arguments']}"
+                            f"{format_tool_arguments(tc)}"
                             for tc in msg.tool_calls
                         )
                     continue
@@ -454,7 +455,7 @@ class EpisodicMemory:
             elif isinstance(msg, ToolMessage):
                 # 1.2. 工具结果只作为当前提取上下文，历史结果不进入提示词。
                 if not mark_as_history:
-                    lines.append(f"工具结果：{msg.content}")
+                    lines.append(f"工具结果：{msg.text}")
                 continue
             else:
                 continue

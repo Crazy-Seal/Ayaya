@@ -1,3 +1,4 @@
+from tests.model_capture import result_parts
 import asyncio
 from pathlib import Path
 import pytest
@@ -78,7 +79,7 @@ def test_stopping_after_text_and_tool_keeps_one_assistant_history_message(tmp_pa
         state = AgentState.create_new("s")
         call = ToolCall(id="tool-1", name="example", args={})
         state.record_assistant_step("正在操作", (call,))
-        state.record_tool_result(call, "工具完成")
+        state.record_tool_result(call, result_parts('工具完成', (), 'tool'))
         await agent.state_manager.save(state, checkpoint_type="intermediate")
         control = TurnControl("run-1")
         control.partial = "正在操作"

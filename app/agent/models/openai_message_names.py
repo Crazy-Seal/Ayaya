@@ -1,4 +1,4 @@
-"""持久化消息名称与分类常量。"""
+"""Chat Completions 图片和内部通知投影使用的消息名称。"""
 
 SCREENSHOT_MESSAGE_NAME = "system_screenshot"
 SCREENSHOT_COMPRESSED_NAME = "system_screenshot_compressed"

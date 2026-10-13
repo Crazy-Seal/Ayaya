@@ -8,6 +8,7 @@ import logging
 from typing import Any, TYPE_CHECKING
 
 from app.agent.tools.base import BaseTool
+from app.agent.models.contracts import ToolDefinition
 
 if TYPE_CHECKING:
     from app.agent.tools.authorization.manager import ToolAuthorization
@@ -85,7 +86,7 @@ class ToolManager:
         """返回当前工具实例集合，供 Agent 装配或调用方检查。"""
         return list(self._tools.values())
 
-    def get_openai_tools(self) -> list[dict]:
+    def get_tools(self) -> list[ToolDefinition]:
         """将当前允许公开的工具转换为模型请求定义，deny 工具不加入列表。"""
         tools = self._tools.values()
         if self._authorization is not None and self._session_id is not None:
@@ -93,7 +94,7 @@ class ToolManager:
                 tool for tool in tools
                 if self._authorization.is_exposed(self._session_id, tool)
             )
-        return [tool.to_openai_tool() for tool in tools]
+        return [tool.definition() for tool in tools]
 
     def clear(self) -> None:
         """清空本 Agent 的工具索引，不改变磁盘上保存的工具权限。"""

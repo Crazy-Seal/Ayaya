@@ -1,3 +1,4 @@
+from tests.model_capture import encoded_tool
 from copy import deepcopy
 
 from app.agent.tools._schema import normalize_tool_schema_for_model
@@ -54,7 +55,7 @@ class _NullableSchemaTool(BaseTool):
 
 def test_openai_tool_normalizes_nullable_schema_recursively() -> None:
     """验证工具 Schema 递归规范化可空联合。"""
-    parameters = _NullableSchemaTool().to_openai_tool()["function"]["parameters"]
+    parameters = encoded_tool(_NullableSchemaTool())["function"]["parameters"]
 
     assert parameters["properties"]["seed"] == {
         "type": "string",
@@ -78,7 +79,7 @@ def test_openai_tool_does_not_mutate_registered_schema() -> None:
     """验证Schema 规范化不修改注册表原定义。"""
     original = deepcopy(_NullableSchemaTool.parameters_schema)
 
-    _NullableSchemaTool().to_openai_tool()
+    encoded_tool(_NullableSchemaTool())
 
     assert _NullableSchemaTool.parameters_schema == original
 

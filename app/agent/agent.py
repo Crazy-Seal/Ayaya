@@ -31,7 +31,7 @@ from app.agent.state.manager import StateManager
 from app.agent.runtime.session_inbox import InboxEnvelope
 from app.agent.runtime.turn_control import TurnControl, TurnInterrupted
 from app.schemas.desktop import DesktopOperations
-from app.agent.state.messages import AssistantMessage, HumanMessage, ToolCall, ToolMessage, RuntimeInputMessage
+from app.agent.state.messages import AssistantMessage, HumanMessage, ToolCall, ToolMessage, RuntimeInputMessage, with_text, text_content
 from app.agent.tools.base import BaseTool, TaskLauncher
 from app.agent.tools.authorization.manager import ToolAuthorization
 from app.agent.utils.domain.images import save_multiple_images
@@ -66,6 +66,7 @@ class AgentConfig:
     api_key: str
     context_strategy: ContextStrategyConfig
     base_url: str = "https://api.openai.com/v1"
+    api_format: str = "openai_chat_completions"
     temperature: float = 0.7
     system_prompt: str = ""
     tools: list[str] = field(default_factory=list)
@@ -141,6 +142,7 @@ class Agent:
                 api_key=config.api_key,
                 base_url=config.base_url,
                 temperature=config.temperature,
+                api_format=config.api_format,
             ))
 
         # 模型输入与执行管道
@@ -150,7 +152,7 @@ class Agent:
             diary_coverage=diary_coverage,
             chat_settings=chat_settings,
             accounting_key=build_token_accounting_key(
-                protocol="openai_chat_completions",
+                protocol=config.api_format,
                 model=config.model_name,
                 endpoint=config.base_url,
             ),
@@ -756,7 +758,7 @@ class Agent:
             if previous is None:
                 raise RuntimeError("已保存的流式文本缺少对应 assistant 消息")
             state.replace_message(replace(
-                previous, text=previous.text + "……（被用户打断）",
+                previous, content=text_content(previous.text + "……（被用户打断）"),
             ))
             rewritten_message_id = previous.message_id
         # 3. 同时写 completed checkpoint 和必要的原消息重写，不放行停止轮次的队列。
@@ -853,7 +855,7 @@ class Agent:
                                  if isinstance(item, AssistantMessage) and item.text == partial
                                  and item.origin_channel == origin_channel), None)
             if previous is not None:
-                state.replace_message(replace(previous, text=previous.text + suffix))
+                state.replace_message(with_text(previous, previous.text + suffix))
                 rewritten_message_id = previous.message_id
             else:
                 # 2.1. 最终提交或工具前 checkpoint 被取消时，内存步骤尚未落盘，需补保存。

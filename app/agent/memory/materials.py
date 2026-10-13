@@ -2,7 +2,7 @@
 
 from dataclasses import replace
 
-from app.agent.state.messages import BaseMessage, ToolMessage
+from app.agent.state.messages import BaseMessage, ToolMessage, with_text
 from app.agent.utils.domain.weighted_text import truncate_weighted_text
 
 
@@ -22,10 +22,10 @@ def compress_tool_results(messages: list[BaseMessage]) -> list[BaseMessage]:
     copied: list[BaseMessage] = []
     for message in messages:
         if isinstance(message, ToolMessage):
-            message = replace(
+            message = with_text(
                 message,
-                content=truncate_weighted_text(
-                    message.content, max_weight=1_000, head_weight=800, tail_weight=200,
+                truncate_weighted_text(
+                    message.text, max_weight=1_000, head_weight=800, tail_weight=200,
                 ),
             )
         copied.append(message)

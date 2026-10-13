@@ -1,3 +1,4 @@
+from tests.model_capture import image_urls, image_kind
 from pathlib import Path
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -844,9 +845,9 @@ async def test_adapter_executes_authorized_call_and_converts_results() -> None:
     result = await adapter.execute({"path": "README.md"}, _tool_context())
 
     assert result.interrupt is None
-    assert "完成" in result.content
-    assert '"ok":true' in result.content
-    assert result.image_urls == ["data:image/png;base64,iVBORw0KGgo="]
+    assert "完成" in result.text
+    assert '"ok":true' in result.text
+    assert image_urls(result) == ["data:image/png;base64,iVBORw0KGgo="]
     assert session.calls == [("write_file", {"path": "README.md"})]
     await manager.close()
 
@@ -927,7 +928,7 @@ async def test_adapter_rejects_changed_tool_contract_at_final_guard() -> None:
     manager.get_tool_contract_fingerprint = lambda *_args: "changed-contract"
     result = await adapter.execute({}, _tool_context())
 
-    assert "MCP_APPROVAL_STALE" in result.content
+    assert "MCP_APPROVAL_STALE" in result.text
     assert session.calls == []
     await manager.close()
 
@@ -968,7 +969,7 @@ async def test_adapter_rejects_server_identity_changed_after_construction() -> N
 
     result = await adapter.execute({}, _tool_context())
 
-    assert "MCP_IDENTITY_UNBOUND" in result.content
+    assert "MCP_IDENTITY_UNBOUND" in result.text
     assert session.calls == []
     await manager.close()
 
@@ -1044,7 +1045,7 @@ async def test_adapter_rechecks_current_policy_before_execution() -> None:
     resolver.policy = ToolPolicy.DENY
     result = await adapter.execute({}, _tool_context())
 
-    assert "未获准" in result.content
+    assert "未获准" in result.text
     assert session.calls == []
     await manager.close()
 
@@ -1101,7 +1102,7 @@ async def test_adapter_rechecks_policy_inside_connection_lease() -> None:
 
     result = await adapter.execute({}, _tool_context())
 
-    assert "未获准" in result.content
+    assert "未获准" in result.text
     assert session.calls == []
     assert manager.get_status("filesystem")["status"] == "available"
     await manager.close()
@@ -1140,7 +1141,7 @@ async def test_adapter_rejects_changed_policy_binding_identity() -> None:
 
     result = await adapter.execute({}, _tool_context())
 
-    assert "MCP_IDENTITY_UNBOUND" in result.content
+    assert "MCP_IDENTITY_UNBOUND" in result.text
     assert session.calls == []
     await manager.close()
 
@@ -1220,7 +1221,7 @@ def test_adapter_converts_errors_multiple_images_and_unsupported_content() -> No
         isError=True,
         content=[SimpleNamespace(type="text", text="remote failed")],
     ))
-    assert "remote failed" in error.content
+    assert "remote failed" in error.text
 
     converted = MCPToolAdapter._convert_result(SimpleNamespace(
         isError=False,
@@ -1233,13 +1234,13 @@ def test_adapter_converts_errors_multiple_images_and_unsupported_content() -> No
             SimpleNamespace(type="resource"),
         ],
     ))
-    assert converted.image_urls == [
+    assert image_urls(converted) == [
         "data:image/png;base64,iVBORw0KGgo=",
         "data:image/jpeg;base64,/9j/",
     ]
-    assert converted.image_message_name == "mcp_tool_image"
-    assert "已忽略 3 个不支持的 MCP 内容类型" in converted.content
-    assert "x" * 60_000 in converted.content
+    assert image_kind(converted) == "mcp"
+    assert "已忽略 3 个不支持的 MCP 内容类型" in converted.text
+    assert "x" * 60_000 in converted.text
 
 
 def test_adapter_preserves_large_error_for_unified_normalization() -> None:
@@ -1249,7 +1250,7 @@ def test_adapter_preserves_large_error_for_unified_normalization() -> None:
         content=[SimpleNamespace(type="text", text="x" * 100_000)],
     ))
 
-    assert huge_error.content == "错误: " + "x" * 100_000
+    assert huge_error.text == "错误: " + "x" * 100_000
 
 
 def test_adapter_applies_image_quotas() -> None:
@@ -1265,8 +1266,8 @@ def test_adapter_applies_image_quotas() -> None:
     ])
     converted = MCPToolAdapter._convert_result(SimpleNamespace(isError=False, content=images))
     normalized = ToolResultNormalizer().normalize(converted)
-    assert len(normalized.image_urls) == 5
-    assert "已忽略 3 张工具图片：图片数量超过限制" in normalized.content
+    assert len(image_urls(normalized)) == 5
+    assert "已忽略 3 张工具图片：图片数量超过限制" in normalized.text
 
 
 def test_adapter_deduplicates_exact_structured_serialization() -> None:
@@ -1280,7 +1281,7 @@ def test_adapter_deduplicates_exact_structured_serialization() -> None:
         structuredContent=structured,
     ))
 
-    assert converted.content == f"结果如下：\n{serialized}"
+    assert converted.text == f"结果如下：\n{serialized}"
 
 
 def test_adapter_appends_structured_content_when_exact_serialization_is_absent() -> None:
@@ -1291,7 +1292,7 @@ def test_adapter_appends_structured_content_when_exact_serialization_is_absent()
         structuredContent={"value": 1},
     ))
 
-    assert converted.content == (
+    assert converted.text == (
         '结果如下： {"value": 1}\n\n[structuredContent]\n{"value":1}'
     )
 
@@ -1304,8 +1305,8 @@ def test_adapter_accepts_structured_result_larger_than_schema_limit() -> None:
         structuredContent={"value": "x" * (300 * 1024)},
     ))
 
-    assert converted.content.startswith('{"value":"')
-    assert "已忽略 structured content" not in converted.content
+    assert converted.text.startswith('{"value":"')
+    assert "已忽略 structured content" not in converted.text
 
 
 def test_adapter_and_normalizer_limit_content_parts_and_summarize_images(monkeypatch) -> None:
@@ -1363,9 +1364,9 @@ def test_adapter_and_normalizer_limit_content_parts_and_summarize_images(monkeyp
     normalized = ToolResultNormalizer().normalize(converted)
 
     assert decode_calls == 1_000
-    assert normalized.content.count("Base64 非法") == 1
-    assert "已忽略 1000 张工具图片" in normalized.content
-    assert "已忽略 99000 个 MCP content parts" in normalized.content
+    assert normalized.text.count("Base64 非法") == 1
+    assert "已忽略 1000 张工具图片" in normalized.text
+    assert "已忽略 99000 个 MCP content parts" in normalized.text
 
 
 def test_adapter_does_not_preserve_untrusted_content_type_or_mime_values() -> None:
@@ -1379,10 +1380,10 @@ def test_adapter_does_not_preserve_untrusted_content_type_or_mime_values() -> No
     converted = MCPToolAdapter._convert_result(SimpleNamespace(isError=False, content=parts))
     normalized = ToolResultNormalizer().normalize(converted)
 
-    assert "image/attacker-" not in normalized.content
-    assert "attacker-" not in normalized.content
-    assert normalized.content.count("MIME 不支持") == 1
-    assert normalized.content.count("不支持的 MCP 内容类型") == 1
+    assert "image/attacker-" not in normalized.text
+    assert "attacker-" not in normalized.text
+    assert normalized.text.count("MIME 不支持") == 1
+    assert normalized.text.count("不支持的 MCP 内容类型") == 1
 
 
 @pytest.mark.parametrize("part_type", ["text", "audio", "resource", "unknown"])
@@ -1420,9 +1421,9 @@ def test_adapter_applies_content_part_limit_to_every_part_type(part_type: str) -
         content=_RepeatedParts(),
     ))
 
-    assert "已忽略 99000 个 MCP content parts" in converted.content
+    assert "已忽略 99000 个 MCP content parts" in converted.text
     if part_type != "text":
-        assert "已忽略 1000 个不支持的 MCP 内容类型" in converted.content
+        assert "已忽略 1000 个不支持的 MCP 内容类型" in converted.text
 
 
 def test_unified_image_normalizer_stops_at_mcp_content_part_limit(monkeypatch) -> None:
@@ -1483,8 +1484,8 @@ def test_unified_image_normalizer_stops_at_mcp_content_part_limit(monkeypatch) -
     normalized = ToolResultNormalizer().normalize(converted)
 
     assert signature_calls == 1_000
-    assert "已忽略 1000 张工具图片：文件签名不匹配" in normalized.content
-    assert "已忽略 99000 个 MCP content parts" in normalized.content
+    assert "已忽略 1000 张工具图片：文件签名不匹配" in normalized.text
+    assert "已忽略 99000 个 MCP content parts" in normalized.text
 
 
 def test_tool_catalog_and_instructions_quotas() -> None:

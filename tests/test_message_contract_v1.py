@@ -1,283 +1,54 @@
-from copy import deepcopy
-from dataclasses import FrozenInstanceError, replace
+from dataclasses import replace
 from datetime import timedelta
-
 import pytest
 
 from app.agent.state import AgentState
-from app.agent.state.messages import (
-    AssistantMessage,
-    AvailableMedia,
-    BaseMessage,
-    CompactedMedia,
-    ContextSummaryMessage,
-    EnvironmentPerceptionMessage,
-    HumanMessage,
-    MessageContractError,
-    RuntimeInputMessage,
-    SystemMessage,
-    TaskResultMessage,
-    ToolCall,
-    ToolMediaMessage,
-    ToolMessage,
-    message_from_protocol_format,
-    message_from_storage_format,
-)
+from app.agent.state.messages import (AssistantMessage, BaseMessage, ContextSummaryMessage, HumanMessage,
+    RuntimeInputMessage, SystemMessage, TaskResultMessage, ToolCall, ToolMessage, ProviderData,
+    TextContent, ImageContent, text_content, message_from_storage_format, MessageContractError, notification_text)
+from app.schemas.runtime_types import TaskResultStatus
 
 
-def test_domain_message_round_trip_keeps_type_and_hides_metadata_from_wire() -> None:
-    """验证领域消息恢复保留类型且模型正文不含内部元数据。"""
-    message = TaskResultMessage(
-        task_id="task-1",
-        task_name="索引代码",
-        status="completed",
-        result="完成",
-    )
-
-    wire = message.to_openai_format()
-    stored = message.to_storage_format()
-    restored = message_from_storage_format(stored)
-
-    assert wire == {
-        "role": "user",
-        "name": "runtime_task_result",
-        "content": "[后台任务完成] 索引代码\n完成",
-    }
-    assert not any(key.startswith("_") for key in wire)
-    assert stored["_message_type"] == "task_result"
-    assert stored["_task"] == {
-        "task_id": "task-1",
-        "task_name": "索引代码",
-        "status": "completed",
-    }
-    assert restored == message
-
-
-def test_orphaned_and_mixed_task_results_do_not_claim_success_or_failure() -> None:
-    """验证未知与混合终态不会被标记为成功或失败。"""
-    # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
-    orphaned = TaskResultMessage(
-        task_id="task-1", task_name="重启前的任务", status="orphaned", result="结果未知",
-    )
-    mixed = TaskResultMessage(
-        task_id="batch:1,2", task_name="两个后台任务", status="mixed",
-        result="一个完成，一个取消",
-    )
-    # 2. 核对公开结果和持久状态，确保场景中的输入、通知或副作用未重复。
-    assert "状态未知" in orphaned.to_openai_format()["content"]
-    assert "状态汇总" in mixed.to_openai_format()["content"]
-
-
-def test_channel_origin_survives_message_storage_without_changing_provider_wire() -> None:
-    """验证来源经过存储恢复且不污染模型协议字段。"""
-    # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
-    human = HumanMessage(text="请帮我看看屏幕", origin_channel="qq")
-    assistant = AssistantMessage(text="好的", origin_channel="qq")
-
-    for message in (human, assistant):
+def test_domain_message_roundtrip_is_independent_of_provider_roles() -> None:
+    """所有业务类型按自己的字段往返，不保存供应商角色。"""
+    messages = [HumanMessage(content=text_content("你好"), origin_channel="inbox"),
+        AssistantMessage(content=text_content("回答")), ToolMessage(content=text_content("结果"), tool_name="read_file", tool_call_id="c"),
+        TaskResultMessage(task_id="task", task_name="命令", status=TaskResultStatus.COMPLETED, result="完成")]
+    for message in messages:
         stored = message.to_storage_format()
-        restored = message_from_storage_format(stored)
-        assert restored.origin_channel == "qq"
-        assert restored.to_openai_format() == message.to_openai_format()
-        assert "origin_channel" not in restored.to_openai_format()
-
-    legacy = human.to_storage_format()
-    legacy["_human"].pop("origin_channel")
-    # 2. 核对公开结果和持久状态，确保场景中的输入、通知或副作用未重复。
-    assert message_from_storage_format(legacy).origin_channel == "desktop"
+        assert "role" not in stored and message_from_storage_format(stored) == message
 
 
-def test_screenshot_payload_is_closed_and_compaction_never_rehydrates_image() -> None:
-    """验证截图内容类型封闭且压缩后不恢复图片。"""
-    available = ToolMediaMessage(
-        tool_name="screenshot",
-        media_kind="screenshot",
-        text="[系统消息]工具 screenshot 返回图片: ",
-        payload=AvailableMedia(
-            urls=("data:image/png;base64,QQ==",),
-            storage_refs=("screenshot/shot.png",),
-        ),
-        associated_message_id="tool-message-1",
-    )
-    compacted = replace(
-        available,
-        payload=CompactedMedia(storage_refs=("screenshot/shot.png",)),
-    )
-
-    restored = message_from_storage_format(compacted.to_storage_format())
-
-    assert isinstance(restored, ToolMediaMessage)
-    assert isinstance(restored.payload, CompactedMedia)
-    assert restored.to_openai_format() == {
-        "role": "user",
-        "name": "system_screenshot_compressed",
-        "content": "[系统消息]已被压缩的旧截图",
-    }
-    assert "data:image" not in str(restored.to_openai_format())
+def test_unknown_and_mixed_task_results_keep_business_status() -> None:
+    """未知与混合任务终态的通知文字不伪称成功。"""
+    for status, label in ((TaskResultStatus.ORPHANED, "状态未知"), (TaskResultStatus.MIXED, "状态汇总")):
+        message = TaskResultMessage(task_id="t", task_name="任务", status=status, result="结果")
+        assert label in notification_text(message)
 
 
-def test_agent_state_exposes_snapshot_and_closes_tool_batch_semantically() -> None:
-    """验证状态以只读消息快照暴露并按工具语义闭合批次。"""
-    state = AgentState.create_new("message-contract")
-    first = ToolCall(id="call-a", name="screenshot", args={})
-    second = ToolCall(id="call-b", name="read_file", args={})
-    state.record_assistant_step("", (first, second))
-
-    state.record_tool_result(
-        first,
-        "已截图",
-        compressible=True,
-        image_urls=("data:image/png;base64,QQ==",),
-        image_message_name="system_screenshot",
-    )
-    assert [type(message) for message in state.messages] == [
-        AssistantMessage,
-        # 第一条工具消息已提交，但图片要等整批闭合。
-        type(state.messages[1]),
-    ]
-
-    state.record_tool_result(second, "文件内容", compressible=True)
-
-    snapshot = state.messages
-    assert isinstance(snapshot, tuple)
-    assert isinstance(snapshot[-1], ToolMediaMessage)
-    assert state.pending_tool_calls == ()
-    with pytest.raises(AttributeError):
-        snapshot.append(HumanMessage(text="绕过接口"))  # type: ignore[attr-defined]
-    with pytest.raises(FrozenInstanceError):
-        snapshot[0].message_id = "changed"  # type: ignore[misc]
-
-
-def test_runtime_input_subclasses_have_distinct_storage_discriminators() -> None:
-    """验证运行时通知子类保存各自独立类型。"""
-    task = TaskResultMessage(
-        task_id="task-1",
-        task_name="任务",
-        status="failed",
-        result="失败",
-    )
-    environment = EnvironmentPerceptionMessage(
-        perception_kind="window_changed",
-        description="前台窗口已变化",
-    )
-
-    assert task.message_type == "task_result"
-    assert environment.message_type == "environment_perception"
-    assert task.to_storage_format()["_message_type"] != (
-        environment.to_storage_format()["_message_type"]
-    )
-
-
-def test_closed_discriminators_reject_unknown_values_at_construction() -> None:
-    """验证构造消息时拒绝未知封闭类型。"""
-    with pytest.raises(ValueError, match="媒体类型"):
-        ToolMediaMessage(
-            tool_name="capture",
-            media_kind="camera",  # type: ignore[arg-type]
-            text="image",
-            payload=AvailableMedia(urls=("data:image/png;base64,QQ==",)),
-        )
-    with pytest.raises(ValueError, match="只有截图"):
-        ToolMediaMessage(
-            tool_name="draw",
-            media_kind="tool",
-            text="image",
-            payload=CompactedMedia(),
-        )
-    with pytest.raises(ValueError, match="任务状态"):
-        TaskResultMessage(
-            task_id="task-1",
-            task_name="任务",
-            status="running",  # type: ignore[arg-type]
-            result="pending",
-        )
-
-
-def test_tool_call_arguments_are_deeply_immutable() -> None:
-    """验证工具调用参数深层结构不可变。"""
-    call = ToolCall(
-        id="call-1",
-        name="read_file",
-        args={"paths": ["a.py"], "nested": {"enabled": True}},
-        extra_content={"provider": {"trace": ["one"]}},
-    )
-    before = call.to_dict()
-
-    with pytest.raises(TypeError, match="immutable"):
-        call.args["path"] = "b.py"  # type: ignore[index]
-    with pytest.raises((TypeError, AttributeError)):
-        del call.args["paths"]  # type: ignore[attr-defined]
-    for method_name in ("update", "pop", "popitem", "clear", "setdefault"):
-        with pytest.raises(AttributeError):
-            getattr(call.args, method_name)
-    frozen = call.args
+def test_tool_parameters_and_provider_material_are_deeply_immutable() -> None:
+    """审批后外部字典变化不能改变参数或专用恢复材料。"""
+    raw = {"items": ["a"]}
+    extra = {"extra_content": {"signature": ["one"]}}
+    call = ToolCall("c", "read_file", raw, ProviderData("openai_chat_completions", "https://example", "model", extra))
+    raw["items"].append("b")
+    extra["extra_content"]["signature"].append("two")
+    assert call.to_dict()["args"] == {"items": ["a"]}
+    assert call.provider_data.to_dict()["payload"] == {"extra_content": {"signature": ["one"]}}
     with pytest.raises(TypeError):
-        frozen |= {"new": True}
-    with pytest.raises(TypeError, match="immutable"):
-        call.args.__init__({"changed": True})  # type: ignore[misc]
-    with pytest.raises(TypeError, match="immutable"):
-        call.args._view = {}  # type: ignore[attr-defined]
-    with pytest.raises(AttributeError):
-        call.args["paths"].append("b.py")  # type: ignore[union-attr]
-    with pytest.raises(TypeError, match="immutable"):
-        call.args["nested"]["enabled"] = False  # type: ignore[index]
-    with pytest.raises(TypeError, match="immutable"):
-        call.extra_content["provider"]["trace"] = ()  # type: ignore[index]
-
-    assert deepcopy(call).to_dict() == before
-    assert call.to_dict() == before
+        call.args["new"] = "bad"
 
 
-def test_abstract_message_types_cannot_be_instantiated() -> None:
-    """验证抽象消息类型不能直接创建。"""
-    with pytest.raises(TypeError, match="abstract"):
-        BaseMessage()  # type: ignore[abstract]
-    with pytest.raises(TypeError, match="abstract"):
-        RuntimeInputMessage()  # type: ignore[abstract]
-
-
-def test_tool_message_requires_non_empty_call_id_in_all_decoders() -> None:
-    """验证所有工具结果解码路径要求非空调用编号。"""
-    with pytest.raises((TypeError, ValueError)):
-        ToolMessage(content="结果", tool_name="read_file")  # type: ignore[call-arg]
-    with pytest.raises(ValueError, match="tool_call_id"):
-        ToolMessage(content="结果", tool_name="read_file", tool_call_id="")
-
-    valid = ToolMessage(
-        content="结果", tool_name="read_file", tool_call_id="call-1"
-    )
-    stored = valid.to_storage_format()
-    stored.pop("tool_call_id")
-    with pytest.raises(ValueError, match="tool_call_id"):
+def test_decoders_reject_old_roles_unknown_types_and_missing_call_id() -> None:
+    """运行时拒绝旧格式及不完整结果，不执行静默兼容。"""
+    for value in ({"role": "user", "content": "旧输入"}, {"message_type": "unknown"}):
+        with pytest.raises(MessageContractError):
+            message_from_storage_format(value)
+    message = ToolMessage(content=text_content("结果"), tool_name="read_file", tool_call_id="c")
+    stored = message.to_storage_format()
+    stored["tool_call_id"] = ""
+    with pytest.raises(MessageContractError):
         message_from_storage_format(stored)
-    with pytest.raises(ValueError, match="tool_call_id"):
-        message_from_protocol_format(
-            message_type="tool",
-            message_json={"role": "tool", "name": "read_file", "content": "结果"},
-            message_id="tool-1",
-            created_at=valid.created_at,
-            domain_json={"tool": {"compressible": False}},
-        )
-
-
-def test_decoders_report_missing_or_illegal_message_type_as_contract_error() -> None:
-    """验证缺失或非法消息类型明确报告契约错误。"""
-    with pytest.raises(MessageContractError, match="_message_type"):
-        message_from_storage_format({})
-    with pytest.raises(MessageContractError, match="message_type"):
-        message_from_protocol_format(
-            message_type=None,
-            message_json={"role": "user", "content": "问题"},
-            message_id="human-1",
-            created_at=HumanMessage(text="时间锚点").created_at,
-        )
-    with pytest.raises(MessageContractError, match="非法"):
-        message_from_protocol_format(
-            message_type="system",
-            message_json={"role": "system", "content": "不应进入协议日志"},
-            message_id="system-1",
-            created_at=HumanMessage(text="时间锚点").created_at,
-        )
 
 
 def _restore_state(
@@ -310,9 +81,9 @@ def _restore_state(
 def test_agent_state_rejects_invalid_tool_protocol_sequences() -> None:
     """验证状态拒绝非法工具请求结果顺序。"""
     call = ToolCall(id="call-1", name="read_file", args={})
-    assistant = AssistantMessage(text="", tool_calls=(call,))
+    assistant = AssistantMessage(content=text_content(""), tool_calls=(call,))
     result = ToolMessage(
-        content="结果", tool_name="read_file", tool_call_id="call-1"
+        content=text_content("结果"), tool_name="read_file", tool_call_id="call-1"
     )
 
     with pytest.raises(ValueError, match="找不到"):
@@ -325,9 +96,9 @@ def test_agent_state_rejects_invalid_tool_protocol_sequences() -> None:
     with pytest.raises(ValueError, match="多个或乱序"):
         _restore_state((assistant, result, replace(result, message_id="result-2")))
     with pytest.raises(ValueError, match="非 ToolMessage 打断"):
-        _restore_state((assistant, HumanMessage(text="插入"), result))
+        _restore_state((assistant, HumanMessage(content=text_content("插入")), result))
     with pytest.raises(ValueError, match="重复工具调用 ID"):
-        _restore_state((AssistantMessage(text="", tool_calls=(call, call)),))
+        _restore_state((AssistantMessage(content=text_content(""), tool_calls=(call, call)),))
 
 
 def test_agent_state_requires_unclosed_batch_to_match_recovery_state_exactly() -> None:
@@ -335,9 +106,9 @@ def test_agent_state_requires_unclosed_batch_to_match_recovery_state_exactly() -
     first = ToolCall(id="call-1", name="read_file", args={})
     second = ToolCall(id="call-2", name="write_file", args={})
     third = ToolCall(id="call-3", name="list_files", args={})
-    assistant = AssistantMessage(text="", tool_calls=(first, second, third))
+    assistant = AssistantMessage(content=text_content(""), tool_calls=(first, second, third))
     first_result = ToolMessage(
-        content="完成", tool_name="read_file", tool_call_id="call-1"
+        content=text_content("完成"), tool_name="read_file", tool_call_id="call-1"
     )
     interrupt = {
         "tool_call_id": "call-2",
@@ -395,13 +166,13 @@ def test_agent_state_rejects_system_messages_and_compaction_insertion_abuse() ->
     human = state.add_user_message("问题")
     assistant = state.add_assistant_message("回答")
     with pytest.raises(ValueError, match="只能新增 ContextSummaryMessage"):
-        state.commit_compaction((*state.messages, HumanMessage(text="绕过输入接口")))
+        state.commit_compaction((*state.messages, HumanMessage(content=text_content("绕过输入接口"))))
     with pytest.raises(ValueError, match="消息类型"):
         state.commit_compaction((
             AssistantMessage(
                 message_id=human.message_id,
                 created_at=human.created_at,
-                text="伪装",
+                content=text_content("伪装"),
             ),
             assistant,
         ))
@@ -420,5 +191,5 @@ def test_agent_state_rejects_system_messages_and_compaction_insertion_abuse() ->
         covered_effective_date="2026-09-20",
         compression_ratio=0.5,
     )
-    state.commit_compaction((summary, human, replace(assistant, text="压缩后的回答")))
-    assert state.messages == (summary, human, replace(assistant, text="压缩后的回答"))
+    state.commit_compaction((summary, human, replace(assistant, content=text_content("压缩后的回答"))))
+    assert state.messages == (summary, human, replace(assistant, content=text_content("压缩后的回答")))

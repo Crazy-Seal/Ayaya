@@ -1,4 +1,4 @@
-"""面向日记和长期记忆的 OpenAI 协议日志只读查询。"""
+"""面向日记和长期记忆的 Ayaya 业务消息日志只读查询。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from app.agent.state.messages import (
     AssistantMessage,
     BaseMessage,
     HumanMessage,
-    message_from_protocol_format,
+    message_from_history,
 )
 from app.runtime import get_chat_history_db
 
@@ -157,8 +157,7 @@ class ChatHistoryStore:
                 return []
             return await conn.execute_fetchall(
                 f"""
-                SELECT id, message_id, created_at, role, message_json, record_kind,
-                       message_type, domain_json, associated_message_id
+                SELECT id, message_id, created_at, message_json, record_kind, message_type
                 FROM {self.TABLE_NAME}
                 WHERE {' AND '.join(clauses)} AND record_kind <> 'legacy_tool_notice'
                 ORDER BY id ASC
@@ -183,33 +182,11 @@ class ChatHistoryStore:
 
     @staticmethod
     def _decode(row: tuple) -> BaseMessage:
-        """将协议正文、消息身份和独立领域字段恢复为强类型消息。
+        """从独立业务 JSON 恢复消息，并核对 SQL 索引身份。"""
+        _row_id, message_id, created_at, raw, _kind, message_type = row
+        return message_from_history(message_json=json.loads(raw), message_type=message_type,
+                                    message_id=str(message_id), created_at=created_at)
 
-        Args:
-            row (tuple): 从数据库读取的单条协议记录。
-
-        Returns:
-            BaseMessage: 保留原编号、时间、来源和媒体关联的领域消息。
-        """
-        (
-            _row_id,
-            message_id,
-            created_at,
-            _role,
-            raw,
-            _record_kind,
-            message_type,
-            raw_domain,
-            associated_message_id,
-        ) = row
-        return message_from_protocol_format(
-            message_type=message_type,
-            message_json=json.loads(raw),
-            message_id=str(message_id),
-            created_at=created_at,
-            domain_json=json.loads(raw_domain) if raw_domain else {},
-            associated_message_id=associated_message_id,
-        )
 
     async def get_latest_message_id(self, session_id: str) -> int:
         """捕获本会话协议日志的最大数据库编号，供本次记忆提取排除后来到达的消息。
@@ -328,8 +305,7 @@ class ChatHistoryStore:
                 return []
             rows = await conn.execute_fetchall(
                 f"""
-                SELECT id, message_id, created_at, role, message_json, record_kind,
-                       message_type, domain_json, associated_message_id
+                SELECT id, message_id, created_at, message_json, record_kind, message_type
                 FROM {self.TABLE_NAME}
                 WHERE {' AND '.join(clauses)} AND record_kind <> 'legacy_tool_notice'
                 ORDER BY id DESC
@@ -414,8 +390,7 @@ class ChatHistoryStore:
                 params.append(self.READ_CHUNK_SIZE)
                 rows = await conn.execute_fetchall(
                     f"""
-                    SELECT id, message_id, created_at, role, message_json, record_kind,
-                           message_type, domain_json, associated_message_id
+                    SELECT id, message_id, created_at, message_json, record_kind, message_type
                     FROM {self.TABLE_NAME}
                     WHERE {' AND '.join(clauses)} AND record_kind <> 'legacy_tool_notice'
                     ORDER BY id DESC

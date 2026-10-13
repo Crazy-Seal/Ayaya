@@ -1,3 +1,5 @@
+from app.agent.models.openai_message_names import MCP_TOOL_IMAGE_MESSAGE_NAME
+from tests.model_capture import result_parts
 import asyncio
 import json
 import re
@@ -11,14 +13,7 @@ from app.agent.state.manager import LATEST_CHECKPOINT_SQL, StateManager
 from app.agent.memory.store.chat_history_store import ChatHistoryStore
 from app.crud.chat_history_dao import ChatHistoryDao
 from app.agent.state import AgentState, TokenBaseline
-from app.agent.state.messages import (
-    AvailableMedia,
-    HumanMessage,
-    MCP_TOOL_IMAGE_MESSAGE_NAME,
-    PROTOCOL_MESSAGE_TYPES,
-    ToolCall,
-    ToolMediaMessage,
-)
+from app.agent.state.messages import (HumanMessage, PROTOCOL_MESSAGE_TYPES, ToolCall, ImageContent, ToolMessage)
 from app.runtime import get_agent_state_db, get_chat_history_db, get_checkpoint_db
 
 
@@ -211,10 +206,10 @@ def test_checkpoint_and_visible_history_are_saved_atomically(tmp_path: Path) -> 
 
             db = await manager._get_db()
             rows = await db.execute_fetchall(
-                "SELECT role,message_id FROM conversation_messages WHERE session_id=? ORDER BY id",
+                "SELECT message_type,message_id FROM conversation_messages WHERE session_id=? ORDER BY id",
                 ("test-session",),
             )
-            assert [row[0] for row in rows] == ["user", "assistant"]
+            assert [row[0] for row in rows] == ["human", "assistant"]
             assert all(row[1] for row in rows)
 
             await db.execute(
@@ -267,12 +262,7 @@ def test_mcp_tool_image_is_not_persisted_as_human_history(tmp_path: Path) -> Non
             state.add_user_message("真实问题")
             call = ToolCall(id="call-mcp", name="mcp_tool", args={})
             state.record_assistant_step("", (call,))
-            state.record_tool_result(
-                call,
-                "完成",
-                image_urls=("data:image/png;base64,MQ==",),
-                image_message_name=MCP_TOOL_IMAGE_MESSAGE_NAME,
-            )
+            state.record_tool_result(call, result_parts('完成', ('data:image/png;base64,MQ==',), 'mcp'))
             state.add_assistant_message("完成")
             await manager.save(state, checkpoint_type="completed")
 

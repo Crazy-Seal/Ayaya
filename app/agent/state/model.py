@@ -9,31 +9,24 @@ from typing import Any, Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
-from app.agent.state.message_names import (
-    MCP_TOOL_IMAGE_MESSAGE_NAME,
-    SCREENSHOT_MESSAGE_NAME,
-    TOOL_IMAGE_MESSAGE_NAME,
-)
 from app.agent.state.messages import (
     AssistantMessage,
-    AvailableMedia,
     BaseMessage,
+    ContentPart, ImageContent, ProviderData, text_content,
     ContextSummaryMessage,
     HumanMessage,
     RuntimeInputMessage,
     SystemMessage,
     ToolCall,
-    ToolMediaMessage,
     ToolMessage,
     message_from_storage_format,
-    messages_to_openai_format,
     to_json_value,
 )
 from app.agent.state.time import normalize_utc, utc_now
 from app.schemas.runtime_types import ApprovalDecisionKind, AuthorizationResolutionKind, InterruptKind
 
 
-CHECKPOINT_SCHEMA_VERSION = 2
+CHECKPOINT_SCHEMA_VERSION = 3
 
 
 class TokenBaseline(BaseModel):
@@ -44,54 +37,6 @@ class TokenBaseline(BaseModel):
     static_fingerprint: str
     rough_prompt_tokens: int = Field(gt=0)
     actual_prompt_tokens: int = Field(gt=0)
-
-
-@dataclass(frozen=True, slots=True)
-class _DeferredToolMedia:
-    """保存工具返回的图片，等同批文本结果全部配对后再追加，避免图片打断工具协议。"""
-    tool_call_id: str
-    tool_name: str
-    associated_message_id: str
-    image_message_name: str
-    image_urls: tuple[str, ...]
-
-    def to_storage_format(self) -> dict[str, Any]:
-        """把尚未追加的工具图片及其结果关联转为 checkpoint 恢复材料。
-
-        Returns:
-            dict[str, Any]: 包含调用编号、结果消息编号、类别和图片地址的字典。
-        """
-        return {
-            "tool_call_id": self.tool_call_id,
-            "tool_name": self.tool_name,
-            "associated_message_id": self.associated_message_id,
-            "image_message_name": self.image_message_name,
-            "image_urls": list(self.image_urls),
-        }
-
-    @classmethod
-    def from_storage_format(cls, data: Mapping[str, Any]) -> "_DeferredToolMedia":
-        """从 checkpoint 恢复等待同批工具结果结束后追加的图片。
-
-        Args:
-            data (Mapping[str, Any]): 需要解析或保存的结构化数据。
-
-        Returns:
-            _DeferredToolMedia: 可供后续追加的工具图片记录。
-
-        Raises:
-            ValueError: 图片地址不是字符串列表。
-        """
-        urls = data.get("image_urls") or []
-        if not isinstance(urls, list) or not all(isinstance(url, str) for url in urls):
-            raise ValueError("_deferred_tool_media.image_urls 必须是字符串数组")
-        return cls(
-            tool_call_id=str(data.get("tool_call_id") or ""),
-            tool_name=str(data.get("tool_name") or ""),
-            associated_message_id=str(data.get("associated_message_id") or ""),
-            image_message_name=str(data.get("image_message_name") or TOOL_IMAGE_MESSAGE_NAME),
-            image_urls=tuple(urls),
-        )
 
 
 class AgentState(BaseModel):
@@ -111,7 +56,6 @@ class AgentState(BaseModel):
         created_at (datetime): 原消息 UTC 创建时间。
         updated_at (datetime): 状态最近修改的 UTC 时间。
         _messages (list[BaseMessage]): 当前会话的内存消息序列，只能经追加、结果记录或压缩替换方法修改。
-        _deferred_tool_media (list[_DeferredToolMedia]): 等整批工具调用闭合后再追加的媒体消息。
     """
 
     session_id: str
@@ -125,7 +69,6 @@ class AgentState(BaseModel):
     updated_at: datetime = Field(default_factory=utc_now)
 
     _messages: list[BaseMessage] = PrivateAttr(default_factory=list)
-    _deferred_tool_media: list[_DeferredToolMedia] = PrivateAttr(default_factory=list)
 
     model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
 
@@ -134,14 +77,6 @@ class AgentState(BaseModel):
         """提供不可变消息序列快照，外部代码不能直接增删内部消息列表。"""
         return tuple(self._messages)
 
-    @property
-    def deferred_tool_media_count(self) -> int:
-        """读取等待整批工具结果结束后追加的图片记录数量。
-
-        Returns:
-            int: 当前内存中的延迟图片记录数。
-        """
-        return len(self._deferred_tool_media)
 
     def append_input(self, message: HumanMessage | RuntimeInputMessage) -> None:
         """把真人消息或运行时通知追加到内存消息序列，不保存数据库。
@@ -176,11 +111,11 @@ class AgentState(BaseModel):
         Returns:
             HumanMessage: 已追加到内存的真人消息，尚未保存 checkpoint。
         """
+        if image_filenames and len(image_filenames) != len(image_urls):
+            raise ValueError("真人图片与本地引用数量不一致")
         message = HumanMessage(
-            text=text,
-            image_urls=tuple(image_urls),
-            image_filenames=tuple(image_filenames),
-            origin_channel=origin_channel,
+            content=(*text_content(text), *(ImageContent(url, storage_ref=image_filenames[index] if image_filenames else None)
+                for index, url in enumerate(image_urls))), origin_channel=origin_channel,
         )
         self.append_input(message)
         return message
@@ -191,6 +126,7 @@ class AgentState(BaseModel):
         tool_calls: Sequence[ToolCall] = (),
         *,
         origin_channel: str = "desktop",
+        provider_data: ProviderData | None = None,
     ) -> AssistantMessage:
         """记录带来源的 Assistant 步骤，上一批工具未闭合时禁止开始下一批。
 
@@ -208,7 +144,7 @@ class AgentState(BaseModel):
         calls = tuple(tool_calls)
         if self.pending_tool_calls:
             raise ValueError("上一批工具调用尚未闭合，不能记录新的 assistant step")
-        message = AssistantMessage(text=content, tool_calls=calls, origin_channel=origin_channel)
+        message = AssistantMessage(content=text_content(content), tool_calls=calls, origin_channel=origin_channel, provider_data=provider_data)
         self._append(message)
         self.pending_tool_calls = calls
         return message
@@ -226,66 +162,30 @@ class AgentState(BaseModel):
         return self.record_assistant_step(content, origin_channel=origin_channel)
 
     def record_tool_result(
-        self,
-        tool_call: ToolCall,
-        content: str,
-        *,
-        compressible: bool = False,
-        image_urls: Sequence[str] = (),
-        image_message_name: str = TOOL_IMAGE_MESSAGE_NAME,
+        self, tool_call: ToolCall, content: Sequence[ContentPart], *, compressible: bool = False,
     ) -> ToolMessage:
-        """记录待处理调用的文本结果，最后一项结果完成后再追加本批图片。
-
-        这里只修改内存；执行管道随后保存 checkpoint 和协议日志。
+        """立即登记完整工具结果，再移除待处理调用；调用方随后持久化。
 
         Args:
-            tool_call (ToolCall): 本次模型请求的工具调用，包含编号、名称和参数。
-            content (str): 当前处理的正文。
-            compressible (bool): 是否允许后续上下文压缩缩短这条工具结果。
-            image_urls (Sequence[str]): 供模型读取的图片地址。
-            image_message_name (str): 区分截图、本地工具图片和 MCP 图片的消息名称。
-
+            tool_call (ToolCall): 当前未完成批次中的调用。
+            content (Sequence[ContentPart]): 已校验的文字与图片，按工具返回顺序排列。
+            compressible (bool): 是否允许后续压缩旧观察。
         Returns:
-            ToolMessage: 新追加的工具文本结果消息。
-
+            ToolMessage: 已加入内存的完整结果，尚未保存数据库。
         Raises:
-            ValueError: 调用编号不在待处理批次中，或工具名称不匹配。
+            ValueError: 调用不在当前批次或工具名不匹配。
         """
-        # 1. 结果必须属于当前未完成批次，且工具名称与模型请求一致，避免闭合错误调用。
-        pending_call = next(
-            (candidate for candidate in self.pending_tool_calls if candidate.id == tool_call.id),
-            None,
-        )
-        if pending_call is None:
-            raise ValueError(f"工具调用未处于待闭合批次: {tool_call.id}")
-        if pending_call.name != tool_call.name:
-            raise ValueError(f"工具调用名称不匹配: {tool_call.id}")
-        message = ToolMessage(
-            content=content,
-            tool_name=pending_call.name,
-            tool_call_id=pending_call.id,
-            compressible=compressible,
-        )
-        # 2. 先追加文本结果，再移除该调用的待处理标记；此时尚未保存 checkpoint。
+        # 1. 先校验请求归属，禁止把一个工具的结果用于闭合另一个调用。
+        pending = next((call for call in self.pending_tool_calls if call.id == tool_call.id), None)
+        if pending is None or pending.name != tool_call.name:
+            raise ValueError(f"工具调用未处于待闭合批次或名称不匹配: {tool_call.id}")
+        message = ToolMessage(content=tuple(content), tool_name=pending.name,
+                              tool_call_id=pending.id, compressible=compressible)
+        # 2. 文字和图片已在同一条消息中；保存失败时持久 pending 状态仍可恢复。
         self._append(message)
-        self.pending_tool_calls = tuple(
-            candidate
-            for candidate in self.pending_tool_calls
-            if candidate.id != pending_call.id
-        )
-        # 3. 图片暂存到恢复材料中，整批文本结果结束后再追加，避免打断工具协议。
-        urls = tuple(image_urls)
-        if urls:
-            self._deferred_tool_media.append(_DeferredToolMedia(
-                tool_call_id=pending_call.id,
-                tool_name=pending_call.name,
-                associated_message_id=message.message_id,
-                image_message_name=image_message_name,
-                image_urls=urls,
-            ))
-        if not self.pending_tool_calls:
-            self._flush_deferred_tool_media()
+        self.pending_tool_calls = tuple(call for call in self.pending_tool_calls if call.id != pending.id)
         return message
+
 
     def add_tool_message(
         self,
@@ -312,7 +212,7 @@ class AgentState(BaseModel):
         )
         if call is None:
             raise ValueError(f"工具调用未处于待闭合批次: {tool_call_id}")
-        return self.record_tool_result(call, content, compressible=compressible)
+        return self.record_tool_result(call, text_content(content), compressible=compressible)
 
     def set_pending_tool_calls(self, tool_calls: Sequence[ToolCall]) -> None:
         """在内存中登记同批未取得结果的工具调用，并更新状态修改时间。
@@ -362,11 +262,11 @@ class AgentState(BaseModel):
             if call.id not in closed:
                 entries.append((call, ordinary_content, ()))
                 closed.add(call.id)
-        # 2. 整批登记后再写结果，延迟图片必须等所有 ToolMessage 闭合才刷新。
+        # 2. 整批登记后逐项写入完整结果，图片与同一次调用的终止文字一起保存。
         self.set_pending_tool_calls([call for call, _content, _images in entries])
         for call, content, images in entries:
             self.record_tool_result(
-                call, content, image_urls=images, image_message_name=SCREENSHOT_MESSAGE_NAME,
+                call, (*text_content(content), *(ImageContent(url, media_kind="screenshot") for url in images)),
             )
         # 3. 在内存中清除中断和待执行信息；调用方随后统一保存工具结果与清理后的状态。
         self.clear_interrupt()
@@ -409,13 +309,6 @@ class AgentState(BaseModel):
         candidate[index] = replacement
         self.commit_compaction(candidate)
 
-    def get_openai_messages(self) -> list[dict[str, Any]]:
-        """转换当前领域消息为模型格式，不包含系统提示词和本轮临时检索背景。
-
-        Returns:
-            list[dict[str, Any]]: 按对话顺序排列的模型消息列表。
-        """
-        return messages_to_openai_format(self.messages)
 
     def set_interrupt(
         self,
@@ -589,9 +482,6 @@ class AgentState(BaseModel):
             ),
             "long_term_memory_turn_counter": self.long_term_memory_turn_counter,
             "pending_tool_calls": [call.to_dict() for call in self.pending_tool_calls],
-            "_deferred_tool_media": [
-                item.to_storage_format() for item in self._deferred_tool_media
-            ],
             "interrupt_data": to_json_value(self.interrupt_data),
             "pending_actions": [call.to_dict() for call in self.pending_actions],
             "extra": to_json_value(self.extra),
@@ -623,10 +513,9 @@ class AgentState(BaseModel):
             raise ValueError("checkpoint.messages 必须是数组")
         raw_pending = data.get("pending_tool_calls") or []
         raw_actions = data.get("pending_actions") or []
-        raw_deferred = data.get("_deferred_tool_media") or []
-        if not all(isinstance(items, list) for items in (raw_pending, raw_actions, raw_deferred)):
+        if not all(isinstance(items, list) for items in (raw_pending, raw_actions)):
             raise ValueError("checkpoint 工具状态格式无效")
-        # 2. 恢复状态字段、消息和延迟图片，再确认未闭合调用都有唯一恢复记录。
+        # 2. 恢复状态字段和完整消息，再确认未闭合调用都有唯一恢复记录。
         state = cls(
             session_id=str(data.get("session_id") or ""),
             token_baseline=data.get("token_baseline"),
@@ -639,9 +528,6 @@ class AgentState(BaseModel):
             updated_at=normalize_utc(data.get("updated_at") or utc_now()),
         )
         state._messages = [message_from_storage_format(item) for item in raw_messages]
-        state._deferred_tool_media = [
-            _DeferredToolMedia.from_storage_format(item) for item in raw_deferred
-        ]
         state._validate_messages(state._messages)
         return state
 
@@ -671,29 +557,6 @@ class AgentState(BaseModel):
         self._messages.append(message)
         self.updated_at = message.created_at
 
-    def _flush_deferred_tool_media(self) -> None:
-        """整批工具文本结果结束后，按记录顺序追加与结果关联的图片消息。
-
-        Raises:
-            ValueError: 延迟记录的图片消息名称不对应任何已知媒体类别。
-        """
-        deferred = list(self._deferred_tool_media)
-        self._deferred_tool_media.clear()
-        for item in deferred:
-            media_kind = {
-                SCREENSHOT_MESSAGE_NAME: "screenshot",
-                MCP_TOOL_IMAGE_MESSAGE_NAME: "mcp",
-                TOOL_IMAGE_MESSAGE_NAME: "tool",
-            }.get(item.image_message_name)
-            if media_kind is None:
-                raise ValueError(f"未知工具图片类型: {item.image_message_name}")
-            self._append(ToolMediaMessage(
-                tool_name=item.tool_name,
-                media_kind=media_kind,
-                text=f"[系统消息]工具 {item.tool_name} 返回图片: ",
-                payload=AvailableMedia(urls=item.image_urls),
-                associated_message_id=item.associated_message_id,
-            ))
 
     def _validate_messages(self, messages: Sequence[BaseMessage]) -> None:
         """保存或替换消息前检查工具请求、结果及未完成恢复记录是否逐项一致。

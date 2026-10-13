@@ -1,4 +1,6 @@
 """上下文压缩依赖的窄端口。"""
+from typing import Sequence
+from app.agent.models.contracts import InputMessage, ToolDefinition
 
 from typing import Protocol
 
@@ -7,14 +9,14 @@ class SummaryClient(Protocol):
     """约定压缩历史时所需的结构化模型调用，不要求调用方持有完整 Agent。"""
     async def ainvoke_structured(
         self,
-        messages: list[dict],
+        messages: Sequence[InputMessage],
         schema: dict,
         **kwargs,
     ) -> dict:
         """由压缩协调器调用模型，要求返回符合指定结构的历史摘要。
 
         Args:
-            messages (list[dict]): 摘要规则和待总结的历史，使用模型消息格式。
+            messages (Sequence[InputMessage]): 摘要规则和待总结的历史，使用临时业务消息。
             schema (dict): 摘要结果必须符合的 JSON Schema。
             kwargs (Any): 温度等附加模型调用选项。
 

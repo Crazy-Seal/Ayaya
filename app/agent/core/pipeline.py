@@ -7,6 +7,8 @@
 tool_call_id/tool_args/resume_state）写入 state.interrupt_data，使恢复能
 在另一个请求（甚至进程重启后）重入同一工具——无需依赖存活的协程。
 """
+from typing import Sequence
+from app.agent.models.contracts import InputMessage, ToolDefinition
 
 import logging
 from typing import Any, AsyncIterator, Awaitable, Callable, Protocol
@@ -22,11 +24,11 @@ from app.agent.core.event_router import EventType, AgentEvent
 from app.agent.core.plugin_manager import PluginManager
 from app.agent.core.response_filter import AssistantTimePrefixFilter
 from app.agent.core.tool_manager import ToolManager
+from app.agent.state.messages import ProviderData
 from app.agent.models.llm_client import StreamChunk
 from app.agent.plugins.base import PluginHook
 from app.agent.state.manager import CheckpointType
 from app.agent.state.messages import (
-    TOOL_IMAGE_MESSAGE_NAME,
     HumanMessage,
     ToolCall,
 )
@@ -71,14 +73,14 @@ class StreamingLLMClient(Protocol):
 
     def astream(
         self,
-        messages: list[dict],
-        tools: list[dict] | None = None,
+        messages: Sequence[InputMessage],
+        tools: Sequence[ToolDefinition] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """执行管道调用主模型时取得流式文字、工具调用和用量片段。
 
         Args:
-            messages (list[dict]): 按对话顺序排列的消息集合。
-            tools (list[dict] | None): 当前向模型公开的工具定义。
+            messages (Sequence[InputMessage]): 按对话顺序排列的消息集合。
+            tools (Sequence[ToolDefinition] | None): 当前向模型公开的工具定义。
 
         Returns:
             AsyncIterator[StreamChunk]: 按到达顺序产出 StreamChunk 的异步迭代器。
@@ -311,6 +313,7 @@ class ExecutionPipeline:
             accumulated_content = ""
             tool_calls: list[ToolCall] = []
             finish_reason: str | None = None
+            provider_data: ProviderData | None = None
             time_prefix_filter = AssistantTimePrefixFilter()
 
             try:
@@ -337,6 +340,8 @@ class ExecutionPipeline:
                                     runtime_context.turn_control.check()
                         if chunk.tool_call:
                             tool_calls.append(chunk.tool_call)
+                        if chunk.provider_data is not None:
+                            provider_data = chunk.provider_data
                         if chunk.finish_reason:
                             finish_reason = chunk.finish_reason
                 finally:
@@ -389,7 +394,7 @@ class ExecutionPipeline:
             if accumulated_content or tool_calls:
                 self._add_assistant_message(
                     state, accumulated_content, tool_calls,
-                    origin_channel=runtime_context.origin_channel,
+                    origin_channel=runtime_context.origin_channel, provider_data=provider_data,
                 )
                 if runtime_context.turn_control:
                     runtime_context.turn_control.partial_persisted = True
@@ -466,7 +471,7 @@ class ExecutionPipeline:
             runtime_context (RuntimeContext): 本轮时间、来源、检索背景和停止信号组成的临时上下文。
             checkpoint (CheckpointCallback | None): 执行管道在继续模型或工具之前调用的持久保存回调。
         """
-        tools = self._tool_manager.get_openai_tools()
+        tools = self._tool_manager.get_tools()
         produced = False
         prepared = await self._model_input.prepare(
             state=state,
@@ -482,18 +487,21 @@ class ExecutionPipeline:
                 if prepared.state_changed:
                     await self._checkpoint(state, checkpoint)
                 try:
-                    async for chunk in self._llm_client.astream(
-                        prepared.messages, tools=tools or None
-                    ):
-                        if chunk.usage and chunk.usage.prompt_tokens:
-                            latest_prompt_tokens = chunk.usage.prompt_tokens
-                        produced = produced or bool(chunk.content or chunk.tool_call)
-                        has_valid_output = has_valid_output or bool(
-                            chunk.tool_call or (chunk.content and chunk.content.strip())
-                        )
-                        if chunk.finish_reason == "content_filter":
-                            raise RuntimeError("触发 API 内容过滤")
-                        yield chunk
+                    stream = self._llm_client.astream(prepared.messages, tools=tools or None)
+                    try:
+                        async for chunk in stream:
+                            if chunk.usage and chunk.usage.prompt_tokens:
+                                latest_prompt_tokens = chunk.usage.prompt_tokens
+                            produced = produced or bool(chunk.content or chunk.tool_call)
+                            has_valid_output = has_valid_output or bool(
+                                chunk.tool_call or (chunk.content and chunk.content.strip())
+                            )
+                            if chunk.finish_reason == "refused":
+                                raise RuntimeError("触发 API 内容过滤")
+                            yield chunk
+                    finally:
+                        # 1. 停止发生在正文交付之后时，关闭当前网络响应，再交还执行控制。
+                        await stream.aclose()
                     if latest_prompt_tokens and has_valid_output:
                         self._model_input.observe_usage(
                             state=state,
@@ -792,8 +800,8 @@ class ExecutionPipeline:
     ) -> None:
         """完整提交一个已经执行完成的工具调用。
 
-        工具消息、pending 状态和批次末尾图片会在同一个 checkpoint 前同步
-        更新，避免持久化“工具批次已结束但图片尚未注入”的中间状态。
+        完整工具结果和 pending 状态会在同一个 checkpoint 前同步
+        更新，避免持久化“调用已闭合但结果图片尚未保存”的中间状态。
 
         Args:
             state (AgentState): 当前 Agent 状态。
@@ -801,18 +809,9 @@ class ExecutionPipeline:
             result (ToolResult): 工具执行结果。
             checkpoint (CheckpointCallback | None): intermediate checkpoint 持久化回调。
         """
-        image_urls = list(result.image_urls)
-        if result.image_url and result.image_url not in image_urls:
-            image_urls.insert(0, result.image_url)
-        state.record_tool_result(
-            tool_call,
-            result.content,
-            compressible=bool(
-                getattr(self._tool_manager.get(tool_call.name), "compressible", False)
-            ),
-            image_urls=image_urls,
-            image_message_name=result.image_message_name or TOOL_IMAGE_MESSAGE_NAME,
-        )
+        # 1. 完整结果立即进入状态；不再为 API 排列拆出或延迟图片。
+        state.record_tool_result(tool_call, result.content, compressible=bool(
+            getattr(self._tool_manager.get(tool_call.name), "compressible", False)))
         if result.state_updates:
             state.update_extra(result.state_updates)
         await self._checkpoint(state, checkpoint)
@@ -863,6 +862,7 @@ class ExecutionPipeline:
         tool_calls: list[ToolCall],
         *,
         origin_channel: str = DESKTOP_CHANNEL,
+        provider_data: ProviderData | None = None,
     ) -> None:
         """保存带入口来源的 Assistant 步骤，并登记需要闭合的工具调用。
 
@@ -872,7 +872,4 @@ class ExecutionPipeline:
             tool_calls (list[ToolCall]): 本步模型请求的工具调用。
             origin_channel (str): 输入或本轮回复所属的渠道。
         """
-        if tool_calls:
-            state.record_assistant_step(content, tool_calls, origin_channel=origin_channel)
-        else:
-            state.add_assistant_message(content, origin_channel=origin_channel)
+        state.record_assistant_step(content, tool_calls, origin_channel=origin_channel, provider_data=provider_data)

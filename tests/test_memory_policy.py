@@ -1,3 +1,4 @@
+from app.agent.state.messages import text_content
 import asyncio
 from datetime import date
 
@@ -411,7 +412,7 @@ def test_disabled_memory_subsystems_are_not_accessed(monkeypatch) -> None:
             _chat_settings(enable_diary=False, enable_episodic=False, enable_semantic=False),
         )
         add_result = await manager.add(
-            [HumanMessage(text="近期对话")],
+            [HumanMessage(content=text_content("近期对话"))],
             enable_episodic=False,
             enable_semantic=False,
         )

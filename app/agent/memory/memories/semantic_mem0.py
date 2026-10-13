@@ -20,11 +20,11 @@ from app.agent.memory.memories.mem0_llm_compat import (
     Mem0FactExtractionLLMAdapter,
 )
 from app.agent.state.messages import (
+    notification_text, text_content, format_tool_arguments,
     AssistantMessage,
     BaseMessage,
     HumanMessage,
     RuntimeInputMessage,
-    ToolMediaMessage,
     ToolMessage,
 )
 from app.agent.state.time import render_timed_text
@@ -331,7 +331,7 @@ class Mem0SemanticMemory:
 
         # 1. 给非桌面输入和回复补来源正文标签，转换后的 role 保持 Mem0 契约。
         for msg in messages:
-            if isinstance(msg, ToolMediaMessage):
+            if isinstance(msg, ToolMessage) and not msg.text:
                 continue
             if isinstance(msg, HumanMessage):
                 role = "user"
@@ -341,12 +341,12 @@ class Mem0SemanticMemory:
                 text = msg.text if msg.origin_channel == DESKTOP_CHANNEL else f"[回复 {msg.origin_channel}] {msg.text}"
             elif isinstance(msg, RuntimeInputMessage):
                 role = "assistant"
-                text = f"运行时输入：{msg.to_openai_format()['content']}"
+                text = f"运行时输入：{notification_text(msg)}"
             elif isinstance(msg, ToolMessage):
                 if mark_as_history:
                     continue
                 role = "assistant"
-                text = msg.content
+                text = msg.text
             else:
                 continue
 
@@ -358,7 +358,7 @@ class Mem0SemanticMemory:
                     else:
                         text = "\n".join(
                             f"AI：调用工具 {call.name}，参数："
-                            f"{call.to_dict()['function']['arguments']}"
+                            f"{format_tool_arguments(call)}"
                             for call in tool_calls
                         )
                 elif isinstance(msg, ToolMessage):

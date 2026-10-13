@@ -1,3 +1,4 @@
+from tests.model_capture import encoded_tool
 import asyncio
 import json
 
@@ -57,7 +58,7 @@ def _args(**overrides) -> dict:
 
 def test_control_screen_schema_only_describes_xyxy() -> None:
     """验证桌面工具 Schema 只描述 xyxy 坐标。"""
-    function = control_screen().to_openai_tool()["function"]
+    function = encoded_tool(control_screen())["function"]
     serialized = json.dumps(function, ensure_ascii=False).lower()
 
     assert set(function["parameters"]["required"]) == {"target", "bbox"}
@@ -113,7 +114,7 @@ def test_invalid_bbox_does_not_create_interrupt() -> None:
     result = asyncio.run(run())
 
     assert result.interrupt is None
-    assert result.content.startswith("错误:")
+    assert result.text.startswith("错误:")
 
 
 
@@ -130,4 +131,4 @@ def test_control_screen_rejects_invalid_scroll_direction() -> None:
     result = asyncio.run(run())
 
     assert result.interrupt is None
-    assert "scroll_direction" in result.content
+    assert "scroll_direction" in result.text

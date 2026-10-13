@@ -1,4 +1,6 @@
+from tests.model_capture import result_parts
 """通过持久输入、快照与生命周期入口验证退出后的执行意图作废。"""
+from tests.model_capture import capture_input
 
 import asyncio
 
@@ -9,7 +11,7 @@ from app.agent.runtime.session_inbox import SessionInbox
 from app.agent.state import AgentState
 from app.agent.state.manager import StateManager
 from app.agent.state.messages import HumanMessage, TaskResultMessage, ToolCall, ToolMessage
-from app.agent.state.messages import AssistantMessage, ToolMediaMessage
+from app.agent.state.messages import AssistantMessage, ImageContent, ToolMessage
 from app.crud.task_record_dao import TaskRecordDao
 from app.services.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.services.interaction_contract import ChannelCommand
@@ -116,7 +118,7 @@ def test_abandoned_result_preserves_media_and_commit_failure_is_retryable(tmp_pa
             calls = [ToolCall(id=str(index), name="screenshot", args={}) for index in range(3)]
             state.record_assistant_step("正文", calls)
             image = "data:image/png;base64,iVBORw0KGgpwYXlsb2Fk"
-            first = state.record_tool_result(calls[0], "已完成", image_urls=(image,))
+            first = state.record_tool_result(calls[0], result_parts('已完成', (image,), 'tool'))
             state.clear_pending_tool_calls()
             state.set_interrupt({
                 "type": "continuation_request", "request_id": "r",
@@ -137,11 +139,11 @@ def test_abandoned_result_preserves_media_and_commit_failure_is_retryable(tmp_pa
             assert await Agent.finalize_abandoned_turn(manager)
             closed = await manager.load()
             results = [item for item in closed.messages if isinstance(item, ToolMessage)]
-            media = [item for item in closed.messages if isinstance(item, ToolMediaMessage)]
-            assert len(results) == 3 and results[0] == first
+            media = [item for item in closed.messages if isinstance(item, ToolMessage) and any(isinstance(part, ImageContent) for part in item.content)]
+            assert len(results) == 3 and results[0].message_id == first.message_id
             assert len(media) == 2
-            assert all(closed.messages.index(item) > closed.messages.index(results[-1]) for item in media)
-            assert '"width": 800' in results[1].content
+            assert all(item.tool_call_id in {result.tool_call_id for result in results} for item in media)
+            assert '"width": 800' in results[1].text
             assert not await Agent.finalize_abandoned_turn(manager)
             assert (await manager.load()).messages == closed.messages
         finally:
@@ -241,9 +243,9 @@ def test_start_finalizes_abandoned_checkpoint_without_execution(tmp_path, case) 
                 results = [item for item in closed.messages if isinstance(item, ToolMessage)]
                 assert len(results) == (0 if case == "human" else 2)
                 if case == "unknown":
-                    assert "未知" in results[0].content
+                    assert "未知" in results[0].text
                 if case == "result":
-                    assert "原始回报" in results[0].content
+                    assert "原始回报" in results[0].text
                 original = closed.to_checkpoint()
                 assert not await Agent.finalize_abandoned_turn(manager)
                 assert (await manager.load()).to_checkpoint() == original
@@ -469,6 +471,7 @@ def test_shutdown_captures_real_agent_partial_and_closes_subscription(tmp_path, 
                 Yields:
                     StreamChunk: 真实可见正文。
                 """
+                messages = capture_input(messages)
                 yield StreamChunk(content="真实片段")
                 if not committing:
                     await asyncio.Event().wait()

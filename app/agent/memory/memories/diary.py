@@ -12,11 +12,11 @@ from app.agent.memory.config import MemoryConfig
 from app.agent.memory.store.chat_history_store import ChatHistoryStore
 from app.agent.memory.store.diary_sqlite_store import DiarySqliteStore
 from app.agent.state.messages import (
+    notification_text, text_content, format_tool_arguments,
     AssistantMessage,
     BaseMessage,
     HumanMessage,
     RuntimeInputMessage,
-    ToolMediaMessage,
     ToolMessage,
 )
 from app.agent.models.llm_client import LLMClient, LLMConfig
@@ -188,8 +188,8 @@ class DiaryMemory:
                 previous_messages=previous_messages,
             )
             # 2. 模型成功返回后保存该日正文；生成或保存失败记日志，稍后检查时可以再次尝试。
-            response = await self.llm.ainvoke([{"role": "user", "content": prompt}])
-            await self.add(target_date, response.content)
+            response = await self.llm.ainvoke([HumanMessage(content=text_content(prompt))])
+            await self.add(target_date, response.text)
         except Exception:
             logger.exception("[DiaryMemory] 生成日记失败: date=%s", target_date)
 
@@ -289,13 +289,13 @@ class DiaryMemory:
         lines: list[str] = []
         # 1. 将来源纳入日记材料，运行时通知保持独立标签，避免当成真人发言。
         for message in messages:
-            if isinstance(message, ToolMediaMessage):
+            if isinstance(message, ToolMessage) and not message.text:
                 continue
             if isinstance(message, HumanMessage):
                 source = "" if message.origin_channel == DESKTOP_CHANNEL else f"（来自 {message.origin_channel}）"
                 lines.append(f"用户{source}：{message.text}")
             elif isinstance(message, RuntimeInputMessage):
-                lines.append(f"运行时输入：{message.to_openai_format()['content']}")
+                lines.append(f"运行时输入：{notification_text(message)}")
             elif isinstance(message, AssistantMessage):
                 if message.text:
                     source = "" if message.origin_channel == DESKTOP_CHANNEL else f"（回复 {message.origin_channel}）"
@@ -303,8 +303,8 @@ class DiaryMemory:
                 for call in message.tool_calls:
                     lines.append(
                         f"AI：调用工具 {call.name}，参数："
-                        f"{call.to_dict()['function']['arguments']}"
+                        f"{format_tool_arguments(call)}"
                     )
             elif isinstance(message, ToolMessage):
-                lines.append(f"工具结果：{message.content}")
+                lines.append(f"工具结果：{message.text}")
         return "\n".join(lines)

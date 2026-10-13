@@ -1,3 +1,4 @@
+from tests.model_capture import capture_input
 from pathlib import Path
 
 import yaml
@@ -334,7 +335,7 @@ def test_approval_is_bound_to_the_original_arguments() -> None:
     )
 
     assert isinstance(outcome, ToolResult)
-    assert "已过期" in outcome.content
+    assert "已过期" in outcome.text
 
 
 def test_explicit_rejection_wins_if_policy_changes_to_allow() -> None:
@@ -371,7 +372,7 @@ def test_explicit_rejection_wins_if_policy_changes_to_allow() -> None:
     )
 
     assert isinstance(outcome, ToolResult)
-    assert "拒绝" in outcome.content
+    assert "拒绝" in outcome.text
 
 
 def test_local_description_and_authorization_timing_are_part_of_approval_contract() -> None:
@@ -464,7 +465,7 @@ def test_denied_tools_are_filtered_from_model_projection() -> None:
         description = "读取文件"
         parameters_schema = {"type": "object", "properties": {}}
 
-        def to_openai_tool(self) -> dict:
+        def definition(self):
             """提供用例使用的模型工具定义。
 
             该定义仅用于外层用例：验证deny 工具不公开给模型。
@@ -480,7 +481,7 @@ def test_denied_tools_are_filtered_from_model_projection() -> None:
     )
     manager.register(Tool())
 
-    assert manager.get_openai_tools() == []
+    assert manager.get_tools() == []
 
 
 class _CountingTool(BaseTool):
@@ -585,6 +586,7 @@ class _ScriptedLlm:
             messages (list[dict]): 按对话顺序排列的消息集合。
             tools (list[dict] | None): 当前向模型公开的工具定义。
         """
+        messages = capture_input(messages)
         for chunk in self.scripts.pop(0):
             yield chunk
 
@@ -667,7 +669,7 @@ def test_pipeline_rechecks_deny_for_a_stale_model_tool_call() -> None:
 
         assert tool.calls == 0
         tool_messages = [message for message in state.messages if isinstance(message, ToolMessage)]
-        assert "不允许" in tool_messages[0].content
+        assert "不允许" in tool_messages[0].text
 
     asyncio.run(scenario())
 
@@ -704,7 +706,7 @@ def test_after_prepare_tool_cannot_request_protected_effect_before_authorization
         assert tool.calls == 1
         assert all(event.type != EventType.INTERRUPT for event in events)
         tool_messages = [message for message in state.messages if isinstance(message, ToolMessage)]
-        assert "只能请求只读准备数据" in tool_messages[0].content
+        assert "只能请求只读准备数据" in tool_messages[0].text
 
     asyncio.run(scenario())
 
@@ -754,7 +756,7 @@ def test_after_prepare_hooks_span_the_logical_call_and_rejection_has_no_after_ho
             resume_data={"kind": "reject"},
             resume_state=pending.resume_state,
         )
-        assert "拒绝" in rejected.content
+        assert "拒绝" in rejected.text
         assert rejected_plugins.hooks == [PluginHook.BEFORE_TOOL]
 
         approved_pipeline, approved_state, approved_call, pending, approved_plugins = (
@@ -766,7 +768,7 @@ def test_after_prepare_hooks_span_the_logical_call_and_rejection_has_no_after_ho
             resume_data={"kind": "approve"},
             resume_state=pending.resume_state,
         )
-        assert approved.content == "performed"
+        assert approved.text == "performed"
         assert approved_plugins.hooks == [PluginHook.BEFORE_TOOL, PluginHook.AFTER_TOOL]
 
     asyncio.run(scenario())

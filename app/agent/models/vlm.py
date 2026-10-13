@@ -9,7 +9,8 @@ import os
 import re
 from typing import Any
 
-from openai import AsyncOpenAI
+from app.agent.models.llm_client import LLMClient, LLMConfig
+from app.agent.state.messages import SystemMessage, HumanMessage, ImageContent, TextContent
 
 logger = logging.getLogger(__name__)
 
@@ -102,23 +103,14 @@ class VLMService:
             image_data_url (str): 完整 data URL（data:image/...;base64,...）
         """
         api_key, base_url, model = _vlm_config()
-        client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        # 1. 保留原 SDK 默认超时与重试，只统一模型调用接口。
+        client = LLMClient(LLMConfig(model=model, api_key=api_key, base_url=base_url,
+                                     temperature=0, timeout=600, max_retries=2))
         try:
-            response = await client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": _LOCATE_SYSTEM_PROMPT},
-                    {"role": "user", "content": [
-                        {"type": "image_url", "image_url": {"url": image_data_url}},
-                        {"type": "text", "text": intent.strip()},
-                    ]},
-                ],
-                stream=False,
-                temperature=0,
-            )
-            content = ""
-            if response.choices and response.choices[0].message:
-                content = response.choices[0].message.content
-            return extract_bbox(content)
+            response = await client.ainvoke([
+                SystemMessage(text=_LOCATE_SYSTEM_PROMPT),
+                HumanMessage(content=(ImageContent(image_data_url), TextContent(intent.strip()))),
+            ])
+            return extract_bbox(response.text)
         finally:
             await client.close()

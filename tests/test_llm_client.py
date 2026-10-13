@@ -1,3 +1,5 @@
+from app.agent.models.openai_chat import OpenAIChatCompletionsAdapter
+from app.agent.state.messages import HumanMessage, text_content
 import asyncio
 import json
 import logging
@@ -49,7 +51,7 @@ def _client_with_responses(responses):
         calls.append(kwargs)
         return pending.pop(0)
 
-    client._client.chat.completions.create = fake_create
+    client._adapter._client.chat.completions.create = fake_create
     return client, calls
 
 
@@ -63,7 +65,7 @@ def _invoke(client: LLMClient):
         """由外层测试调用，完成“用例”的异步步骤。"""
         try:
             return await client.ainvoke_structured(
-                [{"role": "user", "content": "extract"}],
+                [HumanMessage(content=text_content("extract"))],
                 SCHEMA,
             )
         finally:
@@ -217,9 +219,9 @@ def test_astream_reads_usage_from_empty_choices_chunk() -> None:
             calls.append(kwargs)
             return chunks()
 
-        client._client.chat.completions.create = fake_create
+        client._adapter._client.chat.completions.create = fake_create
         try:
-            received = [chunk async for chunk in client.astream([{"role": "user", "content": "x"}])]
+            received = [chunk async for chunk in client.astream([HumanMessage(content=text_content("x"))])]
             return calls, received
         finally:
             await client.close()
@@ -227,7 +229,7 @@ def test_astream_reads_usage_from_empty_choices_chunk() -> None:
     calls, chunks = asyncio.run(scenario())
     assert calls[0]["stream_options"] == {"include_usage": True}
     assert chunks[0].usage == TokenUsage(prompt_tokens=123, completion_tokens=7, total_tokens=130)
-    assert chunks[-1].finish_reason == "stop"
+    assert chunks[-1].finish_reason == "completed"
 
 
 def test_astream_retries_without_usage_option_and_caches_gateway_capability() -> None:
@@ -258,10 +260,10 @@ def test_astream_retries_without_usage_option_and_caches_gateway_capability() ->
                 raise TypeError("unexpected keyword argument 'stream_options'")
             return empty_stream()
 
-        client._client.chat.completions.create = fake_create
+        client._adapter._client.chat.completions.create = fake_create
         try:
             for _ in range(2):
-                _ = [chunk async for chunk in client.astream([{"role": "user", "content": "x"}])]
+                _ = [chunk async for chunk in client.astream([HumanMessage(content=text_content("x"))])]
             return calls
         finally:
             await client.close()

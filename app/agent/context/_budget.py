@@ -58,7 +58,7 @@ class ContextBudgetService(RoughTokenEstimator):
         config (ContextStrategyConfig): 会话配置的压缩阈值和截图保留策略。
     """
 
-    ESTIMATOR_VERSION = 1
+    ESTIMATOR_VERSION = 2
 
     def __init__(self, config: ContextStrategyConfig) -> None:
         """保存会话的上下文策略，供每次模型调用前检查输入大小。
@@ -90,6 +90,7 @@ class ContextBudgetService(RoughTokenEstimator):
         messages: list[dict],
         baseline: TokenBaseline | None,
         accounting_key: str,
+        rough_input: int | None = None,
     ) -> TokenAssessment:
         """估算完整模型输入；配置兼容时，在真实用量上叠加消息增删产生的粗估差值。
 
@@ -108,7 +109,9 @@ class ContextBudgetService(RoughTokenEstimator):
             tools=tools,
             messages=messages,
         )
-        fingerprint = self._static_fingerprint(system_prompt, tools)
+        if rough_input is not None:
+            rough = rough_input
+        fingerprint = self._static_fingerprint(system_prompt, [tool.to_dict() if hasattr(tool, "to_dict") else tool for tool in tools or []])
         # 1. 模型配置、粗估版本和系统提示词/工具定义都一致，才复用上次真实用量。
         compatible = (
             baseline is not None

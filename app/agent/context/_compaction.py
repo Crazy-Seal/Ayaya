@@ -6,9 +6,8 @@ from dataclasses import replace
 from app.agent.state.messages import (
     AssistantMessage,
     BaseMessage,
-    CompactedMedia,
     HumanMessage,
-    ToolMediaMessage,
+    ImageContent, text_content, is_screenshot_message,
     ToolMessage,
 )
 from app.agent.utils.domain.token_estimation import RoughTokenEstimator
@@ -50,9 +49,8 @@ class ContextCompressionPolicy:
         for index in range(len(messages) - 1, -1, -1):
             message = messages[index]
             if (
-                isinstance(message, ToolMediaMessage)
-                and message.media_kind == "screenshot"
-                and not isinstance(message.payload, CompactedMedia)
+                is_screenshot_message(message)
+                and any(isinstance(part, ImageContent) and part.context_state == "available" for part in message.content)
                 and human_count_after >= ttl_human_messages
             ):
                 targets.add(index)
@@ -64,9 +62,8 @@ class ContextCompressionPolicy:
             index
             for index, message in enumerate(messages)
             if index not in targets
-            and isinstance(message, ToolMediaMessage)
-            and message.media_kind == "screenshot"
-            and not isinstance(message.payload, CompactedMedia)
+            and is_screenshot_message(message)
+            and any(isinstance(part, ImageContent) and part.context_state == "available" for part in message.content)
         ]
         excess = max(len(remaining) - max_screenshots, 0)
         targets.update(remaining[:excess])
@@ -75,10 +72,11 @@ class ContextCompressionPolicy:
         candidate = list(messages)
         for index in targets:
             message = candidate[index]
-            assert isinstance(message, ToolMediaMessage)
+            assert isinstance(message, ToolMessage)
             candidate[index] = replace(
                 message,
-                payload=CompactedMedia(storage_refs=message.payload.storage_refs),
+                content=tuple(replace(part, url="", context_state="compacted")
+                    if isinstance(part, ImageContent) and part.media_kind == "screenshot" else part for part in message.content),
             )
         return tuple(candidate), len(targets)
 
@@ -112,24 +110,16 @@ class ContextCompressionPolicy:
         targets = candidates[:-keep_latest] if keep_latest else candidates
         target_ids = {message.message_id for message in targets}
         changed = 0
-        result: list[BaseMessage] = []
+        result = []
         for message in messages:
-            # 3. 工具图片必须明确关联到选中结果才删除，避免误删其他调用的图片。
-            if (
-                isinstance(message, ToolMediaMessage)
-                and message.associated_message_id in target_ids
-            ):
-                changed += 1
-                continue
-            if (
-                isinstance(message, ToolMessage)
-                and message.message_id in target_ids
-                and message.content != COMPRESSED_TOOL_RESULT
-                and weighted_char_count(message.content)
-                >= MIN_TOOL_RESULT_COMPRESSION_WEIGHT
-            ):
-                result.append(replace(message, content=COMPRESSED_TOOL_RESULT))
-                changed += 1
+            if isinstance(message, ToolMessage) and message.message_id in target_ids:
+                text = message.text
+                if text != COMPRESSED_TOOL_RESULT and weighted_char_count(text) >= MIN_TOOL_RESULT_COMPRESSION_WEIGHT:
+                    text = COMPRESSED_TOOL_RESULT
+                candidate = replace(message, content=text_content(text))
+                if candidate != message:
+                    changed += 1
+                result.append(candidate)
             else:
                 result.append(message)
         return tuple(result), changed
@@ -220,7 +210,7 @@ class ContextCompressionPolicy:
                     raise ValueError("压缩轮次边界拆分了工具协议块")
         # 3. 按 token 比例从最旧轮次开始选取；最后一轮整体保留，不按单条消息截断。
         eligible_tokens = sum(
-            budget_service.estimate_message(messages[index].to_openai_format())
+            budget_service.estimate_message(messages[index])
             for unit in units
             for index in unit
         )
@@ -230,7 +220,7 @@ class ContextCompressionPolicy:
         for unit in units:
             selected.extend(unit)
             used += sum(
-                budget_service.estimate_message(messages[index].to_openai_format())
+                budget_service.estimate_message(messages[index])
                 for index in unit
             )
             if used >= target:

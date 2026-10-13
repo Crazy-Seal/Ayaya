@@ -1,3 +1,6 @@
+from app.agent.models.contracts import ModelContextOverflowError
+from tests.model_capture import result_parts
+from tests.model_capture import capture_input
 import asyncio
 from copy import deepcopy
 from types import SimpleNamespace
@@ -35,10 +38,11 @@ class ScriptedModel:
             messages (list[dict]): 按对话顺序排列的消息集合。
             tools (list[dict] | None): 当前向模型公开的工具定义。
         """
+        messages = capture_input(messages)
         self.requests.append(deepcopy(messages))
         self.order.append("model")
         if len(self.requests) <= self.failures:
-            raise RuntimeError("context_length_exceeded")
+            raise ModelContextOverflowError("context_length_exceeded")
         yield StreamChunk(content="完成")
 
     async def ainvoke_structured(self, messages, schema, **kwargs):
@@ -49,6 +53,7 @@ class ScriptedModel:
             schema (Any): 当前要检查或转换的 JSON Schema。
             kwargs (dict[str, Any]): 传递给被调用函数的其他关键字参数。
         """
+        messages = capture_input(messages)
         self.summaries.append(deepcopy(messages))
         self.order.append("summary")
         return {"active_tasks": [], "summary": f"历史摘要{len(self.summaries)}"}
@@ -61,7 +66,7 @@ def history():
         state.add_user_message(f"历史问题{index}：" + "文" * 100)
         call = ToolCall(id=f"call-{index}", name="observe", args={})
         state.record_assistant_step("", (call,))
-        state.record_tool_result(call, "旧观察" * 100, compressible=True)
+        state.record_tool_result(call, result_parts('旧观察' * 100, (), 'tool'), compressible=True)
         state.add_assistant_message("历史回答" + "文" * 100)
     state.add_user_message("继续")
     return state
@@ -169,9 +174,10 @@ def test_overflow_after_output_does_not_compact_or_retry(chunk):
                 messages (list[dict]): 按对话顺序排列的消息集合。
                 tools (list[dict] | None): 当前向模型公开的工具定义。
             """
+            messages = capture_input(messages)
             self.requests.append(deepcopy(messages))
             yield chunk
-            raise RuntimeError("context_length_exceeded")
+            raise ModelContextOverflowError("context_length_exceeded")
 
     model = PartialModel()
     events, checkpoints, _ = asyncio.run(run(model, history()))
@@ -197,6 +203,7 @@ def test_unrelated_failure_does_not_start_compaction():
                 messages (list[dict]): 按对话顺序排列的消息集合。
                 tools (list[dict] | None): 当前向模型公开的工具定义。
             """
+            messages = capture_input(messages)
             self.requests.append(deepcopy(messages))
             raise RuntimeError("connection reset")
             yield  # 保持流式协议。
@@ -238,6 +245,7 @@ def test_invalid_second_summary_keeps_first_committed_candidate():
                 schema (Any): 当前要检查或转换的 JSON Schema。
                 kwargs (dict[str, Any]): 传递给被调用函数的其他关键字参数。
             """
+            messages = capture_input(messages)
             result = await super().ainvoke_structured(messages, schema, **kwargs)
             return result if len(self.summaries) == 1 else {"invalid": True}
 

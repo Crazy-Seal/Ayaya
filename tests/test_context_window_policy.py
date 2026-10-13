@@ -1,3 +1,4 @@
+from app.agent.state.messages import HumanMessage
 from app.agent.context._projection import build_model_window
 from app.agent.state import AgentState
 
@@ -11,4 +12,4 @@ def test_model_projection_no_longer_uses_fixed_human_window() -> None:
 
     messages = build_model_window(state)
 
-    assert sum(1 for message in messages if message.get("role") == "user") == 25
+    assert sum(1 for message in messages if isinstance(message, HumanMessage)) == 25

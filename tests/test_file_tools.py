@@ -1,3 +1,5 @@
+from tests.model_capture import image_urls, image_kind
+from app.agent.models.openai_message_names import TOOL_IMAGE_MESSAGE_NAME
 import asyncio
 from pathlib import Path
 from types import SimpleNamespace
@@ -7,7 +9,6 @@ from app.agent.tools.read_image import read_image
 from app.agent.tools.apply_patch import apply_patch
 from app.agent.tools.result_artifacts import ToolResultArtifactStore
 from app.agent.tools.result_normalizer import ToolResultNormalizer
-from app.agent.state.messages import TOOL_IMAGE_MESSAGE_NAME
 from app.runtime import get_tool_results_dir
 from app.agent.tools.registry import ToolRegistry
 
@@ -118,9 +119,9 @@ def test_read_image_returns_valid_images_as_system_tool_images(tmp_path: Path, m
     raw = asyncio.run(read_image._tool_func(paths=["valid.png", "invalid.png"]))
     normalized = ToolResultNormalizer().normalize(raw)
 
-    assert normalized.image_message_name == TOOL_IMAGE_MESSAGE_NAME
-    assert len(normalized.image_urls) == 1
-    assert "文件签名不匹配" in normalized.content
+    assert image_kind(normalized) == "tool"
+    assert len(image_urls(normalized)) == 1
+    assert "文件签名不匹配" in normalized.text
 
 
 def test_read_image_counts_only_valid_images_toward_limit(tmp_path: Path, monkeypatch) -> None:
@@ -144,8 +145,8 @@ def test_read_image_counts_only_valid_images_toward_limit(tmp_path: Path, monkey
     ]))
     normalized = ToolResultNormalizer().normalize(raw)
 
-    assert len(normalized.image_urls) == 1
-    assert normalized.image_urls[0].startswith("data:image/png;base64,")
+    assert len(image_urls(normalized)) == 1
+    assert image_urls(normalized)[0].startswith("data:image/png;base64,")
 
 
 def test_run_ps_preserves_output_for_unified_normalization(monkeypatch) -> None:

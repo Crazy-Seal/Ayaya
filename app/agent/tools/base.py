@@ -9,7 +9,8 @@ from app.schemas.desktop import DesktopOperations, StopRequested
 from app.schemas.runtime_types import (
     InterruptKind,
 )
-from app.agent.tools._schema import normalize_tool_schema_for_model
+from app.agent.state.messages import ContentPart, ImageContent, text_content, validate_content, content_text
+from app.agent.models.contracts import ToolDefinition
 
 
 # ==================== 中断事件 ====================
@@ -159,36 +160,41 @@ class TaskLauncher(Protocol):
 @dataclass
 class ToolResult:
     """承载工具正文、图片、状态更新，以及需要等待审批或桌面的继续执行材料。"""
-    content: str                                         # 返回给 LLM 的内容
-    interrupt: InterruptEvent | None = None              # 如果需要中断
-    state_updates: dict = field(default_factory=dict)    # 状态更新（写入 state.extra）
-    resume_state: dict = field(default_factory=dict)     # 中断前暂存、恢复执行时要用的中间态
-    image_url: str | None = None                         # 工具产出的图片（注入为用户消息，让模型看见）
-    image_urls: list[str] = field(default_factory=list)  # 工具产出的多张图片
-    image_message_name: str | None = None                # 用于上下文策略区分图片来源
-    prepared_action: dict | None = None                  # after_prepare 工具解析出的最终动作
+    content: tuple[ContentPart, ...]
+    interrupt: InterruptEvent | None = None
+    state_updates: dict = field(default_factory=dict)
+    resume_state: dict = field(default_factory=dict)
+    prepared_action: dict | None = None
+
+    def __post_init__(self) -> None:
+        """固定完整内容；纯文本构造是便捷输入，不是第二种存储格式。"""
+        self.content = text_content(self.content) if isinstance(self.content, str) else validate_content(self.content)
+
+    @property
+    def text(self) -> str:
+        """供工具错误判断和日志读取纯文字。"""
+        return content_text(self.content)
 
     @classmethod
     def success(cls, content: str, state_updates: dict | None = None,
-                image_url: str | None = None,
-                image_urls: list[str] | None = None,
-                image_message_name: str | None = None) -> "ToolResult":
-        """创建普通成功工具结果，按需携带图片和待应用状态更新。
+                image_url: str | None = None, image_urls: list[str] | None = None,
+                media_kind: str = "tool") -> "ToolResult":
+        """把内置工具的文字与图片立即组成完整业务结果。
 
         Args:
-            content (str): 当前处理的正文。
-            state_updates (dict | None): 工具成功后交给管道合并到 AgentState.extra 的更新字段。
-            image_url (str | None): 工具返回的一张图片地址。
-            image_urls (list[str] | None): 供模型读取的图片地址。
-            image_message_name (str | None): 区分截图、本地工具图片和 MCP 图片的消息名称。
+            content (str): 工具文字。
+            state_updates (dict | None): 随结果交给状态的更新。
+            image_url (str | None): 一张工具图片。
+            image_urls (list[str] | None): 多张工具图片。
+            media_kind (str): tool、screenshot 或 mcp。
+        Returns:
+            ToolResult: 完整有序内容，尚未规范化或保存。
         """
-        return cls(
-            content=content,
-            state_updates=state_updates or {},
-            image_url=image_url,
-            image_urls=image_urls or [],
-            image_message_name=image_message_name,
-        )
+        urls = list(image_urls or [])
+        if image_url and image_url not in urls:
+            urls.insert(0, image_url)
+        return cls(content=(*text_content(content), *(ImageContent(url, media_kind=media_kind) for url in urls)),
+                   state_updates=state_updates or {})
 
     @classmethod
     def interrupt_result(cls, interrupt: InterruptEvent) -> "ToolResult":
@@ -272,13 +278,6 @@ class BaseTool(ABC):
         """
         pass
 
-    def to_openai_tool(self) -> dict:
-        """把工具名称、说明和参数 Schema 转换为兼容模型请求的工具定义。"""
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": normalize_tool_schema_for_model(self.parameters_schema)
-            }
-        }
+    def definition(self) -> ToolDefinition:
+        """返回供应商无关的公开契约，参数 Schema 在适配器内转换。"""
+        return ToolDefinition(self.name, self.description, self.parameters_schema)

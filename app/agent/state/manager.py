@@ -13,11 +13,10 @@ from typing import Any, Literal
 import aiosqlite
 
 from app.agent.state.messages import (
-    AvailableMedia,
     BaseMessage,
+    ImageContent,
     HumanMessage,
     PROTOCOL_MESSAGE_TYPES,
-    ToolMediaMessage,
     ToolMessage,
 )
 from app.agent.state.model import AgentState
@@ -131,228 +130,126 @@ class StateManager:
             await self._init_tables()
         return self._db
 
+
+
+
+
+
+
     async def _init_tables(self) -> None:
-        """初始化共享 checkpoint、协议日志与 Inbox 表，保持既有存储约束。"""
+        """初始化 v3 业务历史和 checkpoint；旧表必须先离线迁移。"""
         db = await self._get_db()
+        # 1. 在任何初始化写入之前识别旧格式，禁止运行时自动迁移生产记录。
+        columns = {str(row[1]) for row in await db.execute_fetchall("PRAGMA table_info(conversation_messages)")}
+        if columns and ("role" in columns or "domain_json" in columns):
+            raise RuntimeError("conversation_messages 需要先执行消息协议 v3 离线迁移")
         await ensure_inbox_schema(db)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS checkpoints (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT NOT NULL,
-                state_json TEXT NOT NULL,
-                checkpoint_type TEXT NOT NULL DEFAULT 'completed'
-                    CHECK(checkpoint_type IN ('intermediate', 'completed')),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        await db.execute("""
-            CREATE INDEX IF NOT EXISTS idx_checkpoints_session_type_id
-            ON checkpoints(session_id, checkpoint_type, id DESC)
-        """)
-        allowed_types = ", ".join(
-            f"'{value}'" for value in PROTOCOL_MESSAGE_TYPES
-        )
-        await db.execute(f"""
-            CREATE TABLE IF NOT EXISTS conversation_messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT NOT NULL,
-                message_id TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'tool')),
-                message_json TEXT NOT NULL,
-                record_kind TEXT NOT NULL CHECK (
-                    record_kind IN ('protocol', 'tool_image', 'legacy_tool_notice')
-                ),
-                fidelity TEXT NOT NULL CHECK (fidelity IN ('exact', 'projected')),
-                associated_message_id TEXT,
-                attachments_json TEXT,
-                legacy_source_id TEXT,
-                message_type TEXT CHECK (message_type IN ({allowed_types})),
-                domain_json TEXT,
-                UNIQUE (session_id, message_id)
-            )
-        """)
-        columns = {
-            str(row[1])
-            for row in await db.execute_fetchall("PRAGMA table_info(conversation_messages)")
-        }
-        missing = {"message_type", "domain_json"} - columns
-        if missing:
-            raise RuntimeError(
-                "conversation_messages 尚未完成消息契约迁移，缺少列: "
-                + ", ".join(sorted(missing))
-            )
-        await db.execute("""
-            CREATE INDEX IF NOT EXISTS idx_conversation_messages_session_id
-            ON conversation_messages(session_id, id)
-        """)
-        await db.execute("""
-            CREATE INDEX IF NOT EXISTS idx_conversation_messages_session_time
-            ON conversation_messages(session_id, created_at, id)
-        """)
+        await db.execute("""CREATE TABLE IF NOT EXISTS checkpoints (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL,
+            state_json TEXT NOT NULL, checkpoint_type TEXT NOT NULL DEFAULT 'completed'
+            CHECK(checkpoint_type IN ('intermediate','completed')), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_checkpoints_session_type_id ON checkpoints(session_id, checkpoint_type, id DESC)")
+        allowed = ",".join(f"'{value}'" for value in PROTOCOL_MESSAGE_TYPES)
+        await db.execute(f"""CREATE TABLE IF NOT EXISTS conversation_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, message_id TEXT NOT NULL,
+            created_at TEXT NOT NULL, record_kind TEXT NOT NULL CHECK(record_kind IN ('protocol','legacy_tool_notice')),
+            fidelity TEXT NOT NULL CHECK(fidelity IN ('exact','projected')), legacy_source_id TEXT,
+            message_type TEXT CHECK(message_type IN ({allowed})), message_json TEXT NOT NULL,
+            UNIQUE(session_id,message_id))""")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_conversation_messages_session_id ON conversation_messages(session_id,id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_conversation_messages_session_time ON conversation_messages(session_id,created_at,id)")
+        await db.execute("PRAGMA user_version=3")
         await db.commit()
-
-    @staticmethod
-    def _media_category(message: ToolMediaMessage) -> ImageCategory:
-        """按工具媒体类型选择图片保存目录，保持截图、本地图片和 MCP 图片分开。
-
-        Args:
-            message (ToolMediaMessage): 当前需要读取或追加的消息。
-
-        Returns:
-            ImageCategory: save_multiple_images 使用的图片分类。
-        """
-        return {
-            "screenshot": "screenshot",
-            "mcp": "mcp",
-            "tool": "tool",
-        }[message.media_kind]
 
     @classmethod
     def _externalize_images(cls, state: AgentState) -> None:
-        """保存尚无完整文件引用的工具图片，并替换内存消息附加引用；失败保留原图片地址。
+        """按图片块保存本地文件；失败保留原地址，不丢失完整工具结果。
 
         Args:
-            state (AgentState): 当前会话的内存 AgentState；保存由调用方负责。
+            state (AgentState): 需要保存、恢复或投影的会话业务状态。
         """
-        # 1. 已压缩或已完整保存文件引用的图片跳过；其他可用图片尝试外置保存。
+        # 1. 已压缩图片不能重载；真人附件已经由输入入口保存，不重复落盘。
         for message in state.messages:
-            if not isinstance(message, ToolMediaMessage):
+            if not isinstance(message, ToolMessage):
                 continue
-            if not isinstance(message.payload, AvailableMedia):
-                continue
-            if len(message.payload.storage_refs) == len(message.payload.urls):
-                continue
-            try:
-                filenames = save_multiple_images(
-                    list(message.payload.urls),
-                    category=cls._media_category(message),
-                )
-            except Exception as exc:
-                # 1.1. 文件保存失败不丢图片，协议日志继续使用 Base64，后续保存还能再次尝试。
-                logger.warning(
-                    "[StateManager] 工具图片外置失败，协议日志保留 Base64: %s",
-                    exc,
-                )
-                continue
-            if len(filenames) == len(message.payload.urls):
-                state.replace_message(replace(
-                    message,
-                    payload=AvailableMedia(
-                        urls=message.payload.urls,
-                        storage_refs=tuple(filenames),
-                    ),
-                ))
+            groups: dict[str, list[tuple[int, ImageContent]]] = {}
+            for index, part in enumerate(message.content):
+                if isinstance(part, ImageContent) and part.context_state == "available" and not part.storage_ref:
+                    groups.setdefault(part.media_kind, []).append((index, part))
+            parts = list(message.content)
+            changed = False
+            for kind, group in groups.items():
+                try:
+                    # 1.1. 同类别图片保持原有成组落盘与失败清理规则，不写入一半引用。
+                    filenames = save_multiple_images([part.url for _, part in group], category=kind)
+                except Exception as exc:
+                    logger.warning("[StateManager] 图片外置失败，保留原地址: %s", exc)
+                    filenames = []
+                if len(filenames) == len(group):
+                    for (index, part), filename in zip(group, filenames, strict=True):
+                        parts[index] = replace(part, storage_ref=filename)
+                    changed = True
+            # 2. 保存只补文件引用，内存及 checkpoint 的可用图片地址保持原样。
+            if changed:
+                state.replace_message(replace(message, content=tuple(parts)))
 
     @staticmethod
-    def _domain_payload(message: BaseMessage) -> dict[str, Any]:
-        """提取模型正文之外的领域字段，单独保存来源、任务身份及媒体类别。
+    def _protocol_payload(message: BaseMessage) -> dict[str, Any]:
+        """编码完整业务历史；已落盘图片在历史中使用本地引用。
 
         Args:
-            message (BaseMessage): 当前需要读取或追加的消息。
-
-        Returns:
-            dict[str, Any]: 写入协议日志 domain_json 的领域元数据。
+            message (BaseMessage): 待读取或转换的业务消息。
         """
-        stored = message.to_storage_format()
-        result: dict[str, Any] = {}
-        for key, value in stored.items():
-            if key.startswith("_") and key not in {
-                "_message_type",
-                "_message_id",
-                "_created_at",
-            }:
-                result[key.removeprefix("_")] = value
-        if isinstance(message, ToolMediaMessage):
-            result = {
-                "tool_name": message.tool_name,
-                "media_kind": message.media_kind,
-                "payload_kind": message.payload.kind,
-            }
-        return result
-
-    @staticmethod
-    def _protocol_payload(
-        message: BaseMessage,
-    ) -> tuple[dict[str, Any], list[str] | None]:
-        """生成独立协议正文；图片文件引用完整时用本地路径替换 Base64，checkpoint 图片保持原样。
-
-        Args:
-            message (BaseMessage): 当前需要读取或追加的消息。
-
-        Returns:
-            tuple[dict[str, Any], list[str] | None]: 协议正文及对应附件路径；引用不完整时保留原图片地址并返回空附件。
-        """
-        payload = deepcopy(message.to_openai_format())
-        attachments: list[str] | None = None
-        if isinstance(message, HumanMessage) and message.image_filenames:
-            attachments = list(message.image_filenames)
-        elif (
-            isinstance(message, ToolMediaMessage)
-            and isinstance(message.payload, AvailableMedia)
-            and message.payload.storage_refs
-        ):
-            attachments = list(message.payload.storage_refs)
-        content = payload.get("content")
-        image_parts = [
-            part
-            for part in content
-            if isinstance(part, dict) and part.get("type") == "image_url"
-        ] if isinstance(content, list) else []
-        # 1. 文件引用与图片分段必须一一对应才替换地址，避免历史展示拿错附件。
-        if attachments and len(attachments) == len(image_parts):
-            for part, relative_path in zip(image_parts, attachments, strict=True):
-                image_url = part.get("image_url")
-                if isinstance(image_url, dict):
-                    image_url["url"] = relative_path
-        else:
-            attachments = None
-        return payload, attachments
+        payload = message.to_storage_format()
+        for part in payload.get("content", []) if isinstance(payload.get("content"), list) else []:
+            if part.get("type") == "image_url" and part.get("storage_ref"):
+                part["image_url"]["url"] = part["storage_ref"]
+        return payload
 
     @classmethod
     def _protocol_rows(cls, state: AgentState) -> list[tuple[Any, ...]]:
-        """按消息顺序准备协议日志写入行，排除临时系统提示词和上下文摘要。
+        """为原子事务准备业务历史行，系统提示词和摘要不归档。
 
         Args:
-            state (AgentState): 当前会话的内存 AgentState；保存由调用方负责。
-
-        Returns:
-            list[tuple[Any, ...]]: 供同一数据库事务批量插入的记录列表。
-
-        Raises:
-            ValueError: 消息转换后的角色不受协议日志支持。
+            state (AgentState): 需要保存、恢复或投影的会话业务状态。
         """
-        rows: list[tuple[Any, ...]] = []
-        for message in state.messages:
-            if not message.enters_protocol_log:
+        return [(state.session_id, message.message_id, message.created_at.isoformat(),
+                 "protocol", "exact", None, message.message_type,
+                 json.dumps(cls._protocol_payload(message), ensure_ascii=False, separators=(",", ":")))
+                for message in state.messages if message.enters_protocol_log]
+
+    @staticmethod
+    async def _upgrade_image_refs(db: aiosqlite.Connection, rows: list[tuple[Any, ...]]) -> None:
+        """仅补历史原始图片的文件引用，不覆盖后续压缩文字或图片状态。
+
+        Args:
+            db (aiosqlite.Connection): 调用方已经开启事务的 SQLite 连接。
+            rows (list[tuple[Any, ...]]): 待归档的完整业务历史行。
+        """
+        for row in rows:
+            incoming = json.loads(row[7])
+            image_parts = [part for part in incoming.get("content", []) if isinstance(part, dict)
+                           and part.get("type") == "image_url" and part.get("storage_ref")
+                           and part.get("context_state") == "available"] if isinstance(incoming.get("content"), list) else []
+            if not image_parts:
                 continue
-            payload, attachments = cls._protocol_payload(message)
-            role = payload.get("role")
-            if role not in {"user", "assistant", "tool"}:
-                raise ValueError(f"协议日志不支持 role={role!r}")
-            rows.append((
-                state.session_id,
-                message.message_id,
-                message.created_at.isoformat(),
-                role,
-                json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
-                "tool_image" if isinstance(message, ToolMediaMessage) else "protocol",
-                "exact",
-                (
-                    message.associated_message_id
-                    if isinstance(message, ToolMediaMessage)
-                    else None
-                ),
-                json.dumps(attachments, ensure_ascii=False) if attachments else None,
-                None,
-                message.message_type,
-                json.dumps(
-                    cls._domain_payload(message),
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ),
-            ))
-        return rows
+            found = await db.execute_fetchall("SELECT message_json FROM conversation_messages WHERE session_id=? AND message_id=?", (row[0], row[1]))
+            if not found:
+                continue
+            original = json.loads(found[0][0])
+            original_images = [part for part in original.get("content", []) if part.get("type") == "image_url"]
+            if len(original_images) != len(image_parts):
+                continue
+            changed = False
+            # 1. 只修改未外置的图片地址与引用，原文字、来源和压缩状态保持初次归档值。
+            for old, new in zip(original_images, image_parts, strict=True):
+                if not old.get("storage_ref") and old.get("context_state") == "available":
+                    old["storage_ref"] = new["storage_ref"]
+                    old["image_url"]["url"] = new["storage_ref"]
+                    changed = True
+            if changed:
+                await db.execute("UPDATE conversation_messages SET message_json=? WHERE session_id=? AND message_id=?",
+                    (json.dumps(original, ensure_ascii=False, separators=(",", ":")), row[0], row[1]))
 
     async def load(self) -> AgentState:
         """读取本会话编号最大的 checkpoint 并校验恢复材料，没有历史则只创建空内存状态。
@@ -438,38 +335,21 @@ class StateManager:
                 )
                 await self._prune_completed(db)
             if protocol_rows:
-                await db.executemany(
-                    """
-                    INSERT INTO conversation_messages (
-                        session_id, message_id, created_at, role, message_json,
-                        record_kind, fidelity, associated_message_id,
-                        attachments_json, legacy_source_id, message_type, domain_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(session_id, message_id) DO UPDATE SET
-                        message_json = CASE
-                            WHEN conversation_messages.attachments_json IS NULL
-                             AND excluded.attachments_json IS NOT NULL
-                            THEN excluded.message_json
-                            ELSE conversation_messages.message_json
-                        END,
-                        attachments_json = COALESCE(
-                            excluded.attachments_json,
-                            conversation_messages.attachments_json
-                        )
-                    """,
-                    protocol_rows,
-                )
+                await db.executemany("""INSERT INTO conversation_messages (
+                    session_id,message_id,created_at,record_kind,fidelity,legacy_source_id,message_type,message_json)
+                    VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(session_id,message_id) DO NOTHING""", protocol_rows)
+                await self._upgrade_image_refs(db, protocol_rows)
             # 3. 打断后缀重写已有 Assistant 行，保留 message_id，避免历史出现重复气泡。
             if rewritten_message_id is not None:
                 rewritten = next(
                     (row for row in protocol_rows if row[1] == rewritten_message_id), None,
                 )
-                if rewritten is None or rewritten[10] != "assistant":
+                if rewritten is None or rewritten[6] != "assistant":
                     raise ValueError("仅允许重写当前状态中的 assistant 消息")
                 result = await db.execute(
-                    "UPDATE conversation_messages SET message_json = ?, domain_json = ? "
+                    "UPDATE conversation_messages SET message_json = ? "
                     "WHERE session_id = ? AND message_id = ?",
-                    (rewritten[4], rewritten[11], self.session_id, rewritten_message_id),
+                    (rewritten[7], self.session_id, rewritten_message_id),
                 )
                 if result.rowcount != 1:
                     raise RuntimeError("中断文本对应的协议消息不存在")

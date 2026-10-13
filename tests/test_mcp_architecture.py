@@ -160,7 +160,7 @@ async def test_agent_assembles_tools_and_isolates_server_failures(tmp_path: Path
     assert agent.tool_manager.has("mcp__filesystem__write_file")
     assert agent.tool_manager.has("mcp__filesystem__delete_file")
     exposed_names = {
-        tool["function"]["name"] for tool in agent.tool_manager.get_openai_tools()
+        tool.name for tool in agent.tool_manager.get_tools()
     }
     assert "mcp__filesystem__write_file" in exposed_names
     assert "mcp__filesystem__delete_file" not in exposed_names

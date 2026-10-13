@@ -7,7 +7,7 @@ import json
 import re
 from typing import Any, TYPE_CHECKING
 
-from app.agent.state.messages import MCP_TOOL_IMAGE_MESSAGE_NAME
+from app.agent.state.messages import TextContent, ImageContent, content_text
 from app.agent.tools.base import BaseTool, ToolContext, ToolResult
 from app.agent.tools.authorization.manager import ToolAuthorization
 from app.agent.tools.authorization.models import ToolIdentity
@@ -159,10 +159,9 @@ class MCPToolAdapter(BaseTool):
         if structured is None:
             structured = getattr(result, "structured_content", None)
 
-        images: list[str] = []
+        blocks = []
         unsupported_count = 0
         skipped_content_parts = 0
-        text_parts: list[str] = []
         content_parts = getattr(result, "content", None) or []
         try:
             content_part_count = len(content_parts)
@@ -181,17 +180,17 @@ class MCPToolAdapter(BaseTool):
             if part_type == "text":
                 text = getattr(part, "text", None)
                 if text:
-                    text_parts.append(str(text))
+                    blocks.append(TextContent(str(text)))
             elif part_type == "image":
                 data = getattr(part, "data", "")
                 mime_value = getattr(part, "mimeType", getattr(part, "mime_type", ""))
                 mime_type = mime_value if isinstance(mime_value, str) else ""
                 encoded = data if isinstance(data, str) else str(data)
-                images.append(f"data:{mime_type};base64,{encoded}")
+                blocks.append(ImageContent(f"data:{mime_type};base64,{encoded}", media_kind="mcp"))
             elif part_type != "text":
                 unsupported_count += 1
 
-        content = "\n".join(text_parts)
+        content = content_text(blocks)
 
         def append_section(value: str) -> None:
             """转换 MCP 结果时按出现顺序追加一段文本，已有正文时用空行分隔。
@@ -200,7 +199,9 @@ class MCPToolAdapter(BaseTool):
                 value (str): 当前需要校验或转换的值。
             """
             nonlocal content
+            prefix = "\n" if content else ""
             content += ("\n\n" if content else "") + value
+            blocks.append(TextContent(prefix + value))
 
         # 3. 把忽略原因加入正文，随后与普通工具结果共用同一文本限长流程。
         if unsupported_count:
@@ -238,8 +239,6 @@ class MCPToolAdapter(BaseTool):
         content = content or "(MCP 工具未返回内容)"
         if bool(getattr(result, "isError", getattr(result, "is_error", False))):
             return ToolResult(content=f"错误: {content or 'MCP Server 返回错误'}")
-        return ToolResult.success(
-            content,
-            image_urls=images,
-            image_message_name=MCP_TOOL_IMAGE_MESSAGE_NAME,
-        )
+        if not any(isinstance(block, TextContent) for block in blocks):
+            blocks.insert(0, TextContent(content))
+        return ToolResult(content=tuple(blocks))

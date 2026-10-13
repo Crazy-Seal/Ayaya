@@ -1,3 +1,6 @@
+from tests.model_capture import result_parts
+from tests.model_capture import capture_input
+from app.agent.state.messages import text_content
 import asyncio
 from datetime import date
 from pathlib import Path
@@ -12,10 +15,9 @@ from app.agent.memory.store.chat_history_store import ChatHistoryStore
 from app.agent.memory.store.diary_sqlite_store import DiarySqliteStore
 from app.agent.state.messages import (
     AssistantMessage,
-    AvailableMedia,
     HumanMessage,
     ToolCall,
-    ToolMediaMessage,
+    ImageContent,
     ToolMessage,
 )
 from app.agent.plugins.memory import MemoryPlugin
@@ -45,7 +47,7 @@ def test_protocol_store_freezes_ten_complete_turns_and_five_history_turns(tmp_pa
                 if index == 14:
                     call = ToolCall(id="call-14", name="read_file", args={"path": "a.py"})
                     state.record_assistant_step("", (call,))
-                    state.record_tool_result(call, "file-content", compressible=True)
+                    state.record_tool_result(call, result_parts('file-content', (), 'tool'), compressible=True)
                 state.add_assistant_message(f"assistant-{index}")
             await manager.save(state, checkpoint_type="completed")
             store = ChatHistoryStore(db_path=db_path)
@@ -58,7 +60,6 @@ def test_protocol_store_freezes_ten_complete_turns_and_five_history_turns(tmp_pa
     assert sum(1 for message in history if isinstance(message, HumanMessage)) == 5
     assert sum(1 for message in current if isinstance(message, HumanMessage)) == 10
     assert any(isinstance(message, ToolMessage) for message in current)
-
 
 def test_completed_turn_query_does_not_accept_a_chunk_head_fragment(tmp_path: Path) -> None:
     """验证分块开头不完整轮次不会当作完整历史。
@@ -75,10 +76,9 @@ def test_completed_turn_query_does_not_accept_a_chunk_head_fragment(tmp_path: Pa
             state.add_user_message("请读取文件")
             call = ToolCall(id="call-1", name="read_file", args={})
             state.record_assistant_step("", (call,))
-            state.record_tool_result(call, "file-content")
+            state.record_tool_result(call, text_content("file-content"))
             state.add_assistant_message("读取完成")
             await manager.save(state, checkpoint_type="completed")
-
             store = ChatHistoryStore(db_path=db_path)
             store.READ_CHUNK_SIZE = 2
             return await store.get_recent_completed_turns(
@@ -88,7 +88,6 @@ def test_completed_turn_query_does_not_accept_a_chunk_head_fragment(tmp_path: Pa
             )
         finally:
             await manager.close()
-
     history, current = asyncio.run(scenario())
     assert history == []
     assert [type(message) for message in current] == [
@@ -105,10 +104,10 @@ def test_long_term_memory_format_has_full_current_tools_and_light_history_tools(
     memory.chat_settings = SimpleNamespace(address="用户", name="AI")
     messages = [
         AssistantMessage(
-            text="",
+            content=text_content(""),
             tool_calls=(ToolCall(id="c", name="read_file", args={"path": "a.py"}),),
         ),
-        ToolMessage(content="result", tool_name="read_file", tool_call_id="c"),
+        ToolMessage(content=text_content("result"), tool_name="read_file", tool_call_id="c"),
     ]
 
     current = memory._format_messages(messages)
@@ -118,21 +117,18 @@ def test_long_term_memory_format_has_full_current_tools_and_light_history_tools(
     assert "工具结果：result" in current
     assert history == "AI：调用了工具 read_file"
 
-
 def test_diary_format_skips_system_injected_tool_images() -> None:
     """验证日记格式化跳过内部工具图片。"""
     formatted = DiaryMemory._format_messages([
-        HumanMessage(text="请看一下屏幕"),
-        ToolMessage(content="截屏成功", tool_name="screenshot", tool_call_id="call-shot"),
-        ToolMediaMessage(tool_name="screenshot", media_kind="screenshot", text="截图", payload=AvailableMedia(urls=("data:image/png;base64,QUFB",))),
-        ToolMediaMessage(tool_name="draw", media_kind="mcp", text="图片", payload=AvailableMedia(urls=("data:image/png;base64,QkJC",))),
-        ToolMediaMessage(tool_name="draw", media_kind="tool", text="图片", payload=AvailableMedia(urls=("data:image/png;base64,Q0ND",))),
+        HumanMessage(content=text_content("请看一下屏幕")),
+        ToolMessage(content=text_content("截屏成功"), tool_name="screenshot", tool_call_id="call-shot"),
+        ToolMessage(tool_name="screenshot", tool_call_id="image-screenshot", content=(ImageContent("data:image/png;base64,QUFB", media_kind="screenshot"),)),
+        ToolMessage(tool_name="draw", tool_call_id="image-mcp", content=(ImageContent("data:image/png;base64,QkJC", media_kind="mcp"),)),
+        ToolMessage(tool_name="draw", tool_call_id="image-tool", content=(ImageContent("data:image/png;base64,Q0ND", media_kind="tool"),)),
     ])
-
     assert "用户：请看一下屏幕" in formatted
     assert "工具结果：截屏成功" in formatted
     assert "[系统消息]工具" not in formatted
-
 
 def test_diary_generation_restores_previous_diaries_and_conversation_context() -> None:
     """验证生成日记时恢复旧日记和更早对话前情。"""
@@ -147,7 +143,6 @@ def test_diary_generation_restores_previous_diaries_and_conversation_context() -
             该定义仅用于外层用例：验证生成日记时恢复旧日记和更早对话前情。
             """
             self.before_calls: list[dict] = []
-
         async def get_last_chat_date(self, *_args, **_kwargs):
             """提供用例指定的最近聊天日，并记录排除日期和读取边界。
 
@@ -158,7 +153,6 @@ def test_diary_generation_restores_previous_diaries_and_conversation_context() -
                 _kwargs (dict[str, Any]): 传递给被调用函数的其他关键字参数。
             """
             return date(2026, 9, 1)
-
         async def get_messages_by_date(self, *_args, **_kwargs):
             """提供目标日期的测试对话，并记录历史读取边界。
 
@@ -168,8 +162,7 @@ def test_diary_generation_restores_previous_diaries_and_conversation_context() -
                 _args (dict[str, Any]): 当前工具调用或被包装函数的参数。
                 _kwargs (dict[str, Any]): 传递给被调用函数的其他关键字参数。
             """
-            return [HumanMessage(text="今天继续昨天的设计")]
-
+            return [HumanMessage(content=text_content("今天继续昨天的设计"))]
         async def get_messages_before_date(
             self, session_id, before_date, limit=10, *, max_history_id=None
         ):
@@ -190,10 +183,9 @@ def test_diary_generation_restores_previous_diaries_and_conversation_context() -
                 "max_history_id": max_history_id,
             })
             return [
-                HumanMessage(text="昨天先确定两个字段"),
-                AssistantMessage(text="已经确定 active_tasks 和 summary"),
+                HumanMessage(content=text_content("昨天先确定两个字段")),
+                AssistantMessage(content=text_content("已经确定 active_tasks 和 summary")),
             ]
-
     class DiaryStore:
         """提供当前用例所需的 DiaryStore 测试替身，执行记录仅供外层断言使用。
 
@@ -205,7 +197,6 @@ def test_diary_generation_restores_previous_diaries_and_conversation_context() -
             该定义仅用于外层用例：验证生成日记时恢复旧日记和更早对话前情。
             """
             self.added: list[tuple[str, date, str]] = []
-
         async def exists(self, *_args):
             """返回用例指定的日记是否存在。
 
@@ -215,7 +206,6 @@ def test_diary_generation_restores_previous_diaries_and_conversation_context() -
                 _args (dict[str, Any]): 当前工具调用或被包装函数的参数。
             """
             return False
-
         async def get_recent_before_date(self, session_id, before_date, n=2):
             """提供目标日期之前的测试日记。
 
@@ -233,7 +223,6 @@ def test_diary_generation_restores_previous_diaries_and_conversation_context() -
                 (date(2026, 8, 31), "昨天讨论了上下文摘要。"),
                 (date(2026, 8, 30), "前天开始审核上下文系统。"),
             ]
-
         async def add(self, session_id, effective_date, content):
             """记录本次日记或长期记忆保存内容，供外层检查。
 
@@ -246,7 +235,6 @@ def test_diary_generation_restores_previous_diaries_and_conversation_context() -
             """
             self.added.append((session_id, effective_date, content))
             return 1
-
     class LLM:
         """提供当前用例所需的 LLM 测试替身，执行记录仅供外层断言使用。
 
@@ -258,7 +246,6 @@ def test_diary_generation_restores_previous_diaries_and_conversation_context() -
             该定义仅用于外层用例：验证生成日记时恢复旧日记和更早对话前情。
             """
             self.calls: list[list[dict]] = []
-
         async def ainvoke(self, messages):
             """记录日记模型收到的提示词并返回脚本正文。
 
@@ -267,9 +254,9 @@ def test_diary_generation_restores_previous_diaries_and_conversation_context() -
             Args:
                 messages (list[dict]): 按对话顺序排列的消息集合。
             """
+            messages = capture_input(messages)
             self.calls.append(messages)
-            return SimpleNamespace(content="生成的日记")
-
+            return SimpleNamespace(text="生成的日记")
     async def scenario():
         """由外层测试调用，完成“生成日记时恢复旧日记和更早对话前情”的异步步骤。"""
         memory = DiaryMemory.__new__(DiaryMemory)
@@ -285,12 +272,9 @@ def test_diary_generation_restores_previous_diaries_and_conversation_context() -
         memory.chat_history_store = ChatStore()
         memory.store = DiaryStore()
         memory.llm = LLM()
-
         await memory.check_and_generate(date(2026, 9, 2), max_history_id=42)
         return memory
-
     memory = asyncio.run(scenario())
-
     assert memory.chat_history_store.before_calls == [{
         "session_id": "session",
         "before_date": date(2026, 9, 1),
@@ -309,7 +293,6 @@ def test_diary_generation_restores_previous_diaries_and_conversation_context() -
     assert "没有与用户交互" not in prompt
     assert memory.store.added == [("session", date(2026, 9, 1), "生成的日记")]
 
-
 def test_diary_prompt_marks_missing_reference_context_as_unavailable() -> None:
     """验证缺失前情在日记提示词中明确说明。"""
     memory = DiaryMemory.__new__(DiaryMemory)
@@ -320,19 +303,16 @@ def test_diary_prompt_marks_missing_reference_context_as_unavailable() -> None:
         address="用户",
         characteristic="忠实记录共同经历。",
     )
-
     prompt = memory._build_diary_prompt(
-        [HumanMessage(text="今天第一次聊天")],
+        [HumanMessage(content=text_content("今天第一次聊天"))],
         date(2026, 9, 1),
         previous_diaries=[],
         previous_messages=[],
     )
-
     assert "暂无以前的日记" in prompt
     assert "此前暂无对话记录" in prompt
     assert "今天第一次聊天" in prompt
     assert "None" not in prompt
-
 
 def test_long_term_memory_is_scheduled_after_next_activation_input_commit(monkeypatch) -> None:
     """到期长期记忆只在下一激活输入提交成功后启动，响应提交不启动。
@@ -341,7 +321,6 @@ def test_long_term_memory_is_scheduled_after_next_activation_input_commit(monkey
         monkeypatch (pytest.MonkeyPatch): 替换后台调度和记忆准备依赖的工具。
     """
     scheduled: list[str] = []
-
     class MemoryManager:
         """提供激活前记忆准备所需的固定协议截止位置。"""
         async def get_protocol_history_cutoff(self):
@@ -351,7 +330,6 @@ def test_long_term_memory_is_scheduled_after_next_activation_input_commit(monkey
                 int: 测试中固定的截止消息编号。
             """
             return 42
-
     def capture(coro, *, logger, task_name):
         """记录后台任务准备成功，但不执行外部提取。
 
@@ -375,7 +353,6 @@ def test_long_term_memory_is_scheduled_after_next_activation_input_commit(monkey
         monkeypatch.setattr(plugin, "_mm", lambda state: MemoryManager())
         state = AgentState.create_new("session")
         state.long_term_memory_turn_counter = 10
-
         response_context = {}
         await plugin.execute(HookContext.create(
             PluginHook.BEFORE_RESPONSE_COMMIT, state, data=response_context
@@ -385,7 +362,6 @@ def test_long_term_memory_is_scheduled_after_next_activation_input_commit(monkey
         ))
         assert state.long_term_memory_turn_counter == 10
         assert scheduled == []
-
         input_context = {}
         await plugin.execute(HookContext.create(
             PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, state, data=input_context
@@ -400,16 +376,13 @@ def test_long_term_memory_is_scheduled_after_next_activation_input_commit(monkey
             "extract_long_term_memory": True,
             "long_term_memory_turns": 10,
         }
-
         await plugin.execute(HookContext.create(
             PluginHook.AFTER_ACTIVATION_INPUT_COMMIT, state, data=input_context
         ))
         return state, scheduled
-
     state, tasks = asyncio.run(scenario())
     assert state.long_term_memory_turn_counter == 0
     assert tasks == ["memory.persist_long_term"]
-
 
 def test_diary_and_long_term_memory_are_scheduled_independently(monkeypatch) -> None:
     """一次新激活可同时准备日记和长期记忆，两类后台任务独立启动。
@@ -418,7 +391,6 @@ def test_diary_and_long_term_memory_are_scheduled_independently(monkeypatch) -> 
         monkeypatch (pytest.MonkeyPatch): 替换后台调度和记忆准备依赖的工具。
     """
     scheduled: list[str] = []
-
     class MemoryManager:
         """提供固定历史范围和不实际运行的日记入口。"""
         async def get_protocol_history_cutoff(self):
@@ -428,7 +400,6 @@ def test_diary_and_long_term_memory_are_scheduled_independently(monkeypatch) -> 
                 int: 测试中固定的截止消息编号。
             """
             return 84
-
         async def check_diary(self, *, max_history_id):
             """提供后台日记协程，本测试只检查它是否被安排。
 
@@ -439,7 +410,6 @@ def test_diary_and_long_term_memory_are_scheduled_independently(monkeypatch) -> 
                 AssertionError: 调度记录测试意外执行了后台协程。
             """
             raise AssertionError("background coroutine should not run in this test")
-
     def capture(coro, *, logger, task_name):
         """记录两类任务各自的调度，不执行派生处理。
 
@@ -450,9 +420,7 @@ def test_diary_and_long_term_memory_are_scheduled_independently(monkeypatch) -> 
         """
         scheduled.append(task_name)
         coro.close()
-
     monkeypatch.setattr(memory_plugin_module, "create_background_task", capture)
-
     async def scenario():
         """用同一激活上下文执行准备和提交成功事件。
 
@@ -464,7 +432,6 @@ def test_diary_and_long_term_memory_are_scheduled_independently(monkeypatch) -> 
         state = AgentState.create_new("session")
         state.long_term_memory_turn_counter = 12
         commit_context = {}
-
         await plugin.execute(HookContext.create(
             PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, state, data=commit_context
         ))
@@ -472,12 +439,10 @@ def test_diary_and_long_term_memory_are_scheduled_independently(monkeypatch) -> 
             PluginHook.AFTER_ACTIVATION_INPUT_COMMIT, state, data=commit_context
         ))
         return state, commit_context
-
     state, commit_context = asyncio.run(scenario())
     assert state.long_term_memory_turn_counter == 0
     assert commit_context["memory"]["long_term_memory_turns"] == 12
     assert scheduled == ["memory.check_diary", "memory.persist_long_term"]
-
 
 def test_long_term_memory_uses_frozen_protocol_cutoff(monkeypatch) -> None:
     """验证长期记忆提取使用捕获的协议日志边界。
@@ -486,7 +451,6 @@ def test_long_term_memory_uses_frozen_protocol_cutoff(monkeypatch) -> None:
         monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
     """
     calls: list[dict] = []
-
     class Store:
         """提供当前用例所需的 Store 测试替身，执行记录仅供外层断言使用。
 
@@ -501,7 +465,6 @@ def test_long_term_memory_uses_frozen_protocol_cutoff(monkeypatch) -> None:
                 session_id (Any): 当前操作所属的会话编号。
             """
             raise AssertionError("must use the cutoff frozen before the new user input")
-
         async def get_recent_completed_turns(self, session_id, **kwargs):
             """按用例提供前情和本批完整轮次，并记录日志边界。
 
@@ -515,18 +478,16 @@ def test_long_term_memory_uses_frozen_protocol_cutoff(monkeypatch) -> None:
             current = []
             for index in range(12):
                 current.extend([
-                    HumanMessage(text=f"human-{index}"),
-                    AssistantMessage(text=f"assistant-{index}"),
+                    HumanMessage(content=text_content(f"human-{index}")),
+                    AssistantMessage(content=text_content(f"assistant-{index}")),
                 ])
             return [], current
-
     class MemoryManager:
         """提供当前用例所需的 MemoryManager 测试替身，执行记录仅供外层断言使用。
 
         该定义仅用于外层用例：验证长期记忆提取使用捕获的协议日志边界。
         """
         chat_history_store = Store()
-
         async def add(self, messages, history, **kwargs):
             """记录本次日记或长期记忆保存内容，供外层检查。
 
@@ -542,13 +503,11 @@ def test_long_term_memory_uses_frozen_protocol_cutoff(monkeypatch) -> None:
                 "history_count": len(history),
                 **kwargs,
             })
-
     monkeypatch.setattr(
         memory_plugin_module,
         "get_memory_manager",
         lambda session_id: MemoryManager(),
     )
-
     async def scenario():
         """由外层测试调用，完成“长期记忆提取使用捕获的协议日志边界”的异步步骤。"""
         plugin = MemoryPlugin()
@@ -557,7 +516,6 @@ def test_long_term_memory_uses_frozen_protocol_cutoff(monkeypatch) -> None:
             max_history_id=42,
             batch_turns=12,
         )
-
     asyncio.run(scenario())
     assert calls[0] == {
         "session_id": "session",
@@ -571,7 +529,6 @@ def test_long_term_memory_uses_frozen_protocol_cutoff(monkeypatch) -> None:
         "enable_episodic": True,
         "enable_semantic": True,
     }
-
 
 def test_disabled_long_term_memory_resets_reached_interval_on_next_input() -> None:
     """长期记忆关闭时，新激活消费已到期计数而不准备提取任务。"""
@@ -593,11 +550,9 @@ def test_disabled_long_term_memory_resets_reached_interval_on_next_input() -> No
             PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, state, data=commit_context
         ))
         return state, commit_context
-
     state, commit_context = asyncio.run(scenario())
     assert state.long_term_memory_turn_counter == 0
     assert commit_context == {}
-
 
 def test_disabled_long_term_memory_resets_counter_when_diary_preparation_fails(
     monkeypatch,
@@ -618,7 +573,6 @@ def test_disabled_long_term_memory_resets_counter_when_diary_preparation_fails(
             enable_episodic=False,
             enable_semantic=False,
         )
-
         def fail(_state):
             """模拟日记依赖不可用。
 
@@ -629,7 +583,6 @@ def test_disabled_long_term_memory_resets_counter_when_diary_preparation_fails(
                 RuntimeError: 测试指定的记忆管理器不可用错误。
             """
             raise RuntimeError("diary manager unavailable")
-
         monkeypatch.setattr(plugin, "_mm", fail)
         state = AgentState.create_new("session")
         state.long_term_memory_turn_counter = 10
@@ -638,11 +591,9 @@ def test_disabled_long_term_memory_resets_counter_when_diary_preparation_fails(
             PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, state, data=commit_context
         ))
         return state, commit_context
-
     state, commit_context = asyncio.run(scenario())
     assert state.long_term_memory_turn_counter == 0
     assert commit_context == {}
-
 
 def test_memory_preparation_failure_keeps_pending_turn_counter(monkeypatch) -> None:
     """长期记忆准备失败时保留计数，让下一次新激活重新准备批次。
@@ -657,7 +608,6 @@ def test_memory_preparation_failure_keeps_pending_turn_counter(monkeypatch) -> N
             tuple[AgentState, dict]: 保留到期计数的状态和空任务数据。
         """
         plugin = MemoryPlugin(enable_diary=False)
-
         def fail(_state):
             """模拟长期记忆准备依赖不可用。
 
@@ -668,7 +618,6 @@ def test_memory_preparation_failure_keeps_pending_turn_counter(monkeypatch) -> N
                 RuntimeError: 测试指定的记忆管理器不可用错误。
             """
             raise RuntimeError("memory manager unavailable")
-
         monkeypatch.setattr(plugin, "_mm", fail)
         state = AgentState.create_new("session")
         state.long_term_memory_turn_counter = 10
@@ -677,11 +626,9 @@ def test_memory_preparation_failure_keeps_pending_turn_counter(monkeypatch) -> N
             PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, state, data=commit_context
         ))
         return state, commit_context
-
     state, commit_context = asyncio.run(scenario())
     assert state.long_term_memory_turn_counter == 10
     assert commit_context == {}
-
 
 def test_memory_plugin_does_not_own_completed_turn_counting() -> None:
     """验证记忆插件不自行增加已完成轮次计数。"""

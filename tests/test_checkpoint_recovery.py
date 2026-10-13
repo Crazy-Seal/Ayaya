@@ -1,3 +1,6 @@
+from app.agent.models.openai_message_names import MCP_TOOL_IMAGE_MESSAGE_NAME, TOOL_IMAGE_MESSAGE_NAME
+from tests.model_capture import result_parts
+from tests.model_capture import capture_input
 import asyncio
 from copy import deepcopy
 from pathlib import Path
@@ -12,15 +15,7 @@ from app.agent.core.pipeline import ExecutionPipeline
 from app.agent.plugins.base import BasePlugin, HookContext, PluginHook
 from app.agent.plugins.memory import MemoryPlugin
 from app.agent.state.manager import CheckpointType, StateManager
-from app.agent.state.messages import (
-    AssistantMessage,
-    HumanMessage,
-    MCP_TOOL_IMAGE_MESSAGE_NAME,
-    TOOL_IMAGE_MESSAGE_NAME,
-    ToolMediaMessage,
-    ToolCall,
-    ToolMessage,
-)
+from app.agent.state.messages import (AssistantMessage, HumanMessage, ImageContent, ToolMessage, ToolCall, ToolMessage)
 from app.agent.models.llm_client import StreamChunk
 from app.agent.state import AgentState
 from app.agent.tools.base import BaseTool, ToolContext, ToolResult
@@ -50,6 +45,7 @@ class ScriptedLLM:
             messages (list[dict]): 按对话顺序排列的消息集合。
             tools (list[dict] | None): 当前向模型公开的工具定义。
         """
+        messages = capture_input(messages)
         script = self.scripts.pop(0)
         if isinstance(script, BaseException):
             raise script
@@ -501,6 +497,7 @@ def test_stop_during_llm_saves_visible_partial_and_completed_checkpoint(tmp_path
                 Yields:
                     LLMChunk: 当前测试场景的预设分片或事件。
                 """
+                messages = capture_input(messages)
                 yield StreamChunk(content="已经展示的回答")
                 first_chunk.set()
                 await asyncio.Event().wait()
@@ -563,6 +560,7 @@ def test_stop_flushes_incomplete_time_prefix_before_saving_partial(tmp_path: Pat
                 Yields:
                     LLMChunk: 当前测试场景的预设分片或事件。
                 """
+                messages = capture_input(messages)
                 yield StreamChunk(content="[发送时间：")
                 first_chunk.set()
                 await asyncio.Event().wait()
@@ -1073,7 +1071,7 @@ def test_completed_tool_results_survive_later_llm_failure(tmp_path: Path) -> Non
 
             state = await agent.state_manager.load()
             tool_messages = [item for item in state.messages if isinstance(item, ToolMessage)]
-            assert [item.content for item in tool_messages] == ["完成 A", "完成 B", "完成 C"]
+            assert [item.text for item in tool_messages] == ["完成 A", "完成 B", "完成 C"]
             assert state.pending_tool_calls == ()
             assert state.long_term_memory_turn_counter == 1
             assert await checkpoint_types(agent.state_manager) == ["intermediate"]
@@ -1175,7 +1173,7 @@ def test_empty_response_after_tool_keeps_intermediate_checkpoint(tmp_path: Path)
 
             state = await agent.state_manager.load()
             tool_messages = [item for item in state.messages if isinstance(item, ToolMessage)]
-            assert [item.content for item in tool_messages] == ["完成 A"]
+            assert [item.text for item in tool_messages] == ["完成 A"]
             assert state.pending_tool_calls == ()
             assert await checkpoint_types(agent.state_manager) == ["intermediate"]
         finally:
@@ -1201,7 +1199,7 @@ def test_tool_error_result_is_checkpointed(tmp_path: Path) -> None:
             await drain(agent.run("执行失败工具"))
             state = await agent.state_manager.load()
             tool_messages = [item for item in state.messages if isinstance(item, ToolMessage)]
-            assert tool_messages[-1].content == "错误: 测试工具失败"
+            assert tool_messages[-1].text == "错误: 测试工具失败"
             assert state.pending_tool_calls == ()
         finally:
             await agent.close()
@@ -1244,7 +1242,7 @@ def test_partial_tool_batch_is_marked_interrupted_without_retry(tmp_path: Path) 
             await drain(second_agent.run("新的用户消息"))
             state = await second_agent.state_manager.load()
             by_id = {
-                item.tool_call_id: item.content
+                item.tool_call_id: item.text
                 for item in state.messages
                 if isinstance(item, ToolMessage)
             }
@@ -1402,21 +1400,21 @@ def test_last_tool_checkpoint_flushes_all_batch_images(tmp_path: Path) -> None:
     snapshots = asyncio.run(scenario())
     first_result = snapshots[-2]
     assert [item.id for item in first_result.pending_tool_calls] == ["call-b"]
-    assert first_result.deferred_tool_media_count == 1
+    assert any(isinstance(part, ImageContent) for part in first_result.messages[-1].content)
     assert isinstance(first_result.messages[-1], ToolMessage)
 
     completed_batch = snapshots[-1]
     assert completed_batch.pending_tool_calls == ()
-    assert completed_batch.deferred_tool_media_count == 0
+    assert "_deferred_tool_media" not in completed_batch.to_checkpoint()
     tool_messages = [
         item for item in completed_batch.messages if isinstance(item, ToolMessage)
     ]
     image_messages = [
         item
         for item in completed_batch.messages
-        if isinstance(item, ToolMediaMessage)
+        if isinstance(item, ToolMessage) and any(isinstance(part, ImageContent) for part in item.content)
     ]
-    assert [item.associated_message_id for item in image_messages] == [
+    assert [item.message_id for item in image_messages] == [
         item.message_id for item in tool_messages
     ]
 
@@ -1443,12 +1441,7 @@ def test_resumed_last_tool_checkpoint_flushes_deferred_images(tmp_path: Path) ->
         call_a = ToolCall(id="call-a", name="image_step", args={"label": "A"})
         call_b = ToolCall(id="call-b", name="image_step", args={"label": "B"})
         state.record_assistant_step("", (call_a, call_b))
-        state.record_tool_result(
-            call_a,
-            "完成 A",
-            image_urls=("data:image/png;base64,iVBORw0KGgpwYXlsb2Fk",),
-            image_message_name=MCP_TOOL_IMAGE_MESSAGE_NAME,
-        )
+        state.record_tool_result(call_a, result_parts('完成 A', ('data:image/png;base64,iVBORw0KGgpwYXlsb2Fk',), 'mcp'))
         state.set_interrupt({
             "type": "authorization_request",
             "request_id": "request-b",
@@ -1495,16 +1488,16 @@ def test_resumed_last_tool_checkpoint_flushes_deferred_images(tmp_path: Path) ->
 
     completed_batch = asyncio.run(scenario())
     assert completed_batch.pending_tool_calls == ()
-    assert completed_batch.deferred_tool_media_count == 0
+    assert "_deferred_tool_media" not in completed_batch.to_checkpoint()
     tool_messages = [
         item for item in completed_batch.messages if isinstance(item, ToolMessage)
     ]
     image_messages = [
         item
         for item in completed_batch.messages
-        if isinstance(item, ToolMediaMessage)
+        if isinstance(item, ToolMessage) and any(isinstance(part, ImageContent) for part in item.content)
     ]
-    assert [item.associated_message_id for item in image_messages] == [
+    assert [item.message_id for item in image_messages] == [
         item.message_id for item in tool_messages
     ]
 
@@ -1541,7 +1534,7 @@ def test_chat_resolves_unresolved_interrupt_before_new_message(tmp_path: Path) -
             assert after.interrupt_data is None
             assert any(
                 isinstance(message, ToolMessage)
-                and "已拒绝" in message.content
+                and "已拒绝" in message.text
                 for message in after.messages
             )
             assert any(
@@ -1591,7 +1584,7 @@ def test_new_message_cancels_interrupted_tool_batch_before_starting_turn(
 
             state = await second_agent.state_manager.load()
             tool_results = {
-                message.tool_call_id: message.content
+                message.tool_call_id: message.text
                 for message in state.messages
                 if isinstance(message, ToolMessage)
             }
@@ -1668,12 +1661,11 @@ def test_cancelling_interrupted_batch_flushes_prior_images_after_all_tool_slots(
     }
     media_position = next(
         index for index, message in enumerate(batch_tail)
-        if isinstance(message, ToolMediaMessage)
-        and message.associated_message_id
+        if isinstance(message, ToolMessage) and any(isinstance(part, ImageContent) for part in message.content)
     )
 
     assert set(tool_positions) == {"image-1", "shot-2", "step-3"}
-    assert media_position > max(tool_positions.values())
+    assert media_position == tool_positions["image-1"]
     assert resumed_calls == []
 
 

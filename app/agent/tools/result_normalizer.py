@@ -9,6 +9,7 @@ from collections import Counter
 from dataclasses import replace
 
 from app.agent.tools.base import ToolResult
+from app.agent.state.messages import ImageContent, TextContent, content_text, text_content
 from app.agent.tools.result_artifacts import ToolResultArtifactStore
 from app.agent.tools.result_limits import (
     ALLOWED_IMAGE_MIME_TYPES,
@@ -87,16 +88,15 @@ class ToolResultNormalizer:
         Returns:
             ToolResult: 保留有效图片并限制模型预览正文的 ToolResult，原结果对象不变。
         """
-        content = str(result.content or "")
-        candidates = list(result.image_urls)
-        if result.image_url and result.image_url not in candidates:
-            candidates.insert(0, result.image_url)
+        content = result.text
+        candidates = [part for part in result.content if isinstance(part, ImageContent)]
 
         # 1. 逐张检查图片，只有通过格式和字节限制的图片才占用数量及总大小预算。
-        accepted: list[str] = []
+        accepted: list[ImageContent] = []
         ignored: Counter[str] = Counter()
         total_bytes = 0
-        for candidate in candidates:
+        for image in candidates:
+            candidate = image.url
             if len(accepted) >= MAX_IMAGES_PER_CALL:
                 ignored["图片数量超过限制"] += 1
                 continue
@@ -128,7 +128,7 @@ class ToolResultNormalizer:
                 ignored["文件签名不匹配"] += 1
                 continue
             total_bytes += len(decoded)
-            accepted.append(candidate)
+            accepted.append(image)
 
         # 2. 先把被忽略图片的原因写入正文，再统一截断，确保诊断信息也参与文本预算。
         for reason, count in ignored.items():
@@ -141,12 +141,29 @@ class ToolResultNormalizer:
             persist_overflow=persist_overflow,
         )
 
-        return replace(
-            result,
-            content=content,
-            image_url=accepted[0] if accepted else None,
-            image_urls=accepted,
-        )
+        # 3. 未截断文字保持块顺序；规范化后的诊断和预览只替换文字，不移动有效图片。
+        accepted_counts = Counter(id(image) for image in accepted)
+        parts = []
+        for part in result.content:
+            if isinstance(part, TextContent):
+                parts.append(part)
+            elif accepted_counts[id(part)] > 0:
+                parts.append(part)
+                accepted_counts[id(part)] -= 1
+        if content != content_text(parts):
+            replaced = []
+            inserted = False
+            for part in parts:
+                if isinstance(part, TextContent):
+                    if not inserted:
+                        replaced.append(TextContent(content))
+                        inserted = True
+                else:
+                    replaced.append(part)
+            if not inserted:
+                replaced.insert(0, TextContent(content))
+            parts = replaced
+        return replace(result, content=tuple(parts))
 
     def _normalize_text(
         self,

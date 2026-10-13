@@ -1,6 +1,9 @@
 """构造最终模型输入，并在预算边界执行两层上下文压缩。"""
 
 from __future__ import annotations
+from typing import Sequence
+from app.agent.models.contracts import InputMessage, ToolDefinition
+
 
 import json
 import logging
@@ -21,6 +24,7 @@ from app.agent.context.ports import DiaryCoverage, SummaryClient
 from app.agent.context.runtime import RuntimeContext
 from app.agent.state.model import AgentState
 from app.agent.state.messages import (
+    AssistantMessage, HumanMessage, ToolMessage, text_content,
     BaseMessage,
     ContextSummaryMessage,
     SystemMessage,
@@ -174,29 +178,21 @@ class ContextOverflowError(RuntimeError):
     """两次摘要压缩后仍无法安全调用主模型。"""
 
 
-def validate_openai_protocol(messages: list[dict]) -> None:
+def validate_message_protocol(messages: Sequence[BaseMessage]) -> None:
     """确保 ToolMessage 不孤立，且每组 tool_calls 都有完整返回。
 
     Args:
-        messages (list[dict]): 按对话顺序排列的消息集合。
+        messages (Sequence[InputMessage]): 按对话顺序排列的消息集合。
     """
-    expected: set[str] = set()
+    expected: dict[str, str] = {}
     for message in messages:
-        role = message.get("role")
-        if expected:
-            if role != "tool":
-                raise ValueError(f"工具调用缺少返回: {sorted(expected)}")
-            tool_call_id = message.get("tool_call_id")
-            if tool_call_id not in expected:
-                raise ValueError(f"未知或重复的 tool_call_id: {tool_call_id}")
-            expected.remove(tool_call_id)
-            continue
-        if role == "tool":
-            raise ValueError(f"孤立 ToolMessage: {message.get('tool_call_id')}")
-        if role == "assistant" and message.get("tool_calls"):
-            expected = {
-                call.get("id") for call in message["tool_calls"] if call.get("id")
-            }
+        if expected and not isinstance(message, ToolMessage):
+            raise ValueError(f"工具调用缺少返回: {sorted(expected)}")
+        if isinstance(message, ToolMessage):
+            if expected.pop(message.tool_call_id, None) != message.tool_name:
+                raise ValueError(f"孤立或名称不匹配的工具结果: {message.tool_call_id}")
+        elif isinstance(message, AssistantMessage):
+            expected = {call.id: call.name for call in message.tool_calls}
     if expected:
         raise ValueError(f"工具调用缺少返回: {sorted(expected)}")
 
@@ -206,11 +202,11 @@ class PreparedModelInput:
     """把本次模型请求与对应预算一起交给执行管道，并告知是否需要先保存压缩后的状态。
 
     Attributes:
-        messages (list[dict]): 本次模型调用的完整消息列表。
+        messages (Sequence[InputMessage]): 本次模型调用的完整消息列表。
         token_assessment (TokenAssessment): 同一份输入的预算结果。
         state_changed (bool): 准备输入时是否修改了内存中的 AgentState；不表示已保存 checkpoint。
     """
-    messages: list[dict]
+    messages: Sequence[InputMessage]
     token_assessment: TokenAssessment
     state_changed: bool = False
 
@@ -401,14 +397,14 @@ class ContextCompactionCoordinator:
             raise ContextOverflowError("没有可安全压缩的已完成历史轮次")
         selected_set = set(selected)
         selected_messages = [frozen[index] for index in selected]
-        validate_openai_protocol([message.to_openai_format() for message in selected_messages])
+        validate_message_protocol(selected_messages)
         source = build_model_window(selected_messages)
         # 2. 模型只返回摘要数据；结构校验失败时不向 AgentState 提交任何候选消息。
         response = await self.summary_client.ainvoke_structured(
             [
-                SystemMessage(text=self._build_summary_system_prompt()).to_openai_format(),
+                SystemMessage(text=self._build_summary_system_prompt()),
                 *source,
-                {"role": "user", "content": self._build_summary_extraction_prompt()},
+                HumanMessage(content=text_content(self._build_summary_extraction_prompt())),
             ],
             schema=CONTEXT_SUMMARY_SCHEMA,
             temperature=0.2,
@@ -423,7 +419,7 @@ class ContextCompactionCoordinator:
         created_at = utc_now()
         covered_message_id, effective_date = self._coverage_marker(selected_messages)
         source_tokens = sum(
-            self.budget.estimate_message(message.to_openai_format())
+            self.budget.estimate_message(message)
             for message in selected_messages
         )
         # 3. 记录原历史覆盖边界，让后续压缩和日记清理仍能追溯被摘要替换的内容。
@@ -439,7 +435,7 @@ class ContextCompactionCoordinator:
         first = min(selected)
         candidate = [message for index, message in enumerate(frozen) if index not in selected_set]
         candidate.insert(first, summary_message)
-        validate_openai_protocol([message.to_openai_format() for message in candidate])
+        validate_message_protocol(candidate)
         return tuple(candidate)
 
 
@@ -480,14 +476,15 @@ class ModelInputCoordinator:
         )
         self.screenshot_policy = ContextCompressionPolicy()
         self.accounting_key = accounting_key
+        self.model_client = summary_client
 
     def _view(
         self,
         state: AgentState,
         system_prompt: str,
-        tools: list[dict],
+        tools: Sequence[ToolDefinition],
         turn_context: RuntimeContext,
-    ) -> tuple[list[dict], TokenAssessment]:
+    ) -> tuple[Sequence[InputMessage], TokenAssessment]:
         """构造临时模型消息并估算输入大小，时间和检索记忆不写回原领域消息。
 
         Args:
@@ -497,20 +494,21 @@ class ModelInputCoordinator:
             turn_context (RuntimeContext): 当前轮次的时间、真人输入编号和检索记忆。
 
         Returns:
-            tuple[list[dict], TokenAssessment]: 完整模型消息与同一份输入的预算结果。
+            tuple[Sequence[InputMessage], TokenAssessment]: 完整模型消息与同一份输入的预算结果。
         """
         transient = append_transient_context(state.messages, turn_context)
         history = build_model_window(transient)
         messages = (
-            [SystemMessage(text=system_prompt).to_openai_format()]
+            [SystemMessage(text=system_prompt)]
             if system_prompt else []
-        ) + history
+        ) + list(history)
         assessment = self.budget.assess(
             system_prompt=system_prompt,
             tools=tools,
             messages=history,
             baseline=state.token_baseline,
             accounting_key=self.accounting_key,
+            rough_input=self.model_client.estimate_input(messages, tools) if hasattr(self.model_client, "estimate_input") else None,
         )
         baseline = state.token_baseline
         logger.debug(
@@ -529,7 +527,7 @@ class ModelInputCoordinator:
         *,
         state: AgentState,
         system_prompt: str,
-        tools: list[dict],
+        tools: Sequence[ToolDefinition],
         turn_context: RuntimeContext,
     ) -> PreparedModelInput:
         """先压缩旧截图，再按预算逐层缩短历史，给执行管道返回可发送的模型输入。
@@ -633,15 +631,15 @@ class ModelInputCoordinator:
         Returns:
             bool: 错误文本包含受支持的上下文超限标记时为 True。
         """
-        text = str(error).lower()
-        return "context_length_exceeded" in text or "maximum context" in text
+        from app.agent.models.contracts import ModelContextOverflowError
+        return isinstance(error, ModelContextOverflowError)
 
     async def recover_context_overflow(
         self,
         *,
         state: AgentState,
         system_prompt: str,
-        tools: list[dict],
+        tools: Sequence[ToolDefinition],
         turn_context: RuntimeContext,
     ) -> AsyncGenerator[PreparedModelInput, None]:
         """主模型拒绝上下文后，按同一份历史依次提供 60% 和 75% 的摘要压缩结果。

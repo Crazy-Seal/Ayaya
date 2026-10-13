@@ -1,4 +1,5 @@
 """通过真实激活入口与临时 SQLite 验证记忆批次和内部通知的提交时机。"""
+from tests.model_capture import capture_input
 
 import asyncio
 from collections.abc import AsyncIterator
@@ -55,6 +56,7 @@ class QueuedModel:
         Yields:
             StreamChunk: 测试安排的正文或工具调用。
         """
+        messages = capture_input(messages)
         await self.requests.put(messages)
         reply = await self.replies.get()
         for chunk in reply:

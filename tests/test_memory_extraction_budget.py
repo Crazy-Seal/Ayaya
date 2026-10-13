@@ -1,4 +1,6 @@
 """通过真实记忆入口检查预算归属、实际发送材料和共享消息的保护。"""
+from app.agent.state.messages import text_content
+from tests.model_capture import capture_input
 
 import asyncio
 from copy import deepcopy
@@ -34,7 +36,7 @@ class RecordingLLM:
         Returns:
             dict: 符合结构要求的空记忆结果。
         """
-        self.requests.append(deepcopy(messages))
+        self.requests.append(deepcopy(capture_input(messages)))
         return {"memories": []}
 
 
@@ -58,7 +60,7 @@ class RecordingMem0:
         Returns:
             dict: 含一条记忆编号的 Mem0 结果。
         """
-        self.requests.append(deepcopy(messages))
+        self.requests.append(deepcopy(capture_input(messages)))
         return {"results": [{"id": "semantic-1"}]}
 
 
@@ -94,15 +96,15 @@ def extraction_messages() -> tuple[list[BaseMessage], list[BaseMessage]]:
     """
     timestamp = datetime(2026, 10, 10, 2, 0, tzinfo=timezone.utc)
     current = [
-        HumanMessage(text="当前偏好", origin_channel="qq", created_at=timestamp),
+        HumanMessage(content=text_content("当前偏好"), origin_channel="qq", created_at=timestamp),
         AssistantMessage(tool_calls=(ToolCall(id="call", name="read_file", args={"path": "a.py"}),)),
-        ToolMessage(content="头" * 1_200 + "中" * 5_000 + "尾" * 1_200,
+        ToolMessage(content=text_content("头" * 1_200 + "中" * 5_000 + "尾" * 1_200),
                     tool_name="read_file", tool_call_id="call"),
     ]
     history = [
-        HumanMessage(text="历史偏好" + "史" * 1_500, created_at=timestamp),
+        HumanMessage(content=text_content("历史偏好" + "史" * 1_500), created_at=timestamp),
         AssistantMessage(tool_calls=(ToolCall(id="old", name="read_file", args={"path": "old.py"}),)),
-        ToolMessage(content="历史工具结果不应进入材料", tool_name="read_file", tool_call_id="old"),
+        ToolMessage(content=text_content("历史工具结果不应进入材料"), tool_name="read_file", tool_call_id="old"),
     ]
     return current, history
 
@@ -132,9 +134,9 @@ def test_extractors_budget_actual_materials_without_mutating_shared_messages(lim
             assert "历史工具结果不应进入材料" not in text
             if limit == 1:
                 assert "头" * 800 in text and "尾" * 200 in text
-                assert "中" * 100 not in text and messages[-1].content not in text
+                assert "中" * 100 not in text and messages[-1].text not in text
             else:
-                assert messages[-1].content in text
+                assert messages[-1].text in text
         # 2. Mem0 仍将带标记历史放在当前材料前，两个提取器不改变共享消息值。
         assert converted[0]["content"].startswith("[前情提要]")
         assert (messages, history) == before
@@ -156,8 +158,8 @@ def test_manager_respects_each_extractor_budget_and_only_coordinates_results() -
         assert await manager.add(messages, history) == {"episodic": 0, "semantic": 1}
         prompt = episodic.llm.requests[0][0]["content"]
         semantic_text = "\n".join(item["content"] for item in semantic._memory.requests[0])
-        assert messages[-1].content not in prompt
-        assert messages[-1].content in semantic_text
+        assert messages[-1].text not in prompt
+        assert messages[-1].text in semantic_text
 
     asyncio.run(scenario())
 
@@ -215,7 +217,7 @@ def test_episodic_budget_includes_prompt_instructions_not_only_dialogue() -> Non
         episodic, _semantic = make_extractors(1_500)
         episodic.chat_settings.characteristic = "设定" * 2_000
         content = "头" * 800 + "中" * 100 + "尾" * 200
-        assert await episodic.add([ToolMessage(content=content, tool_name="read_file", tool_call_id="call")]) == []
+        assert await episodic.add([ToolMessage(content=text_content(content), tool_name="read_file", tool_call_id="call")]) == []
         prompt = episodic.llm.requests[0][0]["content"]
         assert episodic.chat_settings.characteristic in prompt
         assert content not in prompt and "中" * 100 not in prompt

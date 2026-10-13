@@ -1,3 +1,4 @@
+from tests.model_capture import capture_input
 import asyncio
 from pathlib import Path
 
@@ -125,6 +126,7 @@ def test_committed_human_is_visible_before_first_model_chunk(tmp_path: Path) -> 
                 Yields:
                     StreamChunk: 放行后的预设正文分片。
                 """
+                messages = capture_input(messages)
                 model_entered.set()
                 await release_model.wait()
                 yield StreamChunk(content="回复。")
@@ -363,6 +365,7 @@ def test_stop_while_publishing_chunk_still_saves_interrupted_response(tmp_path) 
                 Yields:
                     LLMChunk: 当前测试场景的预设分片或事件。
                 """
+                messages = capture_input(messages)
                 yield StreamChunk(content="已经显示")
                 await asyncio.Event().wait()
 
@@ -483,6 +486,7 @@ def test_stop_after_tool_notice_prevents_unstarted_tool_side_effect(tmp_path) ->
                 Yields:
                     LLMChunk: 当前测试场景的预设分片或事件。
                 """
+                messages = capture_input(messages)
                 yield StreamChunk(tool_call=ToolCall(id="call-1", name="recording_tool", args={}))
                 yield StreamChunk(finish_reason="tool_calls")
 

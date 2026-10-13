@@ -74,9 +74,14 @@ class RoughTokenEstimator:
         Returns:
             int: 该消息的粗估 token 数。
         """
+        if hasattr(message, "message"):
+            return self.MESSAGE_OVERHEAD + self.estimate_value(message.text)
+        if hasattr(message, "to_storage_format"):
+            message = message.to_storage_format()
+            message["content"] = message.get("content", message.get("text", message.get("result", message.get("description", ""))))
         total = self.MESSAGE_OVERHEAD + self.estimate_value(message.get("content", ""))
         for tool_call in message.get("tool_calls") or []:
-            total += self.TOOL_CALL_OVERHEAD + self.estimate_value(tool_call)
+            total += self.TOOL_CALL_OVERHEAD + self.estimate_value({key: value for key, value in tool_call.items() if key != "provider_data"})
         return total
 
     def estimate_raw(
@@ -97,6 +102,6 @@ class RoughTokenEstimator:
             int: 完整输入的本地粗估 token 数。
         """
         total = self.MESSAGE_OVERHEAD + _rough_text_tokens(system_prompt or "")
-        total += self.estimate_value(tools or [])
+        total += self.estimate_value([tool.to_dict() if hasattr(tool, "to_dict") else tool for tool in tools or []])
         total += sum(self.estimate_message(message) for message in messages)
         return max(total, 1)

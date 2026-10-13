@@ -8,8 +8,8 @@ from app.agent.state.messages import (
     AssistantMessage,
     HumanMessage,
     MessageContractError,
-    ToolMediaMessage,
-    message_from_protocol_format,
+    ToolMessage, ImageContent,
+    message_from_history,
 )
 from app.runtime import get_chat_history_db
 
@@ -76,107 +76,40 @@ class ChatHistoryDao:
 
     @staticmethod
     def _project_protocol_row(row: tuple) -> list[dict]:
-        """恢复协议行并生成可见历史项，真人和 Assistant 项携带入口来源。
-
-        Args:
-            row (tuple): 固定查询列顺序的 SQLite 行。
-
-        Returns:
-            list[dict]: 一条协议行对应的零个或多个可见历史项。
-
-        Raises:
-            MessageContractError: 协议消息 id={row_id} 的 message_json 必须是对象；协议消息 id={row_id} 缺少 message_type；数据库与当前消息契约不兼容；协议消息 id={row_id} 的 message_json 无效；协议消息 id={row_id} 的 attachments_json 无效；协议消息 id={row_id} 不符合当前消息契约。
-        """
-        (
-            row_id,
-            message_id,
-            role,
-            raw_json,
-            created_at,
-            record_kind,
-            attachments_json,
-            message_type,
-            raw_domain,
-            associated_message_id,
-        ) = row
-        # 1. 解析协议正文和附件，格式损坏明确报告消息契约错误，不能显示成空白历史。
+        """将一条业务记录投影为聊天历史项，分页仍在可见投影后执行。"""
+        row_id, message_id, raw, created_at, kind, message_type = row
         try:
-            message = json.loads(raw_json)
-        except (TypeError, json.JSONDecodeError) as exc:
-            raise MessageContractError(
-                f"协议消息 id={row_id} 的 message_json 无效"
-            ) from exc
-        if not isinstance(message, dict):
-            raise MessageContractError(
-                f"协议消息 id={row_id} 的 message_json 必须是对象"
-            )
-        content_value = message.get("content", "")
-        if isinstance(content_value, list):
-            content = "\n".join(
-                str(part.get("text", ""))
-                for part in content_value
-                if isinstance(part, dict) and part.get("type") == "text"
-            )
-        else:
-            content = str(content_value or "")
-        timestamp = ChatHistoryDao._to_local_time_text(created_at)
-        try:
-            images = json.loads(attachments_json) if attachments_json else None
-        except (TypeError, json.JSONDecodeError) as exc:
-            raise MessageContractError(
-                f"协议消息 id={row_id} 的 attachments_json 无效"
-            ) from exc
-        base = {"id": message_id or str(row_id), "timestamp": timestamp, "images": images}
-        # 2. 旧工具提示保留专用兼容分支；其他记录必须有合法领域类型，不能按 role 猜测。
-        if record_kind == "legacy_tool_notice":
-            return [{**base, "role": "AI_Tool_Calling", "content": content}]
-        if not message_type:
-            raise MessageContractError(
-                f"协议消息 id={row_id} 缺少 message_type；数据库与当前消息契约不兼容"
-            )
-        try:
-            domain_message = message_from_protocol_format(
-                message_type=str(message_type),
-                message_json=message,
-                message_id=str(message_id),
-                created_at=created_at,
-                domain_json=json.loads(raw_domain) if raw_domain else {},
-                associated_message_id=associated_message_id,
-            )
-        except MessageContractError:
-            raise
-        except (TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise MessageContractError(
-                f"协议消息 id={row_id} 不符合当前消息契约"
-            ) from exc
-        # 3. 真人和工具图片各按本身类型展示；后台通知与工具文本结果不直接进入聊天气泡。
-        if isinstance(domain_message, ToolMediaMessage):
-            image_urls = [
-                part.get("image_url", {}).get("url")
-                for part in content_value if isinstance(content_value, list)
-                if isinstance(part, dict) and part.get("type") == "image_url"
-            ]
-            return [{**base, "role": "AI", "content": content, "images": images or image_urls}]
-        if isinstance(domain_message, HumanMessage):
-            return [{**base, "role": "Human", "content": domain_message.text,
-                     "origin_channel": domain_message.origin_channel}]
-        if not isinstance(domain_message, AssistantMessage):
+            payload = json.loads(raw)
+            if not isinstance(payload, dict):
+                raise ValueError("message_json 必须是对象")
+            timestamp = ChatHistoryDao._to_local_time_text(created_at)
+            base = {"id": message_id or str(row_id), "timestamp": timestamp, "images": None}
+            # 1. 旧工具提示只供展示，不能伪造完整调用或进入领域解码。
+            if kind == "legacy_tool_notice":
+                return [{**base, "role": "AI_Tool_Calling", "content": str(payload.get("content", ""))}]
+            message = message_from_history(message_json=payload, message_type=message_type,
+                                           message_id=message_id, created_at=created_at)
+        except (ValueError, TypeError) as exc:
+            raise MessageContractError(f"协议消息 id={row_id} 不符合业务契约: {exc}") from exc
+        images = [part.storage_ref or part.url for part in getattr(message, "content", ())
+                  if isinstance(part, ImageContent) and (part.storage_ref or part.url)]
+        if isinstance(message, HumanMessage):
+            return [{**base, "role": "Human", "content": message.text,
+                     "images": images or None, "origin_channel": message.origin_channel}]
+        # 2. 工具文字仍隐藏，图片保持独立可见气泡并使用稳定派生编号。
+        if isinstance(message, ToolMessage):
+            return [{**base, "id": f"{message.message_id}:images", "role": "AI",
+                     "content": f"[系统消息]工具 {message.tool_name} 返回图片: ", "images": images}] if images else []
+        if not isinstance(message, AssistantMessage):
             return []
-        # 4. 一条助手协议记录可同时显示回复正文和工具提示，工具提示使用派生编号避免气泡去重冲突。
-        projected: list[dict] = []
-        if domain_message.text:
-            projected.append({**base, "role": "AI", "content": domain_message.text,
-                              "origin_channel": domain_message.origin_channel})
-        if domain_message.tool_calls:
-            names = [call.name for call in domain_message.tool_calls]
-            projected.append({
-                **base,
-                "id": f"{base['id']}:tools",
-                "role": "AI_Tool_Calling",
-                "content": f"调用了工具: {', '.join(names)}",
-                "origin_channel": domain_message.origin_channel,
-            })
-        return projected
+        result = []
+        if message.text:
+            result.append({**base, "role": "AI", "content": message.text, "origin_channel": message.origin_channel})
+        if message.tool_calls:
+            result.append({**base, "id": f"{message.message_id}:tools", "role": "AI_Tool_Calling",
+                "content": "调用了工具: " + ", ".join(call.name for call in message.tool_calls), "origin_channel": message.origin_channel})
+        return result
+
 
     @staticmethod
     async def _protocol_table_exists(conn: aiosqlite.Connection) -> bool:
@@ -228,9 +161,7 @@ class ChatHistoryDao:
         direction = "DESC" if descending else "ASC"
         return await conn.execute_fetchall(
             f"""
-            SELECT id, message_id, role, message_json, created_at,
-                   record_kind, attachments_json, message_type, domain_json,
-                   associated_message_id
+            SELECT id, message_id, message_json, created_at, record_kind, message_type
             FROM conversation_messages
             WHERE {' AND '.join(clauses)}
             ORDER BY id {direction}

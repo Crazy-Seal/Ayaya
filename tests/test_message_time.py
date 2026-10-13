@@ -1,3 +1,4 @@
+from app.agent.state.messages import text_content
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -7,10 +8,9 @@ from app.agent.memory.memories.semantic_mem0 import Mem0SemanticMemory
 from app.agent.state import AgentState
 from app.agent.state.messages import (
     AssistantMessage,
-    AvailableMedia,
     HumanMessage,
     ToolCall,
-    ToolMediaMessage,
+    ImageContent,
     ToolMessage,
     message_from_storage_format,
 )
@@ -21,7 +21,7 @@ FIXED_TIME = datetime(2026, 7, 12, 3, 4, 5, tzinfo=timezone.utc)
 
 def test_message_round_trip_preserves_created_at() -> None:
     """验证消息保存恢复保留创建时间。"""
-    message = HumanMessage(text="原始输入", created_at=FIXED_TIME)
+    message = HumanMessage(content=text_content("原始输入"), created_at=FIXED_TIME)
     payload = message.to_storage_format()
 
     restored = message_from_storage_format(payload)
@@ -34,23 +34,17 @@ def test_message_round_trip_preserves_created_at() -> None:
 def test_time_projection_covers_dialogue_and_screenshot_without_mutation() -> None:
     """验证时间投影覆盖对话和截图且不改原消息。"""
     messages = (
-        HumanMessage(text="你好", created_at=FIXED_TIME),
-        AssistantMessage(text="你好呀", created_at=FIXED_TIME),
-        ToolMediaMessage(
-            tool_name="screenshot",
-            media_kind="screenshot",
-            text="截图",
-            payload=AvailableMedia(urls=("data:image/png;base64,eA==",)),
-            created_at=FIXED_TIME,
-        ),
+        HumanMessage(content=text_content("你好"), created_at=FIXED_TIME),
+        AssistantMessage(content=text_content("你好呀"), created_at=FIXED_TIME),
+        ToolMessage(tool_name="screenshot", tool_call_id="shot", content=(ImageContent("data:image/png;base64,eA==", media_kind="screenshot"),), created_at=FIXED_TIME),
         ToolMessage(
-            content="结果",
+            content=text_content("结果"),
             tool_name="read_file",
             tool_call_id="call",
             created_at=FIXED_TIME,
         ),
         AssistantMessage(
-            text="",
+            content=text_content(""),
             tool_calls=(ToolCall(id="c1", name="read_file", args={}),),
             created_at=FIXED_TIME,
         ),
@@ -58,28 +52,28 @@ def test_time_projection_covers_dialogue_and_screenshot_without_mutation() -> No
 
     projected = project_messages_with_time(messages)
 
-    assert "发送时间：2026-07-12 11:04:05 +0800 星期日" in projected[0]["content"]
-    assert "发送时间：2026-07-12 11:04:05 +0800 星期日" in projected[1]["content"]
-    assert "发送时间" not in str(projected[2]["content"])
-    assert projected[3]["content"] == "结果"
-    assert projected[4]["content"] == ""
+    assert "发送时间：2026-07-12 11:04:05 +0800 星期日" in projected[0].text
+    assert "发送时间：2026-07-12 11:04:05 +0800 星期日" in projected[1].text
+    assert "发送时间" not in str(projected[2].text)
+    assert projected[3].text == "结果"
+    assert projected[4].text == ""
     assert messages[0].text == "你好"
 
 
 def test_context_strategy_projects_time_and_removes_internal_metadata() -> None:
     """验证模型上下文附加时间并清除内部元数据。"""
     state = AgentState.create_new("time-test")
-    state.append_input(HumanMessage(text="你好", created_at=FIXED_TIME))
+    state.append_input(HumanMessage(content=text_content("你好"), created_at=FIXED_TIME))
     result = build_model_window(state)
 
-    assert "发送时间" in result[0]["content"]
-    assert "_created_at" not in result[0]
+    assert "发送时间" in result[0].text
+    assert state.messages[0].created_at == FIXED_TIME
     assert state.messages[0].text == "你好"
 
 
 def test_episodic_and_semantic_inputs_include_structured_message_time() -> None:
     """验证两种提取器保留领域消息的结构化时间，不修改消息正文。"""
-    message = HumanMessage(text="我准备学习 Python", created_at=FIXED_TIME)
+    message = HumanMessage(content=text_content("我准备学习 Python"), created_at=FIXED_TIME)
 
     episodic = object.__new__(EpisodicMemory)
     episodic.chat_settings = SimpleNamespace(address="主人", name="Ayaya")

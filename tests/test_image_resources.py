@@ -1,3 +1,5 @@
+from app.agent.state.messages import ImageContent
+from tests.model_capture import result_parts
 import asyncio
 import json
 from pathlib import Path
@@ -50,7 +52,7 @@ def _append_tool_image(state: AgentState, image: str) -> None:
     """
     call = ToolCall(id="call-draw", name="draw", args={})
     state.record_assistant_step("", (call,))
-    state.record_tool_result(call, "done", image_urls=(image,))
+    state.record_tool_result(call, result_parts('done', (image,), 'tool'))
 
 
 def test_vlm_default_config(monkeypatch) -> None:
@@ -135,7 +137,8 @@ def test_vlm_locate_client_is_closed(monkeypatch) -> None:
             """
             self.closed = True
 
-    monkeypatch.setattr(vlm, "AsyncOpenAI", FakeClient)
+    from app.agent.models import openai_chat
+    monkeypatch.setattr(openai_chat, "AsyncOpenAI", FakeClient)
     monkeypatch.setenv("VLM_API_KEY", "test-key")
 
     result = asyncio.run(
@@ -277,7 +280,7 @@ def test_user_image_is_saved_before_first_protocol_commit(
             )
             db = await agent.state_manager._get_db()
             row = (await db.execute_fetchall(
-                "SELECT message_json, attachments_json FROM conversation_messages"
+                "SELECT message_json, CASE WHEN json_extract(message_json,'$.content[1].storage_ref') IS NULL THEN NULL ELSE json_array(json_extract(message_json,'$.content[1].storage_ref')) END FROM conversation_messages"
             ))[0]
             return state, row
         finally:
@@ -289,7 +292,7 @@ def test_user_image_is_saved_before_first_protocol_commit(
 
     assert calls == [[image]]
     assert isinstance(message, HumanMessage)
-    assert message.image_filenames == ("stored.png",)
+    assert tuple(part.storage_ref for part in message.content if isinstance(part, ImageContent) and part.storage_ref) == ("stored.png",)
     assert "image_filenames" not in payload
     assert payload["content"][1]["image_url"]["url"] == "stored.png"
     assert json.loads(row[1]) == ["stored.png"]
@@ -338,7 +341,7 @@ def test_text_input_does_not_save_images(monkeypatch, tmp_path: Path) -> None:
     state = asyncio.run(scenario())
     assert isinstance(state.messages[-1], HumanMessage)
     assert state.messages[-1].text == "只有文字"
-    assert state.messages[-1].image_filenames == ()
+    assert tuple(part.storage_ref for part in state.messages[-1].content if isinstance(part, ImageContent) and part.storage_ref) == ()
 
 
 def test_image_save_failure_does_not_block_user_commit(
@@ -387,7 +390,7 @@ def test_image_save_failure_does_not_block_user_commit(
             )
             db = await agent.state_manager._get_db()
             row = (await db.execute_fetchall(
-                "SELECT message_json, attachments_json FROM conversation_messages"
+                "SELECT message_json, CASE WHEN json_extract(message_json,'$.content[1].storage_ref') IS NULL THEN NULL ELSE json_array(json_extract(message_json,'$.content[1].storage_ref')) END FROM conversation_messages"
             ))[0]
             return state, row
         finally:
@@ -400,7 +403,7 @@ def test_image_save_failure_does_not_block_user_commit(
     assert payload["content"][0]["text"] == "继续聊天"
     assert payload["content"][1]["image_url"]["url"] == "data:image/png;base64,AA=="
     assert isinstance(state.messages[-1], HumanMessage)
-    assert state.messages[-1].image_filenames == ()
+    assert tuple(part.storage_ref for part in state.messages[-1].content if isinstance(part, ImageContent) and part.storage_ref) == ()
     assert row[1] is None
 
 
@@ -430,7 +433,7 @@ def test_tool_image_is_externalized_for_protocol_but_kept_in_checkpoint(
             await manager.save(state, checkpoint_type="completed")
             db = await manager._get_db()
             protocol_raw, attachments_raw = (await db.execute_fetchall(
-                "SELECT message_json, attachments_json FROM conversation_messages WHERE record_kind='tool_image'"
+                "SELECT message_json, CASE WHEN json_extract(message_json,'$.content[1].storage_ref') IS NULL THEN NULL ELSE json_array(json_extract(message_json,'$.content[1].storage_ref')) END FROM conversation_messages WHERE message_type='tool'"
             ))[0]
             checkpoint_raw = (await db.execute_fetchall(
                 "SELECT state_json FROM checkpoints ORDER BY id DESC LIMIT 1"
@@ -442,7 +445,7 @@ def test_tool_image_is_externalized_for_protocol_but_kept_in_checkpoint(
     protocol, checkpoint, attachments = asyncio.run(scenario())
 
     assert attachments[0].startswith("tool/")
-    assert protocol["name"] == "system_tool_image"
+    assert protocol["content"][1]["media_kind"] == "tool"
     assert protocol["content"][1]["image_url"]["url"] == attachments[0]
     assert checkpoint["messages"][-1]["content"][1]["image_url"]["url"] == image
     assert (tmp_path / "images" / Path(attachments[0])).read_bytes() == b"\x00"
@@ -494,12 +497,12 @@ def test_tool_image_protocol_row_upgrades_after_transient_save_failure(
             await manager.save(state, checkpoint_type="completed")
             db = await manager._get_db()
             first_raw, first_attachments = (await db.execute_fetchall(
-                "SELECT message_json, attachments_json FROM conversation_messages WHERE record_kind='tool_image'"
+                "SELECT message_json, CASE WHEN json_extract(message_json,'$.content[1].storage_ref') IS NULL THEN NULL ELSE json_array(json_extract(message_json,'$.content[1].storage_ref')) END FROM conversation_messages WHERE message_type='tool'"
             ))[0]
 
             await manager.save(state, checkpoint_type="completed")
             second_raw, second_attachments = (await db.execute_fetchall(
-                "SELECT message_json, attachments_json FROM conversation_messages WHERE record_kind='tool_image'"
+                "SELECT message_json, CASE WHEN json_extract(message_json,'$.content[1].storage_ref') IS NULL THEN NULL ELSE json_array(json_extract(message_json,'$.content[1].storage_ref')) END FROM conversation_messages WHERE message_type='tool'"
             ))[0]
             return (
                 json.loads(first_raw),
@@ -557,7 +560,7 @@ def test_tool_image_save_exception_preserves_base64_and_checkpoint(
             await manager.save(state, checkpoint_type="completed")
             db = await manager._get_db()
             protocol_raw, attachments = (await db.execute_fetchall(
-                "SELECT message_json, attachments_json FROM conversation_messages WHERE record_kind='tool_image'"
+                "SELECT message_json, CASE WHEN json_extract(message_json,'$.content[1].storage_ref') IS NULL THEN NULL ELSE json_array(json_extract(message_json,'$.content[1].storage_ref')) END FROM conversation_messages WHERE message_type='tool'"
             ))[0]
             checkpoint_raw = (await db.execute_fetchall(
                 "SELECT state_json FROM checkpoints ORDER BY id DESC LIMIT 1"

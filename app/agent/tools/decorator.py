@@ -7,7 +7,7 @@
                        Annotated[类型, "说明"] 里（必填，缺失则装饰时报错）
 - execute     ← 适配器：args dict → kwargs，注入 context（若声明），统一日志与结果包装
 
-因为产出的是 BaseTool 子类，注册表 / ToolManager / pipeline / to_openai_tool 全部无感。
+因为产出的是 BaseTool 子类，注册表、ToolManager 和执行管道使用统一工具接口。
 
 名为 `context` 的参数被视为运行时注入的 ToolContext，不进 schema。
 """

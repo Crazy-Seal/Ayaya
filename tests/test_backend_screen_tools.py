@@ -1,3 +1,4 @@
+from tests.model_capture import image_urls, image_kind
 """屏幕工具直接返回结果，VLM 只在准备阶段定位，不依赖 Electron 回报。"""
 
 import asyncio
@@ -57,7 +58,7 @@ def test_screenshot_returns_image_without_execution_interrupt() -> None:
     """工具首次调用即取得后端图片，不产生领取和恢复中断。"""
     result = asyncio.run(screenshot().execute({}, context(DesktopPort())))
     assert result.interrupt is None
-    assert result.image_url == "data:image/png;base64,test"
+    assert image_urls(result)[0] == "data:image/png;base64,test"
 
 
 def test_control_screen_directly_executes_normalized_action() -> None:
@@ -66,7 +67,7 @@ def test_control_screen_directly_executes_normalized_action() -> None:
     result = asyncio.run(control_screen().execute({"bbox": [450, 450, 550, 550], "target": "目标"}, context(desktop)))
     assert result.interrupt is None
     assert desktop.actions[0].x_ratio == 0.5
-    assert result.image_url == desktop.image.data_url
+    assert image_urls(result)[0] == desktop.image.data_url
 
 
 def test_vlm_prepares_once_and_approved_resume_uses_saved_coordinates(monkeypatch) -> None:
@@ -102,7 +103,7 @@ def test_vlm_prepares_once_and_approved_resume_uses_saved_coordinates(monkeypatc
         assert not desktop.actions
         result = await tool.execute({"target": "搜索框"}, context(desktop,
             resume_data={"kind": AUTHORIZATION_GRANTED_KIND}, resume_state=prepared.resume_state))
-        assert result.interrupt is None and result.image_url == desktop.image.data_url
+        assert result.interrupt is None and image_urls(result)[0] == desktop.image.data_url
         assert desktop.actions[0].x_ratio == 0.5
         assert desktop.actions[0].y_ratio == 0.4
         assert calls == ["搜索框"]
@@ -113,8 +114,8 @@ def test_completed_action_without_capture_is_not_reported_unexecuted() -> None:
     """工具显示输入已完成而截图失败，防止模型根据错误说明重复点击。"""
     from app.agent.tools._screen_result import screen_tool_result
     result = screen_tool_result(ScreenActionResult("completed", error="截图失败"))
-    assert "屏幕操作完成" in result.content and "截图失败" in result.content
-    assert "未执行" not in result.content
+    assert "屏幕操作完成" in result.text and "截图失败" in result.text
+    assert "未执行" not in result.text
 
 
 @pytest.mark.parametrize("policy", ["allow", "ask", "deny"])

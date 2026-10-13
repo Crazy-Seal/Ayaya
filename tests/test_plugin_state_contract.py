@@ -1,3 +1,4 @@
+from tests.model_capture import capture_input
 import asyncio
 from dataclasses import FrozenInstanceError
 
@@ -143,6 +144,7 @@ def test_agent_commits_response_and_in_place_changes_after_rejected_replacement(
                 messages (list[dict]): 按对话顺序排列的消息集合。
                 tools (list[dict] | None): 当前向模型公开的工具定义。
             """
+            messages = capture_input(messages)
             yield StreamChunk(content="已保存的回复")
 
         async def close(self) -> None:

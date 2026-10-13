@@ -1,3 +1,4 @@
+from tests.model_capture import capture_input
 import ast
 import asyncio
 import gc
@@ -41,6 +42,7 @@ class _ScriptedLLM:
             messages (list[dict]): 按对话顺序排列的消息集合。
             tools (list[dict] | None): 当前向模型公开的工具定义。
         """
+        messages = capture_input(messages)
         for chunk in self.scripts.pop(0):
             yield chunk
 
@@ -227,6 +229,7 @@ def test_pipeline_does_not_record_usage_from_a_failed_stream() -> None:
                 messages (list[dict]): 按对话顺序排列的消息集合。
                 tools (list[dict] | None): 当前向模型公开的工具定义。
             """
+            messages = capture_input(messages)
             yield StreamChunk(
                 usage=TokenUsage(prompt_tokens=123, completion_tokens=7, total_tokens=130)
             )

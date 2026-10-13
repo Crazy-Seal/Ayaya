@@ -1,6 +1,5 @@
 """经统一授权后在后端截图，图片沿现有工具消息持久化。"""
 
-from app.agent.state.messages import SCREENSHOT_MESSAGE_NAME
 from app.agent.tools.base import ToolContext, ToolResult
 from app.agent.tools.decorator import tool
 
@@ -17,4 +16,4 @@ async def screenshot(context: ToolContext) -> ToolResult:
     if context.desktop is None:
         return ToolResult(content="错误: 未装配后端桌面模块")
     image = await context.desktop.capture_screen(stop_requested=context.stop_requested)
-    return ToolResult.success("截屏成功", image_url=image.data_url, image_message_name=SCREENSHOT_MESSAGE_NAME)
+    return ToolResult.success("截屏成功", image_url=image.data_url, media_kind="screenshot")
