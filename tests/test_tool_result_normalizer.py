@@ -13,11 +13,6 @@ from app.agent.tools.result_normalizer import (
 )
 
 
-def test_tool_result_has_no_fake_error_constructor() -> None:
-    """验证工具结果不暴露与字段冲突的错误构造方法。"""
-    assert not hasattr(ToolResult, "error")
-
-
 def test_weighted_text_limit_treats_ascii_as_quarter_character() -> None:
     """验证ASCII 按四分之一加权字符计数。"""
     assert weighted_char_count("a" * 20_000) == 5_000

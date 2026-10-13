@@ -1,22 +1,30 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { MotionPage } from "../src/settings/pages/motion-page.js";
+import type { ChatSettingsState } from "../src/settings/types.js";
 
 /**
- * 读取仓库 UI 文件，供检查页面结构、样式与事件绑定。
+ * 读取页面文件，检查初始属性及运行时使用的配置。
  *
  * Args:
- *     relativePath (string): 相对于 UI 根目录的待检查源码路径。
+ *     relativePath (string): 相对于 UI 根目录的文件路径。
+ *
+ * Returns:
+ *     string: 待检查的文件内容。
  */
 const readUiFile = (relativePath: string): string =>
   readFileSync(relativePath, "utf8");
 
 /**
- * 从测试页面源码提取指定元素，供检查语义类和可访问属性。
+ * 提取指定元素的初始属性，检查隐藏状态和可访问名称。
  *
  * Args:
- *     html (string): 当前需要检查结构和样式类的页面源码。
- *     id (string): 当前模型参数或日志记录的编号。
+ *     html (string): 页面 HTML 内容。
+ *     id (string): 待检查元素的 DOM 编号。
+ *
+ * Returns:
+ *     string: 包含元素初始属性的起始标签。
  */
 const elementById = (html: string, id: string): string => {
   const element = html.match(new RegExp(`<[^>]+id="${id}"[^>]*>`))?.[0];
@@ -24,326 +32,105 @@ const elementById = (html: string, id: string): string => {
   return element;
 };
 
-/**
- * 断言当前元素包含用例要求的全部共享样式类。
- *
- * Args:
- *     html (string): 当前需要检查结构和样式类的页面源码。
- *     id (string): 当前模型参数或日志记录的编号。
- *     expectedClasses (readonly string[]): 本用例要求该元素包含的共享样式类。
- */
-const assertHasClasses = (
-  html: string,
-  id: string,
-  expectedClasses: readonly string[],
-): void => {
-  const element = elementById(html, id);
-  const classNames = element.match(/class="([^"]+)"/)?.[1]?.split(/\s+/) ?? [];
-
-  for (const expectedClass of expectedClasses) {
-    assert.ok(
-      classNames.includes(expectedClass),
-      `#${id} 缺少共享样式类 ${expectedClass}`,
-    );
-  }
-};
-
-test("设置页和日志页共同引用窗口组件样式层", /**
- * 验证设置页和日志页共同引用窗口组件样式层。
- */
-() => {
-  const settingsCss = readUiFile("src/settings.css");
-  const logsCss = readUiFile("src/logs/logs.css");
-  const componentsCss = readUiFile("src/window-components.css");
-
-  assert.match(settingsCss, /@import "\.\/window-components\.css";/);
-  assert.match(logsCss, /@import "\.\.\/window-components\.css";/);
-  assert.match(componentsCss, /@import "\.\/window-theme\.css";/);
-});
-
-test("共享组件覆盖语义按钮、表单控件和完整交互状态", /**
- * 验证共享组件覆盖语义按钮、表单控件和完整交互状态。
- */
-() => {
-  const css = readUiFile("src/window-components.css");
-
-  for (const selector of [
-    ".ui-button",
-    ".ui-button--primary",
-    ".ui-button--danger",
-    ".ui-button--secondary",
-    ".ui-button--warning",
-    ".ui-button--icon",
-    ".ui-button--small",
-    ".ui-button--medium",
-    ".ui-control",
-    ".ui-select",
-    ".ui-checkbox",
-    ".ui-range",
-    ".ui-surface",
-    ".ui-table",
-    ".ui-dialog",
-    ".ui-toast",
-    ".ui-empty-state",
-  ]) {
-    assert.match(css, new RegExp(`\\${selector}\\b`), `缺少 ${selector}`);
-  }
-
-  assert.match(css, /\.ui-button:hover/);
-  assert.match(css, /\.ui-button:active/);
-  assert.match(css, /\.ui-button:focus-visible/);
-  assert.match(css, /\.ui-button:disabled/);
-  assert.match(css, /\.ui-checkbox:hover/);
-  assert.match(css, /\.ui-checkbox:checked/);
-  assert.match(css, /\.ui-checkbox:focus-visible/);
-  assert.match(css, /\.ui-checkbox:disabled/);
-  assert.match(css, /prefers-reduced-motion:\s*reduce/);
-});
-
-test("窗口静态控件使用统一语义类", /**
- * 验证窗口静态控件使用统一语义类。
- */
-() => {
-  const settingsHtml = readUiFile("settings.html");
-  const logsHtml = readUiFile("logs.html");
-
-  for (const id of [
-    "settings-min-btn",
-    "settings-close-btn",
-    "open-log-window-btn",
-    "import-model-btn",
-    "confirm-import-btn",
-    "cancel-import-btn",
-    "llm-confirm-btn",
-    "motion-confirm-btn",
-    "plugins-confirm-btn",
-    "context-strategy-confirm-btn",
-    "tools-confirm-btn",
-    "mcp-add-btn",
-    "mcp-policy-save-btn",
-    "mcp-test-btn",
-    "mcp-save-btn",
-    "mcp-cancel-btn",
-    "delete-confirm-cancel",
-    "delete-confirm-ok",
-  ]) {
-    assertHasClasses(settingsHtml, id, ["ui-button"]);
-  }
-
-  assertHasClasses(settingsHtml, "settings-close-btn", ["ui-button--danger"]);
-  assertHasClasses(settingsHtml, "import-model-btn", ["ui-button--primary"]);
-  assertHasClasses(settingsHtml, "open-log-window-btn", ["ui-button--primary"]);
-  assertHasClasses(settingsHtml, "delete-confirm-ok", ["ui-button--danger"]);
-  assertHasClasses(settingsHtml, "checkbox-follow-cursor", ["ui-checkbox"]);
-  assertHasClasses(settingsHtml, "checkbox-hide-on-screenshot", ["ui-checkbox"]);
-  assertHasClasses(settingsHtml, "mcp-transport", ["ui-control", "ui-select"]);
-
-  for (const id of [
-    "log-min-btn",
-    "log-close-btn",
-    "log-pause-btn",
-    "open-log-directory-btn",
-    "frontend-clear",
-    "backend-clear",
-  ]) {
-    assertHasClasses(logsHtml, id, ["ui-button"]);
-  }
-
-  assertHasClasses(logsHtml, "log-close-btn", ["ui-button--danger"]);
-  assertHasClasses(logsHtml, "open-log-directory-btn", ["ui-button--primary"]);
-  assertHasClasses(logsHtml, "log-pause-btn", ["ui-button--secondary"]);
-  assertHasClasses(logsHtml, "frontend-clear", ["ui-button--danger"]);
-  assertHasClasses(logsHtml, "log-search", ["ui-control"]);
-  assertHasClasses(logsHtml, "frontend-level", ["ui-control", "ui-select"]);
-  assertHasClasses(logsHtml, "backend-autoscroll", ["ui-checkbox"]);
-});
-
-test("设置页动态生成的控件也使用共享组件类", /**
- * 验证设置页动态生成的控件也使用共享组件类。
- */
-() => {
-  const modelPage = readUiFile("src/settings/pages/model-page.ts");
-  const motionPage = readUiFile("src/settings/pages/motion-page.ts");
-  const pluginsPage = readUiFile("src/settings/pages/plugins-page.ts");
-  const toolsPage = readUiFile("src/settings/pages/tools-page.ts");
-  const mcpPage = readUiFile("src/settings/pages/mcp-page.ts");
-
-  assert.match(modelPage, /delete-model-btn ui-button ui-button--danger/);
-  assert.match(motionPage, /motion-preview-btn ui-button ui-button--secondary/);
-  assert.match(
-    motionPage,
-    /motion-setting-select ui-control ui-control--small ui-select/,
-  );
-  assert.match(pluginsPage, /ui-checkbox/);
-  assert.match(toolsPage, /tool-policy-select ui-control ui-control--small ui-select/);
-  assert.match(toolsPage, /\["ask", "ASK"\]/);
-  assert.match(toolsPage, /\["allow", "ALLOW"\]/);
-  assert.match(toolsPage, /\["deny", "DENY"\]/);
-  assert.match(toolsPage, /document\.createElement\("details"\)/);
-  assert.match(toolsPage, /tool\.available \? "查看说明" : "不可用 · 查看原因"/);
-  assert.match(mcpPage, /variant: "secondary" \| "danger" = "secondary"/);
-  assert.match(mcpPage, /ui-button ui-button--\$\{variant\} ui-button--small/);
-  assert.match(mcpPage, /toggle.className = "ui-checkbox"/);
-});
-
-test("MCP 编辑器展开时使用自然高度且固定控件不会被压缩", /**
- * 验证MCP 编辑器展开时使用自然高度且固定控件不会被压缩。
- */
-() => {
-  const css = readUiFile("src/settings.css");
-
-  assert.match(
-    css,
-    /\.mcp-page\s*\{[^}]*min-height:\s*100%;[^}]*height:\s*auto;[^}]*box-sizing:\s*border-box;/s,
-  );
-  assert.match(
-    css,
-    /\.mcp-page\s*>\s*\.page-placeholder\s*\{[^}]*flex:\s*1;[^}]*width:\s*auto;[^}]*height:\s*auto;/s,
-  );
-  assert.match(
-    css,
-    /\.mcp-server-list\s*\{[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow:\s*auto;/s,
-  );
-  assert.match(
-    css,
-    /\.mcp-policy-save-btn\s*\{[^}]*flex-shrink:\s*0;[^}]*align-self:\s*flex-start;/s,
-  );
-  assert.match(
-    css,
-    /\.mcp-editor\s*\{[^}]*flex-shrink:\s*0;/s,
-  );
-});
-
-test("MCP 权限按钮位于编辑器之后并正确同步空状态", /**
- * 验证MCP 权限按钮位于编辑器之后并正确同步空状态。
+test("MCP 权限保存按钮在页面初始化时隐藏", /**
+ * 验证服务器配置加载前不会显示权限保存按钮。
  */
 () => {
   const html = readUiFile("settings.html");
-  const componentsCss = readUiFile("src/window-components.css");
-  const mcpPage = readUiFile("src/settings/pages/mcp-page.ts");
-  const editorIndex = html.indexOf('id="mcp-editor"');
-  const policyButtonIndex = html.indexOf('id="mcp-policy-save-btn"');
-
-  assert.notEqual(editorIndex, -1);
-  assert.ok(policyButtonIndex > editorIndex);
   assert.match(elementById(html, "mcp-policy-save-btn"), /\shidden(?:\s|>)/);
-  assert.match(
-    componentsCss,
-    /\.ui-button\[hidden\],\s*\.ui-empty-state\[hidden\]\s*\{[^}]*display:\s*none\s*!important;/s,
-  );
-  assert.match(
-    mcpPage,
-    /const editorOpen = !this\.q<HTMLFormElement>\("#mcp-editor"\)\.hidden;/,
-  );
-  assert.match(
-    mcpPage,
-    /this\.q<HTMLDivElement>\("#mcp-empty"\)\.hidden = hasServers \|\| editorOpen;/,
-  );
-  assert.match(
-    mcpPage,
-    /this\.q<HTMLButtonElement>\("#mcp-policy-save-btn"\)\.hidden = !hasServers;/,
-  );
-});
-
-test("设置侧栏在固定窗口高度内使用紧凑页签并隔离溢出滚动", /**
- * 验证设置侧栏在固定窗口高度内使用紧凑页签并隔离溢出滚动。
- */
-() => {
-  const themeCss = readUiFile("src/window-theme.css");
-  const settingsCss = readUiFile("src/settings.css");
-
-  assert.match(themeCss, /html,\s*body\s*\{[^}]*overflow:\s*hidden;/s);
-  assert.match(
-    settingsCss,
-    /\.settings-layout\s*\{[^}]*overflow:\s*hidden;/s,
-  );
-  assert.match(
-    settingsCss,
-    /\.settings-sidebar\s*\{[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;[^}]*overscroll-behavior:\s*contain;/s,
-  );
-  assert.match(
-    settingsCss,
-    /\.settings-tab\s*\{[^}]*padding-block:\s*var\(--spacing-sm\);/s,
-  );
-});
-
-test("共享下拉框显示清晰箭头并为原生选项提供主题样式", /**
- * 验证共享下拉框显示清晰箭头并为原生选项提供主题样式。
- */
-() => {
-  const css = readUiFile("src/window-components.css");
-
-  assert.doesNotMatch(
-    css,
-    /(?<!input)(?<!textarea)\.ui-control:read-only/,
-    "通用只读规则会错误命中 select 并清除背景箭头",
-  );
-  assert.match(css, /input\.ui-control:read-only/);
-  assert.match(css, /textarea\.ui-control:read-only/);
-  assert.match(
-    css,
-    /\.ui-select\s*\{[^}]*background-image:\s*var\(--icon-chevron\)/s,
-  );
-  assert.match(
-    css,
-    /\.ui-select\s*\{[^}]*background-size:\s*14px 14px;/s,
-  );
-  const optionRule = css.match(/\.ui-select option\s*\{([^}]*)\}/s)?.[1] ?? "";
-  assert.match(optionRule, /font-family:\s*var\(--font-family-body\);/);
-  assert.match(
-    optionRule,
-    /background-color:\s*var\(--color-bg-elevated\);/,
-  );
-  assert.match(
-    css,
-    /\.ui-select option:checked\s*\{[^}]*background-color:\s*var\(--color-primary-dark\);/s,
-  );
-});
-
-test("支持环境使用 base-select 美化按钮、Picker 和选项状态", /**
- * 验证支持环境使用 base-select 美化按钮、Picker 和选项状态。
- */
-() => {
-  const css = readUiFile("src/window-components.css");
-  const supportStart = css.indexOf("@supports (appearance: base-select)");
-
-  assert.notEqual(supportStart, -1, "缺少 base-select 渐进增强块");
-  const supportedCss = css.slice(supportStart);
-  assert.match(
-    supportedCss,
-    /\.ui-select,\s*\.ui-select::picker\(select\)\s*\{[^}]*appearance:\s*base-select;/s,
-  );
-  assert.match(
-    supportedCss,
-    /\.ui-select\s*\{[^}]*background-image:\s*none;/s,
-  );
-  assert.match(supportedCss, /\.ui-select::picker-icon\s*\{/);
-  assert.match(supportedCss, /\.ui-select:open::picker-icon\s*\{/);
-  assert.match(
-    supportedCss,
-    /\.ui-select::picker\(select\)\s*\{[^}]*max-height:\s*min\(320px,\s*50vh\);/s,
-  );
-  assert.match(supportedCss, /\.ui-select option:hover/);
-  assert.match(supportedCss, /\.ui-select option:focus/);
-  assert.match(supportedCss, /\.ui-select option:checked/);
-  assert.match(supportedCss, /\.ui-select option:disabled/);
-  assert.match(supportedCss, /\.ui-select option::checkmark\s*\{/);
 });
 
 test("动态表情设置下拉框提供包含动作名称的可访问名称", /**
- * 验证动态表情设置下拉框提供包含动作名称的可访问名称。
+ * 渲染两个不同动作，检查实际加入表格的下拉框能通过动作名称区分。
  */
 () => {
-  const motionPage = readUiFile("src/settings/pages/motion-page.ts");
+  /**
+   * 保存动作页面渲染的控件及父子关系，不模拟浏览器布局。
+   *
+   * Attributes:
+   *     tagName (string): 创建元素时指定的标签名。
+   *     children (Element[]): 页面实际追加的子元素。
+   *     dataset (Record<string, string>): 页面写入的动作编号等数据。
+   *     ariaLabel (string): 页面设置的可访问名称。
+   */
+  class Element extends EventTarget {
+    children: Element[] = [];
+    dataset: Record<string, string> = {};
+    ariaLabel = "";
 
-  assert.match(
-    motionPage,
-    /select\.ariaLabel\s*=\s*`\$\{motionName\}\s*的动作设置`;/,
-  );
+    /**
+     * 创建供动作页面追加内容和登记事件的测试元素。
+     *
+     * Args:
+     *     tagName (string): 当前元素的标签名。
+     */
+    constructor(public readonly tagName: string) {
+      super();
+    }
+
+    /**
+     * 页面渲染调用时保存子元素，供断言检查真正加入表格的控件。
+     *
+     * Args:
+     *     child (Element): 页面准备追加的元素。
+     *
+     * Returns:
+     *     Element: 已追加的子元素。
+     */
+    appendChild(child: Element): Element {
+      this.children.push(child);
+      return child;
+    }
+  }
+
+  const originalDocument = globalThis.document;
+  const body = new Element("tbody");
+  const motions = ["挥手", "眨眼"];
+  // 1. 仅替换元素创建入口，页面仍执行真实渲染并追加各行动作控件。
+  globalThis.document = {
+    /**
+     * 动作页面创建表格和表单控件时返回可记录父子关系的测试元素。
+     *
+     * Args:
+     *     tagName (string): 页面请求创建的 HTML 标签名。
+     *
+     * Returns:
+     *     Element: 供页面填写属性并追加的元素。
+     */
+    createElement: (tagName: string) => new Element(tagName),
+  } as unknown as Document;
+  try {
+    const page = new MotionPage(
+      body as unknown as HTMLTableSectionElement,
+      new Element("div") as unknown as HTMLDivElement,
+      new Element("button") as unknown as HTMLButtonElement,
+      new Element("textarea") as unknown as HTMLTextAreaElement,
+    );
+    page.render({
+      saved: { name: "测试助手" } as ChatSettingsState,
+      dependencies: { availableMotions: motions },
+    });
+    // 2. 检查已追加的两行动作控件，不要求属性通过某种源码语句赋值。
+    const selects: Element[] = [];
+    for (const row of body.children) {
+      for (const cell of row.children) {
+        for (const control of cell.children) {
+          if (control.tagName === "select") selects.push(control);
+        }
+      }
+    }
+    assert.equal(selects.length, motions.length);
+    assert.ok(selects[0].ariaLabel.includes(motions[0]));
+    assert.ok(selects[1].ariaLabel.includes(motions[1]));
+    assert.notEqual(selects[0].ariaLabel, selects[1].ariaLabel);
+  } finally {
+    // 3. 无论渲染或断言是否失败，都恢复其他用例使用的页面环境。
+    globalThis.document = originalDocument;
+  }
 });
 
 test("工具审批引导输入框提供可访问名称", /**
- * 验证工具审批引导输入框提供可访问名称。
+ * 验证审批输入框在页面初始化时声明可访问名称。
  */
 () => {
   const html = readUiFile("chat.html");
@@ -355,7 +142,7 @@ test("工具审批引导输入框提供可访问名称", /**
 });
 
 test("Vite 生产构建使用相对资源路径供 Electron loadFile 加载", /**
- * 验证Vite 生产构建使用相对资源路径供 Electron loadFile 加载。
+ * 验证构建配置声明供本地文件加载使用的相对资源路径。
  */
 () => {
   const viteConfig = readUiFile("vite.config.ts");

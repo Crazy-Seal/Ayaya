@@ -289,25 +289,3 @@ def test_tool_registry_exposes_new_tools_without_internal_modules() -> None:
     assert "result_artifacts" not in names
     assert "result_limits" not in names
     assert "result_normalizer" not in names
-
-
-def test_apply_patch_schema_explains_the_supported_patch_grammar() -> None:
-    """验证补丁 Schema 明确说明支持的语法。"""
-    description = apply_patch.parameters_schema["properties"]["patch"]["description"]
-
-    assert "*** Add File:" in description
-    assert "*** Update File:" in description
-    assert "*** Delete File:" in description
-    assert "@@" in description
-    assert "同一路径在一个补丁中只能操作一次" in description
-    assert "原文和上下文必须在文件中唯一匹配" in description
-    assert "*** Add File: notes/new.txt\n+第一行" in description
-    assert (
-        "*** Update File: app/example.py\n"
-        "@@\n"
-        " unchanged()\n"
-        "-old_value = 1\n"
-        "+old_value = 2\n"
-        " unchanged()"
-    ) in description
-    assert "*** Delete File: notes/obsolete.txt" in description

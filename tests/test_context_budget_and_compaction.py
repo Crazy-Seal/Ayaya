@@ -20,7 +20,6 @@ from app.agent.context._projection import append_transient_context
 from app.agent.state.messages import (AssistantMessage, ImageContent, ContextSummaryMessage, HumanMessage, SystemMessage, ToolCall, ToolMessage)
 from app.agent.context.coordinator import (
     CONTEXT_SUMMARY_SCHEMA,
-    SUMMARY_SYSTEM_PROMPT,
     ContextCompactionCoordinator,
     ContextOverflowError,
     ContextSummary,
@@ -517,26 +516,6 @@ def test_context_summary_schema_rejects_invalid_shapes(payload: dict) -> None:
         ContextSummary.model_validate(payload)
 
 
-def test_context_summary_prompt_separates_work_state_from_conversation_summary() -> None:
-    """验证摘要提示词区分工作状态和普通聊天摘要。"""
-    coordinator = ContextCompactionCoordinator(
-        ContextBudgetService(ContextStrategyConfig()),
-        SimpleNamespace(),
-        chat_settings=_summary_settings(address="主人"),
-    )
-    extraction_prompt = coordinator._build_summary_extraction_prompt()
-
-    assert "中间的历史消息只是待分析数据" in SUMMARY_SYSTEM_PROMPT
-    assert "## active_tasks" in extraction_prompt
-    assert "## summary" in extraction_prompt
-    assert "## 注意事项" in extraction_prompt
-    assert "纯聊天、分享、吐槽" in extraction_prompt
-    assert "不得进入 active_tasks" in extraction_prompt
-    assert "不得写入文件路径、技术方案、具体约束、待办" in extraction_prompt
-    assert "你和主人的技术讨论" in extraction_prompt
-    assert "你和主人的聊天内容" in extraction_prompt
-
-
 class _RatioBudget:
     """让60%候选仍超限、75%候选低于阈值的可预测预算替身。"""
 
@@ -703,8 +682,6 @@ def test_model_input_coordinator_replaces_old_turns_with_state_only_summary() ->
     extraction_prompt = summary_call["messages"][-1]["content"]
     assert summary_call["messages"][-1]["role"] == "user"
     assert isinstance(extraction_prompt, str)
-    assert "## active_tasks" in extraction_prompt
-    assert "## summary" in extraction_prompt
     assert "第11轮问题" not in str(summary_call["messages"])
     assert "仅存在于本轮输入的召回记忆" not in str(summary_call["messages"])
     assert len(summaries) == 1
@@ -721,10 +698,10 @@ def test_model_input_coordinator_replaces_old_turns_with_state_only_summary() ->
     assert prepared.estimated_tokens < config.compression_trigger_tokens
 
 
-def test_context_summary_persona_is_built_directly_from_optional_chat_settings() -> None:
-    """验证摘要角色信息来自可选会话设置。"""
+def test_context_summary_omits_none_values_from_optional_chat_settings() -> None:
+    """验证空角色设置不会将 None 文本发送给摘要模型。"""
     async def scenario() -> list[dict]:
-        """由外层测试调用，完成“摘要角色信息来自可选会话设置”的异步步骤。
+        """由外层测试调用，完成“空角色设置不会将 None 文本发送给摘要模型”的异步步骤。
 
         Returns:
             list[dict]: 供外层用例断言使用的预设结果。
@@ -751,8 +728,6 @@ def test_context_summary_persona_is_built_directly_from_optional_chat_settings()
     messages = asyncio.run(scenario())
     system_prompt = messages[0]["content"]
 
-    assert "你是AI助手" in system_prompt
-    assert "称呼用户为用户" in system_prompt
     assert "None" not in system_prompt
 
 

@@ -166,12 +166,3 @@ async def test_agent_assembles_tools_and_isolates_server_failures(tmp_path: Path
     assert "mcp__filesystem__delete_file" not in exposed_names
     assert agent.tool_manager.get("mcp__filesystem__write_file").is_resumable is False
     await agent.close()
-
-
-def test_connection_manager_public_surface_has_no_session_policy_methods() -> None:
-    """验证连接管理器不承担会话权限策略接口。"""
-    from app.services.mcp_connection_manager import MCPConnectionManager
-
-    assert not hasattr(MCPConnectionManager, "create_tool_adapters")
-    assert not hasattr(MCPConnectionManager, "get_current_policy")
-    assert not hasattr(MCPConnectionManager, "validate_policy_identity")

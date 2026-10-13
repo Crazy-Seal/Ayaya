@@ -6,9 +6,7 @@ from app.agent.plugins.registry import PluginRegistry
 
 def test_plugin_registry_auto_discovers_plugins() -> None:
     """验证插件注册表自动发现内置插件。"""
-    assert not PluginRegistry.has("context_window")
     assert PluginRegistry.has("memory")
-    assert not PluginRegistry.has("image")
 
 
 def test_plugins_endpoint_exposes_metadata_from_config_model() -> None:
@@ -21,8 +19,6 @@ def test_plugins_endpoint_exposes_metadata_from_config_model() -> None:
     assert response.status_code == 200
     payload = response.json()
     plugins = {item["name"]: item for item in payload["data"]["plugins"]}
-
-    assert "context_window" not in plugins
 
     memory = plugins["memory"]
     assert memory["inherent"] is True

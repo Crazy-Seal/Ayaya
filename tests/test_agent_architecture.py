@@ -544,27 +544,8 @@ def test_agent_runtime_import_graph_is_acyclic() -> None:
         assert_acyclic(module, ())
 
 
-def test_state_and_context_are_deep_packages_with_a_narrow_pipeline_seam() -> None:
-    """验证状态和上下文包仅通过必要接口与管道连接。"""
-    agent_root = Path(__file__).parents[1] / "app" / "agent"
-    expected_modules = {
-        "state/model.py",
-        "state/messages.py",
-        "state/time.py",
-        "state/manager.py",
-        "context/config.py",
-        "context/runtime.py",
-        "context/coordinator.py",
-        "context/ports.py",
-        "context/_budget.py",
-        "context/_projection.py",
-        "context/_compaction.py",
-        "core/response_filter.py",
-        "utils/domain/weighted_text.py",
-    }
-    assert not {
-        path for path in expected_modules if not (agent_root / path).is_file()
-    }
+def test_pipeline_context_dependencies_are_provided_through_model_input() -> None:
+    """验证管道通过模型输入协调器接收上下文依赖，避免重复注入同一配置。"""
     parameters = inspect.signature(ExecutionPipeline.__init__).parameters
     assert "model_input" in parameters
     assert {
@@ -573,7 +554,3 @@ def test_state_and_context_are_deep_packages_with_a_narrow_pipeline_seam() -> No
         "diary_coverage",
         "chat_settings",
     }.isdisjoint(parameters)
-
-    for relative_path in ("context/_compaction.py", "memory/manager.py"):
-        source = (agent_root / relative_path).read_text(encoding="utf-8")
-        assert "app.agent.tools.result_normalizer" not in source

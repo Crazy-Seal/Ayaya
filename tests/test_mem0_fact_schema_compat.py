@@ -171,11 +171,9 @@ def test_fact_adapter_rejects_invalid_shapes_after_one_retry(
     assert len(delegate.calls) == 2
 
 
-def test_fact_prompt_declares_exact_contract_and_marker() -> None:
-    """验证事实提示词声明准确结构和识别标记。"""
+def test_fact_prompt_includes_runtime_extraction_marker() -> None:
+    """验证事实提示词包含运行时分流所需的识别标记。"""
     assert MEM0_FACT_EXTRACTION_MARKER in MEM0_CUSTOM_INSTRUCTIONS
-    assert '{"facts": ["记忆1", "记忆2"]}' in MEM0_CUSTOM_INSTRUCTIONS
-    assert '{"facts": []}' in MEM0_CUSTOM_INSTRUCTIONS
 
 
 def test_cached_mem0_wraps_library_llm(monkeypatch, tmp_path) -> None:

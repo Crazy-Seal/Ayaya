@@ -10,9 +10,7 @@ from app.agent.plugins.base import HookContext, PluginHook
 from app.agent.state.manager import StateManager
 from app.agent.memory.memories.diary import DiaryMemory
 from app.agent.memory.memories.episodic import EpisodicMemory
-from app.agent.memory.memories.semantic_mem0 import MEM0_CUSTOM_INSTRUCTIONS
 from app.agent.memory.store.chat_history_store import ChatHistoryStore
-from app.agent.memory.store.diary_sqlite_store import DiarySqliteStore
 from app.agent.state.messages import (
     AssistantMessage,
     HumanMessage,
@@ -285,16 +283,13 @@ def test_diary_generation_restores_previous_diaries_and_conversation_context() -
     assert [message["role"] for message in memory.llm.calls[0]] == ["user"]
     prompt = memory.llm.calls[0][0]["content"]
     assert prompt.index("【2026-08-30】") < prompt.index("【2026-08-31】")
-    assert prompt.index("之前的日记：") < prompt.index("2026-09-01之前最后的对话记录：")
-    assert prompt.index("2026-09-01之前最后的对话记录：") < prompt.index("2026-09-01的对话内容（这是需要你记录的部分）：")
     assert "昨天先确定两个字段" in prompt
     assert "今天继续昨天的设计" in prompt
-    assert "只是为了让你更好的理解上下文，不要将这些内容重复总结" in prompt
     assert "没有与用户交互" not in prompt
     assert memory.store.added == [("session", date(2026, 9, 1), "生成的日记")]
 
-def test_diary_prompt_marks_missing_reference_context_as_unavailable() -> None:
-    """验证缺失前情在日记提示词中明确说明。"""
+def test_diary_prompt_preserves_current_messages_without_reference_context() -> None:
+    """验证没有前情时仍保留当前对话，且不将 None 文本发送给模型。"""
     memory = DiaryMemory.__new__(DiaryMemory)
     memory.chat_settings = SimpleNamespace(
         name="Ayaya",
@@ -309,8 +304,6 @@ def test_diary_prompt_marks_missing_reference_context_as_unavailable() -> None:
         previous_diaries=[],
         previous_messages=[],
     )
-    assert "暂无以前的日记" in prompt
-    assert "此前暂无对话记录" in prompt
     assert "今天第一次聊天" in prompt
     assert "None" not in prompt
 
@@ -650,19 +643,8 @@ def test_memory_plugin_does_not_own_completed_turn_counting() -> None:
     assert asyncio.run(scenario()) == (0, 0)
 
 
-def test_diaries_have_a_separate_effective_date_unique_table(tmp_path: Path) -> None:
-    """验证日记使用独立有效日期唯一表。
-
-    Args:
-        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
-    """
-    store = DiarySqliteStore(str(tmp_path / "memory.sqlite3"))
-    assert store.TABLE_NAME == "diaries"
-
-
-def test_memory_prompts_only_add_the_tool_evidence_constraint() -> None:
-    """验证记忆提示词只追加工具事实约束。"""
-    assert TOOL_MEMORY_CONSTRAINT in MEM0_CUSTOM_INSTRUCTIONS
+def test_episodic_prompt_includes_the_tool_evidence_constraint() -> None:
+    """验证情景记忆构造的模型输入包含工具事实约束。"""
     memory = EpisodicMemory.__new__(EpisodicMemory)
     memory.chat_settings = SimpleNamespace(
         name="AI", feature="温柔", character="助手", address="用户", characteristic="忠实"

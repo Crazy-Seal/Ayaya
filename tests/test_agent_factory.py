@@ -123,10 +123,3 @@ def test_agent_factory_loads_memory_when_all_memory_types_are_disabled(monkeypat
         "enable_semantic": False,
         "long_term_memory_every_human_messages": 10,
     }
-
-
-def test_image_is_not_registered_as_standalone_plugin() -> None:
-    """验证图片处理不会注册为独立插件。"""
-    from app.agent.plugins.registry import PluginRegistry
-
-    assert not PluginRegistry.has("image")

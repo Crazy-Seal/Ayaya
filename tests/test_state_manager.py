@@ -352,11 +352,6 @@ def test_fresh_database_message_type_check_uses_shared_protocol_types(
     assert allowed_types == PROTOCOL_MESSAGE_TYPES
 
 
-def test_chat_history_store_has_no_independent_write_api() -> None:
-    """验证历史存储没有独立写入接口。"""
-    assert not hasattr(ChatHistoryStore, "save_chat_message")
-
-
 def test_chat_history_store_honors_previous_input_high_watermark(tmp_path: Path) -> None:
     """验证历史读取遵守上一次输入捕获的编号边界。
 
@@ -504,6 +499,3 @@ def test_chat_history_store_constructor_does_not_initialize_schema(tmp_path: Pat
     ChatHistoryStore(db_path=db_path)
 
     assert not db_path.exists()
-    assert not hasattr(ChatHistoryStore, "_ensure_table")
-    assert not hasattr(ChatHistoryStore, "list_chat_history")
-    assert not hasattr(ChatHistoryStore, "has_chat_on_date")

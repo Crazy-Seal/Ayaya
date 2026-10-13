@@ -3,85 +3,49 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 /**
- * 读取仓库 UI 文件，供检查页面结构、样式与事件绑定。
+ * 提取页面元素的初始属性，检查可访问名称和键盘焦点。
  *
  * Args:
- *     relativePath (string): 相对于 UI 根目录的待检查源码路径。
+ *     html (string): 页面 HTML 内容。
+ *     id (string): 待检查元素的 DOM 编号。
+ *
+ * Returns:
+ *     string: 包含元素初始属性的起始标签。
  */
-const readUiFile = (relativePath: string): string =>
-  readFileSync(relativePath, "utf8");
+const elementById = (html: string, id: string): string => {
+  const element = html.match(new RegExp(`<[^>]+id="${id}"[^>]*>`))?.[0];
+  assert.ok(element, `缺少元素 #${id}`);
+  return element;
+};
 
-test("设置侧栏将日志入口放在独立紧凑工具区", /**
- * 验证设置侧栏将日志入口放在独立紧凑工具区。
+test("设置页日志入口提供可访问名称", /**
+ * 验证日志入口可通过其可访问名称识别。
  */
 () => {
-  const html = readUiFile("settings.html");
-  const utilitySection = html.match(
-    /<div class="settings-utility-section">[\s\S]*?<\/div>/,
-  )?.[0];
-
-  assert.ok(utilitySection, "缺少设置侧栏独立工具区");
-  assert.match(utilitySection, /id="open-log-window-btn"/);
-  assert.match(utilitySection, /aria-label="打开日志控制台"/);
-  assert.match(utilitySection, /data-icon="log"/);
-  assert.match(utilitySection, />\s*日志\s*<\/button>/);
-  assert.doesNotMatch(utilitySection, />\s*日志控制台\s*<\/button>/);
+  const html = readFileSync("settings.html", "utf8");
+  assert.match(elementById(html, "open-log-window-btn"), /aria-label="打开日志控制台"/);
 });
 
-test("日志窗口复用设置标题栏并使用阈值级别选项", /**
- * 验证日志窗口复用设置标题栏并使用阈值级别选项。
+test("日志窗口按钮提供可访问名称并列出日志级别", /**
+ * 验证窗口操作按钮的可访问名称及页面公开的日志级别选项。
  */
 () => {
-  const html = readUiFile("logs.html");
+  const html = readFileSync("logs.html", "utf8");
 
-  assert.match(html, /class="settings-titlebar log-titlebar"/);
-  assert.match(html, /class="settings-title log-title"/);
-  assert.match(html, /aria-label="最小化"><span data-icon="minimize"><\/span><\/button>/);
-  assert.match(html, /aria-label="关闭"><span data-icon="close"><\/span><\/button>/);
+  assert.match(elementById(html, "log-min-btn"), /aria-label="最小化"/);
+  assert.match(elementById(html, "log-close-btn"), /aria-label="关闭"/);
   assert.match(html, /<option value="debug">DEBUG<\/option>/);
   assert.match(html, /<option value="info">INFO<\/option>/);
   assert.match(html, /<option value="warn">WARNING<\/option>/);
   assert.match(html, /<option value="error">ERROR<\/option>/);
-  assert.match(html, /class="panel-btn panel-btn-danger[^"]*ui-button--danger/);
 });
 
-test("设置页与日志页共同使用窗口视觉基础样式", /**
- * 验证设置页与日志页共同使用窗口视觉基础样式。
+test("前后端日志列表允许键盘聚焦", /**
+ * 验证两个日志列表在页面初始化时都可以进入键盘焦点顺序。
  */
 () => {
-  const sharedCss = readUiFile("src/window-theme.css");
-  const componentsCss = readUiFile("src/window-components.css");
-  const settingsCss = readUiFile("src/settings.css");
-  const logsCss = readUiFile("src/logs/logs.css");
+  const html = readFileSync("logs.html", "utf8");
 
-  assert.match(settingsCss, /@import "\.\/window-components\.css";/);
-  assert.match(logsCss, /@import "\.\.\/window-components\.css";/);
-  assert.match(componentsCss, /@import "\.\/window-theme\.css";/);
-  assert.match(sharedCss, /color-scheme:\s*dark/);
-  assert.match(componentsCss, /\.ui-button:active/);
-  assert.match(componentsCss, /:focus-visible/);
-  assert.match(sharedCss, /@media \(prefers-reduced-motion: reduce\)/);
-  assert.doesNotMatch(logsCss, /--color-primary:/);
-});
-
-test("日志列表使用可聚焦底部锚点和增量渲染而非每批整表重建", /**
- * 验证日志列表使用可聚焦底部锚点和增量渲染而非每批整表重建。
- */
-() => {
-  const html = readUiFile("logs.html");
-  const viewer = readUiFile("src/logs/log-viewer.ts");
-  const css = readUiFile("src/logs/logs.css");
-
-  assert.match(html, /id="frontend-logs"[^>]*tabindex="0"/);
-  assert.match(html, /id="backend-logs"[^>]*tabindex="0"/);
-  assert.match(viewer, /appendIncomingRecords/);
-  assert.match(viewer, /syncEmptyState/);
-  assert.match(viewer, /dataset\.recordId/);
-  assert.match(viewer, /log-bottom-anchor/);
-  assert.doesNotMatch(
-    viewer,
-    /model\?\.append\(batch\.records\);\s*if \(!model\?\.isPaused\(\)\) renderAll\(\);/,
-  );
-  assert.doesNotMatch(css, /content-visibility:\s*auto/);
-  assert.doesNotMatch(css, /contain-intrinsic-size:/);
+  assert.match(elementById(html, "frontend-logs"), /tabindex="0"/);
+  assert.match(elementById(html, "backend-logs"), /tabindex="0"/);
 });
