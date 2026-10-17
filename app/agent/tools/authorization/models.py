@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal, TypeAlias
 
-from app.agent.tools.base import InterruptEvent, ToolResult
+from app.agent.tools.core.base import InterruptEvent, ToolResult
 from app.schemas.runtime_types import ApprovalDecisionKind
 
 

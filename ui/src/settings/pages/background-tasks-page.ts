@@ -153,7 +153,7 @@ export class BackgroundTasksPage {
       };
       const seconds = Math.max(0, Math.floor((Date.parse(record.ended_at || new Date().toISOString())
         - Date.parse(record.created_at)) / 1000));
-      title.textContent = `${record.command} · ${labels[record.status]} · ${Math.floor(seconds / 60)}分${seconds % 60}秒`;
+      title.textContent = `[${record.tool_name || "未知工具"}] ${record.command} · ${labels[record.status]} · ${Math.floor(seconds / 60)}分${seconds % 60}秒`;
       const details = document.createElement("button");
       details.type = "button";
       details.className = "ui-button ui-button--secondary ui-button--small";

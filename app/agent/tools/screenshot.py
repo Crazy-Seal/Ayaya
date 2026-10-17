@@ -1,7 +1,7 @@
 """经统一授权后在后端截图，图片沿现有工具消息持久化。"""
 
-from app.agent.tools.base import ToolContext, ToolResult
-from app.agent.tools.decorator import tool
+from app.agent.tools.core.base import ToolContext, ToolResult
+from app.agent.tools.core.decorator import tool
 
 
 @tool(compressible=True)

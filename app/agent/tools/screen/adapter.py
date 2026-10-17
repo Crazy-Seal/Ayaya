@@ -1,6 +1,6 @@
 """在屏幕工具与桌面模块之间转换明确动作和副作用结果。"""
 
-from app.agent.tools.base import ToolResult
+from app.agent.tools.core.base import ToolResult
 from app.schemas.desktop import ScreenAction, ScreenActionResult
 
 

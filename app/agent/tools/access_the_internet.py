@@ -5,7 +5,7 @@ from typing import Annotated
 
 from dotenv import dotenv_values
 
-from app.agent.tools.decorator import tool
+from app.agent.tools.core.decorator import tool
 from app.agent.utils.infra.log import shorten_for_log
 
 # 项目根目录下的 .env（access_the_internet.py 位于 app/agent/tools/ 下，向上 3 级即根）

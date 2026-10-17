@@ -1,15 +1,15 @@
 """
 工具注册表
 
-支持延迟加载，避免循环依赖。工具清单由「自动扫描 tools/ 目录」生成，无需手维护。
+通用注册逻辑位于 tools/core，仅延迟扫描 tools 根目录中的具体工具定义。
 """
 
-import os
+from pathlib import Path
 import pkgutil
 from typing import Type
 import logging
 
-from app.agent.tools.base import BaseTool
+from app.agent.tools.core.base import BaseTool
 
 logger = logging.getLogger(__name__)
 
@@ -133,24 +133,17 @@ class ToolRegistry:
 
 # ==================== 自动扫描发现工具 ====================
 
-# 约定：tools/ 下每个 .py 文件 = 一个工具，文件名即工具名；下列模块不是工具，跳过。
-_NON_TOOL_MODULES = {
-    "registry",
-    "base",
-    "decorator",
-    "result_artifacts",
-    "result_limits",
-    "result_normalizer",
-    "authorization",
-}
+# tools/ 根目录中的 Python 模块为工具定义；子目录为支撑代码，不参与自动发现。
+# 历史兼容入口继续按名称隐藏，不维护通用模块排除清单。
+_HIDDEN_TOOL_MODULES = {"run_ps"}
 
 
 def _discover_tools() -> None:
     """扫描 tools/ 目录，把每个工具模块按文件名延迟注册（不导入工具模块）。"""
-    tools_dir = os.path.dirname(__file__)
-    for module_info in pkgutil.iter_modules([tools_dir]):
+    tools_dir = Path(__file__).resolve().parents[1]
+    for module_info in pkgutil.iter_modules([str(tools_dir)]):
         mod_name = module_info.name
-        if mod_name.startswith("_") or mod_name in _NON_TOOL_MODULES:
+        if module_info.ispkg or mod_name.startswith("_") or mod_name in _HIDDEN_TOOL_MODULES:
             continue
         ToolRegistry.register_lazy(mod_name, f"app.agent.tools.{mod_name}")
 

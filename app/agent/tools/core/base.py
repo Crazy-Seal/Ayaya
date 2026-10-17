@@ -1,9 +1,11 @@
 """工具执行契约、结果类型与基础实现。"""
 
+from pathlib import Path
+
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Awaitable, Callable, Protocol, TYPE_CHECKING
 from app.schemas.desktop import DesktopOperations, StopRequested
 
 from app.schemas.runtime_types import (
@@ -11,6 +13,9 @@ from app.schemas.runtime_types import (
 )
 from app.agent.state.messages import ContentPart, ImageContent, text_content, validate_content, content_text
 from app.agent.models.contracts import ToolDefinition
+
+if TYPE_CHECKING:
+    from app.agent.tools.terminal.models import TaskLaunchResult
 
 
 # ==================== 中断事件 ====================
@@ -113,6 +118,7 @@ class ToolContext:
         task_launcher ('TaskLauncher | None'): 工具使用的共享进程启动端口。
         origin_run_id (str): 发起进程任务的运行轮次标识。
         origin_tool_call_id (str): 发起任务的工具调用标识。
+        origin_tool_name (str): Pipeline 注入的实际调用工具名。
         desktop (DesktopOperations | None): 应用共享桌面接口，单个工具与 Agent 不关闭它。
         stop_requested (StopRequested | None): 当前轮次已受理停止或引导的只读检查。
     """
@@ -127,32 +133,60 @@ class ToolContext:
     task_launcher: "TaskLauncher | None" = None
     origin_run_id: str = ""
     origin_tool_call_id: str = ""
+    origin_tool_name: str = ""
     desktop: DesktopOperations | None = None
     stop_requested: StopRequested | None = None
 
 
 class TaskLauncher(Protocol):
-    """定义工具依赖的进程启动端口，具体进程和输出管理由 Supervisor 实现。"""
-    async def launch(
-        self, session_id: str, command: str, argv: list[str], *,
-        cwd: str, background: bool, timeout_sec: int,
-        origin_run_id: str | None = None,
-        origin_tool_call_id: str | None = None,
-    ) -> Any:
-        """启动同一进程句柄，按前台等待预算或显式后台模式返回启动结果。
+    """工具依赖的受管进程 Interface，生命周期由共享 Supervisor 拥有。"""
+
+    async def launch(self, session_id: str, command: str, argv: list[str], *,
+                     cwd: str, tty: bool = False, yield_time_ms: int = 10000,
+                     tool_name: str = "exec_command", origin_run_id: str | None = None,
+                     origin_tool_call_id: str | None = None) -> "TaskLaunchResult":
+        """启动一次受管任务，返回同一进程的当前观察。
 
         Args:
-            session_id (str): 共享 Ayaya 会话标识。
-            command (str): 统一渠道命令或需要执行的命令正文，类型决定其含义。
-            argv (list[str]): 已经构造好的进程参数列表。
-            cwd (str): 命令执行工作目录。
-            background (bool): 是否立即后台运行。
-            timeout_sec (int): 前台等待预算，超时后保留同一进程。
-            origin_run_id (str | None): 发起进程任务的运行轮次标识。
-            origin_tool_call_id (str | None): 发起任务的工具调用标识。
+            session_id (str): 所属 Agent 聊天编号。
+            command (str): 原始任务说明或命令。
+            argv (list[str]): 实际进程参数。
+            cwd (str): 工作目录。
+            tty (bool): 是否使用真实终端。
+            yield_time_ms (int): 本次等待预算。
+            tool_name (str): 创建任务的实际工具名。
+            origin_run_id (str | None): 来源运行编号。
+            origin_tool_call_id (str | None): 来源调用编号。
 
         Returns:
-            Any: 任务编号、是否后台运行和当前可读输出等启动结果。
+            TaskLaunchResult: 有限输出和已提交状态。
+        """
+        ...
+
+    async def interact(self, session_id: str, task_id: str, *, chars: str = "",
+                       yield_time_ms: int = 10000) -> "TaskLaunchResult":
+        """验证所属聊天后，串行发送输入并返回增量或结束提示。
+
+        Args:
+            session_id (str): 当前聊天编号。
+            task_id (str): 目标受管任务。
+            chars (str): 原样发送的输入，空字符串只读。
+            yield_time_ms (int): 本次等待预算。
+
+        Returns:
+            TaskLaunchResult: 输入发送情况、增量和已提交状态。
+        """
+        ...
+
+    async def resolve_output(self, session_id: str, reference: str) -> Path:
+        """验证任务归属后解析完整日志引用。
+
+        Args:
+            session_id (str): 当前聊天编号。
+            reference (str): task-output URI。
+
+        Returns:
+            Path: 已校验归属的日志路径。
         """
         ...
 

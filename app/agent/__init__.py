@@ -11,36 +11,39 @@ Ayaya Agent
 - MCP 协议集成
 """
 
-from app.agent.state import AgentState
-from app.agent.state.messages import BaseMessage, HumanMessage, ToolCall
-from app.agent.tools.base import ToolContext, ToolResult, InterruptEvent
+# 底层终端模块也位于本包下；仅导入包路径时不能顺带加载 Agent 状态与模型依赖。
+_EXPORT_MODULES = {
+    "Agent": "app.agent.agent",
+    "AgentState": "app.agent.state",
+    "BaseMessage": "app.agent.state.messages",
+    "HumanMessage": "app.agent.state.messages",
+    "ToolCall": "app.agent.state.messages",
+    "ToolContext": "app.agent.tools.core.base",
+    "ToolResult": "app.agent.tools.core.base",
+    "InterruptEvent": "app.agent.tools.core.base",
+}
 
-__all__ = [
-    "Agent",
-    "AgentState",
-    "BaseMessage",
-    "HumanMessage",
-    "ToolCall",
-    "ToolContext",
-    "ToolResult",
-    "InterruptEvent",
-]
+__all__ = list(_EXPORT_MODULES)
 
 
 def __getattr__(name: str):
-    """首次访问包导出的 Agent 时才导入实现，减少包初始化时的循环依赖。
+    """首次访问公开类型时才导入实现，底层模块可以独立于完整 Agent 加载。
 
     Args:
-        name (str): 当前对象的名称。
+        name (str): 原有包级公开类型名称。
 
     Returns:
-        type[Agent]: Agent 类。
+        type: 对应公开类型，保持原有导出名称与类身份。
 
     Raises:
-        AttributeError: 访问名称不是 Agent。
+        AttributeError: 访问名称未在公开导出表中声明。
     """
-    if name == "Agent":
-        from app.agent.agent import Agent
+    from importlib import import_module
 
-        return Agent
-    raise AttributeError(name)
+    module_name = _EXPORT_MODULES.get(name)
+    if module_name is None:
+        raise AttributeError(name)
+    # 1. 按需导入并缓存原类型，重复访问不会创建替身或重复装配 Agent。
+    value = getattr(import_module(module_name), name)
+    globals()[name] = value
+    return value

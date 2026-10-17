@@ -11,7 +11,7 @@ from app.schemas.runtime_types import (
     ApprovalDecisionKind, InterruptKind,
 )
 from app.agent.state.messages import to_json_value
-from app.agent.tools.base import InterruptEvent, ToolResult
+from app.agent.tools.core.base import InterruptEvent, ToolResult
 from app.schemas.tool_permissions import ToolPolicy
 
 from .models import (
@@ -172,9 +172,18 @@ class ToolAuthorization:
                 server = settings.mcp.servers.get(identity.server_id or "")
                 if server is None or not server.enabled:
                     return ToolPolicy.DENY
-            return ToolPolicy(
-                settings.tool_permissions.get(identity.stable_key, ToolPolicy.ASK)
-            )
+            policy = settings.tool_permissions.get(identity.stable_key)
+            if identity.source == "local" and identity.name == "run_ps":
+                # 1. 隐藏兼容入口同样服从新工具权限，禁止借旧名称绕过新 deny。
+                policy = settings.tool_permissions.get("local:exec_command", policy)
+            # 2. 内存设置和测试注入也遵循改名规则，不依赖 YAML 已经完成补齐。
+            if policy is None and identity.source == "local":
+                legacy = settings.tool_permissions.get("local:run_ps")
+                if identity.name == "exec_command" and legacy is not None:
+                    policy = legacy
+                elif identity.name == "write_stdin" and legacy == ToolPolicy.DENY:
+                    policy = ToolPolicy.DENY
+            return ToolPolicy(policy if policy is not None else ToolPolicy.ASK)
         except Exception:
             return ToolPolicy.DENY
 

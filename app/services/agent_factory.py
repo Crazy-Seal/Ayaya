@@ -8,7 +8,7 @@ from app.schemas.chat_settings import (
 )
 from app.services.mcp_connection_manager import MCPConnectionManager
 from app.agent.tools.authorization.manager import ToolAuthorization
-from app.agent.tools.base import TaskLauncher
+from app.agent.tools.core.base import TaskLauncher
 from app.schemas.desktop import DesktopOperations
 
 

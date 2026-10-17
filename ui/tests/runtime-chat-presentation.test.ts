@@ -500,7 +500,7 @@ async (t) => {
    */
   async () => {
     reads += 1;
-    return [{ task_id: "t", session_id: "s", command: "echo test", status, background: true,
+    return [{ task_id: "t", session_id: "s", tool_name: "exec_command", command: "echo test", status, background: true,
       pid: 1, exit_code: null, created_at: "2026-10-09T00:00:00Z", ended_at: null,
       recent_output: "最新输出",
     }];
@@ -511,6 +511,7 @@ async (t) => {
     await page.render("s");
     assert.match(list.textContent, /运行中/);
     assert.match(list.textContent, /最新输出/);
+    assert.match(list.textContent, /\[exec_command\]/);
     status = "completed";
     t.mock.timers.tick(2000);
     await flushEvents();

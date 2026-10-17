@@ -1,8 +1,8 @@
 from tests.model_capture import encoded_tool
 from copy import deepcopy
 
-from app.agent.tools._schema import normalize_tool_schema_for_model
-from app.agent.tools.base import BaseTool, ToolContext, ToolResult
+from app.agent.tools.core.schema import normalize_tool_schema_for_model
+from app.agent.tools.core.base import BaseTool, ToolContext, ToolResult
 
 
 class _NullableSchemaTool(BaseTool):

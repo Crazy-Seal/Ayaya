@@ -10,7 +10,7 @@ from app.agent.state import AgentState
 from app.agent.state.manager import StateManager
 from app.agent.state.messages import ToolCall
 from app.agent.state.messages import ToolMessage
-from app.agent.tools.base import BaseTool, ToolContext, ToolResult
+from app.agent.tools.core.base import BaseTool, ToolContext, ToolResult
 from app.agent.runtime.session_inbox import SessionInbox
 from app.crud.task_record_dao import TaskRecordDao
 from app.services.interaction_contract import ChannelCommand

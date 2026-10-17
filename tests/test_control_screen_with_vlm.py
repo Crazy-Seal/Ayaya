@@ -1,11 +1,11 @@
 import asyncio
 
-from app.agent.tools.base import ToolContext
+from app.agent.tools.core.base import ToolContext
 from app.agent.tools.control_screen_with_vlm import (
     control_screen_with_vlm,
     restore_vlm_point,
 )
-from app.agent.tools.registry import ToolRegistry
+from app.agent.tools.core.registry import ToolRegistry
 
 
 def _context(resume_data=None, resume_state=None) -> ToolContext:

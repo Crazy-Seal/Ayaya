@@ -664,7 +664,7 @@ class AgentRuntimeScheduler:
         """把 Inbox 中的任务结束通知整理成 Agent 能读取的 TaskResultMessage。
 
         Args:
-            claims (tuple[InboxEnvelope, ...]): 本次从 Inbox 领取的任务通知，包含任务编号、状态和输出摘要。
+            claims (tuple[InboxEnvelope, ...]): 本次从 Inbox 领取的任务通知，包含任务编号、状态和日志引用。
 
         Returns:
             TaskResultMessage: 任务完成、失败、停止或未知的结果消息，不伪装成用户发送的消息。
@@ -678,9 +678,9 @@ class AgentRuntimeScheduler:
                 status=(TaskResultStatus.CANCELLED if status == TaskStatus.STOPPED else
                         TaskResultStatus.COMPLETED if status == TaskStatus.COMPLETED else
                         TaskResultStatus.ORPHANED if status == TaskStatus.ORPHANED else TaskResultStatus.FAILED),
-                result=str(payload.get("result") or ""),
+                result=AgentRuntimeScheduler._task_notice_text(payload),
             )
-        # 2. 多条通知合并成一条消息；状态相同则保留该状态，不同时用 mixed，并限制摘要长度。
+        # 2. 多条通知合并成一条消息；状态相同则保留该状态，不同时用 mixed，按完整条目分批保留全部日志引用。
         statuses = {item.payload.get("status") for item in claims}
         mapped_statuses = {
             TaskResultStatus.CANCELLED if status == TaskStatus.STOPPED else
@@ -691,15 +691,55 @@ class AgentRuntimeScheduler:
         combined_status = mapped_statuses.pop() if len(mapped_statuses) == 1 else TaskResultStatus.MIXED
         details = "\n".join(
             f"{item.payload['task_id']} [{item.payload.get('status')}]: "
-            f"{str(item.payload.get('result') or '')[:TASK_NOTICE_ITEM_MAX_CHARS]}"
+            f"{AgentRuntimeScheduler._task_notice_text(item.payload)}"
             for item in claims
         )
         return TaskResultMessage(
             task_id="batch:" + ",".join(str(item.payload["task_id"]) for item in claims),
             task_name=f"{len(claims)} 个后台任务",
             status=combined_status,
-            result=details[:TASK_NOTICE_BATCH_MAX_CHARS],
+            result=details,
         )
+
+    @staticmethod
+    def _task_notice_text(payload: dict) -> str:
+        """格式化新通知元信息，同时保留重启前旧摘要通知的读取兼容。
+
+        Args:
+            payload (dict): 从持久 Inbox 读取的一条任务通知。
+
+        Returns:
+            str: 新通知只包含工具、退出码和日志引用，旧通知保留既有摘要。
+        """
+        if payload.get("output_ref"):
+            return (f"tool_name: {payload.get('tool_name') or '未知工具'}\n"
+                    f"exit_code: {payload.get('exit_code')}\n"
+                    f"output_ref: {payload['output_ref']}")
+        return str(payload.get("result") or "")
+
+    @staticmethod
+    def _task_result_messages(claims: tuple[InboxEnvelope, ...]) -> tuple[TaskResultMessage, ...]:
+        """按完整任务条目拆批，所有引用都进入消息，不截断后面的任务。
+
+        Args:
+            claims (tuple[InboxEnvelope, ...]): 本次已领取的全部终态通知。
+
+        Returns:
+            tuple[TaskResultMessage, ...]: 按原顺序分组的全部结果消息。
+        """
+        batches = []
+        group = []
+        size = 0
+        for claim in claims:
+            item_size = len(AgentRuntimeScheduler._task_notice_text(claim.payload)) + len(str(claim.payload["task_id"])) + 64
+            if group and size + item_size > TASK_NOTICE_BATCH_MAX_CHARS:
+                batches.append(AgentRuntimeScheduler._task_result_message(tuple(group)))
+                group, size = [], 0
+            group.append(claim)
+            size += item_size
+        if group:
+            batches.append(AgentRuntimeScheduler._task_result_message(tuple(group)))
+        return tuple(batches)
 
     async def _drain(self, session_id: str) -> None:
         """持续处理一个会话：继续等待中的工具，或取出新输入交给 Agent。
@@ -866,7 +906,7 @@ class AgentRuntimeScheduler:
                 # 3.2. 有任务通知时，把通知和真人消息一起保存；Agent 会先加入任务事实，再加入真人正文。
                 runtime_kwargs = (
                     {"inbox_claims": batch,
-                     "runtime_inputs": (self._task_result_message(terminals),)}
+                     "runtime_inputs": self._task_result_messages(terminals)}
                     if terminals else {}
                 )
                 # 3.3. 此处取得异步事件流；下一步 _consume_events 读取时才真正执行 Agent。
@@ -883,7 +923,7 @@ class AgentRuntimeScheduler:
             else:
                 # 3.4. 只有任务通知就执行内部轮次，不增加真人消息计数；会话已在本次被真人激活。
                 stream = agent.run_runtime_inputs(
-                    (self._task_result_message(terminals),),
+                    self._task_result_messages(terminals),
                     inbox_claims=terminals,
                     turn_control=control,
                     before_next_llm=before_next_llm,
@@ -923,7 +963,7 @@ class AgentRuntimeScheduler:
         if not claims:
             return
         # 2. 任务结果加入当前消息，并与 Inbox 的 delivered 标记一起保存，避免重复交付。
-        await agent.commit_runtime_inputs(state, (self._task_result_message(claims),), claims)
+        await agent.commit_runtime_inputs(state, self._task_result_messages(claims), claims)
 
     async def _publish_committed_human_message(
         self, session_id: str, input_record: InboxEnvelope, message: HumanMessage,

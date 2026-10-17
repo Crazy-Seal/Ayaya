@@ -144,7 +144,8 @@ async def release_queued_in_transaction(db: aiosqlite.Connection, session_id: st
 
 async def append_task_terminal_in_transaction(
     db: aiosqlite.Connection, *, session_id: str, task_id: str, task_name: str,
-    status: str, result: str,
+    status: str, result: str, tool_name: str | None = None,
+    exit_code: int | None = None, output_ref: str | None = None,
 ) -> None:
     """在任务结束事务中，将任务事实编码为一条待交付的 Inbox 通知。
 
@@ -158,7 +159,10 @@ async def append_task_terminal_in_transaction(
         task_id (str): 已首次进入终态的任务标识。
         task_name (str): 用于通知内容的原始任务命令。
         status (str): 调用方已验证的任务终态协议值。
-        result (str): 任务结束时的输出摘要。
+        result (str): 兼容旧通知的摘要字段，新任务为空。
+        tool_name (str | None): 创建任务的实际工具名。
+        exit_code (int | None): 真实退出码或未知。
+        output_ref (str | None): 完整任务日志引用。
     """
     # 1. 沿用现有通知载荷和默认 pending、immediate、未排队状态，等待 worker 领取。
     await db.execute(
@@ -167,6 +171,8 @@ async def append_task_terminal_in_transaction(
         "VALUES (?, ?, ?, ?, ?)",
         (session_id, InboxKind.TASK_TERMINAL.value, SYSTEM_INPUT_ORIGIN, json.dumps({
             "task_id": task_id, "task_name": task_name, "status": status, "result": result,
+            **({"tool_name": tool_name, "exit_code": exit_code, "output_ref": output_ref}
+               if output_ref is not None else {}),
         }, ensure_ascii=False), datetime.now(timezone.utc).isoformat()),
     )
 

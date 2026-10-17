@@ -4,7 +4,7 @@ import pytest
 
 from app.agent.agent import Agent, AgentConfig
 from app.agent.context import ContextStrategyConfig
-from app.agent.tools.base import BaseTool, ToolContext, ToolResult
+from app.agent.tools.core.base import BaseTool, ToolContext, ToolResult
 from app.agent.tools.authorization.manager import ToolAuthorization
 from app.mcp.identity import server_identity_fingerprint
 from app.mcp.types import MCPToolDescriptor

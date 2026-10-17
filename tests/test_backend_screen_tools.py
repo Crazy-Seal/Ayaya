@@ -4,7 +4,7 @@ from tests.model_capture import image_urls, image_kind
 import asyncio
 import pytest
 
-from app.agent.tools.base import ToolContext
+from app.agent.tools.core.base import ToolContext
 from app.agent.tools.screenshot import screenshot
 from app.agent.tools.control_screen import control_screen
 from app.schemas.desktop import ScreenCapture, ScreenActionResult
@@ -112,7 +112,7 @@ def test_vlm_prepares_once_and_approved_resume_uses_saved_coordinates(monkeypatc
 
 def test_completed_action_without_capture_is_not_reported_unexecuted() -> None:
     """工具显示输入已完成而截图失败，防止模型根据错误说明重复点击。"""
-    from app.agent.tools._screen_result import screen_tool_result
+    from app.agent.tools.screen.adapter import screen_tool_result
     result = screen_tool_result(ScreenActionResult("completed", error="截图失败"))
     assert "屏幕操作完成" in result.text and "截图失败" in result.text
     assert "未执行" not in result.text

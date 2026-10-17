@@ -1,308 +1,415 @@
-"""后台 PowerShell 任务、完整输出和一次性终态通知。"""
+"""受管终端任务、增量交互、完整日志与一次性终态通知。"""
 
 from __future__ import annotations
 
 import asyncio
 import codecs
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
 import os
 from pathlib import Path
-import signal
-import subprocess
 from typing import Awaitable, Callable
 from uuid import uuid4
 
-from app.schemas.runtime_types import (
-    TaskStatus,
-)
+from app.schemas.runtime_types import TaskStatus
+from app.agent.tools.terminal.models import TaskLaunchResult
 from app.crud.task_record_dao import TaskRecord, TaskRecordDao
 from app.runtime import get_data_dir
-from app.services.windows_job import WindowsJob
+from app.agent.tools.terminal.process import TerminalProcess, spawn_terminal, dispose_terminal
 
 logger = logging.getLogger(__name__)
-
-# 输出预算各有用途，不因为默认值相同就把前台预览和分页接口合为一个设置。
-TASK_FOREGROUND_PREVIEW_BYTES = 16 * 1024
+TASK_FOREGROUND_PREVIEW_BYTES = 64 * 1024
 TASK_OUTPUT_PAGE_DEFAULT_BYTES = 16 * 1024
 TASK_OUTPUT_PAGE_MAX_BYTES = 64 * 1024
-TASK_TERMINAL_SUMMARY_BYTES = 4096
 TASK_RECENT_OUTPUT_BYTES = 256
 TASK_STOP_GRACE_SECONDS = 2
 TASK_SHUTDOWN_WAIT_SECONDS = 5
 
 
-@dataclass(frozen=True)
-class TaskLaunchResult:
-    """返回任务标识、是否仍在后台运行，以及前台完成时的有限输出。
+@dataclass
+class RunningTerminal:
+    """保存进程运行期间的交互状态，退出后整项释放。
 
     Attributes:
-        task_id (str): 受管进程任务标识。
-        background (bool): 此次调用是否停止等待并由 Supervisor 继续管理进程。
-        output (str): 前台完成时的有限输出，后台返回时为空。
+        process (TerminalProcess): 操作系统对应的进程 Adapter。
+        changed (asyncio.Event): 输出写盘或终态提交后唤醒等待中的调用。
+        interaction (asyncio.Lock): 串行输入和游标更新，不阻塞输出收集任务。
+        offset (int): 已提取输出的日志字节位置，不表示模型交付位置。
     """
-    task_id: str
-    background: bool
-    output: str
+
+    process: TerminalProcess
+    changed: asyncio.Event = field(default_factory=asyncio.Event)
+    interaction: asyncio.Lock = field(default_factory=asyncio.Lock)
+    offset: int = 0
 
 
 class TaskSupervisor:
-    """持有 run_ps 进程树和输出收集任务，统一管理前台与后台生命周期。
+    """统一拥有终端进程、日志与数据库终态，工具调用只决定本次等待。
 
     Attributes:
-        records (TaskRecordDao): 任务持久记录 DAO。
-        spool_dir (Path): 任务完整输出目录。
-        on_terminal (Callable[[str], Awaitable[None]] | None): 持久终态提交后唤醒所属会话的回调。
-        on_status (Callable[[TaskRecord], Awaitable[None]] | None): 提交任务状态后发布界面状态的回调。
-        _jobs (dict[str, WindowsJob]): 按任务标识保存 Windows Job 所有权。
-        _processes (dict[str, asyncio.subprocess.Process]): 按任务标识保存同一子进程句柄。
-        _force_stops (dict[str, asyncio.Task[None]]): 宽限期后的进程树强停任务。
-        _watchers (dict[str, asyncio.Task[None]]): 完整输出收集与终态提交任务。
-        _stopping (set[str]): 已经接受显式停止的任务标识。
+        records (TaskRecordDao): 任务事实及终态通知的事务入口。
+        spool_dir (Path): 完整输出目录。
+        on_terminal (Callable | None): 终态提交后唤醒所属聊天。
+        on_status (Callable | None): 状态提交后通知界面。
     """
-    def __init__(
-        self,
-        *,
-        db_path: str | None = None,
-        spool_dir: Path | None = None,
-        on_terminal: Callable[[str], Awaitable[None]] | None = None,
-        on_status: Callable[[TaskRecord], Awaitable[None]] | None = None,
-    ) -> None:
-        """装配任务持久记录、输出目录和状态回调，进程句柄只在本进程内保存。
+
+    def __init__(self, *, db_path: str | None = None, spool_dir: Path | None = None,
+                 on_terminal: Callable[[str], Awaitable[None]] | None = None,
+                 on_status: Callable[[TaskRecord], Awaitable[None]] | None = None) -> None:
+        """保存持久化和通知依赖，应用级共享，不随单轮 Agent 关闭。
 
         Args:
-            db_path (str | None): 共享 SQLite 路径，省略时使用当前环境的隔离存储。
-            spool_dir (Path | None): 任务完整输出目录。
-            on_terminal (Callable[[str], Awaitable[None]] | None): 持久终态提交后唤醒所属会话的回调。
-            on_status (Callable[[TaskRecord], Awaitable[None]] | None): 提交任务状态后发布界面状态的回调。
+            db_path (str | None): 当前环境的 SQLite 路径。
+            spool_dir (Path | None): 当前环境的任务输出目录。
+            on_terminal (Callable | None): 提交完成通知后调用的唤醒函数。
+            on_status (Callable | None): 提交任务状态后调用的界面发布函数。
         """
         self.records = TaskRecordDao(db_path)
         self.spool_dir = Path(spool_dir or get_data_dir() / "tasks")
         self.on_terminal = on_terminal
         self.on_status = on_status
-        self._jobs: dict[str, WindowsJob] = {}
-        self._processes: dict[str, asyncio.subprocess.Process] = {}
-        self._force_stops: dict[str, asyncio.Task[None]] = {}
+        self._live: dict[str, RunningTerminal] = {}
         self._watchers: dict[str, asyncio.Task[None]] = {}
+        self._force_stops: dict[str, asyncio.Task[None]] = {}
         self._stopping: set[str] = set()
+        self._closing = False
 
     async def recover_orphaned(self) -> None:
-        """将重启前仍 running 的任务标记为状态未知并创建一次终态通知。"""
+        """重启后将失去进程所有权的任务标记 orphaned，并创建唯一通知。"""
         for task_id in await self.records.running_ids():
             await self.finish_once(task_id, TaskStatus.ORPHANED, None)
 
-    async def launch(
-        self, session_id: str, command: str, argv: list[str], *,
-        cwd: str, background: bool, timeout_sec: int,
-        origin_run_id: str | None = None,
-        origin_tool_call_id: str | None = None,
-    ) -> TaskLaunchResult:
-        """创建受管进程并持续收集完整输出，前台超时只停止等待而不另起进程。
+    async def launch(self, session_id: str, command: str, argv: list[str], *, cwd: str,
+                     tty: bool = False, yield_time_ms: int = 10000,
+                     tool_name: str = "exec_command",
+                     origin_run_id: str | None = None, origin_tool_call_id: str | None = None,
+                     background: bool = False, timeout_sec: float | None = None) -> TaskLaunchResult:
+        """启动一次受管进程；兼容旧内部调用参数，但模型不再接收 background。
 
         Args:
-            session_id (str): 共享 Ayaya 会话标识。
-            command (str): 需要执行或展示的 PowerShell 命令正文。
-            argv (list[str]): 已经构造好的进程参数列表。
-            cwd (str): 命令执行工作目录。
-            background (bool): 是否立即后台运行。
-            timeout_sec (int): 前台等待预算，超时后保留同一进程。
-            origin_run_id (str | None): 发起进程任务的运行轮次标识。
-            origin_tool_call_id (str | None): 发起任务的工具调用标识。
+            session_id (str): 任务所属 Agent 聊天编号。
+            command (str): 供界面展示的原始命令。
+            argv (list[str]): 已按实际 Shell 构造的启动参数。
+            cwd (str): 已检查的工作目录。
+            tty (bool): 是否使用真实终端。
+            yield_time_ms (int): 本次等待预算，0 表示立即返回。
+            tool_name (str): Pipeline 提供的创建工具名称。
+            origin_run_id (str | None): 创建任务的运行编号。
+            origin_tool_call_id (str | None): 创建任务的调用编号。
+            background (bool): 仅旧内部调用使用的立即返回开关。
+            timeout_sec (float | None): 仅旧内部调用使用的等待秒数。
 
         Returns:
-            TaskLaunchResult: 同一进程的任务标识、后台运行标记和前台有限输出。
+            TaskLaunchResult: 当前有限输出及已提交状态。
         """
-        # 1. 生成任务标识并建立追加式输出文件，前台与后台共用这一份输出。
+        if not tool_name.strip():
+            raise ValueError("新任务必须提供工具名")
+        if self._closing:
+            raise RuntimeError("任务运行器正在关闭")
+        if timeout_sec is not None:
+            yield_time_ms = min(30000, max(0, int(timeout_sec * 1000)))
+        if background:
+            yield_time_ms = 0
+        self._validate_wait(yield_time_ms)
+        # 1. 日志和进程均创建成功，且运行记录已提交，才将任务身份交给工具。
         task_id = uuid4().hex
         directory = self.spool_dir / task_id
         directory.mkdir(parents=True, exist_ok=True)
         output_path = directory / "output.log"
         output_path.touch()
-        # 2. 非交互启动进程并合并输出；Windows 先挂起，加入 Job 后才放行线程。
-        process = await asyncio.create_subprocess_exec(
-            *argv, cwd=cwd, stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-            creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000004)  # 使用 CREATE_SUSPENDED 先挂起线程
-            if os.name == "nt" else 0,
-        )
-        job = None
+        process = await spawn_terminal(argv, cwd, tty)
         try:
-            job = WindowsJob(process.pid)
-            if os.name == "nt":
-                job.resume_suspended_process(process.pid)
-        # 2.1. Job 创建或恢复线程失败时立即终止进程，不能留下一棵无人管理的进程树。
-        except BaseException:
-            if job is not None:
-                job.terminate()
-                job.close()
-            else:
-                process.kill()
-            await process.wait()
-            raise
-        try:
-            # 3. 保存任务记录，记录失败时清理进程；随后仅保留同一进程句柄。
             await self.records.insert_running(
                 task_id, session_id, command, process.pid, str(output_path),
-                origin_run_id=origin_run_id,
-                origin_tool_call_id=origin_tool_call_id,
-                background=background,
+                origin_run_id=origin_run_id, origin_tool_call_id=origin_tool_call_id,
+                background=yield_time_ms == 0, tool_name=tool_name,
             )
         except BaseException:
-            job.terminate()
-            job.close()
-            await process.wait()
+            await dispose_terminal(process)
             raise
-        self._jobs[task_id] = job
-        self._processes[task_id] = process
-        # 4. 独立 watcher 持续收集输出，即使前台等待超时仍继续运行。
-        watcher = asyncio.create_task(self._watch(task_id, process, output_path))
-        self._watchers[task_id] = watcher
-        if self.on_status is not None:
-            record = await self.get(task_id)
-            if record is not None and record.background:
-                try:
-                    await self.on_status(record)
-                except Exception:
-                    logger.exception("发布后台任务启动状态失败: %s", task_id)
-        # 5. 显式后台立即返回；前台 shield watcher，超时只停止等待而不取消输出收集。
-        if background:
-            return TaskLaunchResult(task_id, True, "")
+        live = RunningTerminal(process)
+        self._live[task_id] = live
+        self._watchers[task_id] = asyncio.create_task(self._watch(task_id, live, output_path))
         try:
-            await asyncio.wait_for(asyncio.shield(watcher), timeout=timeout_sec)
-        except asyncio.TimeoutError:
-            # 5.1. 超时只移交同一任务，先持久模式再发布状态；前台进程不提前占后台徽标。
+            await self._publish_status(task_id)
+            # 2. 初次启动允许返回同步完成的正文；等待不取消独立输出收集任务。
+            async with live.interaction:
+                result = await self._observe(session_id, task_id, live, yield_time_ms, initial=True)
+            if result.background:
+                await self.records.mark_background(task_id)
+                await self._publish_status(task_id)
+            return result
+        except asyncio.CancelledError:
+            # 3. 单轮停止只移交同一进程，不能取消 watcher 或重新执行原命令。
             await self.records.mark_background(task_id)
-            if self.on_status is not None:
-                record = await self.get(task_id)
-                if record is not None:
-                    try:
-                        await self.on_status(record)
-                    except Exception:
-                        logger.exception("发布前台转后台状态失败: %s", task_id)
-            return TaskLaunchResult(task_id, True, "")
-        # 6. 前台完成只返回有限尾部预览，完整日志仍可按 task_id 分页查询。
-        max_result_bytes = TASK_FOREGROUND_PREVIEW_BYTES
-        size = output_path.stat().st_size
-        with output_path.open("rb") as spool:
-            spool.seek(max(0, size - max_result_bytes))
-            output = spool.read().decode("utf-8", errors="replace").strip()
-        if size > max_result_bytes:
-            output = f"[输出过长，以下为末尾片段；完整输出见 task_id={task_id}]\n{output}"
-        return TaskLaunchResult(task_id, False, output or "(无输出)")
+            await self._publish_status(task_id)
+            raise
+        except OSError as exc:
+            # 4. 首次读取失败时任务仍由 watcher 管理，保留编号并报告错误，不能谎称进程未启动。
+            await self.records.mark_background(task_id)
+            await self._publish_status(task_id)
+            record = await self._owned(session_id, task_id)
+            return TaskLaunchResult(task_id, record.status == TaskStatus.RUNNING, "", record.status,
+                                    record.exit_code, error=f"读取任务输出失败，请勿重复执行命令：{exc}")
 
-    async def _watch(
-        self, task_id: str, process: asyncio.subprocess.Process, output_path: Path
-    ) -> None:
-        """追加完整输出并提交首次终态，输出收集失败时结束进程并通知失败。
+    @staticmethod
+    def _validate_wait(value: int) -> None:
+        """校验直接调用运行器时的等待预算。
 
         Args:
-            task_id (str): 受管进程任务标识。
-            process (asyncio.subprocess.Process): 当前受管子进程句柄。
-            output_path (Path): 追加式完整输出文件路径。
+            value (int): 本次等待毫秒数。
         """
-        try:
-            # 1. 持续以追加方式保存全部输出，磁盘写入在线程中完成，避免阻塞模型循环。
-            with output_path.open("ab") as spool:
-                assert process.stdout is not None
-                while chunk := await process.stdout.read(64 * 1024):
-                    await asyncio.to_thread(spool.write, chunk)
-                    await asyncio.to_thread(spool.flush)
-            # 2. 输出闭合后等待进程退出，显式停止优先记录 stopped。
-            exit_code = await process.wait()
-            status: TaskStatus = (
-                TaskStatus.STOPPED if task_id in self._stopping else
-                TaskStatus.COMPLETED if exit_code == 0 else TaskStatus.FAILED
-            )
-            await self.finish_once(task_id, status, exit_code)
-        # 3. 输出收集失败时终止进程树并提交 failed，不能让任务继续无人读取输出。
-        except Exception:
-            logger.exception("后台任务输出收集失败: %s", task_id)
-            job = self._jobs.get(task_id)
-            if job is not None and os.name == "nt":
-                job.terminate()
-            if process.returncode is None:
+        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 30000:
+            raise ValueError("yield_time_ms 必须是 0～30000 的整数")
+
+    async def _owned(self, session_id: str, task_id: str) -> TaskRecord:
+        """先检查持久任务归属，不泄露其他聊天的进程或文件。
+
+        Args:
+            session_id (str): 当前调用所属聊天。
+            task_id (str): 请求访问的任务。
+
+        Returns:
+            TaskRecord: 已确认归属的已提交记录。
+        """
+        record = await self.get(task_id)
+        if record is None or record.session_id != session_id:
+            raise KeyError("任务不存在或不属于当前聊天")
+        return record
+
+    async def interact(self, session_id: str, task_id: str, *, chars: str = "",
+                       yield_time_ms: int = 10000) -> TaskLaunchResult:
+        """串行写入和增量读取；返回终态时不附加剩余正文。
+
+        Args:
+            session_id (str): 当前 Agent 聊天编号。
+            task_id (str): exec_command 创建的稳定任务编号。
+            chars (str): 原始输入，空字符串只读取。
+            yield_time_ms (int): 等待新输出或终态的预算。
+
+        Returns:
+            TaskLaunchResult: 增量、结束提示或明确的输入发送结果。
+        """
+        self._validate_wait(yield_time_ms)
+        record = await self._owned(session_id, task_id)
+        live = self._live.get(task_id)
+        if record.status != TaskStatus.RUNNING or live is None:
+            missing = record.status == TaskStatus.RUNNING and live is None
+            return TaskLaunchResult(task_id, record.status == TaskStatus.RUNNING, "", record.status,
+                                    record.exit_code, input_status="not_sent" if chars else "none",
+                                    error="运行器未持有此进程，不能继续交互；请等待状态恢复" if missing else
+                                    "任务已结束，输入未发送" if chars else None)
+        async with live.interaction:
+            record = await self._owned(session_id, task_id)
+            input_status = "none"
+            error = None
+            # 1. 终态提交之后不再写入；写入途中断开时不能承诺输入一个字节也没发送。
+            if chars and record.status == TaskStatus.RUNNING:
                 try:
-                    process.kill()
-                except ProcessLookupError:
+                    await live.process.write(chars.encode("utf-8"))
+                    input_status = "sent"
+                except (OSError, RuntimeError) as exc:
+                    input_status = "unknown"
+                    error = f"输入发送中断，可能已有部分输入发送，请勿重试：{exc}"
+            elif chars:
+                input_status = "not_sent"
+                error = "任务已结束，输入未发送"
+            try:
+                return await self._observe(session_id, task_id, live, yield_time_ms,
+                                           input_status=input_status, error=error)
+            except OSError as exc:
+                # 2. 输入可能已经发送，后续日志读取失败也必须保留输入状态，禁止建议重发。
+                record = await self._owned(session_id, task_id)
+                return TaskLaunchResult(task_id, record.status == TaskStatus.RUNNING, "", record.status,
+                                        record.exit_code, input_status=input_status,
+                                        error=f"读取任务输出失败，请勿重发输入：{exc}")
+
+    async def _observe(self, session_id: str, task_id: str, live: RunningTerminal, wait_ms: int,
+                       *, initial: bool = False, input_status: str = "none",
+                       error: str | None = None) -> TaskLaunchResult:
+        """等待日志变化并提取一页，不让等待阻塞日志写入和终态提交。
+
+        Args:
+            session_id (str): 当前聊天编号。
+            task_id (str): 受管任务编号。
+            live (RunningTerminal): 运行期间的游标和通知事件。
+            wait_ms (int): 本次剩余等待预算。
+            initial (bool): 初次启动可返回同步完成的有限正文。
+            input_status (str): 本次输入是否已经发送。
+            error (str | None): 输入阶段已经产生的错误。
+
+        Returns:
+            TaskLaunchResult: 一次观察，不表示输出已经交付模型。
+        """
+        deadline = asyncio.get_running_loop().time() + wait_ms / 1000
+        while True:
+            # 1. 先清事件再查状态和文件，防止检查与等待之间丢失输出通知。
+            live.changed.clear()
+            record = await self._owned(session_id, task_id)
+            ended = record.status != TaskStatus.RUNNING
+            if ended and not initial:
+                return TaskLaunchResult(task_id, False, "", record.status, record.exit_code,
+                                        input_status=input_status, error=error)
+            # 1.1. 给页末 UTF-8 字符补齐预留三字节，最终提取量仍不超过 64KiB。
+            page = await self.read_output(task_id, live.offset, TASK_OUTPUT_PAGE_MAX_BYTES - 3)
+            # 2. 初次 exec 等待完成或预算耗尽；后续读取已有增量时立即返回。
+            remaining = deadline - asyncio.get_running_loop().time()
+            if ended or remaining <= 0 or (not initial and page["text"]):
+                # 2.1. 文件读取期间可能刚提交终态，再确认后才能决定是否返回正文。
+                record = await self._owned(session_id, task_id)
+                ended = record.status != TaskStatus.RUNNING
+                output = page["text"] if initial or not ended else ""
+                if output:
+                    live.offset = page["next_offset"]
+                return TaskLaunchResult(task_id, not ended, output, record.status, record.exit_code,
+                                        page["has_more"] if output else False, input_status, error)
+            try:
+                await asyncio.wait_for(live.changed.wait(), remaining)
+            except asyncio.TimeoutError:
+                pass
+
+    async def _watch(self, task_id: str, live: RunningTerminal, output_path: Path) -> None:
+        """独立保存完整输出，日志收尾后重试提交终态，最后释放运行资源。
+
+        Args:
+            task_id (str): 已保存的任务编号。
+            live (RunningTerminal): 当前进程和输出通知。
+            output_path (Path): 唯一完整日志路径。
+        """
+        waiter = asyncio.create_task(live.process.wait())
+        failed = False
+        exit_code = None
+        try:
+            try:
+                # 1. 增量解码保留半个 UTF-8 字符，日志始终使用 UTF-8，包含终端控制序列。
+                decoder = codecs.getincrementaldecoder("utf-8")("replace")
+                with output_path.open("ab") as spool:
+                    while chunk := await live.process.read(TASK_OUTPUT_PAGE_MAX_BYTES):
+                        data = decoder.decode(chunk).encode("utf-8")
+                        await asyncio.to_thread(spool.write, data)
+                        await asyncio.to_thread(spool.flush)
+                        live.changed.set()
+                    tail = decoder.decode(b"", final=True).encode("utf-8")
+                    await asyncio.to_thread(spool.write, tail)
+                    await asyncio.to_thread(spool.flush)
+            except Exception:
+                # 2. 保存失败即终止进程；继续排空终端，让关闭 ConPTY 的等待能够完成。
+                failed = True
+                logger.exception("终端日志收集失败: %s", task_id)
+                live.process.kill()
+                try:
+                    while await live.process.read(TASK_OUTPUT_PAGE_MAX_BYTES):
+                        pass
+                except OSError:
                     pass
-            await process.wait()
-            await self.finish_once(task_id, TaskStatus.FAILED, process.returncode)
-        # 4. 释放 Job 和进程引用，并取消尚未触发的强停计时器。
+            try:
+                exit_code = await waiter
+            except OSError:
+                logger.exception("读取终端退出码失败: %s", task_id)
+                failed = True
+            status = (TaskStatus.FAILED if failed else TaskStatus.STOPPED if task_id in self._stopping
+                      else TaskStatus.COMPLETED if exit_code == 0 else TaskStatus.FAILED)
+            # 3. 通知和任务终态一起提交；短暂数据库故障不能让进程被错误报告为完成。
+            while True:
+                try:
+                    await self.finish_once(task_id, status, exit_code)
+                    live.changed.set()
+                    break
+                except Exception:
+                    logger.exception("终端终态提交失败，将重试: %s", task_id)
+                    await asyncio.sleep(0.2)
         finally:
-            job = self._jobs.pop(task_id, None)
-            if job is not None:
-                job.close()
+            # 4. 终态提交后才释放运行游标；关闭时取消则留下 running 供下次启动恢复。
+            live.process.kill()
+            if not waiter.done():
+                try:
+                    await asyncio.wait_for(asyncio.shield(waiter), 2)
+                except (asyncio.TimeoutError, OSError):
+                    waiter.cancel()
+            live.process.close()
+            self._live.pop(task_id, None)
             self._watchers.pop(task_id, None)
-            self._processes.pop(task_id, None)
             force_stop = self._force_stops.pop(task_id, None)
             if force_stop is not None:
                 force_stop.cancel()
             self._stopping.discard(task_id)
+            live.changed.set()
 
-    async def finish_once(
-        self, task_id: str, status: TaskStatus, exit_code: int | None
-    ) -> bool:
-        """保存有限输出摘要和唯一终态通知，提交之后才发布状态并唤醒会话。
+    async def _publish_status(self, task_id: str) -> None:
+        """状态已经提交后通知界面，通知失败不撤销任务事实。
 
         Args:
-            task_id (str): 受管进程任务标识。
-            status (TaskStatus): 任务终态或查询状态。
-            exit_code (int | None): 进程退出码，状态未知时为空。
+            task_id (str): 需要重新读取已提交状态的任务编号。
+        """
+        record = await self.get(task_id)
+        if self.on_status is not None and record is not None and record.background:
+            try:
+                await self.on_status(record)
+            except Exception:
+                logger.exception("发布任务状态失败: %s", task_id)
+
+    async def finish_once(self, task_id: str, status: TaskStatus, exit_code: int | None) -> bool:
+        """只保存状态和日志引用，事务提交成功后才唤醒 Agent。
+
+        Args:
+            task_id (str): 任务编号。
+            status (TaskStatus): 进程终态。
+            exit_code (int | None): 真实退出码，失去所有权时为空。
 
         Returns:
-            bool: 首次终态持久提交成功时为真，回调失败不撤销终态。
+            bool: 是否首次完成提交。
         """
-        # 1. 查询仍 running 的任务并读取有限尾部摘要，完整输出不进入 SQLite。
-        record = await self.records.get(task_id)
-        if record is None or record.status != TaskStatus.RUNNING:
+        if not await self.records.finish_once(task_id, status, exit_code):
             return False
-        summary = ""
-        try:
-            with open(record.output_path, "rb") as spool:
-                spool.seek(max(0, os.path.getsize(record.output_path) - TASK_TERMINAL_SUMMARY_BYTES))
-                summary = spool.read().decode("utf-8", errors="replace")
-        except OSError:
-            pass
-        # 2. DAO 原子提交终态和唯一 Inbox 通知，重复回调在此结束。
-        if not await self.records.finish_once(task_id, status, exit_code, summary):
-            return False
-        # 3. 提交后才发布可见状态；展示失败不撤销已经保存的终态。
-        if self.on_status is not None:
-            record = await self.get(task_id)
-            if record is not None and record.background:
-                try:
-                    await self.on_status(record)
-                except Exception:
-                    logger.exception("发布后台任务终态失败: %s", task_id)
-        # 4. 唤醒会话消费持久通知，唤醒失败后启动恢复仍能找到 Inbox。
-        if self.on_terminal is not None:
+        live = self._live.get(task_id)
+        if live is not None:
+            live.changed.set()
+        await self._publish_status(task_id)
+        record = await self.get(task_id)
+        if self.on_terminal is not None and record is not None:
             try:
                 await self.on_terminal(record.session_id)
             except Exception:
-                logger.exception("唤醒后台任务会话失败: %s", record.session_id)
+                logger.exception("唤醒任务所属聊天失败: %s", record.session_id)
         return True
 
     async def get(self, task_id: str) -> TaskRecord | None:
-        """查询任务持久记录，进程退出或后端重启后仍可读取。
+        """读取已提交的持久状态，任务退出或重启后仍可查询。
 
         Args:
-            task_id (str): 受管进程任务标识。
+            task_id (str): 任务编号。
 
         Returns:
-            TaskRecord | None: 任务持久记录，记录不存在时为空。
+            TaskRecord | None: 已提交记录，不存在时为空。
         """
         return await self.records.get(task_id)
 
     async def list(self, session_id: str) -> list[TaskRecord]:
-        """查询指定会话已转入后台的任务，前台记录仍可按 task_id 查询输出。
+        """返回指定聊天已移交后台的任务。
 
         Args:
-            session_id (str): 共享 Ayaya 会话标识。
+            session_id (str): Agent 聊天编号。
 
         Returns:
-            list[TaskRecord]: 该会话的运行和已结束后台任务记录。
+            list[TaskRecord]: 后台任务记录。
         """
         return [record for record in await self.records.list(session_id) if record.background]
+
+    async def resolve_output(self, session_id: str, reference: str) -> Path:
+        """解析任务日志引用，先查归属，再接触文件路径。
+
+        Args:
+            session_id (str): 当前聊天编号。
+            reference (str): task-output URI。
+
+        Returns:
+            Path: 当前聊天拥有的日志路径。
+        """
+        prefix = "task-output://"
+        if not reference.startswith(prefix):
+            raise ValueError("无效任务日志引用")
+        record = await self._owned(session_id, reference[len(prefix):])
+        return Path(record.output_path)
 
     async def read_output(self, task_id: str, offset: int, limit: int) -> dict:
         """按字节游标读取输出，闭合 UTF-8 字符边界并保留未完成字节。
@@ -372,56 +479,44 @@ class TaskSupervisor:
         return decoder.decode(data, final=record.status != TaskStatus.RUNNING).strip()
 
     async def stop(self, task_id: str) -> bool:
-        """先请求进程结束，宽限期后根据输出收集任务状态强停整个 Windows Job。
+        """先请求停止，再于宽限期后强停受管进程树。
 
         Args:
-            task_id (str): 受管进程任务标识。
+            task_id (str): 需要停止的受管任务编号。
 
         Returns:
-            bool: 当前 Supervisor 持有任务且已接受停止请求时为真。
+            bool: 当前进程仍受本 Supervisor 管理时为真。
         """
-        # 1. 只停止本进程仍持有的任务，重复停止请求幂等确认。
-        job = self._jobs.get(task_id)
-        process = self._processes.get(task_id)
-        if job is None or process is None:
+        live = self._live.get(task_id)
+        if live is None:
             return False
         if task_id in self._stopping:
             return True
-        # 2. 先标记停止原因，再请求退出，watcher 据此保存 stopped 终态。
         self._stopping.add(task_id)
-        try:
-            if os.name == "nt":
-                process.send_signal(signal.CTRL_BREAK_EVENT)
-            else:
-                process.terminate()
-        except (OSError, ProcessLookupError):
-            pass
 
         async def force_if_running() -> None:
-            """宽限两秒后终止仍未结束的受管进程树，包括持有输出管道的子进程。"""
+            """宽限期后若终态尚未提交，强停同一任务的进程树。"""
             await asyncio.sleep(TASK_STOP_GRACE_SECONDS)
-            watcher = self._watchers.get(task_id)
-            if watcher is not None and not watcher.done():
-                if os.name == "nt":
-                    job.terminate()
-                elif process.returncode is None:
-                    process.kill()
+            if task_id in self._live:
+                live.process.kill()
 
-        # 3. 两秒宽限后仍由 watcher 判断进程树是否结束，子进程持有管道时也要强停。
         self._force_stops[task_id] = asyncio.create_task(force_if_running())
+        try:
+            await live.process.interrupt()
+        except (OSError, RuntimeError):
+            # 1. 退出与停止同时发生时仍保留已受理标记，强停计时器和 watcher 负责收尾。
+            pass
         return True
 
     async def close(self) -> None:
-        """停止受管任务并等待输出收尾，最后关闭持久连接。"""
-        # 1. 对仍持有的任务请求停止，等待输出收尾后再关闭任务数据库。
-        for task_id in tuple(self._jobs):
+        """停止进程并等待输出收尾，取消剩余等待后再关闭数据库。"""
+        self._closing = True
+        for task_id in tuple(self._live):
             await self.stop(task_id)
-        if self._watchers:
-            try:
-                await asyncio.wait_for(
-                    asyncio.gather(*tuple(self._watchers.values()), return_exceptions=True),
-                    timeout=TASK_SHUTDOWN_WAIT_SECONDS,
-                )
-            except asyncio.TimeoutError:
-                pass
+        watchers = tuple(self._watchers.values())
+        if watchers:
+            _, pending = await asyncio.wait(watchers, timeout=TASK_SHUTDOWN_WAIT_SECONDS)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*watchers, return_exceptions=True)
         await self.records.close()

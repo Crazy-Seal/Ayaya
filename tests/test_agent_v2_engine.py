@@ -26,7 +26,7 @@ from app.agent.core.tool_manager import ToolManager
 from app.agent.state.messages import (AssistantMessage, HumanMessage, ImageContent, ToolMessage, ToolMessage, ToolCall)
 from app.agent.state import AgentState
 from app.agent.models.llm_client import LLMClient, LLMConfig, StreamChunk
-from app.agent.tools.base import BaseTool, ToolResult
+from app.agent.tools.core.base import BaseTool, ToolResult
 
 
 # ==================== 测试替身 ====================

@@ -16,7 +16,7 @@ from app.agent.tools.authorization.models import (
     ToolIdentity,
     ToolInvocation,
 )
-from app.agent.tools.base import ToolResult
+from app.agent.tools.core.base import ToolResult
 from app.agent.core.tool_manager import ToolManager
 from app.agent.context import ContextStrategyConfig, ModelInputCoordinator
 from app.agent.core.event_router import EventType
@@ -26,7 +26,7 @@ from app.agent.plugins.base import PluginHook
 from app.agent.models.llm_client import StreamChunk
 from app.agent.state import AgentState
 from app.agent.state.messages import ToolCall, ToolMessage
-from app.agent.tools.base import BaseTool, ToolContext
+from app.agent.tools.core.base import BaseTool, ToolContext
 from app.crud.chat_settings_dao import ChatSettingsDao
 from app.crud.mcp_settings_dao import MCPSettingsDao
 from app.mcp.identity import server_identity_fingerprint

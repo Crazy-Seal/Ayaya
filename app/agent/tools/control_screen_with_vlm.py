@@ -9,10 +9,10 @@ from typing import Annotated, Literal
 from app.schemas.runtime_types import (
     AUTHORIZATION_GRANTED_KIND,
 )
-from app.agent.tools._screen_result import screen_action, screen_tool_result
-from app.agent.tools.base import ToolContext, ToolResult
+from app.agent.tools.screen.adapter import screen_action, screen_tool_result
+from app.agent.tools.core.base import ToolContext, ToolResult
 from app.agent.models.vlm import VLMService, clamp_bbox
-from app.agent.tools.decorator import tool
+from app.agent.tools.core.decorator import tool
 
 Operation = Literal["click", "double", "right", "scroll"]
 ScrollDirection = Literal["none", "down", "up"]

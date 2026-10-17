@@ -11,14 +11,17 @@ from app.schemas.runtime_types import TaskStatus
 from app.services.task_supervisor import TaskSupervisor
 
 
-def test_power_shell_command_is_direct_and_preserves_utf8_setup() -> None:
-    """检查真实启动参数保留非交互和 UTF-8 设置，命令无需 Conda 查找。"""
-    argv = _build_command("Write-Output '中文'")
-    assert argv[:6] == ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"]
-    assert "UTF8Encoding" in argv[-1]
-    assert "[Console]::OutputEncoding" in argv[-1]
-    assert argv[-1].endswith("Write-Output '中文'")
-    assert "conda" not in " ".join(argv).lower()
+def test_shell_command_uses_detected_executable_and_preserves_utf8_setup() -> None:
+    """旧入口与新工具共享 Shell 快照，PowerShell 保留 UTF-8 且不禁用输入。"""
+    from app.agent.tools.terminal.shell import detect_shell
+
+    shell = detect_shell()
+    argv = _build_command("echo 中文")
+    assert argv[0] == shell.executable
+    if shell.kind in {"pwsh", "powershell"}:
+        assert "[Console]::OutputEncoding" in argv[-1]
+        assert "-NonInteractive" not in argv
+    assert argv[-1].endswith("echo 中文")
 
 
 @pytest.mark.skipif(os.name != "nt", reason="直接 PowerShell 进程树仅在 Windows 验证")

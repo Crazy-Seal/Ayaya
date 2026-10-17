@@ -14,7 +14,7 @@ router = APIRouter(tags=["tools"])
 @router.get("/tools", response_model=Result)
 def list_tools() -> Result:
     """获取所有可用工具的名称和描述"""
-    from app.agent.tools.registry import ToolRegistry
+    from app.agent.tools.core.registry import ToolRegistry
 
     tool_list: list[ToolInfo] = []
     for name in ToolRegistry.list_tools():

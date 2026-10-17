@@ -8,7 +8,7 @@ import re
 from typing import Any, TYPE_CHECKING
 
 from app.agent.state.messages import TextContent, ImageContent, content_text
-from app.agent.tools.base import BaseTool, ToolContext, ToolResult
+from app.agent.tools.core.base import BaseTool, ToolContext, ToolResult
 from app.agent.tools.authorization.manager import ToolAuthorization
 from app.agent.tools.authorization.models import ToolIdentity
 from app.mcp.identity import tool_contract_fingerprint

@@ -1,6 +1,6 @@
 from typing import Annotated, Literal
 
-from app.agent.tools.decorator import tool
+from app.agent.tools.core.decorator import tool
 
 
 def test_tool_schema_includes_signature_defaults() -> None:

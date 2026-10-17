@@ -8,10 +8,10 @@ import re
 from collections import Counter
 from dataclasses import replace
 
-from app.agent.tools.base import ToolResult
+from app.agent.tools.core.base import ToolResult
 from app.agent.state.messages import ImageContent, TextContent, content_text, text_content
-from app.agent.tools.result_artifacts import ToolResultArtifactStore
-from app.agent.tools.result_limits import (
+from app.agent.tools.results.artifacts import ToolResultArtifactStore
+from app.agent.tools.results.limits import (
     ALLOWED_IMAGE_MIME_TYPES,
     MAX_IMAGE_BYTES,
     MAX_IMAGES_PER_CALL,

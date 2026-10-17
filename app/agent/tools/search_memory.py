@@ -2,8 +2,8 @@
 
 from typing import Annotated
 
-from app.agent.tools.base import ToolContext
-from app.agent.tools.decorator import tool
+from app.agent.tools.core.base import ToolContext
+from app.agent.tools.core.decorator import tool
 
 
 @tool(compressible=True)

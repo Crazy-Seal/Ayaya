@@ -33,8 +33,8 @@ from app.agent.state.messages import (
     ToolCall,
 )
 from app.agent.state import AgentState
-from app.agent.tools.base import BaseTool, InterruptEvent, ToolContext, ToolResult, TaskLauncher
-from app.agent.tools.result_normalizer import ToolResultNormalizer
+from app.agent.tools.core.base import BaseTool, InterruptEvent, ToolContext, ToolResult, TaskLauncher
+from app.agent.tools.results.normalizer import ToolResultNormalizer
 from app.agent.tools.authorization.manager import ToolAuthorization, descriptor_for_tool
 from app.agent.tools.authorization.models import AuthorizationRequired, ToolInvocation
 
@@ -616,7 +616,7 @@ class ExecutionPipeline:
             )
             hooks_started = True
 
-        # 4. 注入状态与任务端口，run_ps 的进程由共享 Supervisor 持有，并记录来源 run 和工具调用。
+        # 4. 注入状态与任务端口，终端工具的进程由共享 Supervisor 持有，并记录来源 run 和工具调用。
         context = ToolContext(
             session_id=state.session_id,
             state=state,
@@ -631,6 +631,7 @@ class ExecutionPipeline:
             stop_requested=stop_requested,
             origin_run_id=origin_run_id,
             origin_tool_call_id=tool_call.id,
+            origin_tool_name=tool_call.name,
         )
 
         # 5. 执行工具并把普通异常转换为 ToolResult，再统一规范化过长输出与媒体。
@@ -755,6 +756,7 @@ class ExecutionPipeline:
             task_launcher=self._task_launcher,
             origin_run_id=origin_run_id,
             origin_tool_call_id=tool_call.id,
+            origin_tool_name=tool_call.name,
             desktop=self._desktop,
             stop_requested=stop_requested,
         )

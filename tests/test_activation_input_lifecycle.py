@@ -19,7 +19,7 @@ from app.agent.runtime.session_inbox import InboxEnvelope, SessionInbox
 from app.agent.state import AgentState
 from app.agent.state.manager import StateManager
 from app.agent.state.messages import BaseMessage, HumanMessage, TaskResultMessage, ToolCall
-from app.agent.tools.base import BaseTool, ToolContext, ToolResult
+from app.agent.tools.core.base import BaseTool, ToolContext, ToolResult
 from app.crud.task_record_dao import TaskRecordDao
 from app.schemas.runtime_types import InteractionEventKind, InterruptKind, TaskStatus
 from app.services.agent_runtime_scheduler import AgentRuntimeScheduler

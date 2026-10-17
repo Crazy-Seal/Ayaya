@@ -12,7 +12,8 @@ chat_models:
     local:control_screen_with_vlm: deny
     local:read_file: deny
     local:read_image: deny
-    local:run_ps: deny
+    local:exec_command: deny
+    local:write_stdin: deny
     local:screenshot: ask
     local:search_diary: allow
     local:search_memory: allow

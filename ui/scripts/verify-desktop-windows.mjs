@@ -49,6 +49,7 @@ let settings = null;
 let exited = false;
 let currentSession = "";
 let developmentServer = null;
+let demoTaskStatus = "running";
 
 const history = [
   { id: "human-1", role: "human", content: "把聊天记录和输入框放在一起，看起来像聊天软件。", timestamp: "2026-10-11T04:00:00Z" },
@@ -125,8 +126,13 @@ async (input, init = {}) => {
     const command = JSON.parse(init.body); commands.push(command);
     return json({ accepted: true, input_sequence: commands.length });
   }
+  if (route.startsWith("/tasks/") && route.endsWith("/output")) {
+    return json({ text: "完整终端输出：资料已读取。", next_offset: 42, has_more: false });
+  }
   if (route.startsWith("/tasks/")) return json({ tasks: [
-    { task_id: "task-demo", command: "整理项目资料", status: "running", created_at: new Date().toISOString(), recent_output: "正在读取资料…" },
+    { task_id: "task-demo", tool_name: "exec_command", command: "整理项目资料", status: demoTaskStatus, created_at: new Date().toISOString(), recent_output: "正在读取资料…" },
+    { task_id: "task-other", tool_name: "other_tool", command: "后台分析资料", status: "completed", created_at: new Date().toISOString(), recent_output: "处理完成" },
+    { task_id: "task-legacy", tool_name: null, command: "历史任务", status: "completed", created_at: new Date().toISOString(), recent_output: "旧输出" },
   ] });
   if (route.startsWith("/agent/channels/")) return json({ channels: [
     { channel: "desktop", display_name: "桌面", ready: true, enabled: true },
@@ -396,6 +402,20 @@ try {
   for (const page of ["llm", "motion", "memory", "contextStrategy", "tools", "mcp", "multimodal", "channels", "tasks"]) {
     await settingsWindow.webContents.executeJavaScript(`document.querySelector('[data-page="${page}"].settings-tab').click()`);
     await pause(150);
+    if (page === "tasks") {
+      // 1. 原生窗口必须真实显示工具来源；旧任务保留未知说明，不能把所有记录写成终端任务。
+      await waitFor(settingsWindow, "document.getElementById('background-tasks-list').textContent.includes('[exec_command]')");
+      const taskText = await settingsWindow.webContents.executeJavaScript("document.getElementById('background-tasks-list').textContent");
+      assert.match(taskText, /\[other_tool\]/);
+      assert.match(taskText, /\[未知工具\]/);
+      await capture(settingsWindow, "settings-tasks-running");
+      // 2. 使用真实 preload 读取输出，再刷新完成状态，工具名和输出详情都必须保留。
+      await settingsWindow.webContents.executeJavaScript("document.querySelector('.background-task-row button').click()");
+      await waitFor(settingsWindow, "document.getElementById('background-task-output').textContent.includes('完整终端输出')");
+      demoTaskStatus = "completed";
+      await settingsWindow.webContents.executeJavaScript("document.getElementById('refresh-background-tasks').click()");
+      await waitFor(settingsWindow, "document.querySelector('.background-task-row').textContent.includes('已完成')");
+    }
     await capture(settingsWindow, `settings-${page}`);
   }
   await settingsWindow.webContents.executeJavaScript("document.getElementById('exit-application-btn').click()");

@@ -2,9 +2,9 @@ from app.agent.state.messages import ImageContent
 import base64
 from pathlib import Path
 
-from app.agent.tools.base import ToolResult
-from app.agent.tools.result_artifacts import ToolResultArtifactStore
-from app.agent.tools.result_normalizer import (
+from app.agent.tools.core.base import ToolResult
+from app.agent.tools.results.artifacts import ToolResultArtifactStore
+from app.agent.tools.results.normalizer import (
     TOOL_RESULT_TOO_LARGE_MARKER,
     TOOL_RESULT_TRUNCATED_MARKER,
     ToolResultNormalizer,

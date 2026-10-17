@@ -1,4 +1,4 @@
-"""使用 Windows Job Object 约束 run_ps 产生的整个进程树。"""
+"""使用 Windows Job Object 约束受管工具产生的整个进程树。"""
 
 from __future__ import annotations
 

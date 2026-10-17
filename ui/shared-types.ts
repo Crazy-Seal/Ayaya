@@ -385,11 +385,13 @@ export type ChannelSubscription = {
  *     exit_code (number | null): 实际进程退出码，未知时为空。
  *     created_at (string): 任务持久创建时间。
  *     ended_at (string | null): 任务终态时间，运行中为空。
+ *     tool_name (string | null): 创建任务的实际工具名，旧记录为空。
  *     recent_output (string): 任务完整输出的有限尾部摘要。
  *     background (boolean): 显式或超时移交后台的标记，任务列表只包含后台记录。
  */
 export type BackgroundTaskRecord = {
   task_id: string;
+  tool_name: string | null;
   session_id: string;
   command: string;
   status: TaskStatus;

@@ -177,7 +177,7 @@ def get_runtime_scheduler() -> AgentRuntimeScheduler:
         await scheduler.events.publish(InteractionEvent(
             record.session_id, InteractionEventKind.TASK_STATUS,
             {"task_id": record.task_id, "status": record.status,
-             "exit_code": record.exit_code},
+             "exit_code": record.exit_code, "tool_name": record.tool_name},
             task_id=record.task_id,
         ))
 

@@ -24,6 +24,7 @@ from app.routes.desktop import router as desktop_router
 from app.dependencies import get_mcp_connection_manager, get_runtime_scheduler, get_task_supervisor
 from app.dependencies import get_desktop_controller, get_desktop_settings_service, get_desktop_settings_dao
 from app.security.local_api import install_local_api_security, load_api_token
+from app.agent.tools.terminal.shell import detect_shell
 
 # 控制台日志基础配置：让 Agent 的收发日志在本地启动时可见
 logging.basicConfig(
@@ -45,6 +46,11 @@ async def lifespan(_app: FastAPI):
     preconnect_task: asyncio.Task | None = None
     try:
         # 1. Scheduler 拥有存储初始化和旧意图收尾，完成前不开放执行。
+        # 1.1. 先在线程探测默认 Shell，后续工具描述和执行复用缓存，不在模型请求中重复启动探测进程。
+        try:
+            await asyncio.to_thread(detect_shell)
+        except RuntimeError:
+            logging.getLogger(__name__).warning("默认 Shell 不可用，终端工具将返回环境错误")
         await get_runtime_scheduler().start()
         preconnect_task = asyncio.create_task(mcp_manager.preconnect_enabled())
         yield

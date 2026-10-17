@@ -11,7 +11,7 @@ from app.agent.state.messages import (BaseMessage, HumanMessage, AssistantMessag
     ImageContent, TextContent, ToolCall, ProviderData, text_content, notification_text, to_json_value)
 from app.agent.models.openai_message_names import (SCREENSHOT_MESSAGE_NAME, TOOL_IMAGE_MESSAGE_NAME, MCP_TOOL_IMAGE_MESSAGE_NAME,
     SCREENSHOT_COMPRESSED_NAME, CONTEXT_SUMMARY_MESSAGE_NAME)
-from app.agent.tools._schema import normalize_tool_schema_for_model
+from app.agent.tools.core.schema import normalize_tool_schema_for_model
 from app.agent.utils.domain.token_estimation import RoughTokenEstimator
 
 logger = logging.getLogger("app.agent.models.llm_client")

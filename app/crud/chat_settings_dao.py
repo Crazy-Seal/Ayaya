@@ -13,20 +13,32 @@ def _known_local_tool_names() -> list[str]:
     Returns:
         list[str]: 工具注册表公开的本地工具名称列表。
     """
-    from app.agent.tools.registry import ToolRegistry
+    from app.agent.tools.core.registry import ToolRegistry
 
     return ToolRegistry.list_tools()
 
 
 def _reconcile_local_tool_permissions(item: dict) -> bool:
-    """新发现的本地工具默认 ASK，不改变已保存的权限。
+    """补齐新工具权限，终端工具改名时保留旧许可和拒绝。
 
     Args:
         item (dict): 从会话配置文件读取的单项模型配置。
+
+    Returns:
+        bool: 本次补齐或改名规则是否改变了配置内容。
     """
     changed = False
     permissions = dict(item.get("tool_permissions") or {})
-    for name in _known_local_tool_names():
+    # 1. 工具改名时保留既有许可，旧 deny 不能因新增交互工具而变为 ask。
+    names = _known_local_tool_names()
+    legacy = permissions.get("local:run_ps")
+    if "exec_command" in names and "local:exec_command" not in permissions and legacy is not None:
+        permissions["local:exec_command"] = legacy
+        changed = True
+    if "write_stdin" in names and "local:write_stdin" not in permissions and legacy == "deny":
+        permissions["local:write_stdin"] = "deny"
+        changed = True
+    for name in names:
         key = f"local:{name}"
         if key not in permissions:
             permissions[key] = "ask"

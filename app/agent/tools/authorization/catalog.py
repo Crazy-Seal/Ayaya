@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from app.agent.tools.registry import ToolRegistry
+from app.agent.tools.core.registry import ToolRegistry
 from app.crud.mcp_settings_dao import MCPSettingsDao
 from app.schemas.chat_settings import ChatSettings
 from app.schemas.tool_permissions import ToolPolicy

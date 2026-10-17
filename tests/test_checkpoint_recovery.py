@@ -18,7 +18,7 @@ from app.agent.state.manager import CheckpointType, StateManager
 from app.agent.state.messages import (AssistantMessage, HumanMessage, ImageContent, ToolMessage, ToolCall, ToolMessage)
 from app.agent.models.llm_client import StreamChunk
 from app.agent.state import AgentState
-from app.agent.tools.base import BaseTool, ToolContext, ToolResult
+from app.agent.tools.core.base import BaseTool, ToolContext, ToolResult
 import app.agent.plugins.memory as memory_plugin_module
 
 

@@ -30,6 +30,6 @@ def test_full_image_result_survives_checkpoint_before_batch_closes() -> None:
 
 def test_screen_tools_use_business_screenshot_category() -> None:
     """屏幕结果携带截图类别，不携带模型 user 名称。"""
-    from app.agent.tools.base import ToolResult
+    from app.agent.tools.core.base import ToolResult
     result = ToolResult.success("截图", image_url="data:image/png;base64,AA==", media_kind="screenshot")
     assert result.content[-1].media_kind == "screenshot"

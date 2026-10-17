@@ -21,7 +21,7 @@ from app.agent.models.llm_client import StreamChunk, TokenUsage
 from app.agent.plugins.base import BasePlugin, HookContext, PluginHook
 from app.agent.state import AgentState
 from app.agent.state.messages import ToolCall
-from app.agent.tools.base import BaseTool, ToolContext, ToolResult
+from app.agent.tools.core.base import BaseTool, ToolContext, ToolResult
 
 
 class _ScriptedLLM:

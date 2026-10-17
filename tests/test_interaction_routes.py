@@ -12,7 +12,7 @@ from app.routes.tools import router as tools_router
 from app.services.interaction_contract import CommandReceipt
 from app.services.interaction_contract import InteractionEvent
 from app.agent.state.messages import ToolCall
-from app.agent.tools.base import InterruptEvent
+from app.agent.tools.core.base import InterruptEvent
 from app.routes.agent import subscribe_events
 from app.routes import agent as agent_routes
 from app.services.agent_runtime_scheduler import AgentRuntimeScheduler

@@ -32,7 +32,7 @@ from app.agent.runtime.session_inbox import InboxEnvelope
 from app.agent.runtime.turn_control import TurnControl, TurnInterrupted
 from app.schemas.desktop import DesktopOperations
 from app.agent.state.messages import AssistantMessage, HumanMessage, ToolCall, ToolMessage, RuntimeInputMessage, with_text, text_content
-from app.agent.tools.base import BaseTool, TaskLauncher
+from app.agent.tools.core.base import BaseTool, TaskLauncher
 from app.agent.tools.authorization.manager import ToolAuthorization
 from app.agent.utils.domain.images import save_multiple_images
 from app.schemas.mcp import MCPModelSettings
@@ -196,7 +196,7 @@ class Agent:
     async def _setup_tools(self) -> None:
         """按会话设置创建本地及 MCP 工具适配器，并装配技能提供的工具。"""
         # 从工具注册表加载
-        from app.agent.tools.registry import ToolRegistry
+        from app.agent.tools.core.registry import ToolRegistry
 
         tool_names = (
             ToolRegistry.list_tools()
@@ -241,7 +241,7 @@ class Agent:
             return
 
         from app.agent.skills.registry import SkillRegistry
-        from app.agent.tools.registry import ToolRegistry
+        from app.agent.tools.core.registry import ToolRegistry
         from app.agent.plugins.registry import PluginRegistry
 
         for skill_name in self.config.skills:

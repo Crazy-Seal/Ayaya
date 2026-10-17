@@ -711,7 +711,8 @@ export class RuntimeChatClient {
         this.renderQueuedInputs();
       }
     } else if (event.kind === InteractionEventKind.TASK_STATUS) {
-      this.taskEntry?.onStatus(String(event.payload.task_id || ""), String(event.payload.status || ""));
+      this.taskEntry?.onStatus(String(event.payload.task_id || ""), String(event.payload.status || ""),
+          typeof event.payload.tool_name === "string" ? event.payload.tool_name : undefined);
     // 6. 新 run 建立独立草稿；文本、工具和中断只更新该轮可见状态。
     } else if (event.kind === InteractionEventKind.RUN_STARTED) {
       this.currentToolActive = false;

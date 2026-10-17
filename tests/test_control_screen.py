@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from app.agent.tools.base import ToolContext
+from app.agent.tools.core.base import ToolContext
 from app.agent.tools.control_screen import control_screen, normalize_bbox
 
 

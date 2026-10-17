@@ -152,7 +152,8 @@ def test_terminal_notification_failure_rolls_back_task_and_retry_notifies_once(t
             notice = notices[0]
             assert notice.origin_channel == "system" and notice.delivery_mode == "immediate"
             assert notice.payload == {
-                "task_id": "task", "task_name": "测试命令", "status": "completed", "result": "完整结果",
+                "task_id": "task", "task_name": "测试命令", "status": "completed", "result": "",
+                "tool_name": None, "exit_code": 0, "output_ref": "task-output://task",
             }
             # 3. 直接核对持久记录数量及默认排队标记，不能靠领取结果掩盖重复插入。
             with closing(sqlite3.connect(path)) as inspection:
@@ -237,7 +238,8 @@ def test_immediate_child_is_in_job_and_stops_with_parent(tmp_path) -> None:
             "import pathlib,subprocess,sys,time; "
             "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)'],"
             "creationflags=0x200); "
-            f"pathlib.Path({str(pid_file)!r}).write_text(str(child.pid)); "
+            f"pid_path=pathlib.Path({str(pid_file)!r}); "
+            "staging=pid_path.with_suffix('.tmp'); staging.write_text(str(child.pid)); staging.replace(pid_path); "
             "time.sleep(30)"
         )
         supervisor = TaskSupervisor(
@@ -248,6 +250,7 @@ def test_immediate_child_is_in_job_and_stops_with_parent(tmp_path) -> None:
                 "s", "spawn child", [sys.executable, "-c", script],
                 cwd=str(tmp_path), background=True, timeout_sec=1,
             )
+            # 1.1. 子进程编号以重命名原子发布，文件存在时内容已经写完，避免偶发读到空文件。
             for _ in range(100):
                 if pid_file.exists():
                     break
@@ -366,7 +369,7 @@ def test_running_output_keeps_incomplete_utf8_bytes_for_next_page(tmp_path) -> N
             command = (
                 "import sys,time; "
                 "sys.stdout.buffer.write(bytes([0xe4])); sys.stdout.flush(); "
-                "time.sleep(0.3); "
+                "open('partial-ready','w').close(); sys.stdin.readline(); "
                 "sys.stdout.buffer.write(bytes([0xbd,0xa0])); sys.stdout.flush()"
             )
             result = await supervisor.launch(
@@ -375,14 +378,13 @@ def test_running_output_keeps_incomplete_utf8_bytes_for_next_page(tmp_path) -> N
             )
             for _ in range(100):
                 record = await supervisor.get(result.task_id)
-                if record is not None and record.status == "running" and (
-                    await supervisor.read_output(result.task_id, 0, 1)
-                )["has_more"]:
+                if record is not None and record.status == "running" and (tmp_path / "partial-ready").exists():
                     break
                 await asyncio.sleep(0.01)
             page = await supervisor.read_output(result.task_id, 0, 1)
             assert page["text"] == ""
             assert page["next_offset"] == 0
+            await supervisor.interact("s", result.task_id, chars="\n", yield_time_ms=0)
             for _ in range(100):
                 if (await supervisor.get(result.task_id)).status == "completed":
                     break
@@ -413,8 +415,9 @@ def test_foreground_result_is_bounded_but_spool_keeps_full_output(tmp_path) -> N
                 "s", "large output", [sys.executable, "-c", "print('x' * 100000)"],
                 cwd=str(tmp_path), background=False, timeout_sec=3,
             )
-            assert len(result.output) < 17000
-            assert result.task_id in result.output
+            assert len(result.output.encode("utf-8")) <= 64 * 1024
+            assert result.has_more
+            assert "task-output://" not in result.render()
             record = await supervisor.get(result.task_id)
             assert record is not None
             assert (tmp_path / "tasks" / result.task_id / "output.log").stat().st_size > 100000

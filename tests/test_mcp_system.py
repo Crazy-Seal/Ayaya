@@ -12,9 +12,9 @@ from pydantic import BaseModel, ValidationError
 
 from app.agent.context import ContextStrategyConfig
 from app.agent.agent import Agent, AgentConfig
-from app.agent.tools.base import BaseTool, ToolContext, ToolResult
+from app.agent.tools.core.base import BaseTool, ToolContext, ToolResult
 from app.agent.tools.authorization.manager import ToolAuthorization
-from app.agent.tools.result_normalizer import ToolResultNormalizer
+from app.agent.tools.results.normalizer import ToolResultNormalizer
 from app.agent.core.event_router import AgentEvent, EventType
 from app.agent.state import AgentState
 from app.agent.mcp.adapter import MCPToolAdapter, build_exposed_tool_name
@@ -1340,7 +1340,7 @@ def test_adapter_and_normalizer_limit_content_parts_and_summarize_images(monkeyp
 
     decode_calls = 0
     original_decode = __import__(
-        "app.agent.tools.result_normalizer", fromlist=["base64"]
+        "app.agent.tools.results.normalizer", fromlist=["base64"]
     ).base64.b64decode
 
     def counted_decode(*args, **kwargs):
@@ -1356,7 +1356,7 @@ def test_adapter_and_normalizer_limit_content_parts_and_summarize_images(monkeyp
         decode_calls += 1
         return original_decode(*args, **kwargs)
 
-    monkeypatch.setattr("app.agent.tools.result_normalizer.base64.b64decode", counted_decode)
+    monkeypatch.setattr("app.agent.tools.results.normalizer.base64.b64decode", counted_decode)
     converted = MCPToolAdapter._convert_result(SimpleNamespace(
         isError=False,
         content=_RepeatedInvalidImages(),
@@ -1474,7 +1474,7 @@ def test_unified_image_normalizer_stops_at_mcp_content_part_limit(monkeypatch) -
         return False
 
     monkeypatch.setattr(
-        "app.agent.tools.result_normalizer._has_valid_signature",
+        "app.agent.tools.results.normalizer._has_valid_signature",
         counted_signature,
     )
     converted = MCPToolAdapter._convert_result(SimpleNamespace(

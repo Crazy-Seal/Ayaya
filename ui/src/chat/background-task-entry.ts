@@ -73,8 +73,9 @@ export class BackgroundTaskEntry {
    * Args:
    *     taskId (string): 状态变更的任务身份。
    *     status (string): 后端运行或终态标记。
+   *     toolName (string | null | undefined): 创建任务的工具名，缺失时保留原值。
    */
-  onStatus(taskId: string, status: string): void {
+  onStatus(taskId: string, status: string, toolName?: string | null): void {
     // 1. 先更新已知任务，完成事件到达后不能继续显示旧运行数量。
     this.revision += 1;
     this.records = this.records.map(/**
@@ -87,7 +88,7 @@ export class BackgroundTaskEntry {
      *     BackgroundTaskRecord: 更新后的任务记录。
      */
     (record) => record.task_id === taskId
-      ? { ...record, status: status as BackgroundTaskRecord["status"] } : record);
+      ? { ...record, status: status as BackgroundTaskRecord["status"], tool_name: toolName === undefined ? record.tool_name : toolName } : record);
     if (status !== TaskStatus.RUNNING) {
       const labels: Record<string, string> = {
         [TaskStatus.COMPLETED]: "已完成", [TaskStatus.FAILED]: "失败",

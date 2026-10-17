@@ -7,10 +7,10 @@ from types import SimpleNamespace
 from app.agent.tools.read_file import read_file
 from app.agent.tools.read_image import read_image
 from app.agent.tools.apply_patch import apply_patch
-from app.agent.tools.result_artifacts import ToolResultArtifactStore
-from app.agent.tools.result_normalizer import ToolResultNormalizer
+from app.agent.tools.results.artifacts import ToolResultArtifactStore
+from app.agent.tools.results.normalizer import ToolResultNormalizer
 from app.runtime import get_tool_results_dir
-from app.agent.tools.registry import ToolRegistry
+from app.agent.tools.core.registry import ToolRegistry
 
 
 def _context(session_id: str = "session-a") -> SimpleNamespace:
@@ -149,20 +149,16 @@ def test_read_image_counts_only_valid_images_toward_limit(tmp_path: Path, monkey
     assert image_urls(normalized)[0].startswith("data:image/png;base64,")
 
 
-def test_run_ps_preserves_output_for_unified_normalization(monkeypatch) -> None:
-    """验证任务运行器输出仍交给统一工具结果规范化。
-
-    Args:
-        monkeypatch (pytest.MonkeyPatch): Pytest 依赖替换 fixture。
-    """
+def test_run_ps_preserves_output_for_unified_normalization() -> None:
+    """验证旧调用适配仍将完整结果交给统一工具结果规范化。"""
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     import app.agent.tools.run_ps as run_ps_module
-    from app.agent.tools.base import ToolContext
-    from app.services.task_supervisor import TaskLaunchResult
+    from app.agent.tools.core.base import ToolContext
+    from app.agent.tools.terminal.models import TaskLaunchResult
 
     class _Launcher:
         """提供隔离测试替身，用于验证：任务运行器输出仍交给统一工具结果规范化。"""
-        async def launch(self, session_id, command, argv, *, cwd, background, timeout_sec,
+        async def launch(self, session_id, command, argv, *, cwd, tty, yield_time_ms, tool_name,
                          origin_run_id=None, origin_tool_call_id=None):
             """执行该回归场景中的局部测试步骤。
 
@@ -171,22 +167,14 @@ def test_run_ps_preserves_output_for_unified_normalization(monkeypatch) -> None:
                 command (ChannelCommand): 统一渠道命令或需要执行的命令正文，类型决定其含义。
                 argv (对象): 已经构造好的进程参数列表。
                 cwd (对象): 命令执行工作目录。
-                background (对象): 是否立即后台运行。
-                timeout_sec (对象): 前台等待预算，超时后保留同一进程。
+                tty (bool): 是否使用 PTY。
+                yield_time_ms (int): 等待预算。
+                tool_name (str): 创建任务的工具名。
                 origin_run_id (对象): 发起进程任务的运行轮次标识。
                 origin_tool_call_id (对象): 发起任务的工具调用标识。
             """
             return TaskLaunchResult("task", False, "x" * 60_000)
 
-    def fake_build_command(_command: str):
-        """执行该回归场景中的局部测试步骤。
-
-        Args:
-            _command (str): 统一渠道命令或需要执行的命令正文，类型决定其含义。
-        """
-        return ["fake"]
-
-    monkeypatch.setattr(run_ps_module, "_build_command", fake_build_command)
     context = ToolContext(
         session_id="s", state=None,
         emit_event=lambda *_args: None,
@@ -197,7 +185,8 @@ def test_run_ps_preserves_output_for_unified_normalization(monkeypatch) -> None:
     result = asyncio.run(run_ps_module._run_command("Write-Output x", context))
 
     # 2. 核对公开结果和持久状态，确保场景中的输入、通知或副作用未重复。
-    assert result == "x" * 60_000
+    assert result.endswith("x" * 60_000)
+    assert "task_id: task" in result
 
 
 def test_apply_patch_adds_updates_and_deletes_files(tmp_path: Path, monkeypatch) -> None:

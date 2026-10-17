@@ -7,9 +7,9 @@ from types import SimpleNamespace
 from app.agent.mcp.adapter import MCPToolAdapter
 from app.agent.models.llm_client import LLMClient, LLMConfig
 from app.agent.state.messages import HumanMessage, ImageContent, TextContent, text_content
-from app.agent.tools.base import ToolResult
-from app.agent.tools.result_limits import MAX_IMAGES_PER_CALL
-from app.agent.tools.result_normalizer import ToolResultNormalizer
+from app.agent.tools.core.base import ToolResult
+from app.agent.tools.results.limits import MAX_IMAGES_PER_CALL
+from app.agent.tools.results.normalizer import ToolResultNormalizer
 from app.agent.context import RuntimeContext
 from app.agent.core.pipeline import ExecutionPipeline
 from app.agent.state import AgentState

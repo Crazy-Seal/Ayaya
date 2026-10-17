@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Literal
 
-from app.agent.tools.decorator import tool
+from app.agent.tools.core.decorator import tool
 from app.agent.utils.infra.safe_path import safe_path
 
 
