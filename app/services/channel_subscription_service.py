@@ -6,7 +6,7 @@ from app.schemas.runtime_types import (
     DESKTOP_CHANNEL,
 )
 from app.crud.channel_subscription_dao import ChannelSubscriptionDao
-from app.services.interaction_contract import ChannelDescriptor
+from app.interaction.interaction_contract import ChannelDescriptor
 
 
 class ChannelSubscriptionService:

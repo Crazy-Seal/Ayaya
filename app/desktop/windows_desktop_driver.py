@@ -1,4 +1,4 @@
-"""Windows 桌面 adapter：原生窗口、物理坐标截图及可恢复剪贴板输入。"""
+"""Windows 桌面驱动：原生窗口、物理坐标截图及可恢复剪贴板输入。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from typing import Callable, Iterator
 from app.schemas.desktop import ScreenAction, ScreenCapture
 
 
-class WindowsDesktopAdapter:
+class WindowsDesktopDriver:
     """只由 DesktopController 的唯一线程使用，不向工具暴露系统句柄。
 
     Attributes:

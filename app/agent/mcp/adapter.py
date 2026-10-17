@@ -20,7 +20,7 @@ from app.mcp.limits import (
     validate_json_value,
 )
 if TYPE_CHECKING:
-    from app.services.mcp_connection_manager import MCPConnectionManager
+    from app.mcp.mcp_connection_manager import MCPConnectionManager
 
 
 def build_exposed_tool_name(server_id: str, remote_tool_name: str) -> str:

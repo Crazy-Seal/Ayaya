@@ -76,8 +76,8 @@ class DesktopController:
             Any: 此线程唯一的 Windows adapter 或隔离测试替身。
         """
         if self._adapter is None:
-            from app.services.windows_desktop import WindowsDesktopAdapter
-            self._adapter = WindowsDesktopAdapter()
+            from app.desktop.windows_desktop_driver import WindowsDesktopDriver
+            self._adapter = WindowsDesktopDriver()
         return self._adapter
 
     async def _run(self, operation: Callable[[threading.Event], T], stop_requested: StopRequested | None = None) -> T:

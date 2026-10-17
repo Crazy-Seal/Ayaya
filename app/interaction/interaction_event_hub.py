@@ -10,7 +10,7 @@ from uuid import uuid4
 from app.schemas.runtime_types import (
     DESKTOP_CHANNEL, InteractionEventKind,
 )
-from app.services.interaction_contract import ChannelDescriptor, InteractionEvent
+from app.interaction.interaction_contract import ChannelDescriptor, InteractionEvent
 from app.services.channel_subscription_service import ChannelSubscriptionService
 
 

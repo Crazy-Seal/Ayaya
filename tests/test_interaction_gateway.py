@@ -1,9 +1,61 @@
 import asyncio
+from collections.abc import AsyncIterator, Awaitable, Callable
 
-from app.services.interaction_contract import InteractionEvent
-from app.services.interaction_event_hub import InteractionEventHub
-from app.services.interaction_adapter import InProcessInteractionAdapter
-from app.services.interaction_contract import ChannelCommand, CommandReceipt
+from app.interaction.interaction_contract import InteractionEvent
+from app.interaction.interaction_event_hub import InteractionEventHub
+from app.interaction.interaction_adapter import InteractionAdapter
+from app.interaction.interaction_contract import ChannelCommand, CommandReceipt
+
+
+class InProcessInteractionAdapter:
+    """供本文件测试使用，将测试命令处理函数与 EventHub 订阅连接起来。
+
+    Attributes:
+        channel (str): 当前测试渠道的固定标识。
+        _command_handler (Callable[[ChannelCommand], Awaitable[CommandReceipt]]): 测试提供的命令处理函数。
+        _event_source (Callable[[str, str], AsyncIterator[InteractionEvent]]): 测试 EventHub 的订阅方法。
+    """
+
+    def __init__(
+        self,
+        channel: str,
+        command_handler: Callable[[ChannelCommand], Awaitable[CommandReceipt]],
+        event_source: Callable[[str, str], AsyncIterator[InteractionEvent]],
+    ) -> None:
+        """保存测试渠道身份、命令处理函数和事件订阅方法。
+
+        Args:
+            channel (str): 当前测试渠道的固定标识。
+            command_handler (Callable[[ChannelCommand], Awaitable[CommandReceipt]]): 测试提供的命令处理函数。
+            event_source (Callable[[str, str], AsyncIterator[InteractionEvent]]): 测试 EventHub 的订阅方法。
+        """
+        self.channel = channel
+        self._command_handler = command_handler
+        self._event_source = event_source
+
+    async def submit(self, command: ChannelCommand) -> CommandReceipt:
+        """拒绝其他渠道的命令，通过检查后调用测试提供的处理函数。
+
+        Args:
+            command (ChannelCommand): 测试提交的渠道命令。
+
+        Returns:
+            CommandReceipt: 来源不匹配时的拒绝回执，或测试处理函数返回的回执。
+        """
+        if command.origin_channel != self.channel:
+            return CommandReceipt(False, "命令来源与 Adapter 渠道不匹配")
+        return await self._command_handler(command)
+
+    def subscribe(self, session_id: str) -> AsyncIterator[InteractionEvent]:
+        """将会话编号和固定渠道身份交给测试 EventHub，取得事件迭代器。
+
+        Args:
+            session_id (str): 本次测试订阅的会话编号。
+
+        Returns:
+            AsyncIterator[InteractionEvent]: 测试 EventHub 提供的当前状态及后续事件。
+        """
+        return self._event_source(session_id, self.channel)
 
 
 def test_event_hub_routes_only_to_desktop_and_origin() -> None:
@@ -69,7 +121,7 @@ def test_in_process_adapter_uses_shared_command_and_event_contract() -> None:
             ))
             return CommandReceipt(True)
 
-        adapter = InProcessInteractionAdapter("test", submit, hub.subscribe)
+        adapter: InteractionAdapter = InProcessInteractionAdapter("test", submit, hub.subscribe)
         events = adapter.subscribe("s")
         # 2. 核对公开结果和持久状态，确保场景中的输入、通知或副作用未重复。
         assert (await anext(events)).kind == "session_snapshot"

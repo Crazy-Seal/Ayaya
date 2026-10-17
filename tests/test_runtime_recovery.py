@@ -4,9 +4,9 @@ import asyncio
 
 from app.agent.runtime.session_inbox import SessionInbox
 from app.agent.state.manager import StateManager
-from app.services.agent_runtime_scheduler import AgentRuntimeScheduler
-from app.services.interaction_event_hub import InteractionEventHub
-from app.services.task_supervisor import TaskSupervisor
+from app.orchestration.agent_runtime_scheduler import AgentRuntimeScheduler
+from app.interaction.interaction_event_hub import InteractionEventHub
+from app.orchestration.task_supervisor import TaskSupervisor
 
 
 def test_restart_preserves_orphan_notice_without_activating_agent(tmp_path) -> None:

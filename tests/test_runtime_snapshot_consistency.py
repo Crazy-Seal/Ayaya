@@ -10,10 +10,10 @@ from app.agent.core.event_router import AgentEvent, EventType
 from app.agent.runtime.session_inbox import InboxEnvelope, SessionInbox
 from app.agent.state.manager import StateManager
 from app.schemas.runtime_types import InteractionEventKind, SessionPhase
-from app.services.agent_runtime_scheduler import AgentRuntimeScheduler
+from app.orchestration.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.services.channel_subscription_service import ChannelSubscriptionService
-from app.services.interaction_contract import InteractionEvent
-from app.services.interaction_event_hub import InteractionEventHub
+from app.interaction.interaction_contract import InteractionEvent
+from app.interaction.interaction_event_hub import InteractionEventHub
 
 
 @pytest.mark.parametrize("cancelled", [False, True])

@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.dependencies import get_mcp_service
 from app.schemas.mcp import MCPServerConfig
 from app.schemas.result import Result
-from app.services.mcp_connection_manager import MCPConnectionError, MCPServerDisabledError
+from app.mcp.mcp_connection_manager import MCPConnectionError, MCPServerDisabledError
 from app.services.mcp_service import MCPService
 
 

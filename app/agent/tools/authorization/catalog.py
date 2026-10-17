@@ -9,7 +9,7 @@ from app.agent.tools.core.registry import ToolRegistry
 from app.crud.mcp_settings_dao import MCPSettingsDao
 from app.schemas.chat_settings import ChatSettings
 from app.schemas.tool_permissions import ToolPolicy
-from app.services.mcp_connection_manager import MCPConnectionManager
+from app.mcp.mcp_connection_manager import MCPConnectionManager
 
 from .models import ToolIdentity
 

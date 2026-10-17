@@ -1,7 +1,7 @@
 import asyncio
 
 from app.services.channel_subscription_service import ChannelSubscriptionService
-from app.services.interaction_contract import ChannelDescriptor
+from app.interaction.interaction_contract import ChannelDescriptor
 
 
 def test_subscriptions_are_per_session_and_desktop_is_always_enabled(tmp_path) -> None:

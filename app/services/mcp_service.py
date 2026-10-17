@@ -6,7 +6,7 @@ from app.crud.chat_settings_dao import ChatSettingsDao
 from app.crud.mcp_settings_dao import MCPSettingsDao
 from app.schemas.mcp import MCPServerConfig, MCPServersConfig
 from app.mcp.identity import server_identity_fingerprint
-from app.services.mcp_connection_manager import (
+from app.mcp.mcp_connection_manager import (
     MCPConnectionError,
     MCPConnectionManager,
     MCPServerDisabledError,

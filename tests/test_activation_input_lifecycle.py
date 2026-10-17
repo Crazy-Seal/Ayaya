@@ -22,10 +22,10 @@ from app.agent.state.messages import BaseMessage, HumanMessage, TaskResultMessag
 from app.agent.tools.core.base import BaseTool, ToolContext, ToolResult
 from app.crud.task_record_dao import TaskRecordDao
 from app.schemas.runtime_types import InteractionEventKind, InterruptKind, TaskStatus
-from app.services.agent_runtime_scheduler import AgentRuntimeScheduler
+from app.orchestration.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.services.channel_subscription_service import ChannelSubscriptionService
-from app.services.interaction_contract import ChannelCommand, InteractionEvent
-from app.services.interaction_event_hub import InteractionEventHub
+from app.interaction.interaction_contract import ChannelCommand, InteractionEvent
+from app.interaction.interaction_event_hub import InteractionEventHub
 import app.agent.plugins.memory as memory_plugin_module
 
 

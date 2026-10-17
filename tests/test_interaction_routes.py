@@ -9,14 +9,14 @@ from fastapi.testclient import TestClient
 from app.dependencies import get_runtime_scheduler
 from app.routes.agent import router as agent_router
 from app.routes.tools import router as tools_router
-from app.services.interaction_contract import CommandReceipt
-from app.services.interaction_contract import InteractionEvent
+from app.interaction.interaction_contract import CommandReceipt
+from app.interaction.interaction_contract import InteractionEvent
 from app.agent.state.messages import ToolCall
 from app.agent.tools.core.base import InterruptEvent
 from app.routes.agent import subscribe_events
 from app.routes import agent as agent_routes
-from app.services.agent_runtime_scheduler import AgentRuntimeScheduler
-from app.services.interaction_event_hub import InteractionEventHub
+from app.orchestration.agent_runtime_scheduler import AgentRuntimeScheduler
+from app.interaction.interaction_event_hub import InteractionEventHub
 
 
 def test_unknown_command_keeps_http_200_business_rejection() -> None:

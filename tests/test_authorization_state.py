@@ -14,9 +14,9 @@ from app.agent.state import AgentState
 from app.agent.state.manager import StateManager
 from app.agent.state.messages import ToolCall
 from app.schemas.runtime_types import SessionPhase
-from app.services.agent_runtime_scheduler import AgentRuntimeScheduler
-from app.services.interaction_contract import ChannelCommand
-from app.services.interaction_event_hub import InteractionEventHub
+from app.orchestration.agent_runtime_scheduler import AgentRuntimeScheduler
+from app.interaction.interaction_contract import ChannelCommand
+from app.interaction.interaction_event_hub import InteractionEventHub
 
 
 def approval_state() -> AgentState:

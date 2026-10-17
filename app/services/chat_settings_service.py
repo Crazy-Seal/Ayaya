@@ -4,7 +4,7 @@ from app.mcp.identity import server_identity_fingerprint
 from app.schemas.chat_settings import ChatSettings
 from app.schemas.mcp import MCPModelSettings, MCPServerPolicy
 from app.schemas.tool_permissions import ToolPolicy
-from app.services.mcp_connection_manager import MCPConnectionManager
+from app.mcp.mcp_connection_manager import MCPConnectionManager
 from app.services.settings_mutation import SettingsMutationCoordinator
 
 

@@ -5,8 +5,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.dependencies import get_desktop_settings_service, get_desktop_controller, get_runtime_scheduler
 from app.schemas.desktop import DesktopSettings, DesktopWindowRegistration
 from app.schemas.runtime_types import RuntimePhase
-from app.services.desktop_controller import DesktopController
-from app.services.agent_runtime_scheduler import AgentRuntimeScheduler
+from app.desktop.desktop_controller import DesktopController
+from app.orchestration.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.schemas.result import Result
 from app.services.desktop_settings_service import DesktopSettingsService
 

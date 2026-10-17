@@ -4,7 +4,7 @@
 
 本项目是单用户、本地独立运行的应用。架构与功能决策应面向本地桌面使用；除非用户明确要求，否则不得假设存在多用户、分布式或远程部署需求。
 
-FastAPI 后端入口是 `main.py`。应用代码位于 `app/`：HTTP 接口在 `routes/`，请求与响应模型在 `schemas/`，持久化逻辑在 `crud/`，编排逻辑在 `services/`，智能体、工具、插件与记忆的实现在 `agent/`。后端测试位于 `tests/`。Electron/Vite 前端位于 `ui/`：渲染进程代码在 `ui/src/`，Electron 主进程代码在 `ui/electron/`，Live2D 静态资源在 `ui/public/`。运行时状态应存放在 `memory/`，不得纳入版本控制。配置示例位于 `config/` 和 `.env.sample`。
+FastAPI 后端入口是 `main.py`。应用代码位于 `app/`：HTTP 接口在 `routes/`，请求与响应模型在 `schemas/`，持久化逻辑在 `crud/`，设置、历史与权限等应用服务在 `services/`，会话与后台任务编排在 `orchestration/`，渠道交互契约与事件分发在 `interaction/`，本机桌面操作与驱动在 `desktop/`，MCP 连接与协议支持在 `mcp/`，智能体、工具、插件与记忆的实现在 `agent/`。后端测试位于 `tests/`。Electron/Vite 前端位于 `ui/`：渲染进程代码在 `ui/src/`，Electron 主进程代码在 `ui/electron/`，Live2D 静态资源在 `ui/public/`。运行时状态应存放在 `memory/`，不得纳入版本控制。配置示例位于 `config/` 和 `.env.sample`。
 
 ## 构建、测试与开发命令
 

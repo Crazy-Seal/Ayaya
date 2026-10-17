@@ -11,12 +11,12 @@ import pytest
 from app.agent.core.event_router import AgentEvent, EventType
 from app.agent.state.manager import StateManager
 from app.agent.state.messages import TaskResultMessage
-from app.services.agent_runtime_scheduler import AgentRuntimeScheduler
-from app.services.interaction_event_hub import InteractionEventHub
+from app.orchestration.agent_runtime_scheduler import AgentRuntimeScheduler
+from app.interaction.interaction_event_hub import InteractionEventHub
 from app.agent.runtime.session_inbox import SessionInbox
 from app.crud.task_record_dao import TaskRecordDao
 from app.schemas.runtime_types import TaskStatus
-from app.services.task_supervisor import TaskSupervisor
+from app.orchestration.task_supervisor import TaskSupervisor
 
 
 def test_task_list_excludes_foreground_until_same_process_becomes_background(tmp_path) -> None:
@@ -532,7 +532,7 @@ def test_terminal_notification_wakes_idle_agent_on_desktop_channel(tmp_path) -> 
         )
         await scheduler.start()
         supervisor.on_terminal = scheduler.notify_task_terminal
-        from app.services.interaction_contract import ChannelCommand
+        from app.interaction.interaction_contract import ChannelCommand
         await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "启动本次会话"}))
         for _ in range(100):
             if (await scheduler.snapshot("s", "desktop"))["phase"] == "idle":
@@ -696,7 +696,7 @@ def test_active_turn_receives_multiple_task_terminals_at_next_model_boundary(tmp
         )
         await scheduler.start()
         try:
-            from app.services.interaction_contract import ChannelCommand
+            from app.interaction.interaction_contract import ChannelCommand
             await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "启动任务"}))
             await asyncio.wait_for(reached_boundary.wait(), 1)
             task_ids = []
@@ -824,7 +824,7 @@ def test_idle_task_notification_is_committed_before_pending_human_turn(tmp_path)
         )
         await scheduler.start()
         try:
-            from app.services.interaction_contract import ChannelCommand
+            from app.interaction.interaction_contract import ChannelCommand
             await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "继续"}))
             await asyncio.wait_for(done.wait(), 2)
             manager = StateManager("s", db_path)

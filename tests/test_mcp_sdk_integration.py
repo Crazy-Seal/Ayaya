@@ -10,7 +10,7 @@ import time
 import pytest
 
 from app.schemas.mcp import MCPServersConfig, StdioMCPServerConfig, StreamableHttpMCPServerConfig
-from app.services.mcp_connection_manager import MCPConnectionManager
+from app.mcp.mcp_connection_manager import MCPConnectionManager
 
 
 SERVER_SCRIPT = Path(__file__).parent / "fixtures" / "mcp_test_server.py"

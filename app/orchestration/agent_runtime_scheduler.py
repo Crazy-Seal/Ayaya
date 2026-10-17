@@ -13,7 +13,7 @@ from app.agent.agent import Agent
 from app.agent.core.event_router import AgentEvent, EventType
 from app.agent.runtime.session_inbox import InboxEnvelope, SessionInbox
 from app.agent.runtime.turn_control import TurnControl
-from app.services.desktop_controller import DesktopController
+from app.desktop.desktop_controller import DesktopController
 from app.agent.state.manager import StateManager
 from app.agent.state.model import AgentState
 from app.agent.state.messages import HumanMessage, TaskResultMessage
@@ -22,12 +22,12 @@ from app.schemas.runtime_types import (
     InboxDeliveryMode, InboxKind, InteractionEventKind, InterruptKind, SessionPhase,
     TaskResultStatus, TaskStatus, TurnInterruptReason, TurnPhase, RuntimePhase,
 )
-from app.services.interaction_contract import (
+from app.interaction.interaction_contract import (
     ChannelCommand, CommandReceipt, InteractionEvent,
 )
-from app.services.interaction_event_hub import InteractionEventHub
+from app.interaction.interaction_event_hub import InteractionEventHub
 
-from app.services.task_supervisor import TaskSupervisor
+from app.orchestration.task_supervisor import TaskSupervisor
 
 
 logger = logging.getLogger(__name__)

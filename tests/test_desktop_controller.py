@@ -5,7 +5,7 @@ import threading
 from contextlib import contextmanager
 
 from app.schemas.desktop import DesktopSettings, DesktopWindowRegistration, ScreenCapture, ScreenAction
-from app.services.desktop_controller import DesktopController
+from app.desktop.desktop_controller import DesktopController
 
 
 class FakeDesktop:

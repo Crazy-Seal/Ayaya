@@ -17,7 +17,7 @@ from app.agent.tools.read_file import read_file
 from app.agent.tools.results.normalizer import ToolResultNormalizer
 from app.crud.task_record_dao import TaskRecordDao
 from app.schemas.runtime_types import TaskStatus
-from app.services.task_supervisor import TaskSupervisor
+from app.orchestration.task_supervisor import TaskSupervisor
 
 
 async def wait_ended(supervisor: TaskSupervisor, task_id: str):
@@ -253,7 +253,7 @@ def test_many_completion_notices_keep_all_tool_names_and_references(tmp_path: Pa
     Args:
         tmp_path (Path): 隔离任务和 Inbox 数据库。
     """
-    from app.services.agent_runtime_scheduler import AgentRuntimeScheduler
+    from app.orchestration.agent_runtime_scheduler import AgentRuntimeScheduler
 
     async def scenario() -> None:
         """在真实 Inbox 中领取多种工具的完成通知，再走模型消息转换。"""

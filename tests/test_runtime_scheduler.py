@@ -13,9 +13,9 @@ from app.agent.state.messages import ToolMessage
 from app.agent.tools.core.base import BaseTool, ToolContext, ToolResult
 from app.agent.runtime.session_inbox import SessionInbox
 from app.crud.task_record_dao import TaskRecordDao
-from app.services.interaction_contract import ChannelCommand
-from app.services.interaction_event_hub import InteractionEventHub
-from app.services.agent_runtime_scheduler import AgentRuntimeScheduler
+from app.interaction.interaction_contract import ChannelCommand
+from app.interaction.interaction_event_hub import InteractionEventHub
+from app.orchestration.agent_runtime_scheduler import AgentRuntimeScheduler
 
 
 def test_message_arriving_before_wait_signal_is_cleared_is_processed_immediately(tmp_path: Path) -> None:

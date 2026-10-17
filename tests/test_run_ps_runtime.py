@@ -8,7 +8,7 @@ import pytest
 
 from app.agent.tools.run_ps import _build_command
 from app.schemas.runtime_types import TaskStatus
-from app.services.task_supervisor import TaskSupervisor
+from app.orchestration.task_supervisor import TaskSupervisor
 
 
 def test_shell_command_uses_detected_executable_and_preserves_utf8_setup() -> None:

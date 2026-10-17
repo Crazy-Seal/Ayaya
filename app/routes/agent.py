@@ -9,9 +9,9 @@ from app.schemas.interaction import (
     ChannelCommandRequest, ChannelSubscriptionRequest,
 )
 from app.crud.chat_settings_dao import ChatSettingsDao
-from app.services.agent_runtime_scheduler import AgentRuntimeScheduler
-from app.services.task_supervisor import TASK_OUTPUT_PAGE_DEFAULT_BYTES, TaskSupervisor
-from app.services.interaction_contract import ChannelCommand
+from app.orchestration.agent_runtime_scheduler import AgentRuntimeScheduler
+from app.orchestration.task_supervisor import TASK_OUTPUT_PAGE_DEFAULT_BYTES, TaskSupervisor
+from app.interaction.interaction_contract import ChannelCommand
 from app.schemas.runtime_types import DESKTOP_CHANNEL
 from app.utils.sse_stream import SSE_HEARTBEAT_SECONDS, stream_sse_json
 

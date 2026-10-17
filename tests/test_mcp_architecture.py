@@ -15,7 +15,7 @@ from app.schemas.mcp import (
     MCPServersConfig,
     StdioMCPServerConfig,
 )
-from app.services.mcp_connection_manager import MCPConnectionError
+from app.mcp.mcp_connection_manager import MCPConnectionError
 from app.schemas.tool_permissions import ToolPolicy
 
 

@@ -10,8 +10,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from app.schemas.desktop import DesktopSettings, DesktopWindowRegistration, ScreenAction
-from app.services.desktop_controller import DesktopController
-from app.services.windows_desktop import WindowsDesktopAdapter
+from app.desktop.desktop_controller import DesktopController
+from app.desktop.windows_desktop_driver import WindowsDesktopDriver
 
 
 async def main() -> None:
@@ -19,7 +19,7 @@ async def main() -> None:
     request = json.loads(sys.stdin.read())
     observed = []
 
-    class ObservedWindows(WindowsDesktopAdapter):
+    class ObservedWindows(WindowsDesktopDriver):
         """沿用生产 Win32 行为，仅在截图前记录窗口状态用于断言。"""
 
         def capture(self):

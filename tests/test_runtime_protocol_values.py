@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from app.schemas import runtime_types
-from app.services.interaction_contract import InteractionEvent
+from app.interaction.interaction_contract import InteractionEvent
 from app.utils.sse_stream import stream_sse_json
 
 

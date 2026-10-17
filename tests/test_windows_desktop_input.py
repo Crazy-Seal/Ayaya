@@ -7,8 +7,8 @@ from ctypes import wintypes
 import pytest
 
 from app.schemas.desktop import DesktopSettings, ScreenAction
-from app.services.desktop_controller import DesktopController
-from app.services.windows_desktop import WindowsDesktopAdapter
+from app.desktop.desktop_controller import DesktopController
+from app.desktop.windows_desktop_driver import WindowsDesktopDriver
 
 
 class ClipboardSystem:
@@ -228,7 +228,7 @@ def native_adapter(system):
     Args:
         system (ClipboardSystem): 提供 Win32 剪贴板和键盘调用的隔离替身。
     """
-    native = WindowsDesktopAdapter.__new__(WindowsDesktopAdapter)
+    native = WindowsDesktopDriver.__new__(WindowsDesktopDriver)
     native._user = native._kernel = native._ole = native._gdi = native._input = system
     native._w = wintypes
     native._clipboard_window = 99

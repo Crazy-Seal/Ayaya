@@ -22,7 +22,7 @@ from app.mcp.identity import server_identity_fingerprint, tool_contract_fingerpr
 from app.mcp.types import MCPToolDescriptor
 from app.crud.mcp_settings_dao import MCPSettingsDao
 from app.crud.chat_settings_dao import ChatSettingsDao
-from app.services.mcp_connection_manager import (
+from app.mcp.mcp_connection_manager import (
     MCPConnectionError,
     MCPConnectionManager,
     MCPServerDisabledError,

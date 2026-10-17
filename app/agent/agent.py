@@ -39,7 +39,7 @@ from app.schemas.mcp import MCPModelSettings
 
 if TYPE_CHECKING:
     from app.schemas.chat_settings import ChatSettings
-    from app.services.mcp_connection_manager import MCPConnectionManager
+    from app.mcp.mcp_connection_manager import MCPConnectionManager
 
 logger = logging.getLogger(__name__)
 
@@ -291,7 +291,7 @@ class Agent:
             return
 
         from app.agent.mcp.adapter import MCPToolAdapter
-        from app.services.mcp_connection_manager import MCPConnectionError
+        from app.mcp.mcp_connection_manager import MCPConnectionError
 
         for server_id, server_policy in self.config.mcp.servers.items():
             try:

@@ -13,9 +13,9 @@ from app.agent.state.manager import StateManager
 from app.agent.state.messages import HumanMessage, TaskResultMessage, ToolCall, ToolMessage
 from app.agent.state.messages import AssistantMessage, ImageContent, ToolMessage
 from app.crud.task_record_dao import TaskRecordDao
-from app.services.agent_runtime_scheduler import AgentRuntimeScheduler
-from app.services.interaction_contract import ChannelCommand
-from app.services.interaction_event_hub import InteractionEventHub
+from app.orchestration.agent_runtime_scheduler import AgentRuntimeScheduler
+from app.interaction.interaction_contract import ChannelCommand
+from app.interaction.interaction_event_hub import InteractionEventHub
 
 
 def test_restart_discards_humans_and_releases_terminal_claims(tmp_path) -> None:
