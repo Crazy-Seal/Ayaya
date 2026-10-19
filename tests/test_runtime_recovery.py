@@ -5,7 +5,6 @@ import asyncio
 from app.agent.runtime.session_inbox import SessionInbox
 from app.agent.state.manager import StateManager
 from app.orchestration.agent_runtime_scheduler import AgentRuntimeScheduler
-from app.interaction.interaction_event_hub import InteractionEventHub
 from app.orchestration.task_supervisor import TaskSupervisor
 
 
@@ -30,7 +29,7 @@ def test_restart_preserves_orphan_notice_without_activating_agent(tmp_path) -> N
             raise AssertionError("旧任务通知不能自动激活 Agent")
 
         scheduler = AgentRuntimeScheduler(
-            InteractionEventHub(), agent_factory=unexpected_agent,
+           agent_factory=unexpected_agent,
             inbox_factory=lambda session: SessionInbox(session, path),
             state_manager_factory=lambda session: StateManager(session, path),
             task_supervisor=supervisor,
@@ -38,15 +37,17 @@ def test_restart_preserves_orphan_notice_without_activating_agent(tmp_path) -> N
         supervisor.on_terminal = scheduler.notify_task_terminal
         try:
             await scheduler.start()
+            await supervisor.recover_orphaned()
             assert (await supervisor.get("old-task")).status == "orphaned"
-            assert (await scheduler.snapshot("s", "desktop"))["phase"] == "idle"
+            assert ((await scheduler.snapshot("s")).payload)["phase"] == "idle"
             inbox = SessionInbox("s", path)
             try:
-                notices = await inbox.claim_task_terminals()
+                notices = await inbox.read_task_terminals()
                 assert len(notices) == 1
                 assert notices[0].payload["status"] == "orphaned"
             finally:
                 await inbox.close()
         finally:
+            await supervisor.close()
             await scheduler.close()
     asyncio.run(scenario())

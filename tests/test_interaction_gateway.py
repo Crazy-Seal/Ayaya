@@ -1,3 +1,5 @@
+from tests.runtime_event_source import EventSource
+from app.services.channel_subscription_service import ChannelSubscriptionService
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 
@@ -64,9 +66,12 @@ def test_event_hub_routes_only_to_desktop_and_origin() -> None:
     async def scenario() -> None:
         """在隔离异步环境中安排并验证：事件只投递桌面及来源渠道。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
-        hub = InteractionEventHub()
-        hub.register_channel("qq")
-        hub.register_channel("telegram")
+        source = EventSource()
+        subscriptions = ChannelSubscriptionService()
+        hub = InteractionEventHub(source, subscriptions=subscriptions)
+        await hub.start()
+        subscriptions.register_channel("qq")
+        subscriptions.register_channel("telegram")
         desktop = hub.subscribe("shared", "desktop")
         qq = hub.subscribe("shared", "qq")
         telegram = hub.subscribe("shared", "telegram")
@@ -75,7 +80,7 @@ def test_event_hub_routes_only_to_desktop_and_origin() -> None:
         assert (await anext(qq)).kind == "session_snapshot"
         assert (await anext(telegram)).kind == "session_snapshot"
 
-        await hub.publish(InteractionEvent(
+        await source.publish(InteractionEvent(
             session_id="shared", kind="human_message_committed",
             origin_channel="qq", payload={"message_id": "m1", "text": "你好"},
         ))
@@ -91,6 +96,7 @@ def test_event_hub_routes_only_to_desktop_and_origin() -> None:
         await desktop.aclose()
         await qq.aclose()
         await telegram.aclose()
+        await hub.close()
 
     asyncio.run(scenario())
 
@@ -101,8 +107,11 @@ def test_in_process_adapter_uses_shared_command_and_event_contract() -> None:
     async def scenario() -> None:
         """在隔离异步环境中安排并验证：进程内 Adapter 与桌面使用同一命令事件契约。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
-        hub = InteractionEventHub()
-        hub.register_channel("test")
+        source = EventSource()
+        subscriptions = ChannelSubscriptionService()
+        hub = InteractionEventHub(source, subscriptions=subscriptions)
+        await hub.start()
+        subscriptions.register_channel("test")
         commands: list[ChannelCommand] = []
 
         async def submit(command: ChannelCommand) -> CommandReceipt:
@@ -115,7 +124,7 @@ def test_in_process_adapter_uses_shared_command_and_event_contract() -> None:
                 CommandReceipt: 命令受理结果，后续回复通过事件订阅取得。
             """
             commands.append(command)
-            await hub.publish(InteractionEvent(
+            await source.publish(InteractionEvent(
                 command.session_id, "human_message", command.payload,
                 origin_channel=command.origin_channel,
             ))
@@ -132,6 +141,7 @@ def test_in_process_adapter_uses_shared_command_and_event_contract() -> None:
         event = await asyncio.wait_for(anext(events), 1)
         assert event.origin_channel == "test" and event.payload["message"] == "你好"
         await events.aclose()
+        await hub.close()
 
     asyncio.run(scenario())
 
@@ -142,13 +152,16 @@ def test_slow_subscriber_reconnects_from_snapshot_watermark() -> None:
     async def scenario() -> None:
         """在隔离异步环境中安排并验证：慢订阅者断开后可按快照水位恢复。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
-        hub = InteractionEventHub(queue_size=1)
+        source = EventSource()
+        subscriptions = ChannelSubscriptionService()
+        hub = InteractionEventHub(source, subscriptions=subscriptions, queue_size=1)
+        await hub.start()
         stream = hub.subscribe("s", "desktop")
         initial = await anext(stream)
         # 2. 核对公开结果和持久状态，确保场景中的输入、通知或副作用未重复。
         assert initial.event_sequence == 0
-        await hub.publish(InteractionEvent("s", "text_chunk", {"value": "a"}))
-        await hub.publish(InteractionEvent("s", "text_chunk", {"value": "b"}))
+        await source.publish(InteractionEvent("s", "text_chunk", {"value": "a"}))
+        await source.publish(InteractionEvent("s", "text_chunk", {"value": "b"}))
         try:
             await anext(stream)
         except StopAsyncIteration:
@@ -161,5 +174,6 @@ def test_slow_subscriber_reconnects_from_snapshot_watermark() -> None:
         assert snapshot.stream_epoch == initial.stream_epoch
         assert snapshot.event_sequence == 2
         await replacement.aclose()
+        await hub.close()
 
     asyncio.run(scenario())

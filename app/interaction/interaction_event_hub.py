@@ -1,272 +1,177 @@
-"""按渠道发布会话视图，慢订阅者不会阻塞 Agent。"""
+"""由一个领取任务读取 Scheduler 输出，分发到各渠道连接。"""
 
 import asyncio
-import inspect
 from collections import defaultdict
 from dataclasses import replace
-from typing import AsyncIterator, Awaitable, Callable
-from uuid import uuid4
+import logging
+from typing import AsyncIterator
 
-from app.schemas.runtime_types import (
-    DESKTOP_CHANNEL, InteractionEventKind,
-)
-from app.interaction.interaction_contract import ChannelDescriptor, InteractionEvent
+from app.interaction.interaction_contract import InteractionEvent
+from app.orchestration.agent_runtime_scheduler import AgentRuntimeScheduler
+from app.schemas.runtime_types import DESKTOP_CHANNEL, SessionPhase
 from app.services.channel_subscription_service import ChannelSubscriptionService
 
 
+logger = logging.getLogger(__name__)
 INTERACTION_SUBSCRIBER_QUEUE_SIZE = 256
 
 
 class InteractionEventHub:
-    """按会话来源路由观察事件，以有界队列隔离慢订阅者。
+    """管理连接及慢接收方，不修改会话执行状态。
 
     Attributes:
-        _snapshot (Callable[[str, str], dict | Awaitable[dict]]): 按会话和接收渠道生成当前视图的回调。
-        _queue_size (int): 每个订阅者的有界队列容量。
-        _subscriptions (ChannelSubscriptionService): 可替换的会话订阅配置服务。
-        _session_enabled (dict[tuple[str, str], bool]): 每会话渠道启用状态缓存。
-        _epoch (str): 本次后端启动的事件序号命名空间。
-        _channels (dict[str, ChannelDescriptor]): 当前注册的渠道描述集合。
-        _subscribers (dict[tuple[str, str], set[asyncio.Queue[InteractionEvent | None]]]): 接收增量的有界订阅队列集合。
-        _sequences (dict[str, int]): 按会话递增的界面事件水位。
-        _locks (dict[str, asyncio.Lock]): 按会话序列化发布或执行状态迁移的短锁。
-        _closed (bool): 已关闭时拒绝新订阅，不再投递执行视图。
+        _scheduler (AgentRuntimeScheduler): 状态和临时事件的唯一来源。
+        _subscriptions (ChannelSubscriptionService): 与命令入口共享的配置。
+        _queue_size (int): 每个连接允许积压的事件数。
+        _subscribers (dict): 按会话、渠道保存独立连接队列。
+        _reader (asyncio.Task | None): 唯一事件领取任务。
+        _closed (bool): 关闭后禁止新连接。
     """
+
     def __init__(
-        self,
-        snapshot: Callable[[str, str], dict | Awaitable[dict]] | None = None,
-        *,
+        self, scheduler: AgentRuntimeScheduler, *, subscriptions: ChannelSubscriptionService,
         queue_size: int = INTERACTION_SUBSCRIBER_QUEUE_SIZE,
-        subscriptions: ChannelSubscriptionService | None = None,
     ) -> None:
-        """创建进程发布 epoch、桌面渠道和会话订阅队列。
+        """保存依赖，不自动启动任务。
 
         Args:
-            snapshot (Callable[[str, str], dict | Awaitable[dict]] | None): 按会话和接收渠道生成当前视图的回调。
-            queue_size (int): 每个订阅者的有界队列容量。
-            subscriptions (ChannelSubscriptionService | None): 可替换的会话订阅配置服务。
+            scheduler (AgentRuntimeScheduler): 事件和状态来源。
+            subscriptions (ChannelSubscriptionService): 共享配置对象。
+            queue_size (int): 单个订阅积压容量，必须为正。
+
+        Raises:
+            ValueError: 容量不是正数。
         """
-        self._snapshot = snapshot or (lambda _session, _channel: {})
+        if queue_size < 1:
+            raise ValueError("订阅队列容量必须为正数")
+        self._scheduler = scheduler
+        self._subscriptions = subscriptions
         self._queue_size = queue_size
-        self._subscriptions = subscriptions or ChannelSubscriptionService()
-        self._session_enabled: dict[tuple[str, str], bool] = {}
-        self._epoch = uuid4().hex
-        self._channels: dict[str, ChannelDescriptor] = {
-            DESKTOP_CHANNEL: ChannelDescriptor(DESKTOP_CHANNEL, "桌面", ready=True),
-        }
-        self._subscribers: dict[tuple[str, str], set[asyncio.Queue[InteractionEvent | None]]] = defaultdict(set)
-        self._sequences: dict[str, int] = defaultdict(int)
-        self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+        self._subscribers: dict[tuple[str, str], set[asyncio.Queue]] = defaultdict(set)
+        self._reader: asyncio.Task | None = None
         self._closed = False
 
-    async def close(self) -> None:
-        """幂等结束所有订阅，等待正在生成的快照离开发布屏障。"""
-        # 1. 先禁止新登记，随后逐会话等待发布或快照完成。
-        self._closed = True
-        for session_id, lock in tuple(self._locks.items()):
-            async with lock:
-                for (session, _channel), subscribers in tuple(self._subscribers.items()):
-                    if session != session_id:
+    async def start(self) -> None:
+        """应用启动时创建唯一领取任务，重复调用不增加消费者。
+
+        Raises:
+            RuntimeError: 已关闭实例不能重启。
+        """
+        if self._closed:
+            raise RuntimeError("已关闭的事件分发不能重新启动")
+        if self._reader is None:
+            self._reader = asyncio.create_task(self._receive())
+
+    def _end_subscription(self, key: tuple[str, str], queue: asyncio.Queue) -> None:
+        """移除连接，将积压替换为结束标记。
+
+        Args:
+            key (tuple[str, str]): 会话及接收渠道。
+            queue (asyncio.Queue): 本连接的队列。
+        """
+        self._subscribers[key].discard(queue)
+        while not queue.empty():
+            queue.get_nowait()
+        queue.put_nowait(None)
+
+    async def _receive(self) -> None:
+        """等待输出并同步分发，绝不等待 Adapter 网络发送。"""
+        try:
+            while True:
+                event = await self._scheduler.next_event()
+                if event is None:
+                    return
+                # 1. 领取后的分发段不等待，接收方快慢由其独立队列隔离。
+                for key, queues in tuple(self._subscribers.items()):
+                    session_id, channel = key
+                    if session_id != event.session_id:
                         continue
-                    for queue in tuple(subscribers):
-                        while not queue.empty():
-                            queue.get_nowait()
-                        queue.put_nowait(None)
-                    subscribers.clear()
+                    if channel != DESKTOP_CHANNEL and channel != event.origin_channel:
+                        continue
+                    if not self._subscriptions.enabled_for_delivery(session_id, channel):
+                        continue
+                    for queue in tuple(queues):
+                        try:
+                            queue.put_nowait(event)
+                        except asyncio.QueueFull:
+                            self._end_subscription(key, queue)
+        except Exception:
+            logger.exception("领取会话事件失败，结束现有订阅")
+            raise
+        finally:
+            # 2. 来源结束或任务取消均结束连接，不改变 Scheduler 的执行。
+            self._closed = True
+            for key, queues in tuple(self._subscribers.items()):
+                for queue in tuple(queues):
+                    self._end_subscription(key, queue)
 
-    def set_snapshot_provider(
-        self, snapshot: Callable[[str, str], dict | Awaitable[dict]]
-    ) -> None:
-        """装入 Scheduler 的快照回调，EventHub 不反向持有 Adapter。
+    async def close(self) -> None:
+        """结束所有连接，取消并等待领取任务，允许重复清理。"""
+        self._closed = True
+        for key, queues in tuple(self._subscribers.items()):
+            for queue in tuple(queues):
+                self._end_subscription(key, queue)
+        if self._reader is not None:
+            if not self._reader.done():
+                self._reader.cancel()
+            await asyncio.gather(self._reader, return_exceptions=True)
+
+    @staticmethod
+    def _visible_snapshot(event: InteractionEvent, channel: str) -> InteractionEvent:
+        """筛选接收渠道可见的数据，保留原状态编号。
 
         Args:
-            snapshot (Callable[[str, str], dict | Awaitable[dict]]): 按会话和接收渠道生成当前视图的回调。
-        """
-        self._snapshot = snapshot
-
-    def register_channel(self, channel: str, display_name: str | None = None) -> None:
-        """登记渠道描述，不注册渠道实例或后台执行任务。
-
-        Args:
-            channel (str): 已注册渠道标识。
-            display_name (str | None): 渠道在设置页的展示名称。
-
-        Raises:
-            ValueError: 渠道已注册或名称为空。
-        """
-        if not channel or channel in self._channels:
-            raise ValueError("渠道已注册或名称为空")
-        self._channels[channel] = ChannelDescriptor(channel, display_name or channel)
-
-    def channels(self) -> tuple[ChannelDescriptor, ...]:
-        """返回当前渠道描述的不可变集合。
+            event (InteractionEvent): 未筛选的当前状态。
+            channel (str): 接收渠道。
 
         Returns:
-            tuple[ChannelDescriptor, ...]: 已注册的渠道描述，不包含 Adapter 实例。
+            InteractionEvent: 桌面完整状态或仅本渠道可见的内容。
         """
-        return tuple(self._channels.values())
-
-    def set_enabled(self, channel: str, enabled: bool) -> None:
-        """修改渠道默认启用值，测试可用；会话持久配置通过另一入口修改。
-
-        Args:
-            channel (str): 已注册渠道标识。
-            enabled (bool): 渠道是否参与该会话的双向互通。
-
-        Raises:
-            ValueError: 桌面渠道不能关闭。
-        """
-        if channel == DESKTOP_CHANNEL and not enabled:
-            raise ValueError("桌面渠道不能关闭")
-        descriptor = self._channels[channel]
-        self._channels[channel] = replace(descriptor, enabled=enabled)
-
-    def validate_source(self, channel: str) -> None:
-        """拒绝未注册渠道，会话是否启用另由 channel_enabled 检查。
-
-        Args:
-            channel (str): 已注册渠道标识。
-
-        Raises:
-            ValueError: 交互渠道未注册或已关闭。
-        """
-        descriptor = self._channels.get(channel)
-        if descriptor is None:
-            raise ValueError("交互渠道未注册或已关闭")
-
-    async def channel_enabled(self, session_id: str, channel: str) -> bool:
-        """读取并缓存指定会话的持久渠道启用设置。
-
-        Args:
-            session_id (str): 共享 Ayaya 会话标识。
-            channel (str): 已注册渠道标识。
-
-        Returns:
-            bool: 该渠道在指定会话是否允许提交命令及接收事件。
-        """
-        self.validate_source(channel)
-        key = (session_id, channel)
-        # 1. 首次访问读取持久订阅，此后使用缓存；配置写入口同步更新同一缓存。
-        if key not in self._session_enabled:
-            self._session_enabled[key] = await self._subscriptions.is_enabled(
-                session_id, channel, self.channels(),
-            )
-        return self._session_enabled[key]
-
-    async def set_session_enabled(self, session_id: str, channel: str, enabled: bool) -> None:
-        """持久更新渠道订阅并同步进程缓存。
-
-        Args:
-            session_id (str): 共享 Ayaya 会话标识。
-            channel (str): 已注册渠道标识。
-            enabled (bool): 渠道是否参与该会话的双向互通。
-        """
-        # 1. 先确认配置已经持久化，再更新发布路径读取的内存启用状态。
-        await self._subscriptions.set_enabled(session_id, channel, enabled, self.channels())
-        self._session_enabled[(session_id, channel)] = enabled
-
-    async def list_subscriptions(self, session_id: str) -> list[dict]:
-        """合并注册表与持久配置，返回当前会话订阅列表。
-
-        Args:
-            session_id (str): 共享 Ayaya 会话标识。
-
-        Returns:
-            list[dict]: 渠道描述与会话持久启用设置合并后的展示列表。
-        """
-        return await self._subscriptions.list(session_id, self.channels())
-
-    async def publish(
-        self, event: InteractionEvent, *,
-        update_snapshot_state: Callable[[], None] | None = None,
-    ) -> InteractionEvent:
-        """在会话发布锁内分配序号，只投递桌面及原来源，队列满时断开慢订阅者。
-
-        Args:
-            event (InteractionEvent): 待发布或消费的观察事件。
-            update_snapshot_state (Callable[[], None] | None): Scheduler 提供的同步回调；取得发布锁后更新快照使用的内存状态，不得等待、访问数据库或取得其他锁。
-
-        Returns:
-            InteractionEvent: 已填入进程 epoch 和会话序号的事件，未连接渠道不重放。
-        """
-        # 1. 同一会话串行分配水位，持有的只是一段发布屏障。
-        async with self._locks[event.session_id]:
-            if self._closed:
-                return event
-            # 1.1. 运行状态和事件编号一起前进，快照不能提前显示尚未发布的阶段变化。
-            if update_snapshot_state is not None:
-                update_snapshot_state()
-            self._sequences[event.session_id] += 1
-            published = replace(
-                event,
-                stream_epoch=self._epoch,
-                event_sequence=self._sequences[event.session_id],
-            )
-            # 2. 桌面始终观察共享会话，外部事件只再发给原来源，不向其他渠道广播。
-            recipients = {DESKTOP_CHANNEL}
-            if event.origin_channel and event.origin_channel != DESKTOP_CHANNEL:
-                recipients.add(event.origin_channel)
-            for channel in recipients:
-                descriptor = self._channels.get(channel)
-                if descriptor is None or not self._session_enabled.get(
-                    (event.session_id, channel), descriptor.enabled
-                ):
-                    continue
-                for queue in tuple(self._subscribers.get((event.session_id, channel), ())):
-                    try:
-                        queue.put_nowait(published)
-                    # 3. 队列满时清空并放入结束标记，Agent 不等待慢消费者；重连用快照恢复。
-                    except asyncio.QueueFull:
-                        self._subscribers[(event.session_id, channel)].discard(queue)
-                        while not queue.empty():
-                            queue.get_nowait()
-                        queue.put_nowait(None)
-            return published
+        if channel == DESKTOP_CHANNEL:
+            return event
+        payload = event.payload
+        queued = [item for item in payload["queued_inputs"] if item["origin_channel"] == channel]
+        if payload["origin_channel"] != channel:
+            return replace(event, payload={"phase": SessionPhase.IDLE, "queued_inputs": queued})
+        return replace(event, payload={**payload, "queued_inputs": queued, "tasks": [],
+            "pending_inputs": [item for item in payload["pending_inputs"] if item["origin_channel"] == channel]})
 
     async def subscribe(self, session_id: str, channel: str) -> AsyncIterator[InteractionEvent]:
-        """在同一发布屏障内登记队列并取得快照水位，随后逐项消费增量。
+        """先登记再查询状态，跳过状态已包含的事件。
 
         Args:
-            session_id (str): 共享 Ayaya 会话标识。
-            channel (str): 已注册渠道标识。
+            session_id (str): 共享会话编号。
+            channel (str): 接收渠道。
 
         Yields:
-            InteractionEvent: 先提供 session_snapshot，再提供本渠道可见增量。
+            InteractionEvent: 首次状态和编号更大的可见事件。
 
         Raises:
-            ValueError: 该会话未订阅此渠道。
+            ValueError: 渠道未注册或本会话未启用。
         """
-        # 1. 验证会话渠道订阅，为接收方创建独立有界队列。
-        self.validate_source(channel)
-        if not await self.channel_enabled(session_id, channel):
+        self._subscriptions.validate_source(channel)
+        if not await self._subscriptions.is_enabled(session_id, channel):
             raise ValueError("该会话未订阅此渠道")
-        queue: asyncio.Queue[InteractionEvent | None] = asyncio.Queue(self._queue_size)
+        if self._closed:
+            return
+        queue: asyncio.Queue = asyncio.Queue(self._queue_size)
         key = (session_id, channel)
+        self._subscribers[key].add(queue)
         try:
-            # 2. 清理范围从登记前开始；快照查询失败或连接此时取消，也必须移除队列。
-            # 2.1. 与运行状态更新、事件编号分配共用发布锁，查询期间的新事件稍后再发布。
-            async with self._locks[session_id]:
-                if self._closed:
-                    return
-                self._subscribers[key].add(queue)
-                watermark = self._sequences[session_id]
-                payload = self._snapshot(session_id, channel)
-                if inspect.isawaitable(payload):
-                    payload = await payload
-                snapshot = InteractionEvent(
-                    session_id=session_id,
-                    kind=InteractionEventKind.SESSION_SNAPSHOT,
-                    payload=payload,
-                    stream_epoch=self._epoch,
-                    event_sequence=watermark,
-                )
-            # 3. 先发送完整当前视图，再逐条发送水位后的可见增量。
-            yield snapshot
+            # 1. 查询期间的新事件进入已登记队列，查询失败时也由 finally 清理。
+            snapshot = await self._scheduler.snapshot(session_id)
+            if self._closed or queue not in self._subscribers[key]:
+                return
+            yield self._visible_snapshot(snapshot, channel)
+            # 2. 过滤查询前已发生但尚未分发的事件，仅交付当前状态之后的增量。
+            sequence = snapshot.event_sequence
             while True:
                 event = await queue.get()
                 if event is None:
                     return
+                if event.event_sequence <= sequence:
+                    continue
+                sequence = event.event_sequence
                 yield event
-        # 4. 只移除订阅队列，断线不触碰会话 worker 或 Agent 状态。
         finally:
             self._subscribers[key].discard(queue)

@@ -28,7 +28,7 @@ from app.agent.models.llm_client import LLMClient, LLMConfig
 from app.agent.plugins.base import BasePlugin, PluginHook
 from app.agent.state import AgentState
 from app.agent.state.manager import StateManager
-from app.agent.runtime.session_inbox import InboxEnvelope
+from app.agent.runtime.session_inbox import InboxEnvelope, InputNoLongerPending
 from app.agent.runtime.turn_control import TurnControl, TurnInterrupted
 from app.schemas.desktop import DesktopOperations
 from app.agent.state.messages import AssistantMessage, HumanMessage, ToolCall, ToolMessage, RuntimeInputMessage, with_text, text_content
@@ -327,8 +327,8 @@ class Agent:
         *,
         initial_state: AgentState | None = None,
         origin_channel: str = DESKTOP_CHANNEL,
-        inbox_claim: InboxEnvelope | None = None,
-        inbox_claims: tuple[InboxEnvelope, ...] | None = None,
+        inbox_input: InboxEnvelope | None = None,
+        inbox_inputs: tuple[InboxEnvelope, ...] | None = None,
         runtime_inputs: tuple[RuntimeInputMessage, ...] = (),
         turn_control: TurnControl | None = None,
         before_next_llm: Callable[[AgentState], Awaitable[None]] | None = None,
@@ -341,8 +341,8 @@ class Agent:
             images (list[str] | None): 真人附件的图片 data URL 列表。
             initial_state (AgentState | None): 调用方已加载的状态，省略时读取当前 checkpoint。
             origin_channel (str): 输入或本轮回复所属的渠道。
-            inbox_claim (InboxEnvelope | None): 随本次 checkpoint 原子交付的单条领取快照。
-            inbox_claims (tuple[InboxEnvelope, ...] | None): 随本次 checkpoint 原子交付的领取快照集合。
+            inbox_input (InboxEnvelope | None): 随本次 checkpoint 原子交付的单条输入快照。
+            inbox_inputs (tuple[InboxEnvelope, ...] | None): 随本次 checkpoint 原子交付的输入快照集合。
             runtime_inputs (tuple[RuntimeInputMessage, ...]): 同次激活中先于真人输入追加的内部通知。
             turn_control (TurnControl | None): 当前 run 的停止与引导控制器。
             before_next_llm (Callable[[AgentState], Awaitable[None]] | None): 下一次模型调用前注入内部通知的异步回调。
@@ -378,12 +378,17 @@ class Agent:
             await self.state_manager.save(state, checkpoint_type="completed")
 
         # 4. 原子提交本批内部通知与真人输入，再进入可停止的模型工具循环。
-        state = await self._commit_user_input(
-            state, message, images, origin_channel=origin_channel,
-            inbox_claim=inbox_claim, inbox_claims=inbox_claims,
-            runtime_inputs=runtime_inputs,
-            on_input_committed=on_input_committed,
-        )
+        try:
+            state = await self._commit_user_input(
+                state, message, images, origin_channel=origin_channel,
+                inbox_input=inbox_input, inbox_inputs=inbox_inputs,
+                runtime_inputs=runtime_inputs,
+                on_input_committed=on_input_committed,
+            )
+        except InputNoLongerPending:
+            # 4.1. 保存事务已回滚；丢弃本次内存状态，不执行正文和工具的打断保存。
+            yield AgentEvent(EventType.DONE, {"input_cancelled": True})
+            return
 
         # 5. 执行管道；最终提交与 DONE 只由 Agent 负责。
         async for event in self._stream_and_finalize(
@@ -396,34 +401,34 @@ class Agent:
             failure_message="本轮执行出错，已保留最近工具进度，未写入最终 checkpoint",
             origin_channel=origin_channel,
             turn_control=turn_control,
-            release_queued=inbox_claim is not None,
+            release_queued=inbox_input is not None,
         ):
             yield event
 
 
     async def run_runtime_input(
         self, message: RuntimeInputMessage, *,
-        inbox_claim: InboxEnvelope,
+        inbox_input: InboxEnvelope,
         turn_control: TurnControl | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """将单条内部通知转交批量运行入口，不伪装成真人消息。
 
         Args:
             message (RuntimeInputMessage): 真人文本或类型声明对应的内部通知。
-            inbox_claim (InboxEnvelope): 随本次 checkpoint 原子交付的单条领取快照。
+            inbox_input (InboxEnvelope): 随本次 checkpoint 原子交付的单条输入快照。
             turn_control (TurnControl | None): 当前 run 的停止与引导控制器。
 
         Yields:
             AgentEvent: 按执行顺序产生的 Agent 事件。
         """
         async for event in self.run_runtime_inputs(
-            (message,), inbox_claims=(inbox_claim,), turn_control=turn_control,
+            (message,), inbox_inputs=(inbox_input,), turn_control=turn_control,
         ):
             yield event
 
     async def commit_runtime_inputs(
         self, state: AgentState, messages: tuple[RuntimeInputMessage, ...],
-        claims: tuple[InboxEnvelope, ...],
+        inputs: tuple[InboxEnvelope, ...],
     ) -> None:
         """追加内部通知并原子保存消息与 Inbox 交付状态，不触发新激活钩子。
 
@@ -434,19 +439,19 @@ class Agent:
         Args:
             state (AgentState): 当前 Agent 状态。
             messages (tuple[RuntimeInputMessage, ...]): 需要转换或交付的领域消息集合。
-            claims (tuple[InboxEnvelope, ...]): 待交付内部通知的领取快照集合。
+            inputs (tuple[InboxEnvelope, ...]): 待交付内部通知的输入快照集合。
         """
         # 1. 通知只补入当前消息，不消费真人记忆计数，也不准备新的激活派生任务。
         for message in messages:
             state.append_input(message)
-        # 2. 通知、协议历史和领取交付标记在同一事务保存；失败时由状态管理器回滚。
+        # 2. 通知、协议历史和输入交付标记在同一事务保存；失败时由状态管理器回滚。
         await self.state_manager.save(
-            state, checkpoint_type="intermediate", inbox_claims=claims,
+            state, checkpoint_type="intermediate", inbox_inputs=inputs,
         )
 
     async def _commit_runtime_activation_inputs(
         self, state: AgentState, messages: tuple[RuntimeInputMessage, ...],
-        claims: tuple[InboxEnvelope, ...],
+        inputs: tuple[InboxEnvelope, ...],
     ) -> None:
         """在新一轮纯内部通知激活时，协调输入提交和上一批记忆任务。
 
@@ -456,15 +461,15 @@ class Agent:
         Args:
             state (AgentState): 本次新激活加载的会话状态。
             messages (tuple[RuntimeInputMessage, ...]): 本次激活需要交付的内部通知。
-            claims (tuple[InboxEnvelope, ...]): 与通知一同持久交付的领取快照。
+            inputs (tuple[InboxEnvelope, ...]): 与通知一同持久交付的输入快照。
         """
         # 1. 本次通知加入前准备上一批派生任务，前后钩子共用同一提交上下文。
         commit_context: dict = {}
         await self.plugin_manager.run_hooks(
             PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, state, data=commit_context,
         )
-        # 2. 消息与领取交付标记原子保存；失败时直接退出，不启动后台派生任务。
-        await self.commit_runtime_inputs(state, messages, claims)
+        # 2. 消息与输入交付标记原子保存；失败时直接退出，不启动后台派生任务。
+        await self.commit_runtime_inputs(state, messages, inputs)
         # 3. 只有输入事务成功后才通知插件启动已经准备好的上一批任务。
         await self.plugin_manager.run_hooks(
             PluginHook.AFTER_ACTIVATION_INPUT_COMMIT, state, data=commit_context,
@@ -472,7 +477,7 @@ class Agent:
 
     async def run_runtime_inputs(
         self, messages: tuple[RuntimeInputMessage, ...], *,
-        inbox_claims: tuple[InboxEnvelope, ...],
+        inbox_inputs: tuple[InboxEnvelope, ...],
         turn_control: TurnControl | None = None,
         before_next_llm: Callable[[AgentState], Awaitable[None]] | None = None,
     ) -> AsyncIterator[AgentEvent]:
@@ -480,7 +485,7 @@ class Agent:
 
         Args:
             messages (tuple[RuntimeInputMessage, ...]): 需要转换或交付的领域消息集合。
-            inbox_claims (tuple[InboxEnvelope, ...]): 随本次 checkpoint 原子交付的领取快照集合。
+            inbox_inputs (tuple[InboxEnvelope, ...]): 随本次 checkpoint 原子交付的输入快照集合。
             turn_control (TurnControl | None): 当前 run 的停止与引导控制器。
             before_next_llm (Callable[[AgentState], Awaitable[None]] | None): 下一次模型调用前注入内部通知的异步回调。
 
@@ -497,7 +502,12 @@ class Agent:
             raise RuntimeError("待处理工具中断期间不能交付后台通知")
         # 2. 新激活只执行一组输入提交钩子，再以 desktop 来源启动内部轮次。
         # 2.1. 通知可以启动上一批已到期的记忆提取，但自身不增加真人计数。
-        await self._commit_runtime_activation_inputs(state, messages, inbox_claims)
+        try:
+            await self._commit_runtime_activation_inputs(state, messages, inbox_inputs)
+        except InputNoLongerPending:
+            # 2.2. 整批输入未交付时直接结束，不把回滚后的内存状态传给模型。
+            yield AgentEvent(EventType.DONE, {"input_cancelled": True})
+            return
         runtime_context = RuntimeContext.capture()
         runtime_context.turn_control = turn_control
         runtime_context.origin_channel = DESKTOP_CHANNEL
@@ -521,8 +531,8 @@ class Agent:
         images: list[str] | None,
         *,
         origin_channel: str = DESKTOP_CHANNEL,
-        inbox_claim: InboxEnvelope | None = None,
-        inbox_claims: tuple[InboxEnvelope, ...] | None = None,
+        inbox_input: InboxEnvelope | None = None,
+        inbox_inputs: tuple[InboxEnvelope, ...] | None = None,
         runtime_inputs: tuple[RuntimeInputMessage, ...] = (),
         on_input_committed: Callable[[HumanMessage], Awaitable[None]] | None = None,
     ) -> AgentState:
@@ -536,8 +546,8 @@ class Agent:
             message (str): 真人文本或类型声明对应的内部通知。
             images (list[str] | None): 真人附件的图片 data URL 列表。
             origin_channel (str): 输入或本轮回复所属的渠道。
-            inbox_claim (InboxEnvelope | None): 随本次 checkpoint 原子交付的单条领取快照。
-            inbox_claims (tuple[InboxEnvelope, ...] | None): 随本次 checkpoint 原子交付的领取快照集合。
+            inbox_input (InboxEnvelope | None): 随本次 checkpoint 原子交付的单条输入快照。
+            inbox_inputs (tuple[InboxEnvelope, ...] | None): 随本次 checkpoint 原子交付的输入快照集合。
             runtime_inputs (tuple[RuntimeInputMessage, ...]): 同次激活中先于真人输入追加的内部通知。
             on_input_committed (Callable[[HumanMessage], Awaitable[None]] | None): 在 checkpoint 和 Inbox 原子提交后发布输入事实的回调。
 
@@ -576,15 +586,15 @@ class Agent:
         # 真人输入一旦进入 intermediate checkpoint 就属于已提交事实；后续模型、
         # 工具或 completed checkpoint 失败都不能回退或重复推进该计数。
         state.increment_long_term_memory_turn_counter()
-        # 3. 保存 checkpoint 时同时完成领取交付，模型调用失败不能撤销已提交真人事实。
-        claims = inbox_claims if inbox_claims is not None else (
-            (inbox_claim,) if inbox_claim is not None else ()
+        # 3. 保存 checkpoint 时同时完成输入交付，模型调用失败不能撤销已提交真人事实。
+        inputs = inbox_inputs if inbox_inputs is not None else (
+            (inbox_input,) if inbox_input is not None else ()
         )
-        if not claims:
+        if not inputs:
             await self.state_manager.save(state, checkpoint_type="intermediate")
         else:
             await self.state_manager.save(
-                state, checkpoint_type="intermediate", inbox_claims=claims,
+                state, checkpoint_type="intermediate", inbox_inputs=inputs,
             )
 
         # 4. 输入已提交后立即通知观察方，不能等到模型首片才显示真人消息。

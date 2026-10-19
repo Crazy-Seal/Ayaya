@@ -32,12 +32,10 @@ class SessionPhase(str, Enum):
         IDLE (SessionPhase): 空闲，协议值为 idle。
         RUNNING (SessionPhase): 轮次运行中，协议值为 running。
         PENDING_INTERRUPT (SessionPhase): 等待人工审批，协议值为 pending_interrupt。
-        ERROR (SessionPhase): 本轮错误，协议值为 error。
     """
     IDLE = "idle"
     RUNNING = "running"
     PENDING_INTERRUPT = "pending_interrupt"
-    ERROR = "error"
 
 
 class TurnPhase(str, Enum):
@@ -173,11 +171,9 @@ class InboxStatus(str, Enum):
 
     Attributes:
         PENDING (InboxStatus): 尚未领取，协议值为 pending。
-        CLAIMED (InboxStatus): 持有领取令牌，协议值为 claimed。
         DELIVERED (InboxStatus): 已与 checkpoint 原子提交，协议值为 delivered。
     """
     PENDING = "pending"
-    CLAIMED = "claimed"
     DELIVERED = "delivered"
 
 

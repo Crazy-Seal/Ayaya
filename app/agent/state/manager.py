@@ -46,9 +46,9 @@ class StateManager:
     """拥有会话 checkpoint 和协议历史，协调状态保存与输入交付的原子提交。
 
     这是共享的数据库访问实现，不是某个 Agent 的私有存储。Agent 保存执行进度，
-    Scheduler 保存审批决定，桌面 Broker 保存领取标记和结果，各自可创建访问对象。
+    Scheduler 保存审批决定，桌面 Broker 保存读取标记和结果，各自可创建访问对象。
     同一会话的对象访问同一数据库；消息保存和 Inbox delivered 在同一事务完成。
-    Inbox 的领取校验和排队筛选由 Inbox 模块执行；本类负责跨表事务的连接、
+    Inbox 的读取校验和排队筛选由 Inbox 模块执行；本类负责跨表事务的连接、
     执行顺序、统一提交，以及失败或取消时的全部数据库写入回滚。
 
     Attributes:
@@ -278,7 +278,7 @@ class StateManager:
         state: AgentState,
         *,
         checkpoint_type: CheckpointType,
-        inbox_claims: tuple[InboxEnvelope, ...] = (),
+        inbox_inputs: tuple[InboxEnvelope, ...] = (),
         rewritten_message_id: str | None = None,
         release_queued: bool = False,
     ) -> int:
@@ -290,7 +290,7 @@ class StateManager:
         Args:
             state (AgentState): 当前 Agent 状态。
             checkpoint_type (CheckpointType): 中间态或完成态检查点类型。
-            inbox_claims (tuple[InboxEnvelope, ...]): 随本次 checkpoint 原子交付的领取快照集合。
+            inbox_inputs (tuple[InboxEnvelope, ...]): 随本次 checkpoint 原子交付的输入快照集合。
             rewritten_message_id (str | None): 需要同步更新协议行的既有 Assistant 消息标识。
             release_queued (bool): 是否随正常完成的 checkpoint 原子放行排队输入。
 
@@ -298,8 +298,8 @@ class StateManager:
             int: 本次新写入的 checkpoint 数据库编号，其他写入已经同事务提交。
 
         Raises:
-            RuntimeError: 数据库未返回 checkpoint ID，或 Inbox 领取已失效。
-            ValueError: 重写目标不是当前 assistant 消息，或领取属于其他会话、缺少令牌。
+            RuntimeError: 数据库未返回 checkpoint ID，或 Inbox 输入已失效。
+            ValueError: 重写目标不是当前 assistant 消息，或输入属于其他会话。
         """
         db = await self._get_db()
         # 1. 先外置媒体并准备 checkpoint 和协议行，SQLite 事务只覆盖持久写入。
@@ -354,12 +354,12 @@ class StateManager:
                 if result.rowcount != 1:
                     raise RuntimeError("中断文本对应的协议消息不存在")
             # 4. Inbox 用当前连接校验并更新交付记录，不单独提交，失败时回滚前面的状态写入。
-            await mark_delivered_in_transaction(db, self.session_id, inbox_claims)
+            await mark_delivered_in_transaction(db, self.session_id, inbox_inputs)
             # 5. 调用方请求放行时，复用 Inbox 规则；完成状态和排队资格必须一起提交。
             if release_queued:
                 await release_queued_in_transaction(db, self.session_id)
             await db.commit()
-        # 6. 输入令牌失效、数据库失败或取消时回滚 checkpoint、协议行和交付标记。
+        # 6. 输入失效、数据库失败或取消时回滚 checkpoint、协议行和交付标记。
         except BaseException:
             await db.rollback()
             raise

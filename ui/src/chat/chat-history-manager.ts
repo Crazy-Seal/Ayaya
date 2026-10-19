@@ -4,6 +4,7 @@
 
 import type { ChatHistoryItem } from "../types.js";
 import { DESKTOP_CHANNEL } from "../../shared-types.js";
+import { iconMarkup } from "../ui/icons.js";
 
 // 后端静态文件服务地址
 
@@ -72,6 +73,14 @@ export class ChatHistoryManager {
   private historyRevision = 0;
   private historyRequest = 0;
   private sessionId = "";
+  /** 当前会话唯一未交付失败展示；不加入 messages 或正式聊天历史。 */
+  private failedInput: {
+    message: ChatHistoryItem; detail: string; onRetry: () => Promise<void>; submitting: boolean;
+  } | null = null;
+  /** 当前渲染的临时失败节点，历史重绘时重新建立。 */
+  private failedInputElement: HTMLElement | null = null;
+  /** 当前失败展示的按钮，发送期间禁用。 */
+  private retryInputButton: HTMLButtonElement | null = null;
 
   // 句子队列和定时器（用于延迟输出）
   private sentenceQueue: string[] = [];
@@ -306,6 +315,84 @@ export class ChatHistoryManager {
   }
 
   /**
+   * 显示原始失败输入和重试入口，不把它当作已保存消息。
+   *
+   * Args:
+   *     message (ChatHistoryItem): 未交付的真人正文和图片。
+   *     detail (string): 输入交付失败的说明。
+   *     onRetry (() => Promise<void>): 用户点击按钮后，由客户端重新提交原输入。
+   */
+  showFailedInput(message: ChatHistoryItem, detail: string, onRetry: () => Promise<void>): void {
+    this.clearFailedInput();
+    this.failedInput = { message, detail, onRetry, submitting: false };
+    this.renderFailedInput();
+    this.scrollToBottom();
+  }
+
+  /** 清除已被重发或新消息覆盖的临时失败展示。 */
+  clearFailedInput(): void {
+    this.failedInputElement?.remove();
+    this.failedInputElement = null;
+    this.retryInputButton = null;
+    this.failedInput = null;
+  }
+
+  /**
+   * 同步重试命令等待回执时的按钮状态，历史重绘后也保持禁用。
+   *
+   * Args:
+   *     submitting (boolean): 是否正在提交这条失败输入。
+   */
+  setFailedInputRetrying(submitting: boolean): void {
+    if (this.failedInput) this.failedInput.submitting = submitting;
+    if (this.retryInputButton) this.retryInputButton.disabled = submitting;
+  }
+
+  /** 将当前失败消息渲染到对话区，正文和图片直接使用原始输入。 */
+  private renderFailedInput(): void {
+    // 1. 移除上一轮渲染的节点；失败内容独立保存，历史重绘后仍可显示。
+    this.failedInputElement?.remove();
+    if (!this.failedInput) return;
+    const failure = this.failedInput;
+    const item = document.createElement("div");
+    item.className = "message-item human failed-input";
+    const bubble = document.createElement("div");
+    bubble.className = "message-bubble";
+    const text = document.createElement("span");
+    text.textContent = failure.message.content;
+    bubble.appendChild(text);
+    const images = document.createElement("div");
+    // 2. 原始输入并未进入聊天历史，正文与附件直接从失败事件展示。
+    images.className = "message-images";
+    for (const image of failure.message.images ?? []) {
+      const img = document.createElement("img");
+      img.src = image;
+      img.alt = "未发送的图片";
+      images.appendChild(img);
+    }
+    if (images.children.length) bubble.appendChild(images);
+    const detail = document.createElement("div");
+    detail.className = "error-indicator failed-input-error";
+    detail.textContent = failure.detail;
+    bubble.appendChild(detail);
+    const button = document.createElement("button");
+    // 3. 圆形按钮只通知客户端重发；禁用状态随展示数据保留，不创建第二套请求流程。
+    button.type = "button";
+    button.className = "ui-button ui-button--secondary retry-input-button";
+    button.title = "重试";
+    button.setAttribute("aria-label", "重试");
+    button.innerHTML = iconMarkup("retry");
+    button.disabled = failure.submitting;
+    button.addEventListener("click", /** 用户点击时仅提交当前失败输入，等待回执期间不重复触发。 */
+    () => { if (!button.disabled) void failure.onRetry(); });
+    item.appendChild(bubble);
+    item.appendChild(button);
+    this.container.appendChild(item);
+    this.failedInputElement = item;
+    this.retryInputButton = button;
+  }
+
+  /**
    * 为当前回复来源启动流式视图，避免重复创建草稿。
    *
    * Args:
@@ -425,6 +512,7 @@ export class ChatHistoryManager {
     this.historyRequest += 1;
     this.historyRevision += 1;
     this.clearPendingSteer();
+    this.clearFailedInput();
     this.messages = [];
     this.container.innerHTML = "";
     this.isStreaming = false;
@@ -529,6 +617,7 @@ export class ChatHistoryManager {
     for (const msg of this.messages) {
       this.renderMessage(msg);
     }
+    this.renderFailedInput();
     // 渲染完成后移除禁用动画的类
     requestAnimationFrame(/**
      * 历史整体重绘后恢复气泡动画，避免历史消息入场动画干扰初始布局。

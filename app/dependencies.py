@@ -10,8 +10,7 @@ from app.schemas.runtime_types import RuntimePhase
 from app.desktop.desktop_controller import DesktopController
 from app.orchestration.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.interaction.interaction_event_hub import InteractionEventHub
-from app.interaction.interaction_contract import InteractionEvent
-from app.schemas.runtime_types import InteractionEventKind
+from app.services.channel_subscription_service import ChannelSubscriptionService
 from app.orchestration.task_supervisor import TaskSupervisor
 from app.orchestration.agent_factory import build_agent
 from app.mcp.mcp_connection_manager import MCPConnectionManager
@@ -141,48 +140,64 @@ def get_task_supervisor() -> TaskSupervisor:
 
 
 @lru_cache(maxsize=1)
-def get_runtime_scheduler() -> AgentRuntimeScheduler:
-    """装配进程级 Scheduler，并连接任务状态发布和终态唤醒回调。
+def get_channel_subscription_service() -> ChannelSubscriptionService:
+    """取得命令、分发和设置页共用的配置对象。
 
     Returns:
-        AgentRuntimeScheduler: 已连接事件发布和任务结束通知的共享会话调度器。
+        ChannelSubscriptionService: 统一的描述、持久设置和缓存入口。
+    """
+    return ChannelSubscriptionService()
+
+
+@lru_cache(maxsize=1)
+def get_runtime_scheduler() -> AgentRuntimeScheduler:
+    """装配执行模块，任务状态写入其临时输出，不创建 Hub。
+
+    Returns:
+        AgentRuntimeScheduler: 共享执行模块。
     """
     settings_dao = get_chat_settings_dao()
     mcp_manager = get_mcp_connection_manager()
     authorization = get_tool_authorization()
     supervisor = get_task_supervisor()
     desktop = get_desktop_controller()
-    # 1. 进程级缓存持有唯一调度器，Agent 工厂每次运行才读取会话配置。
-    scheduler = AgentRuntimeScheduler(
-        InteractionEventHub(),
-        agent_factory=lambda session_id: build_agent(
+    def create_agent(session_id: str):
+        """真正执行时读取会话设置，创建本次 Agent。
+
+        Args:
+            session_id (str): 当前执行会话。
+
+        Returns:
+            Agent: 注入共享工具依赖的本次执行对象。
+        """
+        return build_agent(
             settings_dao.get_chat_settings(session_id),
             mcp_manager,
             authorization,
             supervisor,
             desktop,
-        ),
+        )
+
+    scheduler = AgentRuntimeScheduler(
+        agent_factory=create_agent,
+        subscriptions=get_channel_subscription_service(),
         task_supervisor=supervisor,
-        desktop=desktop,
     )
-    # 2. 任务终态只通知已激活会话，初始化和关闭期间保留事实，不自行启动 Agent。
+    # 1. 任务终态只通知已激活会话，初始化和关闭期间保留事实，不自行启动 Agent。
     supervisor.on_terminal = scheduler.notify_task_terminal
 
-    async def publish_task(record):
-        """将任务可见状态发布到桌面，不把持续输出广播到聊天事件流。
-
-        Args:
-            record (TaskRecord): 持久任务记录。
-        """
-        await scheduler.events.publish(InteractionEvent(
-            record.session_id, InteractionEventKind.TASK_STATUS,
-            {"task_id": record.task_id, "status": record.status,
-             "exit_code": record.exit_code, "tool_name": record.tool_name},
-            task_id=record.task_id,
-        ))
-
-    supervisor.on_status = publish_task
+    supervisor.on_status = scheduler.record_task_status
     return scheduler
+
+
+@lru_cache(maxsize=1)
+def get_interaction_event_hub() -> InteractionEventHub:
+    """装配唯一 Hub，依赖方向仅从 Hub 指向 Scheduler。
+
+    Returns:
+        InteractionEventHub: 由应用生命周期启动的共享分发对象。
+    """
+    return InteractionEventHub(get_runtime_scheduler(), subscriptions=get_channel_subscription_service())
 
 
 @lru_cache(maxsize=1)

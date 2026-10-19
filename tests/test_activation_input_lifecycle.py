@@ -255,18 +255,18 @@ def bind_memory(db_path: Path, monkeypatch: pytest.MonkeyPatch) -> RecordingMemo
     return memory
 
 
-def terminal_message(claim: InboxEnvelope) -> TaskResultMessage:
-    """将单条真实完成任务的领取记录投影为 Agent 输入。
+def terminal_message(input_record: InboxEnvelope) -> TaskResultMessage:
+    """将单条真实完成任务的读取记录投影为 Agent 输入。
 
     Args:
-        claim (InboxEnvelope): 通过真实 Inbox 领取的完成任务通知。
+        input_record (InboxEnvelope): 通过真实 Inbox 读取的完成任务通知。
 
     Returns:
         TaskResultMessage: 保留任务编号和输出的内部输入消息。
     """
     return TaskResultMessage(
-        task_id=claim.payload["task_id"], task_name=claim.payload["task_name"],
-        status="completed", result=claim.payload["result"],
+        task_id=input_record.payload["task_id"], task_name=input_record.payload["task_name"],
+        status="completed", result=input_record.payload["result"],
     )
 
 
@@ -365,11 +365,13 @@ def test_mid_turn_notification_preserves_batch_until_next_activation(tmp_path: P
         manager = create_manager(SESSION_ID)
         inbox = create_inbox(SESSION_ID)
         records = TaskRecordDao(str(db_path))
-        hub = InteractionEventHub(subscriptions=ChannelSubscriptionService(str(db_path)))
+        subscriptions = ChannelSubscriptionService()
         scheduler = AgentRuntimeScheduler(
-            hub, agent_factory=create_agent, inbox_factory=create_inbox,
+            subscriptions=subscriptions, agent_factory=create_agent, inbox_factory=create_inbox,
             state_manager_factory=create_manager,
         )
+        hub = InteractionEventHub(scheduler, subscriptions=subscriptions)
+        await hub.start()
         stream = hub.subscribe(SESSION_ID, "desktop")
         try:
             # 1. 保存旧完整轮次后启动真实运行时，再提交达到阈值的真人输入。
@@ -391,7 +393,7 @@ def test_mid_turn_notification_preserves_batch_until_next_activation(tmp_path: P
             await asyncio.wait_for(models[0].requests.get(), WAIT_SECONDS)
             saved = await manager.load()
             assert any(isinstance(item, TaskResultMessage) and item.task_id == "mid-turn" for item in saved.messages)
-            assert await inbox.claim_task_terminals() == ()
+            assert await inbox.read_task_terminals() == ()
             assert saved.long_term_memory_turn_counter == 10
             assert memory.extractions == []
             assert len(hooks) == 2
@@ -421,6 +423,7 @@ def test_mid_turn_notification_preserves_batch_until_next_activation(tmp_path: P
             await wait_event(stream, InteractionEventKind.RUN_COMPLETED)
         finally:
             # 5. 先关闭运行时等待其 worker 退出，再释放订阅和测试数据库连接。
+            await hub.close()
             await scheduler.close()
             await stream.aclose()
             for agent in agents:
@@ -498,10 +501,10 @@ def test_runtime_only_activation_extracts_previous_batch_without_counting_notice
             await seed_history(manager, 10, 10)
             cutoff = await memory.chat_history_store.get_latest_message_id(SESSION_ID)
             await publish_terminal(records, db_path, "runtime-activation")
-            claims = await inbox.claim_task_terminals()
+            inputs = await inbox.read_task_terminals()
             model.replies.put_nowait((StreamChunk(content="通知处理完成"),))
             events = await drain(agent.run_runtime_inputs(
-                tuple(terminal_message(claim) for claim in claims), inbox_claims=claims,
+                tuple(terminal_message(input_record) for input_record in inputs), inbox_inputs=inputs,
             ))
             await asyncio.wait_for(memory.extracted.wait(), WAIT_SECONDS)
 
@@ -509,7 +512,7 @@ def test_runtime_only_activation_extracts_previous_batch_without_counting_notice
             saved = await manager.load()
             assert events[-1].type == EventType.DONE
             assert saved.long_term_memory_turn_counter == 0
-            assert await inbox.status(claims[0].id) == "delivered"
+            assert await inbox.status(inputs[0].id) == "delivered"
             assert len([item for item in saved.messages if isinstance(item, HumanMessage)]) == 10
             selected, _history = memory.extractions[0]
             assert [item.text for item in selected if isinstance(item, HumanMessage)] == [
@@ -548,25 +551,25 @@ def test_mixed_activation_and_repeated_notices_use_one_activation_hook_pair(tmp_
         running: asyncio.Task | None = None
 
         async def deliver_notifications(state: AgentState) -> None:
-            """由真实模型前回调领取并提交当前已到达的任务通知。
+            """由真实模型前回调读取并提交当前已到达的任务通知。
 
             Args:
                 state (AgentState): 管道已闭合工具协议、准备下次模型请求的状态。
             """
-            claims = await inbox.claim_task_terminals()
-            if claims:
-                await agent.commit_runtime_inputs(state, tuple(terminal_message(claim) for claim in claims), claims)
+            inputs = await inbox.read_task_terminals()
+            if inputs:
+                await agent.commit_runtime_inputs(state, tuple(terminal_message(input_record) for input_record in inputs), inputs)
 
         try:
-            # 1. 真人和既有任务通知同批领取，通过真人入口只执行一组激活钩子。
+            # 1. 真人和既有任务通知同批读取，通过真人入口只执行一组激活钩子。
             await seed_history(manager, 9, 9)
             await publish_terminal(records, db_path, "initial")
             await inbox.submit_human("desktop", "human-10")
-            batch = await inbox.claim_activation_batch()
-            terminals = tuple(claim for claim in batch if claim.kind == "task_terminal")
+            batch = await inbox.read_activation_batch()
+            terminals = tuple(input_record for input_record in batch if input_record.kind == "task_terminal")
             running = asyncio.create_task(drain(agent.run(
-                "human-10", inbox_claims=batch,
-                runtime_inputs=tuple(terminal_message(claim) for claim in terminals),
+                "human-10", inbox_inputs=batch,
+                runtime_inputs=tuple(terminal_message(input_record) for input_record in terminals),
                 before_next_llm=deliver_notifications,
             )))
             await asyncio.wait_for(model.requests.get(), WAIT_SECONDS)
@@ -589,7 +592,7 @@ def test_mixed_activation_and_repeated_notices_use_one_activation_hook_pair(tmp_
                 "initial", "mid-1", "mid-2",
             }
             assert await inbox.status(terminals[0].id) == "delivered"
-            assert await inbox.claim_task_terminals() == ()
+            assert await inbox.read_task_terminals() == ()
             assert saved.long_term_memory_turn_counter == 10
             assert memory.cutoffs == [] and memory.extractions == []
             assert hooks == [PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, PluginHook.AFTER_ACTIVATION_INPUT_COMMIT]
@@ -669,19 +672,19 @@ def test_resuming_original_turn_does_not_commit_another_activation(tmp_path: Pat
             Args:
                 state (AgentState): 原轮次恢复后的当前状态。
             """
-            claims = await inbox.claim_task_terminals()
-            if claims:
-                await agent.commit_runtime_inputs(state, tuple(terminal_message(claim) for claim in claims), claims)
+            inputs = await inbox.read_task_terminals()
+            if inputs:
+                await agent.commit_runtime_inputs(state, tuple(terminal_message(input_record) for input_record in inputs), inputs)
 
         try:
             # 1. 达到阈值的真人输入已持久提交，但工具中断使该轮尚无普通助手回复。
             await seed_history(manager, 9, 9)
             await inbox.submit_human("desktop", "human-10")
-            human = await inbox.claim_next()
+            human = await inbox.read_next()
             model.replies.put_nowait((StreamChunk(tool_call=ToolCall(
                 id="pause-1", name="activation_pause", args={},
             )),))
-            events = await drain(agent.run("human-10", inbox_claim=human))
+            events = await drain(agent.run("human-10", inbox_input=human))
             assert events[-1].type == EventType.INTERRUPT
             assert (await manager.load()).long_term_memory_turn_counter == 10
 
@@ -694,7 +697,7 @@ def test_resuming_original_turn_does_not_commit_another_activation(tmp_path: Pat
             assert resumed[-1].type == EventType.DONE
             assert not saved.is_interrupted()
             assert any(isinstance(item, TaskResultMessage) and item.task_id == "during-interrupt" for item in saved.messages)
-            assert await inbox.claim_task_terminals() == ()
+            assert await inbox.read_task_terminals() == ()
             assert saved.long_term_memory_turn_counter == 10
             assert memory.cutoffs == [] and memory.extractions == []
             assert hooks == [PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, PluginHook.AFTER_ACTIVATION_INPUT_COMMIT]
@@ -727,30 +730,30 @@ def test_failed_activation_commit_preserves_batch_and_retry_extracts_frozen_hist
         inbox = SessionInbox(SESSION_ID, str(db_path))
         records = TaskRecordDao(str(db_path))
 
-        def activate(agent: Agent, claims: tuple[InboxEnvelope, ...]) -> AsyncIterator[AgentEvent]:
-            """按测试类别从公开入口提交同一份仍有效的领取记录。
+        def activate(agent: Agent, inputs: tuple[InboxEnvelope, ...]) -> AsyncIterator[AgentEvent]:
+            """按测试类别从公开入口提交同一份仍有效的读取记录。
 
             Args:
                 agent (Agent): 本次实际执行输入提交的 Agent。
-                claims (tuple[InboxEnvelope, ...]): 失败后尚未交付的领取快照。
+                inputs (tuple[InboxEnvelope, ...]): 失败后尚未交付的读取快照。
 
             Returns:
                 AsyncIterator[AgentEvent]: 真人或纯内部通知的新激活事件流。
             """
             if activation == "human":
-                return agent.run("human-11", inbox_claims=claims)
-            return agent.run_runtime_inputs(tuple(terminal_message(claim) for claim in claims), inbox_claims=claims)
+                return agent.run("human-11", inbox_inputs=inputs)
+            return agent.run_runtime_inputs(tuple(terminal_message(input_record) for input_record in inputs), inbox_inputs=inputs)
 
         try:
-            # 1. 旧十轮已完整，到期批次在本次新激活之前冻结；两类输入都使用真实领取。
+            # 1. 旧十轮已完整，到期批次在本次新激活之前冻结；两类输入都使用真实读取。
             await seed_history(manager, 10, 10)
             cutoff = await memory.chat_history_store.get_latest_message_id(SESSION_ID)
             if activation == "human":
                 await inbox.submit_human("desktop", "human-11")
-                claims = (await inbox.claim_next(),)
+                inputs = (await inbox.read_next(),)
             else:
                 await publish_terminal(records, db_path, "retry-notice")
-                claims = await inbox.claim_task_terminals()
+                inputs = await inbox.read_task_terminals()
 
             # 2. 用真实数据库触发器拒绝输入 checkpoint，不替换状态管理器或插件分发。
             async with aiosqlite.connect(str(db_path)) as db:
@@ -761,9 +764,9 @@ def test_failed_activation_commit_preserves_batch_and_retry_extracts_frozen_hist
                 )
                 await db.commit()
             with pytest.raises(aiosqlite.IntegrityError, match="activation commit rejected"):
-                await drain(activate(agents[0], claims))
+                await drain(activate(agents[0], inputs))
             assert (await manager.load()).long_term_memory_turn_counter == 10
-            assert await inbox.status(claims[0].id) == "claimed"
+            assert await inbox.status(inputs[0].id) == "pending"
             assert memory.extractions == []
             assert models[0].requests.empty()
             assert hooks == [PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT]
@@ -773,12 +776,12 @@ def test_failed_activation_commit_preserves_batch_and_retry_extracts_frozen_hist
                 await db.execute("DROP TRIGGER reject_activation")
                 await db.commit()
             models[1].replies.put_nowait((StreamChunk(content="新激活已经完成"),))
-            events = await drain(activate(agents[1], claims))
+            events = await drain(activate(agents[1], inputs))
             await asyncio.wait_for(memory.extracted.wait(), WAIT_SECONDS)
             saved = await manager.load()
             assert events[-1].type == EventType.DONE
             assert saved.long_term_memory_turn_counter == (1 if activation == "human" else 0)
-            assert await inbox.status(claims[0].id) == "delivered"
+            assert await inbox.status(inputs[0].id) == "delivered"
             selected, _history = memory.extractions[0]
             assert [item.text for item in selected if isinstance(item, HumanMessage)] == [
                 f"human-{number}" for number in range(1, 11)

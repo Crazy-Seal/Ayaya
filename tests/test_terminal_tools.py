@@ -84,7 +84,7 @@ def test_duplex_terminal_input_completion_and_full_log(tmp_path: Path, tty: bool
             assert not polled.background and polled.output == ""
             rejected = await supervisor.interact("chat", started.task_id, chars="again\n", yield_time_ms=0)
             assert rejected.input_status == "not_sent" and rejected.error
-            notices = await inbox.claim_task_terminals()
+            notices = await inbox.read_task_terminals()
             assert len(notices) == 1
             payload = notices[0].payload
             assert payload["result"] == "" and payload["tool_name"] == "exec_command"
@@ -264,7 +264,7 @@ def test_many_completion_notices_keep_all_tool_names_and_references(tmp_path: Pa
                 name = "exec_command" if index % 2 == 0 else "other_tool"
                 await records.insert_running(f"task-{index}", "chat", "command", 1, "unused", tool_name=name)
                 await records.finish_once(f"task-{index}", TaskStatus.COMPLETED, 0)
-            claims = await inbox.claim_task_terminals()
+            claims = await inbox.read_task_terminals()
             messages = AgentRuntimeScheduler._task_result_messages(claims)
             text = "\n".join(message.result for message in messages)
             assert len(messages) > 1

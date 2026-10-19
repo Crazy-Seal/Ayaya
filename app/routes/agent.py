@@ -3,7 +3,12 @@ from dataclasses import asdict
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
-from app.dependencies import get_chat_settings_dao, get_runtime_scheduler, get_task_supervisor
+from app.dependencies import (
+    get_chat_settings_dao, get_runtime_scheduler, get_task_supervisor,
+    get_interaction_event_hub, get_channel_subscription_service,
+)
+from app.interaction.interaction_event_hub import InteractionEventHub
+from app.services.channel_subscription_service import ChannelSubscriptionService
 from app.schemas.result import Result
 from app.schemas.interaction import (
     ChannelCommandRequest, ChannelSubscriptionRequest,
@@ -41,14 +46,16 @@ async def submit_command(
 async def subscribe_events(
     session_id: str,
     channel: str = DESKTOP_CHANNEL,
-    scheduler: AgentRuntimeScheduler = Depends(get_runtime_scheduler),
+    hub: InteractionEventHub = Depends(get_interaction_event_hub),
+    subscriptions: ChannelSubscriptionService = Depends(get_channel_subscription_service),
 ) -> StreamingResponse:
     """校验渠道订阅后建立会话观察流，连接结束不取消 Agent。
 
     Args:
         session_id (str): 共享 Ayaya 会话标识。
         channel (str): 已注册渠道标识。
-        scheduler (AgentRuntimeScheduler): 进程级会话调度器。
+        hub (InteractionEventHub): 主动读取 Scheduler 的共享分发对象。
+        subscriptions (ChannelSubscriptionService): 共享渠道配置。
 
     Returns:
         StreamingResponse: 独立的会话 SSE，先发送接收方快照再发送增量。
@@ -57,15 +64,15 @@ async def subscribe_events(
         HTTPException: 渠道未注册或在该会话未启用时返回 HTTP 400。
     """
     try:
-        scheduler.events.validate_source(channel)
-        if not await scheduler.events.channel_enabled(session_id, channel):
+        subscriptions.validate_source(channel)
+        if not await subscriptions.is_enabled(session_id, channel):
             raise ValueError("该会话未订阅此渠道")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # 1. 会话长期订阅共用分钟心跳和 JSON 投影，心跳不占业务事件序号。
     return StreamingResponse(stream_sse_json(
-        scheduler.events.subscribe(session_id, channel),
+        hub.subscribe(session_id, channel),
         heartbeat_interval=SSE_HEARTBEAT_SECONDS,
     ), media_type="text/event-stream")
 
@@ -73,18 +80,18 @@ async def subscribe_events(
 @router.get("/agent/channels/{session_id}")
 async def list_channels(
     session_id: str,
-    scheduler: AgentRuntimeScheduler = Depends(get_runtime_scheduler),
+    subscriptions: ChannelSubscriptionService = Depends(get_channel_subscription_service),
 ) -> dict:
     """返回当前会话已注册渠道的配置与可用状态。
 
     Args:
         session_id (str): 共享 Ayaya 会话标识。
-        scheduler (AgentRuntimeScheduler): 进程级会话调度器。
+        subscriptions (ChannelSubscriptionService): 共享渠道描述和启用配置。
 
     Returns:
         dict: 以 channels 键包装的会话渠道列表。
     """
-    return {"channels": await scheduler.events.list_subscriptions(session_id)}
+    return {"channels": await subscriptions.list(session_id)}
 
 
 @router.put("/agent/channels/{session_id}/{channel}")
@@ -92,7 +99,7 @@ async def update_channel_subscription(
     session_id: str,
     channel: str,
     payload: ChannelSubscriptionRequest,
-    scheduler: AgentRuntimeScheduler = Depends(get_runtime_scheduler),
+    subscriptions: ChannelSubscriptionService = Depends(get_channel_subscription_service),
 ) -> dict:
     """持久更新可选渠道订阅并返回更新后的列表。
 
@@ -100,7 +107,7 @@ async def update_channel_subscription(
         session_id (str): 共享 Ayaya 会话标识。
         channel (str): 已注册渠道标识。
         payload (ChannelSubscriptionRequest): HTTP 请求内容。
-        scheduler (AgentRuntimeScheduler): 进程级会话调度器。
+        subscriptions (ChannelSubscriptionService): 命令与分发共用的配置。
 
     Returns:
         dict: 保存后以 channels 键包装的渠道列表。
@@ -109,10 +116,10 @@ async def update_channel_subscription(
         HTTPException: 修改桌面固定订阅或未注册渠道时返回 HTTP 400。
     """
     try:
-        await scheduler.events.set_session_enabled(session_id, channel, payload.enabled)
+        await subscriptions.set_enabled(session_id, channel, payload.enabled)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"channels": await scheduler.events.list_subscriptions(session_id)}
+    return {"channels": await subscriptions.list(session_id)}
 
 
 

@@ -21,6 +21,10 @@ class PresentationElement {
   private value = "";
   className = "";
   hidden = true;
+  disabled = false;
+  title = "";
+  src = "";
+  attributes = new Map<string, string>();
   handlers = new Map<string, () => void>();
   scrollHeight = 100;
   classList = {
@@ -107,9 +111,12 @@ class PresentationElement {
   querySelectorAll(): PresentationElement[] { return []; }
 
   /**
-   *  提供历史渲染所需的属性设置占位方法。
+   * 记录公开 DOM 属性，供测试核对控件的无障碍名称。
+   * Args:
+   *     name (string): DOM 属性名称。
+   *     value (string): 属性值。
    */
-  setAttribute(): void {}
+  setAttribute(name: string, value: string): void { this.attributes.set(name, value); }
 
   /**
    *  提供展示器滚动容器所需的占位方法。
@@ -285,6 +292,16 @@ function createPresentation(withTaskEntry = false) {
    */
   playMotionByLabel: (label: string) => { motions.push(label); },
   } as unknown as Window & typeof globalThis;
+  const submissions = {
+    commands: [] as Parameters<NonNullable<RuntimeChatClientOptions["bridge"]>["submitInteractionCommand"]>[0][],
+    accepted: true,
+    barrier: null as Promise<void> | null,
+  };
+  const input = {
+    value: "", style: {},
+    /** 保留用户当前输入，测试重发不能消耗正在编辑的草稿。 */
+    focus(): void {},
+  };
   const bridge: NonNullable<RuntimeChatClientOptions["bridge"]> = {
     /**
      *  模拟事件订阅已经就绪。
@@ -309,9 +326,18 @@ function createPresentation(withTaskEntry = false) {
       return () => {};
     },
     /**
-     *  返回预设受理回执，当前展示测试不执行真实命令。
+     * 记录公开命令，允许测试控制回执到达时机。
+     *
+     * Args:
+     *     command (ChannelCommand): 真人输入或重发命令。
+     * Returns:
+     *     Promise<CommandReceipt>: 测试指定的受理结果。
      */
-    submitInteractionCommand: async () => ({ accepted: true }),
+    submitInteractionCommand: async (command) => {
+      submissions.commands.push(command);
+      if (submissions.barrier) await submissions.barrier;
+      return { accepted: submissions.accepted, reason: submissions.accepted ? undefined : "暂未受理" };
+    },
     /**
      *  返回空任务列表。
      */
@@ -337,13 +363,7 @@ function createPresentation(withTaskEntry = false) {
        */
       setAttribute() {},
     } as unknown as HTMLButtonElement,
-    input: { value: "", style: {}, /**
-     * 记录输入框焦点恢复。
-     *
-     * 此定义用于：装配真实聊天展示类，只替换主进程 bridge 和 DOM 环境。
-     */
-      focus() {},
-    } as unknown as HTMLTextAreaElement,
+    input: input as unknown as HTMLTextAreaElement,
     confirmDialog: {
       /**
        *  当前测试不显示审批，返回预设决定。
@@ -357,7 +377,7 @@ function createPresentation(withTaskEntry = false) {
   });
   return {
     root, bubble, motions, persisted, taskHeader, taskButton, taskNotice, tasks, openedPages,
-    client, historyReads, approvals, attention,
+    client, historyReads, approvals, attention, input, submissions,
     /**
      * 从公共 bridge 注入事件并等待 Renderer 处理完成。
      *
@@ -793,6 +813,131 @@ async () => {
     assert.equal(view.bubble.textContent, "");
   } finally {
     release();
+    view.close();
+  }
+});
+
+
+test("未交付失败显示原输入和重试按钮，拒绝保留、受理移除且不改草稿", /**
+ * 验证临时失败消息的正文、附件、按钮禁用和原内容重发。
+ * Returns:
+ *     Promise<void>: 所有公开事件和按钮操作已处理。
+ */
+async () => {
+  const view = createPresentation();
+  let release: (() => void) | undefined;
+  try {
+    await view.emit("session_snapshot", { phase: "idle" }, 0);
+    await view.emit("error", { detail: "交付失败", failed_input: {
+      input_sequence: 8, message: "原正文", images: ["data:image/png;base64,YQ=="],
+    } }, 1);
+    const failed = view.root.children.find(/**
+     * 从用户可见容器寻找失败消息，不依赖客户端内部字段。
+     * Args:
+     *     node (PresentationElement): 实际渲染的消息节点。
+     * Returns:
+     *     boolean: 是否为失败输入展示。
+     */
+    (node) => node.className.includes("failed-input"));
+    assert.ok(failed);
+    assert.match(failed.textContent, /原正文/);
+    assert.match(failed.textContent, /交付失败/);
+    const button = failed.children.find(/**
+     * 寻找失败消息附带的公开重试控件。
+     * Args:
+     *     node (PresentationElement): 消息中的子节点。
+     * Returns:
+     *     boolean: 是否为重试按钮。
+     */
+    (node) => node.className.includes("retry-input-button"));
+    assert.ok(button);
+    assert.equal(button.attributes.get("aria-label"), "重试");
+    assert.equal(button.title, "重试");
+    const image = failed.children[0].children.find(/**
+     * 从实际图片展示中找到原输入附件。
+     * Args:
+     *     node (PresentationElement): 气泡中的子元素。
+     * Returns:
+     *     boolean: 是否为图片集合。
+     */
+    (node) => node.className === "message-images")?.children[0];
+    assert.equal(image?.src, "data:image/png;base64,YQ==");
+    // 1. 慢回执期间只允许一次重发，不能改动当前正在输入的新草稿。
+    view.input.value = "新草稿";
+    view.submissions.accepted = false;
+    view.submissions.barrier = new Promise<void>(/**
+     * 暂存回执结束函数，由测试明确放行。
+     * Args:
+     *     resolve (() => void): 完成回执的函数。
+     */
+    (resolve) => { release = resolve; });
+    button.handlers.get("click")?.();
+    button.handlers.get("click")?.();
+    await flushEvents();
+    assert.equal(button.disabled, true);
+    assert.equal(view.submissions.commands.length, 1);
+    assert.deepEqual(view.submissions.commands[0], { session_id: "s", origin_channel: "desktop",
+      kind: "human_turn", payload: { message: "原正文", images: ["data:image/png;base64,YQ=="] } });
+    release!();
+    await flushEvents();
+    assert.equal(button.disabled, false);
+    assert.equal(failed.parent, view.root);
+    assert.equal(view.input.value, "新草稿");
+    // 2. 成功受理后移除临时失败消息，正式消息仍由后端交付事件产生。
+    view.submissions.barrier = null;
+    view.submissions.accepted = true;
+    button.handlers.get("click")?.();
+    await flushEvents();
+    assert.equal(view.root.children.includes(failed), false);
+    assert.equal(view.input.value, "新草稿");
+    assert.equal(view.persisted.length, 0);
+  } finally {
+    release?.();
+    view.close();
+  }
+});
+
+test("迟到重试回执保留新失败提示，新消息受理后覆盖失败内容", /**
+ * 验证失败输入按身份清理，历史刷新保留临时展示，新消息不重发旧输入。
+ * Returns:
+ *     Promise<void>: 交错回执和前端事件已处理。
+ */
+async () => {
+  const view = createPresentation();
+  let release: (() => void) | undefined;
+  try {
+    await view.emit("session_snapshot", { phase: "idle" }, 0);
+    await view.emit("error", { detail: "第一次失败", failed_input: {
+      input_sequence: 1, message: "旧失败", images: [],
+    } }, 1);
+    const oldButton = view.root.children[0].children[1];
+    view.submissions.barrier = new Promise<void>(/**
+     * 暂停旧回执，允许新失败事件先到达。
+     * Args:
+     *     resolve (() => void): 结束回执等待的函数。
+     */
+    (resolve) => { release = resolve; });
+    oldButton.handlers.get("click")?.();
+    await flushEvents();
+    // 1. 重发已失败并返回新输入编号，旧回执此时还没有返回。
+    await view.emit("error", { detail: "再次失败", failed_input: {
+      input_sequence: 2, message: "新失败", images: [],
+    } }, 2);
+    release!();
+    await flushEvents();
+    assert.match(view.root.textContent, /新失败/);
+    assert.equal(view.root.textContent.includes("旧失败"), false);
+    // 2. 正常历史重绘不应把未交付失败消息写进历史或丢掉重试入口。
+    await view.emit("session_snapshot", { phase: "idle" }, 3);
+    assert.match(view.root.textContent, /新失败/);
+    view.submissions.barrier = null;
+    view.input.value = "换个问题";
+    await view.client.sendMessage();
+    assert.equal(view.root.textContent.includes("新失败"), false);
+    assert.equal(view.submissions.commands.at(-1)?.payload?.message, "换个问题");
+    assert.equal(view.persisted.length, 0);
+  } finally {
+    release?.();
     view.close();
   }
 });

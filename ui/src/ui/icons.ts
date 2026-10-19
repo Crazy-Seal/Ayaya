@@ -7,6 +7,7 @@ const paths = {
   close: `<path d="${linePaths.close}"/>`,
   send: '<path d="m22 2-7 20-4-9-9-4 20-7ZM22 2 11 13"/>',
   stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
+  retry: '<path d="M20 7v5h-5M20 12a8 8 0 1 0-2.3 5.7"/>',
   image: '<rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8" cy="8" r="1"/><path d="m21 15-5-5L5 21"/>',
   settings: '<path d="m10 3-.7 3-2.8 1-2.7-.9-2 3.5L4 12l-2.2 2.4 2 3.5 2.7-.9 2.8 1 .7 3h4l.7-3 2.8-1 2.7.9 2-3.5L20 12l2.2-2.4-2-3.5-2.7.9-2.8-1L14 3Z"/><circle cx="12" cy="12" r="3"/>',
   pin: '<path d="m16 3 5 5-4 1-3 6-5-5 6-3 1-4ZM9 15l-6 6M7 8l9 9"/>',

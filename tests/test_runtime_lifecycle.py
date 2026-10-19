@@ -1,3 +1,4 @@
+from app.services.channel_subscription_service import ChannelSubscriptionService
 from tests.model_capture import result_parts
 """通过持久输入、快照与生命周期入口验证退出后的执行意图作废。"""
 from tests.model_capture import capture_input
@@ -18,8 +19,8 @@ from app.interaction.interaction_contract import ChannelCommand
 from app.interaction.interaction_event_hub import InteractionEventHub
 
 
-def test_restart_discards_humans_and_releases_terminal_claims(tmp_path) -> None:
-    """验证重启清理删除所有旧意图，保留通知内容并使旧领取失效。
+def test_restart_discards_humans_and_preserves_pending_notices(tmp_path) -> None:
+    """验证重启清理删除所有旧意图，保留未交付任务通知。
 
     Args:
         tmp_path (Path): 隔离数据库目录。
@@ -31,36 +32,35 @@ def test_restart_discards_humans_and_releases_terminal_claims(tmp_path) -> None:
         records = TaskRecordDao(path)
         manager = StateManager("s", path)
         try:
-            # 1. 已交付真人输入保留，其他真人输入覆盖领取和两种排队放行状态。
+            # 1. 已交付真人输入保留，其他真人输入覆盖读取和两种排队放行状态。
             await inbox.submit_human("desktop", "已交付")
-            delivered = await inbox.claim_next()
+            delivered = await inbox.read_next()
             state = AgentState.create_new("s")
             state.add_user_message("已交付")
-            await manager.save(state, checkpoint_type="completed", inbox_claims=(delivered,))
-            await inbox.submit_human("desktop", "已领取")
-            claimed_human = await inbox.claim_next()
+            await manager.save(state, checkpoint_type="completed", inbox_inputs=(delivered,))
+            await inbox.submit_human("desktop", "已读取")
+            claimed_human = await inbox.read_next()
             await inbox.submit_human("desktop", "已放行", queued=True)
             await inbox.release_queued()
             await inbox.submit_human("desktop", "未放行", queued=True)
             await inbox.submit_human("desktop", "立即输入")
-            # 2. 遗留任务通知已领取但尚未交付，重启后无需等待旧租期。
+            # 2. 遗留任务通知已读取但尚未交付，重启后仍然保留待交付状态。
             await records.insert_running("task", "s", "测试任务", 1, str(tmp_path / "out"))
             await records.finish_once("task", "completed", 0, "执行事实")
-            terminal = (await inbox.claim_task_terminals())[0]
+            terminal = (await inbox.read_task_terminals())[0]
             await SessionInbox.reset_after_restart(path)
             await SessionInbox.reset_after_restart(path)
             assert await inbox.pending_humans() == []
             assert await inbox.status(delivered.id) == "delivered"
             assert await inbox.status(claimed_human.id) is None
-            restored = (await inbox.claim_task_terminals())[0]
+            restored = (await inbox.read_task_terminals())[0]
             assert restored.payload == terminal.payload
-            assert restored.claim_token != terminal.claim_token
-            # 3. 旧令牌的交付不能写入 checkpoint，新的领取仍然有效。
-            with pytest.raises(RuntimeError, match="claim 已失效"):
-                await manager.save(state, checkpoint_type="intermediate", inbox_claims=(terminal,))
-            assert manager.last_loaded_checkpoint_type is None
+            assert restored.id == terminal.id and restored.status == "pending"
+            # 3. 查询没有令牌；原始通知仍可交付，重复交付必须整笔回滚。
+            await manager.save(state, checkpoint_type="completed", inbox_inputs=(terminal,))
+            with pytest.raises(RuntimeError, match="输入已失效"):
+                await manager.save(state, checkpoint_type="intermediate", inbox_inputs=(restored,))
             assert (await manager.load()).messages == state.messages
-            await manager.save(state, checkpoint_type="completed", inbox_claims=(restored,))
         finally:
             await inbox.close()
             await records.close()
@@ -68,8 +68,8 @@ def test_restart_discards_humans_and_releases_terminal_claims(tmp_path) -> None:
     asyncio.run(scenario())
 
 
-def test_restart_reset_rolls_back_human_deletion_when_notice_release_fails(tmp_path) -> None:
-    """验证通知重置失败不会只删除真人输入，重试可完成全部清理。
+def test_restart_reset_preserves_humans_when_deletion_fails(tmp_path) -> None:
+    """验证真人输入删除失败保留原输入和任务通知，修复后可重新清理。
 
     Args:
         tmp_path (Path): 隔离数据库目录。
@@ -83,15 +83,15 @@ def test_restart_reset_rolls_back_human_deletion_when_notice_release_fails(tmp_p
             await inbox.submit_human("desktop", "必须原子作废")
             await records.insert_running("task", "s", "任务", 1, str(tmp_path / "out"))
             await records.finish_once("task", "completed", 0, "事实")
-            notice = (await inbox.claim_task_terminals())[0]
+            notice = (await inbox.read_task_terminals())[0]
             db = await inbox._get_db()
-            await db.execute("CREATE TRIGGER reject_reset BEFORE UPDATE ON session_inbox "
-                             "WHEN OLD.kind = 'task_terminal' BEGIN SELECT RAISE(ABORT, 'injected'); END")
+            await db.execute("CREATE TRIGGER reject_reset BEFORE DELETE ON session_inbox "
+                             "WHEN OLD.kind = 'human' BEGIN SELECT RAISE(ABORT, 'injected'); END")
             await db.commit()
             with pytest.raises(Exception, match="injected"):
                 await SessionInbox.reset_after_restart(path)
             assert len(await inbox.pending_humans()) == 1
-            assert await inbox.status(notice.id) == "claimed"
+            assert await inbox.status(notice.id) == "pending"
             await db.execute("DROP TRIGGER reject_reset")
             await db.commit()
             await SessionInbox.reset_after_restart(path)
@@ -226,14 +226,14 @@ def test_start_finalizes_abandoned_checkpoint_without_execution(tmp_path, case) 
             raise AssertionError("启动和快照不能构造可执行 Agent")
 
         scheduler = AgentRuntimeScheduler(
-            InteractionEventHub(), agent_factory=unexpected_agent,
+           agent_factory=unexpected_agent,
             inbox_factory=lambda session: SessionInbox(session, path),
             state_manager_factory=lambda session: StateManager(session, path),
         )
         try:
             await scheduler.start()
             await scheduler.start()
-            assert (await scheduler.snapshot("s", "desktop"))["phase"] == "idle"
+            assert ((await scheduler.snapshot("s")).payload)["phase"] == "idle"
             manager = StateManager("s", path)
             try:
                 closed = await manager.load()
@@ -273,13 +273,13 @@ def test_terminal_waits_for_new_human_and_shutdown_cannot_reactivate(tmp_path) -
 
         class RecordingAgent:
             """通过真实持久交付记录激活时的输入顺序。"""
-            async def run(self, message, *, inbox_claim=None, inbox_claims=None, runtime_inputs=(), **kwargs):
+            async def run(self, message, *, inbox_input=None, inbox_inputs=None, runtime_inputs=(), **kwargs):
                 """保存通知和真人消息，并结束测试轮次。
 
                 Args:
                     message (str): 新真人正文。
-                    inbox_claim (InboxEnvelope | None): 真人领取。
-                    inbox_claims (tuple | None): 合并领取。
+                    inbox_input (InboxEnvelope | None): 真人读取。
+                    inbox_inputs (tuple | None): 合并读取。
                     runtime_inputs (tuple): 先交付的任务事实。
                     **kwargs (dict): 其余运行参数。
                 Yields:
@@ -292,19 +292,19 @@ def test_terminal_waits_for_new_human_and_shutdown_cannot_reactivate(tmp_path) -
                     for item in runtime_inputs:
                         state.append_input(item)
                     state.add_user_message(message)
-                    await manager.save(state, checkpoint_type="completed", inbox_claims=inbox_claims or (inbox_claim,))
+                    await manager.save(state, checkpoint_type="completed", inbox_inputs=inbox_inputs or (inbox_input,))
                 finally:
                     await manager.close()
                 calls.append(message)
                 executed.set()
                 yield AgentEvent(EventType.DONE, None)
 
-            async def run_runtime_inputs(self, messages, *, inbox_claims, **kwargs):
+            async def run_runtime_inputs(self, messages, *, inbox_inputs, **kwargs):
                 """记录本次运行内通知启动的内部轮次。
 
                 Args:
                     messages (tuple): 任务通知消息。
-                    inbox_claims (tuple): 通知领取。
+                    inbox_inputs (tuple): 通知读取。
                     **kwargs (dict): 其余运行参数。
                 Yields:
                     AgentEvent: 轮次完成事件。
@@ -315,7 +315,7 @@ def test_terminal_waits_for_new_human_and_shutdown_cannot_reactivate(tmp_path) -
                     state = await manager.load()
                     for item in messages:
                         state.append_input(item)
-                    await manager.save(state, checkpoint_type="completed", inbox_claims=inbox_claims)
+                    await manager.save(state, checkpoint_type="completed", inbox_inputs=inbox_inputs)
                 finally:
                     await manager.close()
                 calls.append("内部通知")
@@ -326,7 +326,7 @@ def test_terminal_waits_for_new_human_and_shutdown_cannot_reactivate(tmp_path) -
                 """替身不拥有外部资源。"""
 
         scheduler = AgentRuntimeScheduler(
-            InteractionEventHub(), agent_factory=lambda _: RecordingAgent(),
+           agent_factory=lambda _: RecordingAgent(),
             inbox_factory=lambda session: SessionInbox(session, path),
             state_manager_factory=lambda session: StateManager(session, path),
         )
@@ -334,7 +334,7 @@ def test_terminal_waits_for_new_human_and_shutdown_cannot_reactivate(tmp_path) -
             assert not (await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "启动前"}))).accepted
             await scheduler.start()
             await scheduler.notify_task_terminal("s")
-            await scheduler.snapshot("s", "desktop")
+            (await scheduler.snapshot("s")).payload
             assert calls == []
             assert (await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "新意图"}))).accepted
             await asyncio.wait_for(executed.wait(), 2)
@@ -360,7 +360,7 @@ def test_terminal_waits_for_new_human_and_shutdown_cannot_reactivate(tmp_path) -
             assert calls == ["新意图", "内部通知"]
             inbox = SessionInbox("s", path)
             try:
-                assert len(await inbox.claim_task_terminals()) == 1
+                assert len(await inbox.read_task_terminals()) == 1
             finally:
                 await inbox.close()
         finally:
@@ -406,7 +406,7 @@ def test_start_failure_keeps_execution_closed_and_retry_finishes_cleanup(tmp_pat
             raise AssertionError("启动不能执行")
 
         scheduler = AgentRuntimeScheduler(
-            InteractionEventHub(), agent_factory=unexpected_agent,
+           agent_factory=unexpected_agent,
             inbox_factory=lambda session: SessionInbox(session, path),
             state_manager_factory=lambda session: StateManager(session, path),
         )
@@ -419,7 +419,7 @@ def test_start_failure_keeps_execution_closed_and_retry_finishes_cleanup(tmp_pat
             monkeypatch.setattr(Agent, "finalize_abandoned_turn", staticmethod(original))
             await scheduler.start()
             assert scheduler.phase == "running"
-            assert (await scheduler.snapshot("s", "desktop"))["phase"] == "idle"
+            assert ((await scheduler.snapshot("s")).payload)["phase"] == "idle"
         finally:
             monkeypatch.setattr(Agent, "finalize_abandoned_turn", staticmethod(original))
             await scheduler.close()
@@ -494,12 +494,14 @@ def test_shutdown_captures_real_agent_partial_and_closes_subscription(tmp_path, 
                 agent.state_manager = DelayedCommitManager(session, path)
             return agent
 
-        hub = InteractionEventHub()
+        subscriptions = ChannelSubscriptionService()
         scheduler = AgentRuntimeScheduler(
-            hub, agent_factory=make_agent,
+            subscriptions=subscriptions, agent_factory=make_agent,
             inbox_factory=lambda session: SessionInbox(session, path),
             state_manager_factory=lambda session: StateManager(session, path),
         )
+        hub = InteractionEventHub(scheduler, subscriptions=subscriptions)
+        await hub.start()
         await scheduler.start()
         stream = hub.subscribe("s", "desktop")
         await anext(stream)
@@ -510,8 +512,10 @@ def test_shutdown_captures_real_agent_partial_and_closes_subscription(tmp_path, 
             if committing:
                 await asyncio.wait_for(commit_entered.wait(), 2)
             await scheduler.begin_shutdown()
+            await hub.close()
             with pytest.raises(StopAsyncIteration):
                 await anext(stream)
+            await hub.close()
             await scheduler.close()
             manager = StateManager("s", path)
             try:
@@ -521,6 +525,7 @@ def test_shutdown_captures_real_agent_partial_and_closes_subscription(tmp_path, 
             finally:
                 await manager.close()
         finally:
+            await hub.close()
             await scheduler.close()
             await stream.aclose()
     asyncio.run(scenario())

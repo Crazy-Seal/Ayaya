@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import os
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
 from dotenv import load_dotenv
 
@@ -23,6 +23,7 @@ from app.routes.mcp import router as mcp_router
 from app.routes.desktop import router as desktop_router
 from app.dependencies import get_mcp_connection_manager, get_runtime_scheduler, get_task_supervisor
 from app.dependencies import get_desktop_controller, get_desktop_settings_service, get_desktop_settings_dao
+from app.dependencies import get_interaction_event_hub, get_channel_subscription_service
 from app.security.local_api import install_local_api_security, load_api_token
 from app.agent.tools.terminal.shell import detect_shell
 
@@ -31,6 +32,31 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
+
+async def begin_runtime_shutdown() -> None:
+    """封住执行和桌面入口，再结束 SSE；内部关闭请求与最终清理共用此顺序。"""
+    try:
+        if get_runtime_scheduler.cache_info().currsize:
+            await get_runtime_scheduler().begin_shutdown()
+    finally:
+        try:
+            if get_desktop_controller.cache_info().currsize:
+                get_desktop_controller().begin_shutdown()
+        finally:
+            if get_interaction_event_hub.cache_info().currsize:
+                await get_interaction_event_hub().close()
+
+
+def clear_runtime_dependencies() -> None:
+    """资源关闭后释放缓存，下一次应用生命周期重新装配共享对象。"""
+    get_interaction_event_hub.cache_clear()
+    get_runtime_scheduler.cache_clear()
+    get_channel_subscription_service.cache_clear()
+    get_task_supervisor.cache_clear()
+    get_desktop_controller.cache_clear()
+    get_desktop_settings_service.cache_clear()
+    get_desktop_settings_dao.cache_clear()
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -52,25 +78,31 @@ async def lifespan(_app: FastAPI):
         except RuntimeError:
             logging.getLogger(__name__).warning("默认 Shell 不可用，终端工具将返回环境错误")
         await get_runtime_scheduler().start()
+        await get_task_supervisor().recover_orphaned()
+        get_desktop_controller().start()
+        await get_interaction_event_hub().start()
         preconnect_task = asyncio.create_task(mcp_manager.preconnect_enabled())
         yield
     finally:
-        # 2. 停止预连接后，由 Scheduler 封住激活入口并保存任务终态、关闭执行资源。
+        # 2. 停止预连接，随后即使某项关闭失败也继续尝试释放其他资源。
         if preconnect_task is not None:
             if not preconnect_task.done():
                 preconnect_task.cancel()
             await asyncio.gather(preconnect_task, return_exceptions=True)
-        try:
+        # 3. 退出栈逆序执行：封入口/关 SSE → 等 worker → 桌面 → 进程 → 持久收尾 → 缓存 → MCP。
+        # 3.1. 先注册最后执行的操作；启动中途失败时只关闭已创建的对象。
+        async with AsyncExitStack() as cleanup:
+            cleanup.push_async_callback(mcp_manager.close)
+            cleanup.callback(clear_runtime_dependencies)
             if get_runtime_scheduler.cache_info().currsize:
-                await get_runtime_scheduler().close()
-        finally:
-            # 3. 生命周期结束后不能复用旧对象；收尾失败也必须释放 MCP 连接。
-            get_runtime_scheduler.cache_clear()
-            get_task_supervisor.cache_clear()
-            get_desktop_controller.cache_clear()
-            get_desktop_settings_service.cache_clear()
-            get_desktop_settings_dao.cache_clear()
-            await mcp_manager.close()
+                cleanup.push_async_callback(get_runtime_scheduler().close)
+            if get_task_supervisor.cache_info().currsize:
+                cleanup.push_async_callback(get_task_supervisor().close)
+            if get_desktop_controller.cache_info().currsize:
+                cleanup.push_async_callback(get_desktop_controller().close)
+            if get_runtime_scheduler.cache_info().currsize:
+                cleanup.push_async_callback(get_runtime_scheduler().wait_for_workers)
+            cleanup.push_async_callback(begin_runtime_shutdown)
 
 
 
@@ -120,7 +152,7 @@ async def internal_shutdown(request: Request):
     if server is None:
         raise HTTPException(status_code=503, detail="后端不由受控启动器管理")
     # 1. 长连接与任务回调先失去执行资格，服务器等待请求退出期间也不能启动新轮次。
-    await get_runtime_scheduler().begin_shutdown()
+    await begin_runtime_shutdown()
     server.should_exit = True
     return {"shutting_down": True}
 

@@ -27,21 +27,21 @@ def test_inbox_input_and_checkpoint_commit_as_one_delivery(tmp_path) -> None:
         inbox = SessionInbox("shared", db_path=db_path)
         try:
             envelope = await inbox.submit_human("qq", "请截图")
-            claimed = await inbox.claim_next()
-            assert claimed is not None and claimed.id == envelope.id
+            input_record = await inbox.read_next()
+            assert input_record is not None and input_record.id == envelope.id
             state = AgentState.create_new("shared")
-            state.add_user_message(claimed.payload["message"], origin_channel=claimed.origin_channel)
-            await manager.save(state, checkpoint_type="intermediate", inbox_claims=(claimed,))
+            state.add_user_message(input_record.payload["message"], origin_channel=input_record.origin_channel)
+            await manager.save(state, checkpoint_type="intermediate", inbox_inputs=(input_record,))
             assert await inbox.status(envelope.id) == "delivered"
             # 2. 从独立连接确认 checkpoint、协议历史和交付记录均已持久提交。
             with closing(sqlite3.connect(db_path)) as inspection:
                 assert inspection.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] == 1
                 assert inspection.execute("SELECT COUNT(*) FROM conversation_messages").fetchone()[0] == 1
-                status, token, delivered_at = inspection.execute(
-                    "SELECT status, claim_token, delivered_at FROM session_inbox WHERE id = ?",
+                status, delivered_at = inspection.execute(
+                    "SELECT status, delivered_at FROM session_inbox WHERE id = ?",
                     (envelope.id,),
                 ).fetchone()
-                assert status == "delivered" and token is None and delivered_at is not None
+                assert status == "delivered" and delivered_at is not None
             restored = await manager.load()
             assert restored.messages[-1].origin_channel == "qq"
         finally:
@@ -51,50 +51,52 @@ def test_inbox_input_and_checkpoint_commit_as_one_delivery(tmp_path) -> None:
     asyncio.run(scenario())
 
 
-def test_later_invalid_claim_rolls_back_checkpoint_protocol_and_earlier_delivery(tmp_path: Path) -> None:
-    """验证同批后一条令牌失效时，前一条交付和状态保存一起回滚，并可重试。
+def test_later_cancelled_input_rolls_back_checkpoint_protocol_and_earlier_delivery(tmp_path: Path) -> None:
+    """验证同批后一条输入撤销时，前一条交付和状态保存一起回滚，并可重试。
 
     Args:
         tmp_path (Path): 测试专用 SQLite 目录。
     """
     async def scenario() -> None:
-        """通过公开领取和保存入口，检查部分交付失败后的持久状态。"""
+        """通过公开读取和保存入口，检查部分交付失败后的持久状态。"""
         path = str(tmp_path / "state.sqlite3")
         inbox = SessionInbox("shared", path)
         manager = StateManager("shared", path)
         try:
-            # 1. 保存空的旧 checkpoint，然后领取两条尚未写入协议历史的真人输入。
+            # 1. 保存空的旧 checkpoint，然后读取两条尚未写入协议历史的真人输入。
             state = AgentState.create_new("shared")
             baseline_id = await manager.save(state, checkpoint_type="intermediate")
             await inbox.submit_human("desktop", "第一条")
-            await inbox.submit_human("desktop", "第二条")
-            first = await inbox.claim_next()
-            second = await inbox.claim_next()
+            first = await inbox.read_next()
+            second = await inbox.submit_human("desktop", "第二条", queued=True)
             assert first is not None and second is not None
             state.add_user_message("第一条")
             state.add_user_message("第二条")
-            # 2. 第一条允许更新，第二条使用失效令牌，数据库必须撤销前面的全部写入。
-            with pytest.raises(RuntimeError, match="claim 已失效"):
+            # 2. 第一条允许更新，第二条已经撤销，数据库必须撤销前面的全部写入。
+            assert await inbox.cancel_queued(second.id, "desktop")
+            with pytest.raises(RuntimeError, match="输入已失效"):
                 await manager.save(
                     state, checkpoint_type="intermediate",
-                    inbox_claims=(first, replace(second, claim_token="invalid-token")),
+                    inbox_inputs=(first, second),
                 )
             with closing(sqlite3.connect(path)) as inspection:
                 assert inspection.execute("SELECT id FROM checkpoints").fetchall() == [(baseline_id,)]
                 assert inspection.execute("SELECT COUNT(*) FROM conversation_messages").fetchone()[0] == 0
                 assert inspection.execute(
-                    "SELECT status, claim_token, delivered_at FROM session_inbox ORDER BY id",
+                    "SELECT status, delivered_at FROM session_inbox ORDER BY id",
                 ).fetchall() == [
-                    ("claimed", first.claim_token, None), ("claimed", second.claim_token, None),
+                    ("pending", None),
                 ]
             assert not (await manager.load()).messages
-            # 3. 原始领取仍有效，成功重试只保存一份协议历史并交付两条输入。
-            await manager.save(state, checkpoint_type="intermediate", inbox_claims=(first, second))
+            # 3. 重新加载状态后，只保存第一条仍然有效的输入。
+            state = await manager.load()
+            state.add_user_message("第一条")
+            await manager.save(state, checkpoint_type="intermediate", inbox_inputs=(first,))
             assert await inbox.status(first.id) == "delivered"
-            assert await inbox.status(second.id) == "delivered"
+            assert await inbox.status(second.id) is None
             with closing(sqlite3.connect(path)) as inspection:
-                assert inspection.execute("SELECT COUNT(*) FROM conversation_messages").fetchone()[0] == 2
-            assert len((await manager.load()).messages) == 2
+                assert inspection.execute("SELECT COUNT(*) FROM conversation_messages").fetchone()[0] == 1
+            assert len((await manager.load()).messages) == 1
         finally:
             await manager.close()
             await inbox.close()
@@ -102,41 +104,41 @@ def test_later_invalid_claim_rolls_back_checkpoint_protocol_and_earlier_delivery
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("invalid_field, invalid_value", [("session_id", "other"), ("claim_token", None)])
-def test_invalid_claim_metadata_leaves_no_checkpoint(
+@pytest.mark.parametrize("invalid_field, invalid_value", [("session_id", "other")])
+def test_invalid_input_session_leaves_no_checkpoint(
     tmp_path: Path, invalid_field: str, invalid_value: str | None,
 ) -> None:
-    """验证错误会话或缺少令牌时保存失败，且原始领取仍可成功交付。
+    """验证错误会话时保存失败，且原始读取仍可成功交付。
 
     Args:
         tmp_path (Path): 测试专用 SQLite 目录。
-        invalid_field (str): 需要破坏的领取快照字段。
-        invalid_value (str | None): 错误会话或空令牌。
+        invalid_field (str): 需要破坏的读取快照字段。
+        invalid_value (str | None): 错误会话。
     """
     async def scenario() -> None:
-        """分别注入非法领取元数据，核对失败和重试的公开结果。"""
+        """分别注入非法读取元数据，核对失败和重试的公开结果。"""
         path = str(tmp_path / "state.sqlite3")
         inbox = SessionInbox("shared", path)
         manager = StateManager("shared", path)
         try:
-            # 1. 保留数据库中的有效领取，只破坏交给保存入口的快照。
+            # 1. 保留数据库中的有效读取，只破坏交给保存入口的快照。
             await inbox.submit_human("desktop", "合法输入")
-            claim = await inbox.claim_next()
-            assert claim is not None
+            input_record = await inbox.read_next()
+            assert input_record is not None
             state = AgentState.create_new("shared")
             state.add_user_message("合法输入")
-            with pytest.raises(ValueError, match="不属于当前会话或缺少令牌"):
+            with pytest.raises(ValueError, match="不属于当前会话"):
                 await manager.save(
                     state, checkpoint_type="intermediate",
-                    inbox_claims=(replace(claim, **{invalid_field: invalid_value}),),
+                    inbox_inputs=(replace(input_record, **{invalid_field: invalid_value}),),
                 )
-            # 2. checkpoint 和协议历史均未保存，输入仍保持原领取状态。
+            # 2. checkpoint 和协议历史均未保存，输入仍保持pending 状态。
             with closing(sqlite3.connect(path)) as inspection:
                 assert inspection.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] == 0
                 assert inspection.execute("SELECT COUNT(*) FROM conversation_messages").fetchone()[0] == 0
-            assert await inbox.status(claim.id) == "claimed"
-            await manager.save(state, checkpoint_type="intermediate", inbox_claims=(claim,))
-            assert await inbox.status(claim.id) == "delivered"
+            assert await inbox.status(input_record.id) == "pending"
+            await manager.save(state, checkpoint_type="intermediate", inbox_inputs=(input_record,))
+            assert await inbox.status(input_record.id) == "delivered"
             assert len((await manager.load()).messages) == 1
         finally:
             await manager.close()
@@ -161,8 +163,8 @@ def test_queued_release_failure_rolls_back_completed_checkpoint_and_delivery(tmp
             state = AgentState.create_new("shared")
             baseline_id = await manager.save(state, checkpoint_type="intermediate")
             await inbox.submit_human("desktop", "本轮输入")
-            claim = await inbox.claim_next()
-            assert claim is not None
+            input_record = await inbox.read_next()
+            assert input_record is not None
             queued = await inbox.submit_human("desktop", "下一轮输入", queued=True)
             state.add_user_message("本轮输入")
             with closing(sqlite3.connect(path)) as inspection:
@@ -174,29 +176,29 @@ def test_queued_release_failure_rolls_back_completed_checkpoint_and_delivery(tmp
             # 2. 放行失败发生在交付更新之后，不能留下新 checkpoint 或已交付标记。
             with pytest.raises(sqlite3.IntegrityError, match="reject release"):
                 await manager.save(
-                    state, checkpoint_type="completed", inbox_claims=(claim,), release_queued=True,
+                    state, checkpoint_type="completed", inbox_inputs=(input_record,), release_queued=True,
                 )
             with closing(sqlite3.connect(path)) as inspection:
                 assert inspection.execute("SELECT id FROM checkpoints").fetchall() == [(baseline_id,)]
                 assert inspection.execute("SELECT COUNT(*) FROM conversation_messages").fetchone()[0] == 0
                 assert inspection.execute(
-                    "SELECT status, claim_token, delivered_at FROM session_inbox WHERE id = ?", (claim.id,),
-                ).fetchone() == ("claimed", claim.claim_token, None)
+                    "SELECT status, delivered_at FROM session_inbox WHERE id = ?", (input_record.id,),
+                ).fetchone() == ("pending", None)
                 assert inspection.execute(
                     "SELECT queue_ready FROM session_inbox WHERE id = ?", (queued.id,),
                 ).fetchone() == (0,)
                 inspection.execute("DROP TRIGGER reject_release")
                 inspection.commit()
-            assert await inbox.claim_activation_batch() == ()
-            # 3. 去掉故障后，同一领取可完成提交，排队输入才获得执行资格。
+            assert [item.id for item in await inbox.read_activation_batch()] == [input_record.id]
+            # 3. 去掉故障后，同一读取可完成提交，排队输入才获得执行资格。
             await manager.save(
-                state, checkpoint_type="completed", inbox_claims=(claim,), release_queued=True,
+                state, checkpoint_type="completed", inbox_inputs=(input_record,), release_queued=True,
             )
-            assert await inbox.status(claim.id) == "delivered"
+            assert await inbox.status(input_record.id) == "delivered"
             with closing(sqlite3.connect(path)) as inspection:
                 assert inspection.execute("SELECT checkpoint_type FROM checkpoints").fetchall() == [("completed",)]
                 assert inspection.execute("SELECT COUNT(*) FROM conversation_messages").fetchone()[0] == 1
-            batch = await inbox.claim_activation_batch()
+            batch = await inbox.read_activation_batch()
             assert [item.id for item in batch] == [queued.id]
         finally:
             await manager.close()
@@ -223,17 +225,17 @@ def test_release_only_touches_pending_queued_humans_in_current_session(
         manager = StateManager("shared", path)
         records = TaskRecordDao(path)
         try:
-            # 1. 先形成已交付和已领取的排队输入，再加入仍在等待的各类输入。
+            # 1. 先形成已交付和已读取的排队输入，再加入仍在等待的各类输入。
             delivered = await inbox.submit_human("desktop", "已交付", queued=True)
             await inbox.release_queued()
-            claim = await inbox.claim_next()
-            assert claim is not None
+            input_record = await inbox.read_next()
+            assert input_record is not None
             state = AgentState.create_new("shared")
             state.add_user_message("已交付")
-            await manager.save(state, checkpoint_type="intermediate", inbox_claims=(claim,))
-            claimed = await inbox.submit_human("desktop", "已领取", queued=True)
+            await manager.save(state, checkpoint_type="intermediate", inbox_inputs=(input_record,))
+            input_record = await inbox.submit_human("desktop", "已读取", queued=True)
             await inbox.release_queued()
-            assert (await inbox.claim_next()).id == claimed.id
+            assert (await inbox.read_next()).id == input_record.id
             target = await inbox.submit_human("desktop", "应放行", queued=True)
             await inbox.submit_human("desktop", "立即输入")
             await other.submit_human("desktop", "其他会话", queued=True)
@@ -242,7 +244,7 @@ def test_release_only_touches_pending_queued_humans_in_current_session(
             # 2. 即使重复更新不会改变值，也禁止放行 SQL 触及非目标记录。
             with closing(sqlite3.connect(path)) as inspection:
                 before = inspection.execute(
-                    "SELECT id, queue_ready, status, claim_token FROM session_inbox ORDER BY id",
+                    "SELECT id, queue_ready, status FROM session_inbox ORDER BY id",
                 ).fetchall()
                 inspection.execute(
                     "CREATE TRIGGER guard_release BEFORE UPDATE OF queue_ready ON session_inbox "
@@ -256,16 +258,16 @@ def test_release_only_touches_pending_queued_humans_in_current_session(
                     await manager.save(state, checkpoint_type="completed", release_queued=True)
                 else:
                     await inbox.release_queued()
-            # 3. 两次放行只改变目标记录的资格，状态和领取令牌保持原值。
+            # 3. 两次放行只改变目标记录的资格，交付状态保持原值。
             with closing(sqlite3.connect(path)) as inspection:
                 after = inspection.execute(
-                    "SELECT id, queue_ready, status, claim_token FROM session_inbox ORDER BY id",
+                    "SELECT id, queue_ready, status FROM session_inbox ORDER BY id",
                 ).fetchall()
             assert after == [
-                (row[0], 1 if row[0] == target.id else row[1], row[2], row[3]) for row in before
+                (row[0], 1 if row[0] == target.id else row[1], row[2]) for row in before
             ]
             assert await inbox.status(delivered.id) == "delivered"
-            assert await inbox.status(claimed.id) == "claimed"
+            assert await inbox.status(input_record.id) == "pending"
         finally:
             await records.close()
             await manager.close()
@@ -292,13 +294,13 @@ def test_queued_input_survives_connection_reopen_and_task_terminal_does_not_rele
             queued = await inbox.submit_human("desktop", "稍后执行", queued=True)
             await records.insert_running("task-1", "shared", "任务", 1, str(tmp_path / "out"))
             assert await records.finish_once("task-1", "completed", 0, "完成")
-            batch = await inbox.claim_activation_batch()
+            batch = await inbox.read_activation_batch()
             assert [item.kind for item in batch] == ["task_terminal"]
             manager = StateManager("shared", db_path)
             try:
                 await manager.save(
                     AgentState.create_new("shared"), checkpoint_type="completed",
-                    inbox_claims=batch,
+                    inbox_inputs=batch,
                 )
             finally:
                 await manager.close()
@@ -307,10 +309,10 @@ def test_queued_input_survives_connection_reopen_and_task_terminal_does_not_rele
             await records.close()
         restarted = SessionInbox("shared", db_path)
         try:
-            assert await restarted.claim_activation_batch() == ()
+            assert await restarted.read_activation_batch() == ()
             assert await restarted.status(queued.id) == "pending"
             await restarted.release_queued()
-            released = await restarted.claim_activation_batch()
+            released = await restarted.read_activation_batch()
             assert len(released) == 1 and released[0].id == queued.id
         finally:
             await restarted.close()
@@ -335,7 +337,7 @@ def test_activation_batch_groups_later_task_terminal_before_human_projection(tmp
             human = await inbox.submit_human("desktop", "用户指令")
             await records.insert_running("task-1", "shared", "任务", 1, str(tmp_path / "out"))
             assert await records.finish_once("task-1", "completed", 0, "完成")
-            batch = await inbox.claim_activation_batch()
+            batch = await inbox.read_activation_batch()
             assert {item.id for item in batch} == {human.id, human.id + 1}
             assert [item.kind for item in batch] == ["human", "task_terminal"]
         finally:
@@ -369,8 +371,8 @@ def test_completed_checkpoint_releases_queued_input_in_same_transaction(tmp_path
             await inbox.close()
         restarted = SessionInbox("shared", db_path)
         try:
-            claimed = await restarted.claim_activation_batch()
-            assert len(claimed) == 1 and claimed[0].id == queued.id
+            input_record = await restarted.read_activation_batch()
+            assert len(input_record) == 1 and input_record[0].id == queued.id
         finally:
             await restarted.close()
 

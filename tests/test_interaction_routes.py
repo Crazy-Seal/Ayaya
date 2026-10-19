@@ -1,12 +1,22 @@
 import asyncio
 import json
-from types import SimpleNamespace
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
+from functools import partial
+from threading import Event
 import pytest
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.dependencies import get_runtime_scheduler
+from app.dependencies import (
+    get_runtime_scheduler, get_interaction_event_hub, get_channel_subscription_service,
+)
+from app.agent.core.event_router import AgentEvent, EventType
+from app.agent.runtime.session_inbox import SessionInbox
+from app.agent.state.manager import StateManager
+from app.interaction.interaction_event_hub import InteractionEventHub
+from app.services.channel_subscription_service import ChannelSubscriptionService
 from app.routes.agent import router as agent_router
 from app.routes.tools import router as tools_router
 from app.interaction.interaction_contract import CommandReceipt
@@ -16,7 +26,194 @@ from app.agent.tools.core.base import InterruptEvent
 from app.routes.agent import subscribe_events
 from app.routes import agent as agent_routes
 from app.orchestration.agent_runtime_scheduler import AgentRuntimeScheduler
-from app.interaction.interaction_event_hub import InteractionEventHub
+
+
+@pytest.mark.parametrize("delivery_failure", [False, True])
+def test_http_command_reaches_real_scheduler_and_sse_subscriber(tmp_path, delivery_failure) -> None:
+    """通过真实 HTTP 命令、持久交付和 SSE 响应验证单向接线。
+
+    Args:
+        tmp_path (Path): 隔离 SQLite 数据库目录。
+        delivery_failure (bool): 是否让输入交付始终失败，验证真实错误帧。
+    """
+    path = str(tmp_path / "state.sqlite3")
+    snapshot_sent = Event()
+    completed_sent = Event()
+
+    class Agent:
+        """只替代模型执行，保留真人输入的真实保存和交付通知。"""
+
+        async def run(self, message, *, origin_channel, inbox_input, on_input_committed, **kwargs):
+            """保存输入后通知界面，再保存正常结果并结束。
+
+            Args:
+                message (str): HTTP 提交的用户正文。
+                origin_channel (str): 输入来源渠道。
+                inbox_input (InboxEnvelope): Scheduler 读取的输入。
+                on_input_committed (Callable): 保存成功后由替身调用的显示通知。
+                **kwargs (dict): 本轮控制等未使用参数。
+
+            Yields:
+                AgentEvent: 文字及正常完成事件。
+            """
+            if delivery_failure:
+                raise RuntimeError("交付失败")
+            manager = StateManager("s", path)
+            try:
+                # 1. checkpoint 与 Inbox 交付同事务保存后，才通知显示真人消息。
+                state = await manager.load()
+                human = state.add_user_message(message, origin_channel=origin_channel)
+                await manager.save(state, checkpoint_type="intermediate", inbox_inputs=(inbox_input,))
+                await on_input_committed(human)
+                yield AgentEvent(EventType.TEXT_CHUNK, "收到：" + message)
+                # 2. 模拟真实 Agent 的正常完成事务，队列仅在这里放行。
+                await manager.save(state, checkpoint_type="completed", release_queued=True)
+                yield AgentEvent(EventType.DONE, None)
+            finally:
+                await manager.close()
+
+        async def close(self):
+            """替身无额外资源，存储连接由 run 清理。"""
+
+    def create_agent(session_id):
+        """为真实 Scheduler 提供测试执行对象。
+
+        Args:
+            session_id (str): 被调度的会话。
+
+        Returns:
+            Agent: 不访问模型的执行替身。
+        """
+        assert session_id == "s"
+        return Agent()
+
+    subscriptions = ChannelSubscriptionService(path)
+    scheduler = AgentRuntimeScheduler(
+        agent_factory=create_agent, subscriptions=subscriptions,
+        inbox_factory=partial(SessionInbox, db_path=path),
+        state_manager_factory=partial(StateManager, db_path=path),
+    )
+    hub = InteractionEventHub(scheduler, subscriptions=subscriptions)
+
+    @asynccontextmanager
+    async def lifespan(app):
+        """在 TestClient 事件循环中启动并关闭真实调度与分发对象。
+
+        Args:
+            app (FastAPI): 当前测试应用。
+
+        Yields:
+            None: 请求可进入的生命周期区间。
+        """
+        await scheduler.start()
+        await hub.start()
+        try:
+            yield
+        finally:
+            try:
+                await hub.close()
+            finally:
+                await scheduler.close()
+
+    app = FastAPI(lifespan=lifespan)
+    app.include_router(agent_router)
+
+    def runtime_override():
+        """返回测试的真实 Scheduler。
+
+        Returns:
+            AgentRuntimeScheduler: 测试实例。
+        """
+        return scheduler
+
+    def hub_override():
+        """返回测试的真实分发对象。
+
+        Returns:
+            InteractionEventHub: 测试实例。
+        """
+        return hub
+
+    def subscriptions_override():
+        """返回命令与分发共享的配置。
+
+        Returns:
+            ChannelSubscriptionService: 测试实例。
+        """
+        return subscriptions
+
+    app.dependency_overrides[get_runtime_scheduler] = runtime_override
+    app.dependency_overrides[get_interaction_event_hub] = hub_override
+    app.dependency_overrides[get_channel_subscription_service] = subscriptions_override
+
+    @app.post("/test/end-events")
+    async def end_events():
+        """结束长连接，让 TestClient 返回完整 SSE 响应。
+
+        Returns:
+            dict: 关闭操作已完成。
+        """
+        await hub.close()
+        return {"closed": True}
+
+    async def observed_app(scope, receive, send):
+        """透传 ASGI 请求，在实际响应体发出时通知测试线程。
+
+        Args:
+            scope (dict): 请求或生命周期信息。
+            receive (Callable): ASGI 输入读取函数。
+            send (Callable): TestClient 的响应发送函数。
+        """
+        async def observed_send(message):
+            """原样发送响应，并按实际 SSE 帧唤醒测试线程。
+
+            Args:
+                message (dict): 应用发出的 ASGI 消息。
+            """
+            await send(message)
+            if message["type"] == "http.response.body":
+                for frame in message.get("body", b"").decode().split("\n\n"):
+                    if frame.startswith("data: "):
+                        kind = json.loads(frame[6:])["kind"]
+                        if kind == "session_snapshot":
+                            snapshot_sent.set()
+                        elif kind in {"run_completed", "error"}:
+                            completed_sent.set()
+        await app(scope, receive, observed_send)
+
+    with TestClient(observed_app) as client, ThreadPoolExecutor(max_workers=1) as pool:
+        # 1. TestClient 缓存流响应；独立线程发起 GET，等待实际初始帧后再提交命令。
+        response_future = pool.submit(client.get, "/agent/events/s")
+        try:
+            assert snapshot_sent.wait(3), "SSE 未交付初始状态"
+            response = client.post("/agent/commands", json={
+                "session_id": "s", "origin_channel": "desktop", "kind": "human_turn",
+                "payload": {"message": "你好"},
+            })
+            assert response.status_code == 200
+            assert response.json() == {"accepted": True, "reason": None, "run_id": None}
+            assert completed_sent.wait(3), "命令未通过 Scheduler 和 Hub 到达 SSE"
+        finally:
+            # 2. 即使断言失败也结束长连接，避免线程池等待一个永不返回的 GET。
+            assert client.post("/test/end-events").status_code == 200
+        events_response = response_future.result(timeout=3)
+    assert events_response.status_code == 200
+    assert events_response.headers["content-type"].startswith("text/event-stream")
+    frames = [json.loads(line[6:]) for line in events_response.iter_lines() if line.startswith("data: ")]
+    assert frames[0]["payload"]["phase"] == "idle"
+    assert frames[1]["run_id"] and frames[1]["run_id"] == frames[-1]["run_id"]
+    assert len({frame["stream_epoch"] for frame in frames}) == 1
+    if delivery_failure:
+        assert [frame["kind"] for frame in frames] == ["session_snapshot", "run_started", "error"]
+        assert frames[-1]["payload"]["failed_input"] == {"input_sequence": 1, "message": "你好", "images": []}
+        assert [frame["event_sequence"] for frame in frames] == [0, 1, 2]
+    else:
+        assert [frame["kind"] for frame in frames] == [
+            "session_snapshot", "run_started", "human_message", "text_chunk", "run_completed",
+        ]
+        assert frames[2]["payload"]["message_id"]
+        assert frames[3]["payload"]["value"] == "收到：你好"
+        assert [frame["event_sequence"] for frame in frames] == list(range(5))
 
 
 def test_unknown_command_keeps_http_200_business_rejection() -> None:
@@ -32,7 +229,7 @@ def test_unknown_command_keeps_http_200_business_rejection() -> None:
         """
         raise AssertionError("未知命令不能启动 Agent")
 
-    scheduler = AgentRuntimeScheduler(InteractionEventHub(), agent_factory=unexpected_agent)
+    scheduler = AgentRuntimeScheduler( agent_factory=unexpected_agent)
     asyncio.run(scheduler.start())
     app = FastAPI()
     app.include_router(agent_router)
@@ -77,7 +274,7 @@ def test_idle_sse_heartbeats_preserve_pending_event_and_close_source(monkeypatch
                     channel (str): 测试渠道标识。
                 """
 
-            async def channel_enabled(self, session_id: str, channel: str) -> bool:
+            async def is_enabled(self, session_id: str, channel: str) -> bool:
                 """返回固定启用状态。
 
                 Args:
@@ -109,8 +306,7 @@ def test_idle_sse_heartbeats_preserve_pending_event_and_close_source(monkeypatch
                     closed.set()
 
         source = Source()
-        scheduler = SimpleNamespace(events=source)
-        response = await subscribe_events("s", "desktop", scheduler)
+        response = await subscribe_events("s", "desktop", source, source)
         stream = response.body_iterator
         try:
             # 1. 连续空闲周期只发送注释，不生成假事件，也不能取消来源的 queue.get。
@@ -153,7 +349,7 @@ def test_approval_arguments_are_json_objects_in_increment_and_snapshot() -> None
                 """
                 assert channel == "desktop"
 
-            async def channel_enabled(self, session_id: str, channel: str) -> bool:
+            async def is_enabled(self, session_id: str, channel: str) -> bool:
                 """返回测试渠道的固定启用状态。
 
                 Args:
@@ -179,7 +375,8 @@ def test_approval_arguments_are_json_objects_in_increment_and_snapshot() -> None
                 yield InteractionEvent(session_id, "interrupt", {"value": approval})
 
         # 1. 只替换事件来源，路由和不可变消息容器使用实际实现。
-        response = await subscribe_events("s", "desktop", SimpleNamespace(events=Events()))
+        events = Events()
+        response = await subscribe_events("s", "desktop", events, events)
         frames = [json.loads(frame[6:]) async for frame in response.body_iterator]
         # 2. 实时与重连不得将参数退化为 Python 对象地址字符串。
         for frame, key in zip(frames, ("interrupt", "value"), strict=True):

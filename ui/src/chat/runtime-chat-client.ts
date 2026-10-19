@@ -5,7 +5,7 @@ import { BackgroundTaskEntry } from "./background-task-entry.js";
 import {
   CommandKind, DESKTOP_CHANNEL, InteractionEventKind, InterruptKind, SessionPhase,
 } from "../../shared-types.js";
-import type { ChatAttentionUpdate, ChatHistoryItem } from "../../shared-types.js";
+import type { ChatAttentionUpdate, ChatHistoryItem, FailedInteractionInput } from "../../shared-types.js";
 import type { BubbleManager } from "./bubble.js";
 import type { ChatHistoryManager } from "./chat-history-manager.js";
 import type {
@@ -30,7 +30,8 @@ type RuntimeBridge = Pick<DesktopPetApi,
  * "updateLastAiMessage" | "finalizeStreamingMessage" | "abortStreaming" |
  * "showToolCallMessage" | "finalizeToolCallIndicator" | "showErrorMessage" | "loadHistory"
  * > & Partial<Pick<ChatHistoryManager,
- * "setSessionId" | "showPendingSteer" | "clearPendingSteer"
+ * "setSessionId" | "showPendingSteer" | "clearPendingSteer" |
+ * "showFailedInput" | "clearFailedInput" | "setFailedInputRetrying"
  * >>): 历史、草稿、工具状态和错误展示端口。
  *     sendBtn (HTMLButtonElement): 当前发送或停止按钮。
  *     input (HTMLTextAreaElement): 真人草稿输入元素。
@@ -47,7 +48,8 @@ export interface RuntimeChatClientOptions {
     "updateLastAiMessage" | "finalizeStreamingMessage" | "abortStreaming" |
     "showToolCallMessage" | "finalizeToolCallIndicator" | "showErrorMessage" | "loadHistory"
   > & Partial<Pick<ChatHistoryManager,
-    "setSessionId" | "showPendingSteer" | "clearPendingSteer"
+    "setSessionId" | "showPendingSteer" | "clearPendingSteer" |
+    "showFailedInput" | "clearFailedInput" | "setFailedInputRetrying"
   >>;
   sendBtn: HTMLButtonElement;
   input: HTMLTextAreaElement;
@@ -122,6 +124,8 @@ export class RuntimeChatClient {
   private pendingEvents = new Map<InteractionEvent, number>();
   private refreshingRevision: number | null = null;
   private refreshedApprovals = new Set<string>();
+  /** 当前会话唯一待重发输入，不属于已保存历史；新输入受理后覆盖。 */
+  private failedInput: FailedInteractionInput | null = null;
 
   /**
    * 装配 RuntimeChatClient 的依赖并初始化本地视图状态。
@@ -188,6 +192,7 @@ export class RuntimeChatClient {
     this.refreshingRevision = null;
     // 1.1. 切换会话清理上一轮临时状态和审批，避免迟到事件串入新视图。
     if (this.sessionId !== sessionId) {
+      this.clearFailedInput(this.failedInput);
       this.options.onAttention?.({ reset: true });
       this.attentionApprovalId = null;
       this.historyReplyIds = null;
@@ -545,6 +550,53 @@ export class RuntimeChatClient {
   }
 
   /**
+   * 仅清除调用开始时的失败消息，迟到回执不能覆盖随后到达的新失败。
+   * Args:
+   *     input (FailedInteractionInput | null): 发起命令前看到的失败输入。
+   */
+  private clearFailedInput(input: FailedInteractionInput | null): void {
+    if (!input || this.failedInput !== input) return;
+    this.failedInput = null;
+    this.options.chatHistory.clearFailedInput?.();
+  }
+
+  /**
+   * 用户点击圆形按钮后按新真人输入重发原正文和图片，不消耗当前草稿。
+   * Args:
+   *     input (FailedInteractionInput): 点击时对应的失败输入。
+   * Returns:
+   *     Promise<void>: 回执已处理，失败时保留入口供用户选择。
+   */
+  private async retryFailedInput(input: FailedInteractionInput): Promise<void> {
+    // 1. 确认点击仍对应当前失败输入，先禁用按钮，再等待订阅和命令回执。
+    if (!this.initialized || this.submitting || this.failedInput !== input) return;
+    const sessionId = this.sessionId;
+    this.submitting = true;
+    this.options.chatHistory.setFailedInputRetrying?.(true);
+    this.updateSendButton();
+    try {
+      await this.bridge.subscribeDesktopSession(sessionId);
+      // 2. 等待期间会话可能切换；只向发起点击时的会话重发原正文和图片。
+      if (sessionId !== this.sessionId) return;
+      const receipt = await this.bridge.submitInteractionCommand({
+        session_id: sessionId, origin_channel: DESKTOP_CHANNEL, kind: CommandKind.HUMAN_TURN,
+        payload: { message: input.message, images: input.images },
+      });
+      if (sessionId !== this.sessionId) return;
+      if (!receipt.accepted) throw new Error(receipt.reason || "命令未被受理");
+      // 3. 只清除本次点击对应的失败展示，期间到达的新失败由其自身按钮处理。
+      this.clearFailedInput(input);
+    } catch (error) {
+      if (sessionId === this.sessionId) this.options.chatHistory.showErrorMessage(`重试失败: ${String(error)}`);
+    } finally {
+      // 4. 任何回执都释放提交状态；仍显示同一失败输入时重新启用其按钮。
+      this.submitting = false;
+      if (this.failedInput === input) this.options.chatHistory.setFailedInputRetrying?.(false);
+      this.updateSendButton();
+    }
+  }
+
+  /**
    * 先确保事件订阅可用再提交命令，受理后清空草稿并按事件处理真实运行状态。
    *
    * Args:
@@ -558,6 +610,7 @@ export class RuntimeChatClient {
   private async submit(kind: CommandKind, message: string, images?: string[]): Promise<void> {
     // 1. 捕获会话并标记提交中，先等待首次快照以取得当前 run 身份。
     const sessionId = this.sessionId;
+    const replacedFailure = this.failedInput;
     this.submitting = true;
     this.updateSendButton();
     try {
@@ -581,6 +634,7 @@ export class RuntimeChatClient {
       if (this.sessionId !== sessionId) return;
       // 4. 受理有效输入后清空草稿和附件；停止动作不消耗用户草稿。
       if (kind !== CommandKind.STOP_TURN) {
+        this.clearFailedInput(replacedFailure);
         this.options.input.value = "";
         this.options.input.style.height = "auto";
         this.options.onChatComplete?.();
@@ -785,13 +839,27 @@ export class RuntimeChatClient {
       const failedKey = this.replyKey(event.run_id || this.runId);
       this.pendingSteerMessage = null;
       this.options.chatHistory.clearPendingSteer?.();
-      this.phase = SessionPhase.ERROR;
+      this.phase = SessionPhase.IDLE;
       this.runId = null;
       await this.refreshHistory();
       if (event.session_id !== this.sessionId || revision !== this.sessionRevision) return;
       this.deferredRuns.delete(failedKey);
       this.options.chatHistory.hideTypingIndicator();
-      this.options.chatHistory.showErrorMessage(String(event.payload.detail || event.payload.value || "运行失败"));
+      const detail = String(event.payload.detail || event.payload.value || "运行失败");
+      const failed = event.payload.failed_input as FailedInteractionInput | undefined;
+      if (failed) {
+        // 8.1. 失败输入没有进入历史，只在当前页面显示；已删除的排队项也立即移除。
+        this.failedInput = failed;
+        this.queuedInputs.delete(failed.input_sequence);
+        this.renderQueuedInputs();
+        this.options.chatHistory.showFailedInput?.({
+          role: "human", content: failed.message, images: failed.images,
+          origin_channel: event.origin_channel || DESKTOP_CHANNEL, timestamp: new Date().toISOString(),
+        }, detail, /** 用户点击后重发当前展示的原始输入。 */
+        () => this.retryFailedInput(failed));
+      } else {
+        this.options.chatHistory.showErrorMessage(detail);
+      }
     }
     this.updateSendButton();
   }

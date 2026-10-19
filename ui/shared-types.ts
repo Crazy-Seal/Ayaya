@@ -13,13 +13,11 @@ export const DESKTOP_CHANNEL = "desktop";
  *     IDLE (string): 空闲，协议值为 idle。
  *     RUNNING (string): 轮次运行中，协议值为 running。
  *     PENDING_INTERRUPT (string): 等待人工审批，协议值为 pending_interrupt。
- *     ERROR (string): 本轮错误，协议值为 error。
  */
 export const SessionPhase = {
   IDLE: "idle",
   RUNNING: "running",
   PENDING_INTERRUPT: "pending_interrupt",
-  ERROR: "error",
 } as const;
 export type SessionPhase = typeof SessionPhase[keyof typeof SessionPhase];
 
@@ -441,6 +439,19 @@ export type InteractionEvent = {
   task_id?: string | null;
   stream_epoch: string;
   event_sequence: number;
+};
+
+/**
+ * 未交付失败时返回的原始输入，仅用于当前页面重发。
+ * Attributes:
+ *     input_sequence (number): 已从 Inbox 删除的原输入编号。
+ *     message (string): 用户原正文。
+ *     images (string[]): 原始图片 data URL。
+ */
+export type FailedInteractionInput = {
+  input_sequence: number;
+  message: string;
+  images: string[];
 };
 
 export type ApiResponse<T> = {

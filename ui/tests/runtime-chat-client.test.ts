@@ -4,8 +4,8 @@ import { test } from "node:test";
 import { RuntimeChatClient, type RuntimeChatClientOptions } from "../src/chat/runtime-chat-client.js";
 import type { InteractionEvent } from "../shared-types.js";
 
-test("桌面 Adapter 接收其他渠道消息并用统一命令提交输入", /**
- * 验证桌面 Adapter 接收其他渠道消息并用统一命令提交输入。
+test("桌面 Adapter 接收渠道消息，执行失败后显示错误并恢复发送", /**
+ * 验证桌面 Adapter 接收渠道消息、提交输入，以及失败后的历史同步和发送恢复。
  */
 async () => {
   // 1. 建立隔离 DOM、bridge 替身与事件监听，按场景安排输入和到达顺序。
@@ -15,6 +15,8 @@ async () => {
   let listener: (event: InteractionEvent) => void = () => {};
   const commands: Array<{ kind: string; origin_channel: string }> = [];
   const added: Array<{ content: string; origin_channel?: string }> = [];
+  const errors: string[] = [];
+  let historyLoads = 0;
   const bridge = {
     /**
      * 模拟桌面订阅建立，不连接真实后端。
@@ -86,6 +88,13 @@ async () => {
      * 此定义用于：验证桌面 Adapter 接收其他渠道消息并用统一命令提交输入。
      */
     focus: () => {} };
+    const sendButton = {
+      innerHTML: "send", disabled: false, title: "",
+      /**
+       * 接收按钮属性更新，测试只观察按钮标题。
+       */
+      setAttribute: () => {},
+    } as unknown as HTMLButtonElement;
     const client = new RuntimeChatClient({
       sessionId: "s", bridge,
       bubble: { /**
@@ -139,22 +148,20 @@ async () => {
          */
         finalizeToolCallIndicator: () => {},
         /**
-         * 提供测试占位回调，不产生额外副作用。
+         * 记录实际显示的错误，检查事件去重及错误提示是否保留。
+         *
+         * Args:
+         *     message (string): 界面要显示的错误正文。
          */
-        showErrorMessage: () => {}, /**
+        showErrorMessage: (message: string) => { errors.push(message); }, /**
          * 按脚本返回历史同步结果，并记录历史读取时机。
          *
-         * 此定义用于：验证桌面 Adapter 接收其他渠道消息并用统一命令提交输入。
+         * Returns:
+         *     Promise<never[]>: 当前测试没有已保存的历史消息。
          */
-        loadHistory: async () => [],
+        loadHistory: async () => { historyLoads += 1; return []; },
       },
-      sendBtn: {
-        innerHTML: "send", disabled: false, title: "",
-        /**
-         * 提供测试占位回调，不产生额外副作用。
-         */
-        setAttribute: () => {},
-      } as unknown as HTMLButtonElement,
+      sendBtn: sendButton,
       input: input as unknown as HTMLTextAreaElement,
       confirmDialog: {
         /**
@@ -196,6 +203,38 @@ async () => {
     assert.equal(commands[0].kind, "human_turn");
     assert.equal(commands[0].origin_channel, "desktop");
     assert.equal(input.value, "");
+    // 2. 开始后空草稿按钮用于停止；错误到达后应读取历史并恢复普通发送。
+    listener({ session_id: "s", kind: "run_started", payload: {}, run_id: "r1",
+      stream_epoch: "epoch", event_sequence: 2 });
+    await new Promise<void>(/**
+     * 等待开始事件处理完毕，再检查按钮的实际展示。
+     *
+     * Args:
+     *     resolve ((value: void) => void): 下一事件循环中结束等待的函数。
+     */
+    (resolve) => setImmediate(resolve));
+    assert.equal(sendButton.title, "停止当前回答");
+    const beforeError = historyLoads;
+    const failure: InteractionEvent = {
+      session_id: "s", kind: "error", payload: { detail: "执行失败" }, run_id: "r1",
+      stream_epoch: "epoch", event_sequence: 3,
+    };
+    listener(failure);
+    listener(failure);
+    await new Promise<void>(/**
+     * 等待错误事件及历史刷新，重复序号不能再次显示错误。
+     *
+     * Args:
+     *     resolve ((value: void) => void): 下一事件循环中结束等待的函数。
+     */
+    (resolve) => setImmediate(resolve));
+    assert.deepEqual(errors, ["执行失败"]);
+    assert.equal(historyLoads, beforeError + 1);
+    assert.equal(sendButton.title, "发送消息");
+    input.value = "重试";
+    await client.sendMessage();
+    assert.equal(commands.length, 2);
+    assert.equal(commands[1].kind, "human_turn");
   } finally {
     globalThis.document = oldDocument;
   }
