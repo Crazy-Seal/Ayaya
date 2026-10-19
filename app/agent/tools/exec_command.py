@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr
 
 from app.agent.models.contracts import ToolDefinition
 from app.agent.tools.core.base import BaseTool, ToolContext, ToolResult
+from app.agent.tools.core.schema import tool_parameters_schema
 from app.agent.tools.terminal.validation import failure, validate_input
 from app.agent.utils.infra.safe_path import WORKDIR, safe_path
 from app.agent.tools.terminal.shell import detect_shell
@@ -30,7 +31,7 @@ class ExecCommandTool(BaseTool):
         "任务后台运行时，你可以根据本工具返回的任务编号 task_id ，调用 write_stdin 读取命令的输出增量或继续向其发送输入。"
         "任务运行结束时，会将完成状态和完整输出日志位置主动通知你。禁止运行可能损害计算机系统的命令。"
     )
-    parameters_schema = ExecCommandArguments.model_json_schema()
+    parameters_schema = tool_parameters_schema(ExecCommandArguments)
 
     def definition(self) -> ToolDefinition:
         """在模型请求定义中追加实际 Shell 信息，不改变权限目录静态描述。

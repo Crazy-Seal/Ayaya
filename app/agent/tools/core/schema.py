@@ -1,8 +1,30 @@
-"""工具定义内部使用的模型 JSON Schema 兼容转换。"""
+"""工具参数 JSON Schema 的生成与模型兼容转换。"""
 
 from __future__ import annotations
 
 from typing import Any
+
+from pydantic import TypeAdapter
+
+
+def tool_parameters_schema(parameter_type: Any) -> dict[str, Any]:
+    """生成工具参数 Schema，保留字段说明，不把类型文档作为模型说明发送。
+
+    Pydantic 会将参数模型及嵌套类型的 docstring 放进类型节点的 description。
+    这些文档供维护者阅读；模型的参数说明应由 Field 显式提供。
+
+    Args:
+        parameter_type (Any): 参数模型类，或通过 Annotated 和 Field 声明约束的参数类型。
+
+    Returns:
+        dict[str, Any]: 去掉根类型及复用类型说明的独立 Schema，字段说明与约束保留。
+    """
+    # 1. 只删除类型节点的说明，不递归删除字段的 description，避免丢失显式参数说明。
+    schema = TypeAdapter(parameter_type).json_schema()
+    schema.pop("description", None)
+    for definition in schema.get("$defs", {}).values():
+        definition.pop("description", None)
+    return schema
 
 
 def normalize_tool_schema_for_model(schema: dict[str, Any]) -> dict[str, Any]:

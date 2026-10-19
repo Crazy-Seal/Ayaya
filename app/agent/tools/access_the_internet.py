@@ -69,14 +69,17 @@ def _format_search_output(data) -> str:
     return "互联网检索结果:\n" + "\n".join(lines)
 
 
-@tool(compressible=True)
+@tool(
+    description="访问互联网，搜索你想要的信息。当用户提及你不知道的信息，或你想上网查询时使用。",
+    compressible=True,
+)
 async def access_the_internet(
     query: Annotated[str, "你的搜索问题或关键词等。"],
 ) -> str:
     """访问互联网，搜索你想要的信息。当用户提及你不知道的信息，或你想上网查询时使用。
 
     Args:
-        query (str): 你的搜索问题或关键词等。
+        query (str): 搜索问题或关键词等。
     """
     if not query or not query.strip():
         return "错误: query不能为空。"

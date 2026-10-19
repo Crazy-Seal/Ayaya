@@ -223,7 +223,7 @@ def _write_changes(prepared: dict[Path, str | None]) -> None:
         raise
 
 
-@tool
+@tool(description="使用一个补丁新增、修改或删除一个或多个工作区文件。")
 async def apply_patch(
     patch: Annotated[
         str,
@@ -250,20 +250,7 @@ async def apply_patch(
     """使用一个补丁新增、修改或删除一个或多个工作区文件。
 
     Args:
-        patch (str): 完整补丁文本。补丁必须由 *** Begin Patch 和 *** End Patch 包围。每个文件使用 *** Add File: <路径>、*** Update File: <路径> 或 *** Delete File: <路径>，同一路径在一个补丁中只能操作一次。Add File 的每行内容以 + 开头；Update File 的每个变更块以 @@ 开始，随后每行分别以空格（表示定位用的上下文）、-（表示删除）或 +（表示新增）开头，原文和上下文必须在文件中唯一匹配；Delete File 后不能有内容。使用本工具时，请使用相对路径，该相对路径会自动定位于你的工作区内
-
-            示例：
-            *** Begin Patch
-            *** Add File: notes/new.txt
-            +第一行
-            *** Update File: app/example.py
-            @@
-             unchanged()
-            -old_value = 1
-            +old_value = 2
-             unchanged()
-            *** Delete File: notes/obsolete.txt
-            *** End Patch
+        patch (str): 完整补丁文本。
     """
     try:
         # 1. 先解析并校验全部操作，再写入文件，工具入口负责把异常转换成错误文本。

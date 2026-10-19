@@ -3,6 +3,7 @@
 from pydantic import BaseModel, ConfigDict, Field, StrictStr
 
 from app.agent.tools.core.base import BaseTool, ToolContext, ToolResult
+from app.agent.tools.core.schema import tool_parameters_schema
 from app.agent.tools.terminal.validation import failure, validate_input
 
 
@@ -27,7 +28,7 @@ class WriteStdinTool(BaseTool):
         "不要因等待超时而随便重发输入。PTY 中可发送 \\u0003 中断命令执行。"
         "Windows PTY 中使用 \\r 换行，普通管道和 Unix 通常使用 \\n；本工具不会帮你转换。"
     )
-    parameters_schema = WriteStdinArguments.model_json_schema()
+    parameters_schema = tool_parameters_schema(WriteStdinArguments)
 
     async def execute(self, args: dict, context: ToolContext) -> ToolResult:
         """校验聊天归属后读取或写入，由运行器表达输入是否已经发送。

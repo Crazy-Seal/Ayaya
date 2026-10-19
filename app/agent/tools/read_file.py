@@ -56,7 +56,15 @@ def _resolve_path(path: str, context: ToolContext) -> Path:
     return safe_path(path)
 
 
-@tool(compressible=True, persist_oversized_result=False)
+@tool(
+    description=(
+        "读取 UTF-8 文本；读取指定范围的行/字符。[start, end) 范围为左闭右开。"
+        "支持工作区文件、tool-result 引用和任务完成通知中的 task-output 日志引用。"
+        "task-output 日志固定按字符分页，后续可根据返回的 next_start 继续读取。"
+    ),
+    compressible=True,
+    persist_oversized_result=False,
+)
 async def read_file(
     path: Annotated[str, "被读取的文件路径、tool-result URI 或完成通知中的 task-output URI。"],
     start: Annotated[int | None, "可选起始位置，从 0 开始且包含。"] = None,

@@ -6,6 +6,7 @@ import pytest
 
 from app.agent.tools.core.base import ToolContext
 from app.agent.tools.control_screen import control_screen, normalize_bbox
+from app.agent.tools.control_screen_with_vlm import control_screen_with_vlm
 
 
 def _context(
@@ -70,6 +71,22 @@ def test_control_screen_schema_only_describes_xyxy() -> None:
 def test_bbox_is_always_interpreted_as_xyxy() -> None:
     """验证边界框始终按 xyxy 解读。"""
     assert normalize_bbox([200, 400, 400, 600]) == [200, 400, 400, 600]
+
+
+@pytest.mark.parametrize("tool_class", [control_screen, control_screen_with_vlm])
+def test_screen_wait_range_is_visible_to_model(tool_class) -> None:
+    """验证两种屏幕工具发送的等待范围与后端校验一致，默认等待仍为三秒。
+
+    Args:
+        tool_class (type[BaseTool]): 使用坐标框或文字定位的屏幕工具类。
+    """
+    schema = encoded_tool(tool_class())["function"]["parameters"]
+    wait = schema["properties"]["wait_seconds"]
+    assert wait["type"] == "integer"
+    assert wait["minimum"] == 0
+    assert wait["maximum"] == 60
+    assert wait["default"] == 3
+    assert "wait_seconds" not in schema["required"]
 
 
 @pytest.mark.parametrize(

@@ -5,6 +5,8 @@
 
 from typing import Annotated, Literal
 
+from pydantic import Field
+
 from app.agent.tools.screen.adapter import screen_action, screen_tool_result
 from app.agent.tools.core.base import ToolContext, ToolResult
 from app.agent.tools.core.decorator import tool
@@ -115,18 +117,27 @@ def _validate_args(
     )
 
 
-@tool(compressible=True)
+@tool(
+    description=(
+        "操作用户的屏幕，并回传操作后的屏幕截图。需要提供目标元素的边界框坐标。\n\n"
+        "调用此工具前，你需要知道屏幕上的情况；如不知道，可先通过截屏工具获取。\n"
+        "每轮工具调用中只允许使用一次该工具；收到操作后的截图后再判断下一步操作。"
+    ),
+    compressible=True,
+)
 async def control_screen(
     bbox: Annotated[list[int], "目标元素边界框 [x1, y1, x2, y2]，坐标相对于当前屏幕归一化到 0 至 1000。必须输入。"],
     target: Annotated[str, "操作时的光标位置描述，例如‘页面上方的搜索框’。必须输入。"],
     operation: Annotated[Operation, "操作方式：click 单击、double 双击、right 右键、scroll 滚动。"] = "double",
     text: Annotated[str, "操作后要在该位置输入的文字；为空则不输入。"] = "",
     press_enter: Annotated[bool, "输入文字后是否按回车。"] = True,
-    wait_seconds: Annotated[int, "操作后的等待时长，单位秒，用于等待页面加载。"] = 3,
+    wait_seconds: Annotated[
+        int, "操作后的等待时长，单位秒，范围 0～60，用于等待页面加载。", Field(ge=0, le=60),
+    ] = 3,
     scroll_direction: Annotated[ScrollDirection, "滚动方向：none、down 或 up。仅 scroll 操作使用，默认 down。"] = "down",
     context: ToolContext | None = None,
 ) -> ToolResult:
-    """操作用户的屏幕，并回传操作后的屏幕截图。
+    """操作用户的屏幕，并回传操作后的屏幕截图。需要提供目标元素的边界框坐标。
 
     调用此工具前，你需要知道屏幕上的情况；如不知道，可先通过截屏工具获取。
     每轮工具调用中只允许使用一次该工具；收到操作后的截图后再判断下一步操作。
@@ -137,7 +148,7 @@ async def control_screen(
         operation (Operation): 操作方式：click 单击、double 双击、right 右键、scroll 滚动。
         text (str): 操作后要在该位置输入的文字；为空则不输入。
         press_enter (bool): 输入文字后是否按回车。
-        wait_seconds (int): 操作后的等待时长，单位秒，用于等待页面加载。
+        wait_seconds (int): 操作后的等待时长，单位秒，范围 0～60，用于等待页面加载。
         scroll_direction (ScrollDirection): 滚动方向：none、down 或 up。仅 scroll 操作使用，默认 down。
         context (ToolContext | None): 执行管道提供的工具运行上下文。
     """

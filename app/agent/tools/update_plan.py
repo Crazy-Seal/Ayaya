@@ -73,7 +73,14 @@ class TodoItem(BaseModel):
     status: Literal["pending", "in_progress", "completed"] = Field(description="任务状态。")
 
 
-@tool
+@tool(
+    description=(
+        "更新计划列表。更新时，禁止修改id和text字段，仅更改status字段。"
+        "只能有一条计划处于in_progress状态，其他必须是pending或completed状态。"
+        "items为列表，最多20项，每项为一个字典，包含\"id\"（序号）、\"text\"（任务描述）"
+        "和\"status\"（pending / in_progress / completed）字段。"
+    ),
+)
 async def update_plan(
     items: Annotated[list[TodoItem], "最多20项的计划列表。"],
     context: ToolContext,

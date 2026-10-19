@@ -6,12 +6,18 @@ from app.agent.tools.core.base import ToolContext
 from app.agent.tools.core.decorator import tool
 
 
-@tool(compressible=True)
+@tool(
+    description=(
+        "在长期记忆中搜索相关信息，并返回最相近的10条。"
+        "当你有想要知道的关于用户或关于你自己的记忆时，调用此工具搜索。"
+    ),
+    compressible=True,
+)
 async def search_memory(
     query: Annotated[str, "搜索关键词/关键句。不要使用问句。"],
     context: ToolContext,
 ) -> str:
-    """在长期记忆中搜索相关信息，并返回最相近的10条。当你有想要知道的关于用户或你自己的信息时，调用此工具搜索。
+    """在长期记忆中搜索相关信息，并返回最相近的10条。当你有想要知道的关于用户或关于你自己的记忆时，调用此工具搜索。
 
     Args:
         query (str): 搜索关键词/关键句。不要使用问句。

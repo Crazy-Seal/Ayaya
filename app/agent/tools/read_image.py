@@ -20,7 +20,10 @@ _MIME_BY_SUFFIX = {
 }
 
 
-@tool(compressible=True)
+@tool(
+    description="读取 PNG、JPEG 或 WebP 图片，并返回图片内容供你查看。",
+    compressible=True,
+)
 async def read_image(
     paths: Annotated[list[str], "要读取的工作区图片路径列表。"],
 ) -> ToolResult:

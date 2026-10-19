@@ -7,7 +7,13 @@ from app.agent.tools.core.base import ToolContext
 from app.agent.tools.core.decorator import tool
 
 
-@tool(compressible=True)
+@tool(
+    description=(
+        "搜索指定日期范围的日记。返回[start, end]范围内的日记内容(包括end那天的)，"
+        "按日期排序。两个日期参数之间最多间隔5天。"
+    ),
+    compressible=True,
+)
 async def search_diary(
     start: Annotated[str, "开始日期，格式 YYYY-MM-DD"],
     end: Annotated[str, "结束日期，格式 YYYY-MM-DD"],

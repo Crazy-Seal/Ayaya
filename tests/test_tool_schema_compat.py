@@ -1,7 +1,9 @@
 from tests.model_capture import encoded_tool
 from copy import deepcopy
 
-from app.agent.tools.core.schema import normalize_tool_schema_for_model
+from pydantic import BaseModel, Field
+
+from app.agent.tools.core.schema import normalize_tool_schema_for_model, tool_parameters_schema
 from app.agent.tools.core.base import BaseTool, ToolContext, ToolResult
 
 
@@ -121,3 +123,29 @@ def test_normalizer_does_not_narrow_real_multi_type_union() -> None:
     }
 
     assert normalize_tool_schema_for_model(schema) == schema
+
+
+def test_parameter_schema_omits_type_docs_and_preserves_field_descriptions() -> None:
+    """验证根模型和复用模型的文档不进入参数 Schema，显式字段说明及约束保持不变。"""
+    class NestedOptions(BaseModel):
+        """内部嵌套参数实现说明。"""
+
+        count: int = Field(default=5, ge=0, le=10, description="最多返回条数。")
+
+    class Arguments(BaseModel):
+        """内部参数校验说明。"""
+
+        options: NestedOptions = Field(description="本次查询选项。")
+
+    schema = tool_parameters_schema(Arguments)
+    assert "description" not in schema
+    assert "description" not in schema["$defs"]["NestedOptions"]
+    assert schema["properties"]["options"]["description"] == "本次查询选项。"
+    assert schema["$defs"]["NestedOptions"]["properties"]["count"] == {
+        "type": "integer", "title": "Count", "default": 5,
+        "minimum": 0, "maximum": 10, "description": "最多返回条数。",
+    }
+    assert schema["required"] == ["options"]
+    # 1. 工具定义使用独立 Schema，不影响参数模型本身保留给维护者的文档。
+    assert Arguments.model_json_schema()["description"] == Arguments.__doc__
+    assert Arguments.model_json_schema()["$defs"]["NestedOptions"]["description"] == NestedOptions.__doc__

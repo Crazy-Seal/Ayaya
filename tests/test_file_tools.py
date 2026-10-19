@@ -1,4 +1,4 @@
-from tests.model_capture import image_urls, image_kind
+from tests.model_capture import image_urls, image_kind, encoded_tool
 from app.agent.models.openai_message_names import TOOL_IMAGE_MESSAGE_NAME
 import asyncio
 from pathlib import Path
@@ -71,6 +71,34 @@ def test_read_file_resolves_current_session_artifact() -> None:
     ))
 
     assert result == "第二行"
+
+
+def test_read_file_execute_uses_default_line_unit(tmp_path: Path, monkeypatch) -> None:
+    """验证模型只提供路径时，经装饰器执行仍按默认行单位读取完整文件。
+
+    Args:
+        tmp_path (Path): Pytest 提供的临时文件目录，不访问生产存储。
+        monkeypatch (pytest.MonkeyPatch): 将工作区临时替换到用例目录。
+    """
+    import app.agent.utils.infra.safe_path as safe_path_module
+
+    monkeypatch.setattr(safe_path_module, "WORKDIR", tmp_path)
+    (tmp_path / "sample.txt").write_text("第一行\n第二行\n", encoding="utf-8")
+
+    result = asyncio.run(read_file().execute({"path": "sample.txt"}, _context()))
+
+    assert result.text == "第一行\n第二行"
+
+
+def test_read_file_schema_preserves_nullable_ranges() -> None:
+    """验证模型收到的起止位置允许整数或空值，并且仍然可以省略。"""
+    parameters = encoded_tool(read_file())["function"]["parameters"]
+    for name in ("start", "end"):
+        parameter = parameters["properties"][name]
+        assert parameter["type"] == "integer"
+        assert parameter["nullable"] is True
+        assert name not in parameters["required"]
+        assert "default" not in parameter
 
 
 def test_read_file_rejects_invalid_range_and_cross_session_artifact() -> None:

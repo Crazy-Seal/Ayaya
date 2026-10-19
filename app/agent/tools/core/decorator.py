@@ -1,10 +1,10 @@
 """函数式工具装饰器 @tool。
 
-把一个带类型注解 + docstring 的 async 函数，自动变成一个 BaseTool 子类：
+把一个带类型注解的 async 函数，自动变成一个 BaseTool 子类：
 - name        ← 函数名（或显式传入）
-- description ← 函数 docstring
+- description ← @tool(description=...) 中显式声明的模型说明；docstring 仅供维护者阅读
 - parameters_schema ← 从签名 + 类型注解自动合成（结构）；每个参数的文字描述写在
-                       Annotated[类型, "说明"] 里（必填，缺失则装饰时报错）
+                       Annotated[类型, "说明"] 里（必填，缺失则装饰时报错），可追加 Field 声明约束
 - execute     ← 适配器：args dict → kwargs，注入 context（若声明），统一日志与结果包装
 
 因为产出的是 BaseTool 子类，注册表、ToolManager 和执行管道使用统一工具接口。
@@ -19,8 +19,10 @@ import typing
 from typing import Any, Callable, Type, Union, Literal, get_args, get_origin
 
 from pydantic import BaseModel
+from pydantic.fields import FieldInfo
 
 from app.agent.tools.core.base import BaseTool, ToolContext, ToolResult
+from app.agent.tools.core.schema import tool_parameters_schema
 from app.agent.utils.infra.log import log_tool_call_result
 
 # Python 基础类型 → JSON Schema 类型
@@ -82,13 +84,16 @@ def _inline_defs(node: Any, defs: dict) -> Any:
     return node
 
 
-def _model_schema(model: type[BaseModel]) -> dict:
-    """从 Pydantic 模型生成自包含的 JSON Schema：内联 $defs + 去 title。
+def _parameter_schema(parameter_type: Any) -> dict:
+    """生成保留联合类型及 Field 约束的自包含参数 Schema，不发送类型文档。
 
     Args:
-        model (type[BaseModel]): 模型配置或模型类型。
+        parameter_type (Any): 参数模型类、联合类型，或通过 Annotated 声明 Field 约束的类型。
+
+    Returns:
+        dict: 保留显式字段说明与约束的自包含 Schema。
     """
-    schema = model.model_json_schema()
+    schema = tool_parameters_schema(parameter_type)
     defs = schema.pop("$defs", {})
     schema = _inline_defs(schema, defs)
     _strip_titles(schema)
@@ -113,16 +118,16 @@ def _json_type(tp: Any) -> dict:
 
     Args:
         tp (Any): 要转换为 JSON Schema 的 Python 类型。
+
+    Returns:
+        dict: 保留联合类型中 null 分支及其他允许类型的 Schema 片段。
     """
     origin = get_origin(tp)
 
-    # Optional[X] / X | None → 取非 None 的内层类型
-    # 注意：typing.Optional[X] 的 origin 是 typing.Union；PEP604 的 X | None 是 types.UnionType
+    # 1. 联合类型必须保留全部分支，不能删掉 None，也不能将多类型联合缩成字符串。
+    # 1.1. 使用共享参数生成器保留 null 分支；字段是否能省略仍由 _build_schema 的 required 决定。
     if origin is Union or origin is types.UnionType:
-        non_none = [a for a in get_args(tp) if a is not type(None)]
-        if len(non_none) == 1:
-            return _json_type(non_none[0])
-        return {"type": "string"}  # 复杂联合，回退
+        return _parameter_schema(tp)
 
     # Literal 声明的可选值直接转换为模型参数的枚举限制。
     if origin is Literal:
@@ -141,7 +146,7 @@ def _json_type(tp: Any) -> dict:
 
     # Pydantic 模型 → 嵌套 object schema
     if isinstance(tp, type) and issubclass(tp, BaseModel):
-        return _model_schema(tp)
+        return _parameter_schema(tp)
 
     return {"type": _SCALAR_JSON.get(tp, "string")}
 
@@ -189,7 +194,12 @@ def _build_schema(func: Callable) -> tuple[dict, str | None]:
                 f"@tool 函数 '{func.__name__}' 的参数 '{pname}' 缺少 Annotated 描述："
                 f"请写成 {pname}: Annotated[类型, \"说明\"]。"
             )
-        prop = _json_type(base)
+        # 1. 带 Field 的参数保留完整注解生成约束；其他参数沿用既有类型转换。
+        # 1.1. 文字说明仍取自 Annotated 中的字符串，不从函数或参数模型文档读取。
+        if any(isinstance(item, FieldInfo) for item in getattr(ann, "__metadata__", ())):
+            prop = _parameter_schema(ann)
+        else:
+            prop = _json_type(base)
         prop["description"] = desc
         properties[pname] = prop
         if param.default is inspect.Parameter.empty:
@@ -206,6 +216,7 @@ def _build_schema(func: Callable) -> tuple[dict, str | None]:
 def tool(
     func: Callable | None = None,
     *,
+    description: str,
     name: str | None = None,
     is_resumable: bool = False,
     compressible: bool = False,
@@ -213,15 +224,16 @@ def tool(
     authorization_timing: str = "before_execute",
     parameters_schema: dict | None = None,
 ) -> Any:
-    """将带文档和类型注解的异步函数变成 BaseTool 类，供注册、授权和执行管道统一使用。
+    """将显式模型说明与异步函数包装为 BaseTool 类，不读取函数的维护文档。
 
     用法：
-        @tool
+        @tool(description="读取工作区文件。")
         async def read_file(path: Annotated[str, "文件路径"]) -> str:
             \"\"\"读取文件。\"\"\"
             ...
 
     Args:
+        description (str): 必填的非空模型说明，描述工具用途、调用时机及操作约束。
         name (str | None): 覆盖工具名（默认取函数名）。
         is_resumable (bool): 标记为可恢复工具（execute 内靠 context.resume_data 分支）。
         compressible (bool): 标记旧工具结果允许从活跃模型上下文回收，不代表允许重放工具。
@@ -230,7 +242,17 @@ def tool(
         parameters_schema (dict | None): 逃生口——直接给定 JSON Schema，跳过自动推导。
             用于嵌套/复杂参数（如 update_plan 的 array-of-object），签名无法表达时。
         func (Callable | None): 需要包装或检查签名的函数。
+
+    Returns:
+        Any: 等待函数定义的装饰器，或包装已有函数后得到的 BaseTool 子类。
+
+    Raises:
+        ValueError: 模型说明不是字符串，或只包含空白字符。
     """
+    # 1. 定义工具时立即检查模型说明，遗漏或无效时失败，不回退读取 docstring。
+    if not isinstance(description, str) or not description.strip():
+        raise ValueError("@tool 的 description 必须是非空字符串。")
+
     def wrap(fn: Callable) -> Type[BaseTool]:
         """装饰工具函数时从签名及说明创建 BaseTool 子类，此时不执行工具正文。
 
@@ -241,8 +263,7 @@ def tool(
             Type[BaseTool]: 可供注册表与执行管道使用的工具类。
         """
         tool_name = name or fn.__name__
-        # 1. 函数文档会成为模型可见工具说明；参数说明从 Annotated 读取，不包含注入的 context。
-        description = inspect.getdoc(fn) or ""
+        # 1. 参数说明从 Annotated 或显式 Schema 读取，不包含运行时注入的 context。
         if parameters_schema is not None:
             schema = parameters_schema
             param_names, injected = _inspect_params(fn)
@@ -251,17 +272,22 @@ def tool(
             param_names = list(schema["properties"].keys())
 
         async def execute(self, args: dict, context: ToolContext) -> ToolResult:
-            """执行管道调用动态工具时注入运行上下文，等待原函数结束后记录日志并统一包装结果。
+            """执行管道调用动态工具时保留省略参数并注入上下文，完成后记录日志及包装结果。
+
+            模型没有提供的参数不传给原函数，由 Python 应用函数默认值；
+            显式提供的值（包括 None）原样转交。
 
             Args:
-                args (dict): 当前工具调用或被包装函数的参数。
+                args (dict): 模型实际提供的工具参数，不包含省略字段的占位值。
                 context (ToolContext): 执行管道提供的工具运行上下文。
 
             Returns:
                 ToolResult: 原 ToolResult 或由字符串包装的成功结果。
             """
-            # 1. 只传签名中声明的工具参数，再注入运行上下文；不把整个状态对象交给模型。
-            kwargs: dict[str, Any] = {k: args.get(k) for k in param_names}
+            # 1. 只转交签名中声明且模型实际提供的参数，省略字段留给 Python 应用默认值。
+            # 1.1. 根据字段是否存在筛选，不按值筛选，保留显式的零、False、空串和 None。
+            kwargs: dict[str, Any] = {k: args[k] for k in param_names if k in args}
+            # 1.2. 运行上下文始终由执行管道注入，不从模型参数读取。
             if injected:
                 kwargs[injected] = context
             # 2. 原工具结束后记录输出，再统一为 ToolResult，已有中断和状态更新材料原样保留。

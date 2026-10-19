@@ -4,9 +4,9 @@ from app.agent.tools.core.base import ToolContext, ToolResult
 from app.agent.tools.core.decorator import tool
 
 
-@tool(compressible=True)
+@tool(description="获取当前用户电脑的屏幕截图。", compressible=True)
 async def screenshot(context: ToolContext) -> ToolResult:
-    """获取当前主屏观察，不产生前端执行中断。
+    """获取当前用户电脑的屏幕截图。
 
     Args:
         context (ToolContext): Pipeline 提供共享桌面模块及只读停止信号。
