@@ -46,7 +46,7 @@ def test_restart_discards_humans_and_preserves_pending_notices(tmp_path) -> None
             await inbox.submit_human("desktop", "立即输入")
             # 2. 遗留任务通知已读取但尚未交付，重启后仍然保留待交付状态。
             await records.insert_running("task", "s", "测试任务", 1, str(tmp_path / "out"))
-            await records.finish_once("task", "completed", 0, "执行事实")
+            await records.finish_once("task", "completed", 0)
             terminal = (await inbox.read_task_terminals())[0]
             await SessionInbox.reset_after_restart(path)
             await SessionInbox.reset_after_restart(path)
@@ -82,7 +82,7 @@ def test_restart_reset_preserves_humans_when_deletion_fails(tmp_path) -> None:
         try:
             await inbox.submit_human("desktop", "必须原子作废")
             await records.insert_running("task", "s", "任务", 1, str(tmp_path / "out"))
-            await records.finish_once("task", "completed", 0, "事实")
+            await records.finish_once("task", "completed", 0)
             notice = (await inbox.read_task_terminals())[0]
             db = await inbox._get_db()
             await db.execute("CREATE TRIGGER reject_reset BEFORE DELETE ON session_inbox "
@@ -267,7 +267,7 @@ def test_terminal_waits_for_new_human_and_shutdown_cannot_reactivate(tmp_path) -
         path = str(tmp_path / "state.sqlite3")
         records = TaskRecordDao(path)
         await records.insert_running("old", "s", "旧任务", 1, str(tmp_path / "out"))
-        await records.finish_once("old", "completed", 0, "旧事实")
+        await records.finish_once("old", "completed", 0)
         calls = []
         executed = asyncio.Event()
 
@@ -347,12 +347,12 @@ def test_terminal_waits_for_new_human_and_shutdown_cannot_reactivate(tmp_path) -
                 await manager.close()
             executed.clear()
             await records.insert_running("new", "s", "新任务", 1, str(tmp_path / "out"))
-            await records.finish_once("new", "completed", 0, "新事实")
+            await records.finish_once("new", "completed", 0)
             await scheduler.notify_task_terminal("s")
             await asyncio.wait_for(executed.wait(), 2)
             await scheduler.begin_shutdown()
             await records.insert_running("closing", "s", "关闭任务", 1, str(tmp_path / "out"))
-            await records.finish_once("closing", "stopped", None, "关闭事实")
+            await records.finish_once("closing", "stopped", None)
             await scheduler.notify_task_terminal("s")
             assert not (await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "关闭后"}))).accepted
             await scheduler.close()

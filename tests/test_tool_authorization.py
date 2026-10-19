@@ -92,7 +92,7 @@ def test_new_local_tool_defaults_to_ask_without_overwriting_saved_permissions(
     monkeypatch.setattr(
         dao_module,
         "_known_local_tool_names",
-        lambda: ["read_file", "screenshot", "run_ps"],
+        lambda: ["read_file", "screenshot", "exec_command"],
     )
     config_file = tmp_path / "chat_settings.yaml"
     config_file.write_text(
@@ -103,12 +103,12 @@ def test_new_local_tool_defaults_to_ask_without_overwriting_saved_permissions(
 
     assert settings.tool_permissions["local:read_file"] == ToolPolicy.ALLOW
     assert settings.tool_permissions["local:screenshot"] == ToolPolicy.DENY
-    assert settings.tool_permissions["local:run_ps"] == ToolPolicy.ASK
+    assert settings.tool_permissions["local:exec_command"] == ToolPolicy.ASK
     assert settings.tool_permissions["mcp:filesystem:read"] == ToolPolicy.ALLOW
 
     stored = yaml.safe_load(config_file.read_text(encoding="utf-8"))["chat_models"][0]
     assert stored["tool_permissions_schema_version"] == 1
-    assert stored["tool_permissions"]["local:run_ps"] == "ask"
+    assert stored["tool_permissions"]["local:exec_command"] == "ask"
     before = config_file.read_bytes()
     ChatSettingsDao(config_file=config_file).get_chat_settings("configured-session")
     assert config_file.read_bytes() == before

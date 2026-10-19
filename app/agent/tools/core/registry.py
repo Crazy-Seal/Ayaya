@@ -134,16 +134,12 @@ class ToolRegistry:
 # ==================== 自动扫描发现工具 ====================
 
 # tools/ 根目录中的 Python 模块为工具定义；子目录为支撑代码，不参与自动发现。
-# 历史兼容入口继续按名称隐藏，不维护通用模块排除清单。
-_HIDDEN_TOOL_MODULES = {"run_ps"}
-
-
 def _discover_tools() -> None:
     """扫描 tools/ 目录，把每个工具模块按文件名延迟注册（不导入工具模块）。"""
     tools_dir = Path(__file__).resolve().parents[1]
     for module_info in pkgutil.iter_modules([str(tools_dir)]):
         mod_name = module_info.name
-        if module_info.ispkg or mod_name.startswith("_") or mod_name in _HIDDEN_TOOL_MODULES:
+        if module_info.ispkg or mod_name.startswith("_"):
             continue
         ToolRegistry.register_lazy(mod_name, f"app.agent.tools.{mod_name}")
 

@@ -332,8 +332,8 @@ def test_approval_arguments_are_json_objects_in_increment_and_snapshot() -> None
     """验证不可变工具参数在实时审批和重连快照中都保持 JSON 对象。"""
     async def scenario() -> None:
         """消费真实 SSE 路由生成的帧，检查前端实际收到的参数类型和内容。"""
-        call = ToolCall(id="call", name="run_ps", args={
-            "command": "Write-Output test", "options": {"values": [1, 2]},
+        call = ToolCall(id="call", name="exec_command", args={
+            "cmd": "echo test", "options": {"values": [1, 2]},
         })
         approval = InterruptEvent.create(
             "authorization_request", "确认命令", {"arguments": call.args},
@@ -381,7 +381,7 @@ def test_approval_arguments_are_json_objects_in_increment_and_snapshot() -> None
         # 2. 实时与重连不得将参数退化为 Python 对象地址字符串。
         for frame, key in zip(frames, ("interrupt", "value"), strict=True):
             assert frame["payload"][key]["data"]["arguments"] == {
-                "command": "Write-Output test", "options": {"values": [1, 2]},
+                "cmd": "echo test", "options": {"values": [1, 2]},
             }
 
     asyncio.run(scenario())

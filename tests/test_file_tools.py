@@ -149,12 +149,19 @@ def test_read_image_counts_only_valid_images_toward_limit(tmp_path: Path, monkey
     assert image_urls(normalized)[0].startswith("data:image/png;base64,")
 
 
-def test_run_ps_preserves_output_for_unified_normalization() -> None:
-    """验证旧调用适配仍将完整结果交给统一工具结果规范化。"""
+def test_exec_command_preserves_output_for_unified_normalization(tmp_path: Path, monkeypatch) -> None:
+    """验证终端工具将完整调用结果交给统一工具结果规范化。
+
+    Args:
+        tmp_path (Path): 当前测试的隔离工作目录。
+        monkeypatch (pytest.MonkeyPatch): 将工具工作目录限制在临时目录。
+    """
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
-    import app.agent.tools.run_ps as run_ps_module
+    import app.agent.tools.exec_command as terminal_module
     from app.agent.tools.core.base import ToolContext
     from app.agent.tools.terminal.models import TaskLaunchResult
+
+    monkeypatch.setattr(terminal_module, "WORKDIR", tmp_path)
 
     class _Launcher:
         """提供隔离测试替身，用于验证：任务运行器输出仍交给统一工具结果规范化。"""
@@ -182,7 +189,7 @@ def test_run_ps_preserves_output_for_unified_normalization() -> None:
         task_launcher=_Launcher(),
     )
 
-    result = asyncio.run(run_ps_module._run_command("Write-Output x", context))
+    result = asyncio.run(terminal_module.ExecCommandTool().execute({"cmd": "echo x"}, context)).text
 
     # 2. 核对公开结果和持久状态，确保场景中的输入、通知或副作用未重复。
     assert result.endswith("x" * 60_000)

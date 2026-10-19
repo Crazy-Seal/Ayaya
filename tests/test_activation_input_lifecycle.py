@@ -224,7 +224,7 @@ async def publish_terminal(records: TaskRecordDao, db_path: Path, task_id: str) 
         task_id (str): 本条通知的独立任务编号。
     """
     await records.insert_running(task_id, SESSION_ID, "测试任务", 1, str(db_path.with_suffix(".out")))
-    assert await records.finish_once(task_id, TaskStatus.COMPLETED, 0, "任务已完成")
+    assert await records.finish_once(task_id, TaskStatus.COMPLETED, 0)
 
 
 def bind_memory(db_path: Path, monkeypatch: pytest.MonkeyPatch) -> RecordingMemory:

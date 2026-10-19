@@ -208,7 +208,6 @@ class TaskRecordDao:
 
     async def finish_once(
         self, task_id: str, status: TaskStatus, exit_code: int | None,
-        result: str = "",
     ) -> bool:
         """条件更新首次任务终态，并在同一事务插入唯一终态通知。
 
@@ -219,7 +218,6 @@ class TaskRecordDao:
             task_id (str): 受管进程任务标识。
             status (TaskStatus): 调用方确认的任务终态，不允许使用 running。
             exit_code (int | None): 进程退出码，状态未知时为空。
-            result (str): 仅兼容旧调用的参数，新通知不包含输出正文。
 
         Returns:
             bool: 首次终态与通知均已提交时为真，重复或不存在的记录为假。

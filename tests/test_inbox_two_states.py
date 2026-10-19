@@ -130,7 +130,7 @@ def test_task_notice_failure_stops_until_human_reactivates(tmp_path) -> None:
             await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "启动"}))
             await until("run_completed")
             await records.insert_running("task", "s", "任务", 1, str(tmp_path / "output"))
-            await records.finish_once("task", "completed", 0, "任务事实")
+            await records.finish_once("task", "completed", 0)
             await scheduler.notify_task_terminal("s")
             error = await until("error")
             assert attempts == 4 and "failed_input" not in error.payload

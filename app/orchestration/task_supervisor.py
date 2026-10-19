@@ -82,9 +82,8 @@ class TaskSupervisor:
     async def launch(self, session_id: str, command: str, argv: list[str], *, cwd: str,
                      tty: bool = False, yield_time_ms: int = 10000,
                      tool_name: str = "exec_command",
-                     origin_run_id: str | None = None, origin_tool_call_id: str | None = None,
-                     background: bool = False, timeout_sec: float | None = None) -> TaskLaunchResult:
-        """启动一次受管进程；兼容旧内部调用参数，但模型不再接收 background。
+                     origin_run_id: str | None = None, origin_tool_call_id: str | None = None) -> TaskLaunchResult:
+        """启动一次受管进程，本次等待预算耗尽后由同一后台任务继续管理。
 
         Args:
             session_id (str): 任务所属 Agent 聊天编号。
@@ -96,8 +95,6 @@ class TaskSupervisor:
             tool_name (str): Pipeline 提供的创建工具名称。
             origin_run_id (str | None): 创建任务的运行编号。
             origin_tool_call_id (str | None): 创建任务的调用编号。
-            background (bool): 仅旧内部调用使用的立即返回开关。
-            timeout_sec (float | None): 仅旧内部调用使用的等待秒数。
 
         Returns:
             TaskLaunchResult: 当前有限输出及已提交状态。
@@ -106,10 +103,6 @@ class TaskSupervisor:
             raise ValueError("新任务必须提供工具名")
         if self._closing:
             raise RuntimeError("任务运行器正在关闭")
-        if timeout_sec is not None:
-            yield_time_ms = min(30000, max(0, int(timeout_sec * 1000)))
-        if background:
-            yield_time_ms = 0
         self._validate_wait(yield_time_ms)
         # 1. 日志和进程均创建成功，且运行记录已提交，才将任务身份交给工具。
         task_id = uuid4().hex

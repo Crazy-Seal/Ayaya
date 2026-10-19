@@ -33,14 +33,14 @@ def test_task_list_excludes_foreground_until_same_process_becomes_background(tmp
             # 1. 正常前台完成仍保留可按身份查询的输出，但不进入后台任务列表。
             foreground = await supervisor.launch(
                 "s", "quick", [sys.executable, "-c", "print('done')"],
-                cwd=str(tmp_path), background=False, timeout_sec=3,
+                cwd=str(tmp_path), yield_time_ms=3000,
             )
             assert not foreground.background
             assert await supervisor.list("s") == []
             # 2. 超时移交后台后，列表包含返回的同一个 task_id，不重新启动进程。
             timeout = await supervisor.launch(
                 "s", "slow", [sys.executable, "-c", "import time; time.sleep(2)"],
-                cwd=str(tmp_path), background=False, timeout_sec=0.05,
+                cwd=str(tmp_path), yield_time_ms=50,
             )
             assert timeout.background
             assert [record.task_id for record in await supervisor.list("s")] == [timeout.task_id]
@@ -75,7 +75,7 @@ def test_background_task_terminal_notification_is_once_and_output_survives_resta
             result = await supervisor.launch(
                 "s", "print('hello')",
                 [sys.executable, "-c", "print('hello')"],
-                cwd=str(tmp_path), background=True, timeout_sec=1,
+                cwd=str(tmp_path), yield_time_ms=0,
                 origin_run_id="run-1", origin_tool_call_id="call-1",
             )
             task_id = result.task_id
@@ -132,7 +132,7 @@ def test_terminal_notification_failure_rolls_back_task_and_retry_notifies_once(t
                 )
                 inspection.commit()
             with pytest.raises(sqlite3.IntegrityError, match="reject terminal"):
-                await records.finish_once("task", TaskStatus.COMPLETED, 0, "完整结果")
+                await records.finish_once("task", TaskStatus.COMPLETED, 0)
             record = await records.get("task")
             assert record is not None
             assert record.status == "running" and record.exit_code is None and record.ended_at is None
@@ -142,9 +142,9 @@ def test_terminal_notification_failure_rolls_back_task_and_retry_notifies_once(t
                 inspection.execute("DROP TRIGGER reject_terminal")
                 inspection.commit()
             # 2. 去掉故障后可以首次结束，重复回调或不存在的任务不会追加通知。
-            assert await records.finish_once("task", TaskStatus.COMPLETED, 0, "完整结果")
-            assert not await records.finish_once("task", TaskStatus.FAILED, 1, "重复结果")
-            assert not await records.finish_once("missing", TaskStatus.COMPLETED, 0, "不存在")
+            assert await records.finish_once("task", TaskStatus.COMPLETED, 0)
+            assert not await records.finish_once("task", TaskStatus.FAILED, 1)
+            assert not await records.finish_once("missing", TaskStatus.COMPLETED, 0)
             record = await records.get("task")
             assert record is not None
             assert record.status == "completed" and record.exit_code == 0 and record.ended_at is not None
@@ -203,7 +203,7 @@ def test_spool_write_failure_marks_task_failed_and_notifies_once(tmp_path, monke
         try:
             result = await supervisor.launch(
                 "s", "print('hello')", [sys.executable, "-c", "print('hello')"],
-                cwd=str(tmp_path), background=True, timeout_sec=1,
+                cwd=str(tmp_path), yield_time_ms=0,
             )
             for _ in range(100):
                 record = await supervisor.get(result.task_id)
@@ -249,7 +249,7 @@ def test_immediate_child_is_in_job_and_stops_with_parent(tmp_path) -> None:
         try:
             result = await supervisor.launch(
                 "s", "spawn child", [sys.executable, "-c", script],
-                cwd=str(tmp_path), background=True, timeout_sec=1,
+                cwd=str(tmp_path), yield_time_ms=0,
             )
             # 1.1. 子进程编号以重命名原子发布，文件存在时内容已经写完，避免偶发读到空文件。
             for _ in range(100):
@@ -334,7 +334,7 @@ def test_output_pages_preserve_utf8_characters_across_byte_boundaries(tmp_path) 
             result = await supervisor.launch(
                 "s", "print('你好')",
                 [sys.executable, "-c", "import sys; sys.stdout.buffer.write('你好'.encode('utf-8'))"],
-                cwd=str(tmp_path), background=False, timeout_sec=3,
+                cwd=str(tmp_path), yield_time_ms=3000,
             )
             cursor = 0
             chunks = []
@@ -375,7 +375,7 @@ def test_running_output_keeps_incomplete_utf8_bytes_for_next_page(tmp_path) -> N
             )
             result = await supervisor.launch(
                 "s", "write split utf8", [sys.executable, "-c", command],
-                cwd=str(tmp_path), background=True, timeout_sec=1,
+                cwd=str(tmp_path), yield_time_ms=0,
             )
             for _ in range(100):
                 record = await supervisor.get(result.task_id)
@@ -414,7 +414,7 @@ def test_foreground_result_is_bounded_but_spool_keeps_full_output(tmp_path) -> N
         try:
             result = await supervisor.launch(
                 "s", "large output", [sys.executable, "-c", "print('x' * 100000)"],
-                cwd=str(tmp_path), background=False, timeout_sec=3,
+                cwd=str(tmp_path), yield_time_ms=3000,
             )
             assert len(result.output.encode("utf-8")) <= 64 * 1024
             assert result.has_more
@@ -444,7 +444,7 @@ def test_explicit_stop_ends_process_and_records_stopped_status(tmp_path) -> None
         try:
             result = await supervisor.launch(
                 "s", "sleep", [sys.executable, "-c", "import time; time.sleep(30)"],
-                cwd=str(tmp_path), background=True, timeout_sec=1,
+                cwd=str(tmp_path), yield_time_ms=0,
             )
             assert await supervisor.stop(result.task_id)
             for _ in range(200):
@@ -550,7 +550,7 @@ def test_terminal_notification_wakes_idle_agent_on_desktop_channel(tmp_path) -> 
             # 2. 后台任务结束后的输出必须属于新轮次，不能混入会话激活时的完成事件。
             result = await supervisor.launch(
                 "s", "print('done')", [sys.executable, "-c", "print('done')"],
-                cwd=str(tmp_path), background=True, timeout_sec=1,
+                cwd=str(tmp_path), yield_time_ms=0,
             )
             await asyncio.wait_for(delivered.wait(), 3)
             observed = []
@@ -711,7 +711,7 @@ def test_active_turn_receives_multiple_task_terminals_at_next_model_boundary(tmp
             for index in range(2):
                 result = await supervisor.launch(
                     "s", f"print({index})", [sys.executable, "-c", f"print({index})"],
-                    cwd=str(tmp_path), background=True, timeout_sec=1,
+                    cwd=str(tmp_path), yield_time_ms=0,
                 )
                 task_ids.append(result.task_id)
             for _ in range(100):
@@ -756,7 +756,7 @@ def test_idle_task_notification_is_committed_before_pending_human_turn(tmp_path)
         done = asyncio.Event()
         result = await supervisor.launch(
             "s", "print('ready')", [sys.executable, "-c", "print('ready')"],
-            cwd=str(tmp_path), background=True, timeout_sec=1,
+            cwd=str(tmp_path), yield_time_ms=0,
         )
         for _ in range(100):
             record = await supervisor.get(result.task_id)

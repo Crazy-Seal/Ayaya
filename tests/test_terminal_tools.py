@@ -280,7 +280,7 @@ def test_many_completion_notices_keep_all_tool_names_and_references(tmp_path: Pa
 
 @pytest.mark.parametrize("legacy", ["allow", "ask", "deny"])
 def test_tool_permission_rename_preserves_saved_decisions(legacy: str) -> None:
-    """新权限优先，旧 deny 不会因改名或隐藏恢复入口被绕过。
+    """新权限优先，旧 deny 不会因工具改名被绕过。
 
     Args:
         legacy (str): 旧 run_ps 保存的权限。
@@ -296,17 +296,17 @@ def test_tool_permission_rename_preserves_saved_decisions(legacy: str) -> None:
     assert not _reconcile_local_tool_permissions(settings)
     settings["tool_permissions"]["local:exec_command"] = "deny"
     authorization = ToolAuthorization(lambda _: SimpleNamespace(tool_permissions=settings["tool_permissions"]))
-    assert authorization.get_policy("chat", ToolIdentity.local("run_ps")) == "deny"
+    assert authorization.get_policy("chat", ToolIdentity.local("exec_command")) == "deny"
 
 
-def test_old_call_is_hidden_but_can_resume_without_exposing_run_ps() -> None:
-    """兼容工具只在按旧名称查找时出现，新模型和工具目录均不公开它。"""
+def test_old_tool_name_cannot_be_resolved_or_exposed() -> None:
+    """工具管理器和公开目录只提供当前工具，不再解析旧调用名称。"""
     from app.agent.core.tool_manager import ToolManager
     from app.agent.tools.core.registry import ToolRegistry
 
     manager = ToolManager()
     manager.register(ExecCommandTool())
-    assert manager.get("run_ps").name == "run_ps"
+    assert manager.get("run_ps") is None
     assert "run_ps" not in ToolRegistry.list_tools()
     assert "run_ps" not in [definition.name for definition in manager.get_tools()]
 

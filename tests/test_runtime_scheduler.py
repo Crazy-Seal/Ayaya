@@ -879,7 +879,7 @@ def test_task_only_wakeup_does_not_release_queue_left_by_stopped_turn(tmp_path) 
                     break
                 await asyncio.sleep(0.01)
             await records.insert_running("task-1", "s", "后台任务", 1, str(tmp_path / "out"))
-            assert await records.finish_once("task-1", "completed", 0, "完成")
+            assert await records.finish_once("task-1", "completed", 0)
             await scheduler.notify_task_terminal("s")
             await asyncio.wait_for(task_done.wait(), 1)
             assert not queue_done.is_set()

@@ -240,7 +240,7 @@ def test_release_only_touches_pending_queued_humans_in_current_session(
             await inbox.submit_human("desktop", "立即输入")
             await other.submit_human("desktop", "其他会话", queued=True)
             await records.insert_running("task", "shared", "任务", 1, str(tmp_path / "out"))
-            assert await records.finish_once("task", "completed", 0, "完成")
+            assert await records.finish_once("task", "completed", 0)
             # 2. 即使重复更新不会改变值，也禁止放行 SQL 触及非目标记录。
             with closing(sqlite3.connect(path)) as inspection:
                 before = inspection.execute(
@@ -293,7 +293,7 @@ def test_queued_input_survives_connection_reopen_and_task_terminal_does_not_rele
         try:
             queued = await inbox.submit_human("desktop", "稍后执行", queued=True)
             await records.insert_running("task-1", "shared", "任务", 1, str(tmp_path / "out"))
-            assert await records.finish_once("task-1", "completed", 0, "完成")
+            assert await records.finish_once("task-1", "completed", 0)
             batch = await inbox.read_activation_batch()
             assert [item.kind for item in batch] == ["task_terminal"]
             manager = StateManager("shared", db_path)
@@ -336,7 +336,7 @@ def test_activation_batch_groups_later_task_terminal_before_human_projection(tmp
         try:
             human = await inbox.submit_human("desktop", "用户指令")
             await records.insert_running("task-1", "shared", "任务", 1, str(tmp_path / "out"))
-            assert await records.finish_once("task-1", "completed", 0, "完成")
+            assert await records.finish_once("task-1", "completed", 0)
             batch = await inbox.read_activation_batch()
             assert {item.id for item in batch} == {human.id, human.id + 1}
             assert [item.kind for item in batch] == ["human", "task_terminal"]

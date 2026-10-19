@@ -173,10 +173,7 @@ class ToolAuthorization:
                 if server is None or not server.enabled:
                     return ToolPolicy.DENY
             policy = settings.tool_permissions.get(identity.stable_key)
-            if identity.source == "local" and identity.name == "run_ps":
-                # 1. 隐藏兼容入口同样服从新工具权限，禁止借旧名称绕过新 deny。
-                policy = settings.tool_permissions.get("local:exec_command", policy)
-            # 2. 内存设置和测试注入也遵循改名规则，不依赖 YAML 已经完成补齐。
+            # 1. 内存设置和测试注入也遵循权限改名规则，不依赖 YAML 已经完成补齐。
             if policy is None and identity.source == "local":
                 legacy = settings.tool_permissions.get("local:run_ps")
                 if identity.name == "exec_command" and legacy is not None:

@@ -68,11 +68,6 @@ class ToolManager:
         Args:
             name (str): 当前对象的名称。
         """
-        if name == "run_ps" and "exec_command" in self._tools:
-            # 1. 只在恢复旧调用时构造兼容工具，不注册进新工具目录。
-            from app.agent.tools.run_ps import RunPsTool
-
-            return RunPsTool()
         return self._tools.get(name)
 
     def has(self, name: str) -> bool:
