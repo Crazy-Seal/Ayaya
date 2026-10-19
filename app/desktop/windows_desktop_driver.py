@@ -5,24 +5,37 @@ from __future__ import annotations
 import base64
 import ctypes
 import io
+import json
 import os
 import time
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Callable, Iterator
 
-from app.schemas.desktop import ScreenAction, ScreenCapture
+from app.schemas.desktop import DesktopWindowRegistration, ScreenAction, ScreenCapture
 
 
 class WindowsDesktopDriver:
     """只由 DesktopController 的唯一线程使用，不向工具暴露系统句柄。
 
     Attributes:
+        _restore_path (Path): 与 Electron 共用的窗口恢复记录位置。
+        _owner_pid (int): 允许登记窗口的 Electron 主进程编号。
+        _registration (DesktopWindowRegistration | None): 已校验 HWND 的完整快照。
         _clipboard_window (int | None): 本线程创建的隐藏剪贴板所有者窗口。
         _clipboard_written_sequence (int | None): 本次写入后的系统序号，用于保护用户新复制内容。
     """
 
-    def __init__(self) -> None:
-        """在工作线程配置 DPI 与 64 位系统调用，不在应用导入时操作桌面。"""
+    def __init__(self, *, restore_path: Path, owner_pid: int = 0) -> None:
+        """在工作线程保存窗口恢复配置并初始化 Windows 原生输入资源。
+
+        Args:
+            restore_path (Path): 应用装配处指定的当前环境恢复文件位置。
+            owner_pid (int): 受管 Electron 主进程编号；零表示尚未确定所有者。
+        """
+        self._restore_path = restore_path
+        self._owner_pid = owner_pid
+        self._registration: DesktopWindowRegistration | None = None
         if os.name != "nt":
             raise RuntimeError("屏幕操作仅支持 Windows")
         from ctypes import wintypes as w
@@ -76,6 +89,130 @@ class WindowsDesktopDriver:
         self._clipboard_written_sequence: int | None = None
         self._snapshot_sequence: int | None = None
         self._pressed: set[int] = set()
+
+    def register_windows(self, registration: DesktopWindowRegistration) -> dict:
+        """在桌面工作线程校验 HWND 并保存完整登记，过期快照不能替换当前身份。
+
+        Args:
+            registration (DesktopWindowRegistration): Electron 提供的 pet/chat 窗口快照。
+        Returns:
+            dict: 是否接受快照，以及与 Electron 共用的恢复文件路径。
+        """
+        # 1. 先核对进程与版本；拒绝快照时不改变已经验证的窗口身份。
+        if self._owner_pid and registration.owner_pid != self._owner_pid:
+            raise ValueError("窗口所有者与当前 Electron 进程不一致")
+        if self._registration and registration.revision <= self._registration.revision:
+            return {"accepted": False, "window_restore_path": str(self._restore_path)}
+        # 2. 全部句柄验证通过后才能替换登记，避免错误快照污染后续隐藏与恢复。
+        for handle in registration.windows.model_dump().values():
+            if handle is not None and int(handle) >= 1 << (ctypes.sizeof(ctypes.c_void_p) * 8):
+                raise ValueError("桌面窗口句柄超出指针范围")
+            if handle is not None and self.window_owner(int(handle)) != registration.owner_pid:
+                raise ValueError("桌面窗口句柄不存在或不属于登记进程")
+        # 3. 仅保存已核对的身份；文件仍在实际隐藏窗口前写入。
+        self._owner_pid = registration.owner_pid
+        self._registration = registration
+        return {"accepted": True, "window_restore_path": str(self._restore_path)}
+
+    def _write_restore_record(self, windows: list[dict]) -> None:
+        """先原子保存可恢复窗口，后续才允许调用系统隐藏。
+
+        Args:
+            windows (list[dict]): 本次原本可见窗口的角色及十进制句柄。
+        """
+        self._restore_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self._restore_path.with_suffix(".tmp")
+        record = {"owner_pid": self._owner_pid, "backend_pid": os.getpid(), "windows": windows}
+        temporary.write_text(json.dumps(record), encoding="utf-8")
+        temporary.replace(self._restore_path)
+
+    @contextmanager
+    def window_guard(self, *, hide: bool, check: Callable[[], None]) -> Iterator[None]:
+        """操作期间隐藏指定窗口，结束后只恢复原本可见且没有被最小化的对象。
+
+        Args:
+            hide (bool): 控制器根据当前设置决定是否隐藏应用窗口。
+            check (Callable[[], None]): 控制器的停止检查，恢复阶段不再调用。
+        Yields:
+            None: 窗口已完成隐藏和缓冲，可以执行本次桌面观察与输入。
+        """
+        check()
+        if self._owner_pid and self._registration is None:
+            raise RuntimeError("桌面窗口尚未登记，不能开始屏幕操作")
+        # 1. 上次清理未完成时先重试匹配窗口；不允许新记录覆盖仍隐藏窗口的恢复身份。
+        if self._restore_path.exists():
+            record = json.loads(self._restore_path.read_text(encoding="utf-8"))
+            known = self._registration.windows.model_dump() if self._registration else {}
+            if record.get("owner_pid") != self._owner_pid:
+                # 1.1. 整个应用重启后 PID 已变化；旧窗口均销毁的记录不能永久阻塞新应用。
+                if any(self.window_owner(int(item["hwnd"])) == record.get("owner_pid")
+                       for item in record.get("windows", [])):
+                    raise RuntimeError("已有窗口恢复记录仍属于存活的旧 Electron，不能覆盖")
+            else:
+                remaining = [item for item in record.get("windows", [])
+                             if item.get("role") in known and known[item["role"]] == item.get("hwnd")]
+                self._restore_windows(remaining)
+            self._restore_path.unlink(missing_ok=True)
+        hidden: list[dict] = []
+        if hide and self._registration:
+            # 2. 只处理登记角色；已销毁的句柄跳过，绝不枚举同进程其他窗口。
+            for role, handle in self._registration.windows.model_dump().items():
+                if handle is not None:
+                    hwnd = int(handle)
+                    if self.window_owner(hwnd) == self._owner_pid and self.visible(hwnd) and not self.minimized(hwnd):
+                        hidden.append({"role": role, "hwnd": handle})
+        if hidden:
+            self._write_restore_record(hidden)
+        try:
+            # 3. 隐藏请求发出不等于完成，确认系统状态后才进入捕获缓冲。
+            deadline = time.monotonic() + 1
+            for window in hidden:
+                hwnd = int(window["hwnd"])
+                self.hide(hwnd)
+                while self.visible(hwnd):
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("隐藏桌面窗口超时")
+                    self._wait(0.01, check)
+            if hidden:
+                self._wait(0.12, check)
+            yield
+        finally:
+            # 4. 清理不再检查停止；失败时保留原记录，供下次操作或 Electron 崩溃恢复使用。
+            self._restore_windows(hidden)
+            if hidden:
+                self._restore_path.unlink(missing_ok=True)
+
+    def _restore_windows(self, windows: list[dict]) -> None:
+        """尝试全部本次匹配窗口，一个恢复失败不会跳过其余窗口。
+
+        Args:
+            windows (list[dict]): 已核对角色身份的本次隐藏窗口或未完成恢复记录。
+        Raises:
+            RuntimeError: 至少一个存活且未最小化的窗口恢复失败。
+        """
+        failures = []
+        for window in windows:
+            hwnd = int(window["hwnd"])
+            try:
+                if self.window_owner(hwnd) == self._owner_pid and not self.minimized(hwnd):
+                    self.show_inactive(hwnd)
+            except Exception as exc:
+                failures.append(str(exc))
+        if failures:
+            raise RuntimeError("桌面窗口恢复失败：" + "; ".join(failures))
+
+    def _wait(self, seconds: float, check: Callable[[], None]) -> None:
+        """等待原生窗口或粘贴消息生效，期间定期调用控制器的停止检查。
+
+        Args:
+            seconds (float): 当前平台操作需要等待的秒数。
+            check (Callable[[], None]): 控制器提供的检查，停止时抛出异常。
+        """
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            check()
+            time.sleep(min(0.01, max(0, deadline - time.monotonic())))
+        check()
 
     def window_owner(self, hwnd: int) -> int | None:
         """返回存活窗口所属 PID，销毁的句柄返回 None。
@@ -278,7 +415,7 @@ class WindowsDesktopDriver:
             raise
 
     def _write_text(self, text: str) -> None:
-        """确认用户没有新复制内容后写入 UTF-16，成功后句柄归系统所有。
+        """确认用户没有新复制内容后写入 UTF-16，允许同一批次连续替换自己的输入文本。
 
         Args:
             text (str): 本次需要粘贴到目标程序的完整文本。
@@ -296,11 +433,16 @@ class WindowsDesktopDriver:
             ctypes.memmove(pointer, data, len(data))
             self._kernel.GlobalUnlock(handle)
             with self._clipboard():
-                if self._user.GetClipboardSequenceNumber() != self._snapshot_sequence:
+                # 1. 首次写入比对原快照，后续写入比对本批次上一次写入的序号。
+                # 1.1. 只信任自己的上一次写入；用户在两个动作间复制的新内容仍会阻止覆盖。
+                expected_sequence = self._clipboard_written_sequence
+                if expected_sequence is None:
+                    expected_sequence = self._snapshot_sequence
+                if self._user.GetClipboardSequenceNumber() != expected_sequence:
                     raise RuntimeError("用户已复制新内容，取消本次文本输入")
                 if not self._user.EmptyClipboard():
                     raise RuntimeError("清空剪贴板失败")
-                # 1. 即使后续 SetClipboardData 失败，也必须凭此序号恢复已经被清空的旧内容。
+                # 2. 即使后续 SetClipboardData 失败，也必须凭此序号恢复已经被清空的旧内容。
                 self._clipboard_written_sequence = self._user.GetClipboardSequenceNumber()
                 if not self._user.SetClipboardData(13, handle):
                     raise RuntimeError("写入剪贴板失败")
@@ -363,10 +505,7 @@ class WindowsDesktopDriver:
         self._input.keyUp("ctrl")
         self._pressed.discard(0x11)
         # 1. 给目标程序处理粘贴消息的短暂时间，不能立即把剪贴板换回旧内容。
-        deadline = time.monotonic() + 0.1
-        while time.monotonic() < deadline:
-            check()
-            time.sleep(0.01)
+        self._wait(0.1, check)
 
     def press_enter(self) -> None:
         """显式记录回车按下，输入失败时 finally 仍可原生释放。"""

@@ -29,6 +29,10 @@ def screen_tool_result(result: ScreenActionResult) -> ToolResult:
     messages = {"completed": "屏幕操作完成", "not_started": "屏幕操作未执行",
                 "partial_or_unknown": "屏幕操作可能已部分执行，请先观察屏幕，不要直接重复操作"}
     content = messages[result.status]
+    if result.total_actions:
+        content += f"；已完整完成 {result.completed_actions}/{result.total_actions} 个动作"
+        if result.completed_actions < result.total_actions:
+            content += "；后续动作未继续执行，不能直接重放整批动作"
     if result.error:
         content += f"：{result.error}"
     if result.screenshot is None and result.status == "completed":

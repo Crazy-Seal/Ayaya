@@ -90,14 +90,18 @@ class ScreenActionResult:
         status (Literal): 未开始、部分或不确定、已完成的副作用状态。
         screenshot (ScreenCapture | None): 动作后的观察，截图失败时为空。
         error (str | None): 输入、捕获或清理失败说明，不代表动作一定未执行。
+        completed_actions (int): 已完整发出鼠标和键盘输入的动作数量，不包含执行程度未知的当前动作。
+        total_actions (int): 本批次请求的动作总数。
     """
     status: Literal["not_started", "partial_or_unknown", "completed"]
     screenshot: ScreenCapture | None = None
     error: str | None = None
+    completed_actions: int = 0
+    total_actions: int = 0
 
 
 class DesktopOperations(Protocol):
-    """工具依赖的两个桌面接口，生产与隔离操作系统测试共用此契约。"""
+    """工具依赖的截图与整批操作接口，生产与隔离操作系统测试共用此契约。"""
 
     async def capture_screen(self, *, stop_requested: StopRequested | None = None) -> ScreenCapture:
         """取得主屏观察，结束前恢复本次临时隐藏的窗口。
@@ -109,13 +113,13 @@ class DesktopOperations(Protocol):
         """
         ...
 
-    async def perform_action(self, action: ScreenAction, *, stop_requested: StopRequested | None = None) -> ScreenActionResult:
-        """串行执行已获准动作，清理后返回真实副作用及可选截图。
+    async def perform_actions(self, actions: tuple[ScreenAction, ...], *, stop_requested: StopRequested | None = None) -> ScreenActionResult:
+        """在同一锁及窗口隐藏期间顺序执行整批动作，最后截图，失败时停止余下动作。
 
         Args:
-            action (ScreenAction): 已由 Pipeline 获准的动作及物理位置比例。
+            actions (tuple[ScreenAction, ...]): 已由 Pipeline 整批获准的有序动作及物理位置比例。
             stop_requested (StopRequested | None): 当前轮次的只读停止检查。
         Returns:
-            ScreenActionResult: 如实区分副作用状态、观察图片和错误。
+            ScreenActionResult: 如实区分执行程度、完成数量、最终观察和错误。
         """
         ...

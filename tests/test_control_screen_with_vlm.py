@@ -1,10 +1,8 @@
 import asyncio
 
 from app.agent.tools.core.base import ToolContext
-from app.agent.tools.control_screen_with_vlm import (
-    control_screen_with_vlm,
-    restore_vlm_point,
-)
+from app.agent.tools.control_screen_with_vlm import control_screen_with_vlm
+from app.agent.tools.screen.actions import LocatedScreenActionArguments
 from app.agent.tools.core.registry import ToolRegistry
 
 
@@ -46,16 +44,12 @@ def test_vlm_tool_is_discovered_by_registry() -> None:
     assert tool_class.name == "control_screen_with_vlm"
 
 
-def test_restore_vlm_point_keeps_original_coordinate_payload() -> None:
-    """验证恢复定位点时保留原坐标载荷。"""
-    result = restore_vlm_point([400, 200, 600, 400], 1920, 1080)
+def test_located_action_preserves_bbox_and_center_ratios() -> None:
+    """验证定位后审批材料保留原坐标框，桌面仍使用归一化中心比例。"""
+    result = LocatedScreenActionArguments(target="输入框", bbox=[400, 200, 600, 400]).execution_data()
 
-    assert result == {
+    assert result["coordinates"] == {
         "bbox": [400, 200, 600, 400],
         "x_ratio": 0.5,
         "y_ratio": 0.3,
-        "x": 960,
-        "y": 324,
-        "width": 1920,
-        "height": 1080,
     }

@@ -1,5 +1,6 @@
 from fastapi import Depends
 from functools import lru_cache
+import os
 
 from app.crud.chat_history_dao import ChatHistoryDao
 from app.crud.chat_settings_dao import ChatSettingsDao
@@ -8,6 +9,8 @@ from app.crud.desktop_settings_dao import DesktopSettingsDao
 from app.services.desktop_settings_service import DesktopSettingsService
 from app.schemas.runtime_types import RuntimePhase
 from app.desktop.desktop_controller import DesktopController
+from app.desktop.driver import DesktopDriver
+from app.runtime import get_data_dir
 from app.orchestration.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.interaction.interaction_event_hub import InteractionEventHub
 from app.services.channel_subscription_service import ChannelSubscriptionService
@@ -44,7 +47,24 @@ def get_desktop_controller() -> DesktopController:
     Returns:
         DesktopController: 由应用生命周期统一启动与关闭的共享实例。
     """
-    return DesktopController(get_desktop_settings_dao().load)
+    def create_driver() -> DesktopDriver:
+        """由控制器工作线程调用，按当前平台创建一次原生驱动。
+
+        Returns:
+            DesktopDriver: 使用当前环境数据目录及 Electron 进程身份的驱动。
+        Raises:
+            RuntimeError: 当前平台尚未提供桌面驱动。
+        """
+        if os.name != "nt":
+            raise RuntimeError("屏幕操作仅支持 Windows")
+        from app.desktop.windows_desktop_driver import WindowsDesktopDriver
+
+        return WindowsDesktopDriver(
+            restore_path=get_data_dir() / "desktop" / "window_restore.json",
+            owner_pid=int(os.getenv("AYAYA_PARENT_PID") or 0),
+        )
+
+    return DesktopController(get_desktop_settings_dao().load, driver_factory=create_driver)
 
 
 @lru_cache(maxsize=1)

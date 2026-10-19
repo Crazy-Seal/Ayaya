@@ -5,7 +5,8 @@ import json
 import pytest
 
 from app.agent.tools.core.base import ToolContext
-from app.agent.tools.control_screen import control_screen, normalize_bbox
+from app.agent.tools.control_screen import control_screen
+from app.agent.tools.screen.actions import normalize_bbox
 from app.agent.tools.control_screen_with_vlm import control_screen_with_vlm
 
 
@@ -54,7 +55,7 @@ def _args(**overrides) -> dict:
     """
     args = {"target": "search box", "bbox": [400, 200, 600, 400]}
     args.update(overrides)
-    return args
+    return {"actions": [args]}
 
 
 def test_control_screen_schema_only_describes_xyxy() -> None:
@@ -62,8 +63,11 @@ def test_control_screen_schema_only_describes_xyxy() -> None:
     function = encoded_tool(control_screen())["function"]
     serialized = json.dumps(function, ensure_ascii=False).lower()
 
-    assert set(function["parameters"]["required"]) == {"target", "bbox"}
-    assert "[x1, y1, x2, y2]" in function["parameters"]["properties"]["bbox"]["description"]
+    assert function["parameters"]["required"] == ["actions"]
+    actions = function["parameters"]["properties"]["actions"]
+    assert actions["minItems"] == 1
+    assert set(actions["items"]["required"]) == {"target", "bbox"}
+    assert "[x1, y1, x2, y2]" in actions["items"]["properties"]["bbox"]["description"]
     assert "gemini" not in serialized
     assert "y1, x1, y2, x2" not in serialized
 
@@ -81,12 +85,13 @@ def test_screen_wait_range_is_visible_to_model(tool_class) -> None:
         tool_class (type[BaseTool]): 使用坐标框或文字定位的屏幕工具类。
     """
     schema = encoded_tool(tool_class())["function"]["parameters"]
-    wait = schema["properties"]["wait_seconds"]
+    item = schema["properties"]["actions"]["items"]
+    wait = item["properties"]["wait_seconds"]
     assert wait["type"] == "integer"
     assert wait["minimum"] == 0
     assert wait["maximum"] == 60
     assert wait["default"] == 3
-    assert "wait_seconds" not in schema["required"]
+    assert "wait_seconds" not in item["required"]
 
 
 @pytest.mark.parametrize(

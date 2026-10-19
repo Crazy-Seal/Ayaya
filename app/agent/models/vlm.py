@@ -1,7 +1,4 @@
-"""VLM 屏幕定位服务。
-
-- VLMService.locate(intent, image_data_url) -> bbox：在截图中定位元素并返回 2D 边界框
-"""
+"""基于同一张截图，在一次 VLM 请求中定位有序目标数组。"""
 
 import json
 import logging
@@ -19,8 +16,12 @@ VLM_DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 _LOCATE_SYSTEM_PROMPT = (
     "你是一个PC屏幕视觉分析助手。你的任务是根据用户的文字描述，"
-    "在提供的截图中定位目标元素，并以JSON格式返回该元素的2D边界框。"
-    "返回格式必须是 {\"bbox_2d\": [x1, y1, x2, y2]}，不要输出Markdown格式或其他内容。"
+    "在同一张截图中一次定位 targets 数组中的全部目标。"
+    "所有坐标都必须按图片宽高分别归一化到0～1000，边界框格式为[x1,y1,x2,y2]。"
+    "返回格式必须是 {\"bboxes_2d\": [[x1,y1,x2,y2], ...]}，"
+    "框的数量及顺序必须与 targets 严格一致，不能遗漏、合并或交换目标。"
+    "所有目标必须在当前截图中已存在；不能预测后续操作后的新界面。"
+    "找不到的目标在对应位置返回null，不得猜测坐标。不要输出Markdown或其他内容。"
 )
 
 
@@ -41,11 +42,18 @@ def _vlm_config() -> tuple[str, str, str]:
     return api_key.strip(), base_url, model
 
 
-def extract_bbox(content: Any) -> list[int]:
-    """从 VLM 文本响应中解析 bbox_2d [x1,y1,x2,y2]（容错 JSON 提取）。
+def extract_bboxes(content: Any, expected_count: int) -> list[list[int]]:
+    """解析全部定位框，任一目标缺失、数量不符或框无效时拒绝整个结果。
 
     Args:
-        content (Any): 当前处理的正文。
+        content (Any): VLM 返回的 JSON 文本或文本内容块。
+        expected_count (int): 请求中的目标数量，返回数组必须逐项对应。
+
+    Returns:
+        list[list[int]]: 按目标顺序排列的完整 xyxy 整数框数组。
+
+    Raises:
+        ValueError: JSON 无效、数量不符、任一目标未找到或坐标框无效。
     """
     if isinstance(content, list):
         content = "".join(
@@ -62,46 +70,45 @@ def extract_bbox(content: Any) -> list[int]:
             raise ValueError(f"模型返回不是JSON: {text[:200]}")
         parsed = json.loads(match.group(0))
 
-    bbox = parsed.get("bbox_2d") if isinstance(parsed, dict) else None
-    if not isinstance(bbox, list) or len(bbox) != 4:
-        raise ValueError(f"缺少合法bbox_2d字段: {parsed}")
-    try:
-        x1, y1, x2, y2 = [int(float(v)) for v in bbox]
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"bbox_2d坐标不是数字: {bbox}") from exc
-    if x2 <= x1 or y2 <= y1:
-        raise ValueError(f"bbox_2d范围无效: {bbox}")
-    return [x1, y1, x2, y2]
-
-
-def clamp_bbox(bbox: list[int], width: int, height: int) -> list[int]:
-    """把 bbox 夹到图像范围内。
-
-    Args:
-        bbox (list[int]): 归一化画布中的 xyxy 边界框。
-        width (int): 截图宽度，用于坐标范围判断。
-        height (int): 截图高度，用于坐标范围判断。
-    """
-    x1, y1, x2, y2 = bbox
-    x1 = max(0, min(x1, width - 1))
-    y1 = max(0, min(y1, height - 1))
-    x2 = max(1, min(x2, width))
-    y2 = max(1, min(y2, height))
-    if x2 <= x1 or y2 <= y1:
-        raise ValueError("bbox超出屏幕有效范围。")
-    return [x1, y1, x2, y2]
+    boxes = parsed.get("bboxes_2d") if isinstance(parsed, dict) else None
+    if not isinstance(boxes, list) or len(boxes) != expected_count:
+        raise ValueError("VLM 返回的 bboxes_2d 数量与目标数量不一致。")
+    result = []
+    # 1. 全部框都合法才交给工具，不能把部分定位成功误当作整批定位成功。
+    for index, bbox in enumerate(boxes, start=1):
+        if not isinstance(bbox, list) or len(bbox) != 4:
+            raise ValueError(f"第 {index} 个目标未找到或坐标框无效。")
+        if any(isinstance(value, bool) for value in bbox):
+            raise ValueError(f"第 {index} 个目标的坐标不能是布尔值。")
+        try:
+            x1, y1, x2, y2 = [int(float(value)) for value in bbox]
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"第 {index} 个目标的坐标不是有限数字。") from exc
+        if x2 <= x1 or y2 <= y1:
+            raise ValueError(f"第 {index} 个目标的坐标框边界无效。")
+        result.append([x1, y1, x2, y2])
+    return result
 
 
 class VLMService:
     """视觉模型服务。无状态，按需读取 VLM_* 环境变量。"""
 
-    async def locate(self, intent: str, image_data_url: str) -> list[int]:
-        """在截图中定位元素，返回 bbox_2d。
+    async def locate_many(self, intents: list[str], image_data_url: str) -> list[list[int]]:
+        """一次请求定位同一张截图上的全部目标，不按目标循环调用模型。
 
         Args:
-            intent (str): 元素描述，如"屏幕中间的确定按钮"
+            intents (list[str]): 按动作顺序排列的非空目标描述。
             image_data_url (str): 完整 data URL（data:image/...;base64,...）
+
+        Returns:
+            list[list[int]]: 与输入目标一一对应的全部定位框。
+
+        Raises:
+            ValueError: 目标为空或模型未返回完整有效的定位结果。
+            RuntimeError: 缺少定位模型配置。
         """
+        if not intents or any(not isinstance(intent, str) or not intent.strip() for intent in intents):
+            raise ValueError("VLM 定位需要至少一个非空目标。")
         api_key, base_url, model = _vlm_config()
         # 1. 保留原 SDK 默认超时与重试，只统一模型调用接口。
         client = LLMClient(LLMConfig(model=model, api_key=api_key, base_url=base_url,
@@ -109,8 +116,10 @@ class VLMService:
         try:
             response = await client.ainvoke([
                 SystemMessage(text=_LOCATE_SYSTEM_PROMPT),
-                HumanMessage(content=(ImageContent(image_data_url), TextContent(intent.strip()))),
+                HumanMessage(content=(ImageContent(image_data_url), TextContent(json.dumps(
+                    {"targets": [intent.strip() for intent in intents]}, ensure_ascii=False,
+                )))),
             ])
-            return extract_bbox(response.text)
+            return extract_bboxes(response.text, len(intents))
         finally:
             await client.close()

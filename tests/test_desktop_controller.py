@@ -3,16 +3,28 @@
 import asyncio
 import threading
 from contextlib import contextmanager
+from pathlib import Path
+
+import pytest
 
 from app.schemas.desktop import DesktopSettings, DesktopWindowRegistration, ScreenCapture, ScreenAction
 from app.desktop.desktop_controller import DesktopController
+from app.desktop.windows_desktop_driver import WindowsDesktopDriver
 
 
-class FakeDesktop:
+class FakeDesktop(WindowsDesktopDriver):
     """模拟窗口和屏幕的操作系统，不移动真实鼠标、不截图。"""
 
-    def __init__(self) -> None:
-        """建立桌宠、聊天、设置窗口和可观察的焦点状态。"""
+    def __init__(self, restore_path: Path, owner_pid: int = 0) -> None:
+        """使用生产窗口管理方法，只替换系统窗口与输入调用。
+
+        Args:
+            restore_path (Path): 独立测试目录中的窗口恢复文件位置。
+            owner_pid (int): 模拟 Electron 进程编号，零表示等待首次登记。
+        """
+        self._restore_path = restore_path
+        self._owner_pid = owner_pid
+        self._registration = None
         self.windows = {11: {"owner": 100, "visible": True, "minimized": False},
                         12: {"owner": 100, "visible": True, "minimized": False},
                         13: {"owner": 100, "visible": True, "minimized": False}}
@@ -105,6 +117,144 @@ class FakeDesktop:
         pass
 
 
+@pytest.mark.parametrize("failure", ["none", "second_action", "capture", "stop"])
+def test_batch_actions_keep_one_window_guard_and_stop_after_failure(tmp_path, monkeypatch, failure) -> None:
+    """验证整批只隐藏恢复一次、只在最后截图，并保留失败或停止前的真实进度。
+
+    Args:
+        tmp_path (Path): 测试窗口恢复记录的独立目录。
+        monkeypatch (pytest.MonkeyPatch): 在动作间等待结束时注入停止通知。
+        failure (str): 正常执行、第二步故障、最终截图故障或动作间停止。
+    """
+    class BatchDesktop(FakeDesktop):
+        """记录输入准备和窗口显隐，不执行真实桌面操作。"""
+        def __init__(self, restore_path):
+            """初始化与本批次对应的显隐和剪贴板记录。
+
+            Args:
+                restore_path (Path): 当前测试的窗口恢复文件位置。
+            """
+            super().__init__(restore_path)
+            self.hidden = []
+            self.shown = []
+            self.guards = []
+
+        def hide(self, hwnd):
+            """记录本批次隐藏的窗口。
+
+            Args:
+                hwnd (int): 模拟窗口句柄。
+            """
+            self.hidden.append(hwnd)
+            super().hide(hwnd)
+
+        def show_inactive(self, hwnd):
+            """记录本批次恢复的窗口。
+
+            Args:
+                hwnd (int): 模拟窗口句柄。
+            """
+            self.shown.append(hwnd)
+            super().show_inactive(hwnd)
+
+        @contextmanager
+        def input_guard(self, text):
+            """记录整批输入预检查，结束时也记录清理。
+
+            Args:
+                text (str): 用于判断整批是否需要保存剪贴板的文本。
+
+            Yields:
+                None: 允许当前批次执行桌面输入。
+            """
+            self.guards.append(text)
+            try:
+                yield
+            finally:
+                self.guards.append("cleaned")
+
+        def mouse_action(self, action, check):
+            """记录输入，第二步可以模拟已经部分发送后的失败。
+
+            Args:
+                action (ScreenAction): 当前要执行的动作。
+                check (Callable): 原控制器的停止检查。
+            """
+            assert not self.visible(11) and not self.visible(12)
+            super().mouse_action(action, check)
+            if failure == "second_action" and len(self.actions) == 2:
+                raise OSError("第二步输入中断")
+
+    async def scenario():
+        """通过批量公开接口观察动作顺序、进度和最终清理。"""
+        native = BatchDesktop(tmp_path / "restore.json")
+        native.fail_capture = failure == "capture"
+        desktop = DesktopController(lambda: DesktopSettings(), driver_factory=lambda: native)
+        desktop.start()
+        await desktop.register_windows(DesktopWindowRegistration(owner_pid=100, revision=1, windows={"pet": "11", "chat": "12"}))
+        pause = desktop._pause
+
+        def stop_after_first_wait(seconds, cancelled):
+            """在第一步已经完成时触发公开关闭信号，阻止第二步开始。
+
+            Args:
+                seconds (float): 原流程需要等待的秒数。
+                cancelled (threading.Event): 原流程接收的取消信号。
+            """
+            pause(seconds, cancelled)
+            if failure == "stop" and len(native.actions) == 1:
+                desktop.begin_shutdown()
+
+        monkeypatch.setattr(desktop, "_pause", stop_after_first_wait)
+        actions = (
+            ScreenAction(0.2, 0.2, "click", wait_seconds=0),
+            ScreenAction(0.5, 0.5, "click", text="第二步文字", press_enter=False, wait_seconds=0),
+            ScreenAction(0.8, 0.8, "click", wait_seconds=0),
+        )
+        try:
+            result = await desktop.perform_actions(actions)
+            assert result.total_actions == 3
+            expected_completed = 3 if failure in {"none", "capture"} else 1
+            assert result.completed_actions == expected_completed
+            assert result.status == ("completed" if expected_completed == 3 else "partial_or_unknown")
+            expected_inputs = 2 if failure == "second_action" else 1 if failure == "stop" else 3
+            assert native.actions == list(actions[:expected_inputs])
+            assert len(native.observed) == (1 if expected_completed == 3 else 0)
+            assert native.hidden == native.shown == [11, 12]
+            assert native.guards == ["第二步文字", "cleaned"]
+            assert native.visible(11) and native.visible(12)
+            assert not (tmp_path / "restore.json").exists()
+            assert bool(result.error) == (failure != "none")
+        finally:
+            await desktop.close()
+
+    asyncio.run(scenario())
+
+
+def test_invalid_later_action_prevents_entire_batch(tmp_path) -> None:
+    """后面的无效坐标必须在第一次输入前被发现，不能产生部分批次。
+
+    Args:
+        tmp_path (Path): 测试窗口恢复记录的独立目录。
+    """
+    async def scenario():
+        """给公开接口提供第二步无效的数组，观察动作和进度均为空。"""
+        native = FakeDesktop(tmp_path / "restore.json")
+        desktop = DesktopController(lambda: DesktopSettings(hide_on_screenshot=False), driver_factory=lambda: native)
+        desktop.start()
+        try:
+            result = await desktop.perform_actions((
+                ScreenAction(0.5, 0.5, "click", wait_seconds=0),
+                ScreenAction(float("nan"), 0.5, "click", wait_seconds=0),
+            ))
+            assert result.status == "not_started" and result.completed_actions == 0
+            assert result.total_actions == 2 and result.error
+            assert not native.actions and not native.observed
+        finally:
+            await desktop.close()
+    asyncio.run(scenario())
+
+
 def test_capture_hides_only_registered_windows_and_restores_without_focus(tmp_path) -> None:
     """通过截图 interface 验证只有登记窗口消失且结束后恢复原焦点。
 
@@ -113,8 +263,8 @@ def test_capture_hides_only_registered_windows_and_restores_without_focus(tmp_pa
     """
     async def scenario():
         """在独立控制器生命周期内登记两个窗口并观察截图。"""
-        native = FakeDesktop()
-        desktop = DesktopController(lambda: DesktopSettings(), adapter=native, restore_path=tmp_path / "restore.json")
+        native = FakeDesktop(tmp_path / "restore.json")
+        desktop = DesktopController(lambda: DesktopSettings(), driver_factory=lambda: native)
         desktop.start()
         await desktop.register_windows(DesktopWindowRegistration(owner_pid=100, revision=1, windows={"pet": "11", "chat": "12"}))
         try:
@@ -138,10 +288,10 @@ def test_capture_failure_and_minimized_windows_preserve_original_visibility(tmp_
     async def scenario():
         """在观察失败前安排聊天最小化，并检查清理后的外部状态。"""
         import pytest
-        native = FakeDesktop()
+        native = FakeDesktop(tmp_path / "restore.json")
         native.windows[12]["minimized"] = True
         native.fail_capture = True
-        desktop = DesktopController(lambda: DesktopSettings(), adapter=native, restore_path=tmp_path / "restore.json")
+        desktop = DesktopController(lambda: DesktopSettings(), driver_factory=lambda: native)
         desktop.start()
         await desktop.register_windows(DesktopWindowRegistration(owner_pid=100, revision=2, windows={"pet": "11", "chat": "12"}))
         try:
@@ -164,12 +314,12 @@ def test_completed_action_survives_post_action_capture_failure(tmp_path) -> None
     """
     async def scenario():
         """从公共动作接口观察已执行的动作与捕获错误。"""
-        native = FakeDesktop()
+        native = FakeDesktop(tmp_path / "restore.json")
         native.fail_capture = True
-        desktop = DesktopController(lambda: DesktopSettings(hide_on_screenshot=False), adapter=native, restore_path=tmp_path / "restore.json")
+        desktop = DesktopController(lambda: DesktopSettings(hide_on_screenshot=False), driver_factory=lambda: native)
         desktop.start()
         try:
-            result = await desktop.perform_action(ScreenAction(0.5, 0.5, "click", wait_seconds=0))
+            result = await desktop.perform_actions((ScreenAction(0.5, 0.5, "click", wait_seconds=0),))
             assert result.status == "completed" and result.screenshot is None
             assert result.error == "截图失败"
             assert len(native.actions) == 1
@@ -187,9 +337,9 @@ def test_registration_rejects_other_process_and_stale_revision(tmp_path) -> None
     async def scenario():
         """登记一次后提交过期快照与不属于当前进程的句柄。"""
         import pytest
-        native = FakeDesktop()
+        native = FakeDesktop(tmp_path / "restore.json", owner_pid=100)
         native.windows[13]["owner"] = 200
-        desktop = DesktopController(lambda: DesktopSettings(), adapter=native, restore_path=tmp_path / "restore.json", owner_pid=100)
+        desktop = DesktopController(lambda: DesktopSettings(), driver_factory=lambda: native)
         desktop.start()
         try:
             await desktop.register_windows(DesktopWindowRegistration(owner_pid=100, revision=5, windows={"pet": "11", "chat": "12"}))
@@ -223,8 +373,8 @@ def test_cancelling_wait_does_not_release_desktop_before_thread_cleanup(tmp_path
                     assert release.wait(2)
                 return super().capture()
 
-        native = BlockingDesktop()
-        desktop = DesktopController(lambda: DesktopSettings(hide_on_screenshot=False), adapter=native, restore_path=tmp_path / "restore.json")
+        native = BlockingDesktop(tmp_path / "restore.json")
+        desktop = DesktopController(lambda: DesktopSettings(hide_on_screenshot=False), driver_factory=lambda: native)
         desktop.start()
         first = asyncio.create_task(desktop.capture_screen())
         while not entered.is_set():
@@ -266,9 +416,9 @@ def test_failed_restore_record_is_not_overwritten_by_next_capture(tmp_path) -> N
 
     async def scenario():
         """连续失败不丢记录，系统恢复正常后原窗口都能清理。"""
-        native = FailingRestore()
+        native = FailingRestore(tmp_path / "restore.json")
         restore = tmp_path / "restore.json"
-        desktop = DesktopController(lambda: DesktopSettings(), adapter=native, restore_path=restore)
+        desktop = DesktopController(lambda: DesktopSettings(), driver_factory=lambda: native)
         desktop.start()
         try:
             await desktop.register_windows(DesktopWindowRegistration(owner_pid=100, revision=1, windows={"pet": "11", "chat": "12"}))
@@ -301,8 +451,8 @@ def test_new_electron_can_discard_restore_record_of_destroyed_old_windows(tmp_pa
         restore = tmp_path / "restore.json"
         restore.write_text(json.dumps({"owner_pid": 90, "backend_pid": 200,
                                        "windows": [{"role": "pet", "hwnd": "91"}]}))
-        native = FakeDesktop()
-        desktop = DesktopController(lambda: DesktopSettings(), adapter=native, restore_path=restore, owner_pid=100)
+        native = FakeDesktop(restore, owner_pid=100)
+        desktop = DesktopController(lambda: DesktopSettings(), driver_factory=lambda: native)
         desktop.start()
         try:
             await desktop.register_windows(DesktopWindowRegistration(owner_pid=100, revision=1, windows={"pet": "11", "chat": "12"}))

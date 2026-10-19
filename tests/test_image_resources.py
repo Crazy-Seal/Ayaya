@@ -96,6 +96,7 @@ def test_vlm_locate_client_is_closed(monkeypatch) -> None:
         monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
     """
     clients = []
+    requests = []
 
     class FakeCompletions:
         """提供当前用例所需的 FakeCompletions 测试替身，执行记录仅供外层断言使用。
@@ -110,7 +111,8 @@ def test_vlm_locate_client_is_closed(monkeypatch) -> None:
             Args:
                 kwargs (dict[str, Any]): 传递给被调用函数的其他关键字参数。
             """
-            message = SimpleNamespace(content='{"bbox_2d":[1,2,3,4]}')
+            requests.append(kwargs)
+            message = SimpleNamespace(content='{"bboxes_2d":[[1,2,3,4],[5,6,7,8]]}')
             return SimpleNamespace(choices=[SimpleNamespace(message=message)])
 
     class FakeClient:
@@ -142,15 +144,20 @@ def test_vlm_locate_client_is_closed(monkeypatch) -> None:
     monkeypatch.setenv("VLM_API_KEY", "test-key")
 
     result = asyncio.run(
-        vlm.VLMService().locate(
-            "确认按钮",
+        vlm.VLMService().locate_many(
+            ["确认按钮", "输入框"],
             "data:image/png;base64,AA==",
         )
     )
 
-    assert result == [1, 2, 3, 4]
+    assert result == [[1, 2, 3, 4], [5, 6, 7, 8]]
     assert len(clients) == 1
     assert clients[0].closed is True
+    assert len(requests) == 1
+    parts = requests[0]["messages"][1]["content"]
+    assert len([part for part in parts if part["type"] == "image_url"]) == 1
+    text = next(part["text"] for part in parts if part["type"] == "text")
+    assert json.loads(text) == {"targets": ["确认按钮", "输入框"]}
 
 
 def test_save_multiple_images_writes_files(monkeypatch, tmp_path: Path) -> None:

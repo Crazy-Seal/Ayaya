@@ -25,15 +25,15 @@ class DesktopPort:
         """
         return self.image
 
-    async def perform_action(self, action, *, stop_requested=None):
-        """记录已经获准的动作，并返回真实接口形状的结果。
+    async def perform_actions(self, actions, *, stop_requested=None):
+        """记录已经整批获准的动作，并返回真实接口形状的结果。
 
         Args:
-            action (ScreenAction): 已经由工具准备并获准的鼠标位置和输入配置。
+            actions (tuple[ScreenAction, ...]): 已经整批获准的鼠标位置和输入配置。
             stop_requested (StopRequested | None): 当前轮次已受理停止或引导时返回 True 的只读回调。
         """
-        self.actions.append(action)
-        return ScreenActionResult("completed", self.image)
+        self.actions.extend(actions)
+        return ScreenActionResult("completed", self.image, completed_actions=len(actions), total_actions=len(actions))
 
 
 def context(desktop, **kwargs):
@@ -64,9 +64,14 @@ def test_screenshot_returns_image_without_execution_interrupt() -> None:
 def test_control_screen_directly_executes_normalized_action() -> None:
     """模型 bbox 仍按中心点归一化，工具直接执行后端动作。"""
     desktop = DesktopPort()
-    result = asyncio.run(control_screen().execute({"bbox": [450, 450, 550, 550], "target": "目标"}, context(desktop)))
+    result = asyncio.run(control_screen().execute({"actions": [
+        {"bbox": [450, 450, 550, 550], "target": "目标"},
+        {"bbox": [700, 700, 900, 900], "target": "第二个目标", "operation": "click", "wait_seconds": 0},
+    ]}, context(desktop)))
     assert result.interrupt is None
     assert desktop.actions[0].x_ratio == 0.5
+    assert len(desktop.actions) == 2 and desktop.actions[1].x_ratio == 0.8
+    assert desktop.actions[0].wait_seconds == 3 and desktop.actions[1].wait_seconds == 0
     assert image_urls(result)[0] == desktop.image.data_url
 
 
@@ -81,32 +86,35 @@ def test_vlm_prepares_once_and_approved_resume_uses_saved_coordinates(monkeypatc
     from app.schemas.runtime_types import AUTHORIZATION_GRANTED_KIND
     calls = []
 
-    async def locate(_self, target, _image):
-        """记录一次准备阶段定位，返回固定归一化目标框。
+    async def locate_many(_self, targets, _image):
+        """记录一次整批准备阶段定位，返回两个固定归一化目标框。
 
         Args:
             _self (VLMService): 正在执行定位的 VLM 实例，用例替换其模型请求。
-            target (str): 准备阶段请求 VLM 定位的界面目标描述。
+            targets (list[str]): 准备阶段一次请求 VLM 定位的全部界面目标描述。
             _image (str): 桌面接口提供的截图 data URL，本替身不读取真实图像。
         """
-        calls.append(target)
-        return [400, 300, 600, 500]
+        calls.append(targets)
+        return [[400, 300, 600, 500], [700, 700, 900, 900]]
 
-    monkeypatch.setattr(VLMService, "locate", locate)
+    monkeypatch.setattr(VLMService, "locate_many", locate_many)
     desktop = DesktopPort()
 
     async def scenario():
         """准备完毕后仅模拟 Pipeline 已获准的重入材料。"""
         tool = control_screen_with_vlm()
-        prepared = await tool.execute({"target": "搜索框"}, context(desktop))
+        arguments = {"actions": [{"target": "搜索框"}, {"target": "另一个输入框"}]}
+        prepared = await tool.execute(arguments, context(desktop))
         assert prepared.prepared_action is not None
+        assert len(prepared.prepared_action["actions"]) == 2
         assert not desktop.actions
-        result = await tool.execute({"target": "搜索框"}, context(desktop,
+        result = await tool.execute(arguments, context(desktop,
             resume_data={"kind": AUTHORIZATION_GRANTED_KIND}, resume_state=prepared.resume_state))
         assert result.interrupt is None and image_urls(result)[0] == desktop.image.data_url
         assert desktop.actions[0].x_ratio == 0.5
         assert desktop.actions[0].y_ratio == 0.4
-        assert calls == ["搜索框"]
+        assert len(desktop.actions) == 2 and desktop.actions[1].x_ratio == 0.8
+        assert calls == [["搜索框", "另一个输入框"]]
     asyncio.run(scenario())
 
 
@@ -118,12 +126,15 @@ def test_completed_action_without_capture_is_not_reported_unexecuted() -> None:
     assert "未执行" not in result.text
 
 
+@pytest.mark.parametrize("tool_name", ["control_screen", "control_screen_with_vlm"])
 @pytest.mark.parametrize("policy", ["allow", "ask", "deny"])
-def test_pipeline_screen_permissions_and_first_call_stop_port(policy) -> None:
+def test_pipeline_screen_permissions_and_first_call_stop_port(policy, tool_name, monkeypatch) -> None:
     """真实 Pipeline 使用统一权限，并把同一个轮次的停止状态传到首次桌面调用。
 
     Args:
         policy (str): 本轮使用的统一工具权限 allow、ask 或 deny。
+        tool_name (str): 使用坐标框或 VLM 定位的批量工具名称。
+        monkeypatch (pytest.MonkeyPatch): 用固定多框响应替代真实 VLM 请求。
     """
     from app.agent.context import ContextStrategyConfig, ModelInputCoordinator, RuntimeContext
     from app.agent.core.pipeline import ExecutionPipeline
@@ -135,13 +146,37 @@ def test_pipeline_screen_permissions_and_first_call_stop_port(policy) -> None:
     from app.agent.state.messages import ToolCall
     from app.agent.tools.authorization.manager import ToolAuthorization
     from app.schemas.chat_settings import ChatSettings
+    from app.agent.models.vlm import VLMService
+    from app.agent.tools.control_screen_with_vlm import control_screen_with_vlm
+
+    locations = []
+
+    async def locate_many(_self, targets, _image):
+        """一次记录整批定位请求，不访问网络。
+
+        Args:
+            _self (VLMService): 当前测试替代的定位服务。
+            targets (list[str]): 按动作顺序提供的目标文字。
+            _image (str): 测试截图，本替身不解析真实屏幕。
+
+        Returns:
+            list[list[int]]: 两个目标对应的固定边界框。
+        """
+        locations.append(targets)
+        return [[400, 400, 600, 600], [700, 700, 900, 900]]
+
+    monkeypatch.setattr(VLMService, "locate_many", locate_many)
+    actions = [{"target": "目标"}, {"target": "另一个目标"}]
+    if tool_name == "control_screen":
+        for action, bbox in zip(actions, [[400, 400, 600, 600], [700, 700, 900, 900]]):
+            action["bbox"] = bbox
 
     class ScriptedModel:
         """输出一个真实屏幕工具调用，然后结束回复，不访问网络。"""
         def __init__(self):
             """保存两个模型步骤供 Pipeline 消费。"""
-            self.steps = [[StreamChunk(tool_call=ToolCall(id="screen-call", name="control_screen",
-                                                         args={"bbox": [400, 400, 600, 600], "target": "目标"}))],
+            self.steps = [[StreamChunk(tool_call=ToolCall(id="screen-call", name=tool_name,
+                                                         args={"actions": actions}))],
                           [StreamChunk(content="完成")]]
 
         async def astream(self, _messages, tools=None):
@@ -156,17 +191,17 @@ def test_pipeline_screen_permissions_and_first_call_stop_port(policy) -> None:
 
     class CheckedDesktop(DesktopPort):
         """从公共工具端口验证停止读取，并记录已经获准的动作。"""
-        async def perform_action(self, action, *, stop_requested=None):
+        async def perform_actions(self, actions, *, stop_requested=None):
             """调用开始和请求停止后，检查提供给桌面线程的状态及时改变。
 
             Args:
-                action (ScreenAction): 已经由工具准备并获准的鼠标位置和输入配置。
+                actions (tuple[ScreenAction, ...]): 已经由工具整批准备并获准的鼠标位置和输入配置。
                 stop_requested (StopRequested | None): 当前轮次已受理停止或引导时返回 True 的只读回调。
             """
             assert stop_requested is not None and not stop_requested()
             control.request("stop")
             assert stop_requested()
-            return await super().perform_action(action, stop_requested=stop_requested)
+            return await super().perform_actions(actions, stop_requested=stop_requested)
 
     async def scenario():
         """执行一轮屏幕调用，ask 审批恢复后使用同一个桌面接口。"""
@@ -176,10 +211,10 @@ def test_pipeline_screen_permissions_and_first_call_stop_port(policy) -> None:
         settings = ChatSettings(session_id="s", model_name="test", openai_api_key="test",
                                 openai_base_url="http://127.0.0.1:1/v1", temperature=0.1, system_prompt="test",
                                 context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100),
-                                tool_permissions={"local:control_screen": policy})
+                                tool_permissions={f"local:{tool_name}": policy})
         authorization = ToolAuthorization(lambda _session_id: settings)
         manager = ToolManager(session_id="s", authorization=authorization)
-        manager.register(control_screen())
+        manager.register((control_screen if tool_name == "control_screen" else control_screen_with_vlm)())
         desktop = CheckedDesktop()
 
         async def emit(_kind, _data):
@@ -209,7 +244,9 @@ def test_pipeline_screen_permissions_and_first_call_stop_port(policy) -> None:
             assert not desktop.actions and events[-1].data["type"] == "authorization_request"
             with pytest.raises(TurnInterrupted):
                 await consume(pipeline.resume_tools(state, {"kind": "approve"}, runtime_context=runtime))
-        assert len(desktop.actions) == (0 if policy == "deny" else 1)
+        assert len(desktop.actions) == (0 if policy == "deny" else 2)
+        if tool_name == "control_screen_with_vlm":
+            assert locations == ([] if policy == "deny" else [["目标", "另一个目标"]])
 
     async def consume(stream):
         """审批恢复入口的流必须完整消费才发生工具执行。

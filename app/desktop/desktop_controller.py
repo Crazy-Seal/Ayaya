@@ -3,18 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import ctypes
-import json
 import math
-import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
-from pathlib import Path
-from typing import Any, Callable, Iterator, TypeVar
+from typing import Callable, TypeVar
 
-from app.runtime import get_data_dir
+from app.desktop.driver import DesktopDriver
 from app.schemas.desktop import (
     DesktopSettings, DesktopWindowRegistration, ScreenAction, ScreenActionResult,
     ScreenCapture, StopRequested,
@@ -28,30 +23,26 @@ class DesktopStopped(RuntimeError):
 
 
 class DesktopController:
-    """持有全应用唯一的输入线程、窗口身份与关闭状态。
+    """持有全应用唯一的执行线程，协调平台驱动完成截图、批量输入与清理。
 
     Attributes:
-        _settings_reader (Callable[[], DesktopSettings]): 每次操作开始读取后端 YAML。
-        _adapter (Any | None): 工作线程专用的 Windows adapter，测试替换操作系统。
-        _restore_path (Path): 隐藏前原子保存的窗口恢复记录，不是工具执行队列。
+        _settings_reader (Callable[[], DesktopSettings]): 每次操作开始读取共享设置。
+        _driver_factory (Callable[[], DesktopDriver]): 在工作线程首次需要时创建平台驱动。
+        _driver (DesktopDriver | None): 工作线程独占的驱动，控制器不解释原生窗口身份。
         _lock (asyncio.Lock): 截图、动作和登记共同串行，清理结束前不能释放。
     """
 
-    def __init__(self, settings_reader: Callable[[], DesktopSettings], *, adapter: Any = None,
-                 restore_path: Path | None = None, owner_pid: int | None = None) -> None:
-        """保存依赖，构造时不截图、创建原生窗口或读取生产配置。
+    def __init__(self, settings_reader: Callable[[], DesktopSettings], *,
+                 driver_factory: Callable[[], DesktopDriver]) -> None:
+        """保存应用注入的设置与驱动工厂，构造时不操作桌面或创建原生资源。
 
         Args:
             settings_reader (Callable[[], DesktopSettings]): 共享配置 DAO 的读取方法。
-            adapter (Any): 可替换的操作系统 adapter，生产在工作线程内延迟创建。
-            restore_path (Path | None): 当前环境的数据目录或测试独立恢复文件。
-            owner_pid (int | None): 受管 Electron 所有者，省略时读取启动环境。
+            driver_factory (Callable[[], DesktopDriver]): 应用选择的平台驱动工厂，仅在工作线程调用。
         """
         self._settings_reader = settings_reader
-        self._adapter = adapter
-        self._restore_path = restore_path or get_data_dir() / "desktop" / "window_restore.json"
-        self._owner_pid = owner_pid or int(os.getenv("AYAYA_PARENT_PID") or 0)
-        self._registration: DesktopWindowRegistration | None = None
+        self._driver_factory = driver_factory
+        self._driver: DesktopDriver | None = None
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ayaya-desktop")
         self._lock = asyncio.Lock()
         self._shutdown = threading.Event()
@@ -69,16 +60,15 @@ class DesktopController:
         self._accepting = False
         self._shutdown.set()
 
-    def _native(self) -> Any:
-        """仅在唯一工作线程中创建操作系统对象，避免测试导入产生桌面副作用。
+    def _get_driver(self) -> DesktopDriver:
+        """在唯一工作线程中延迟创建并复用应用选择的平台驱动。
 
         Returns:
-            Any: 此线程唯一的 Windows adapter 或隔离测试替身。
+            DesktopDriver: 本控制器独占的驱动或隔离操作系统的测试替身。
         """
-        if self._adapter is None:
-            from app.desktop.windows_desktop_driver import WindowsDesktopDriver
-            self._adapter = WindowsDesktopDriver()
-        return self._adapter
+        if self._driver is None:
+            self._driver = self._driver_factory()
+        return self._driver
 
     async def _run(self, operation: Callable[[threading.Event], T], stop_requested: StopRequested | None = None) -> T:
         """序列化工作并屏蔽线程清理等待的取消，不让下一动作进入旧线程。
@@ -130,36 +120,24 @@ class DesktopController:
             self._lock.release()
 
     async def register_windows(self, registration: DesktopWindowRegistration) -> dict:
-        """校验 HWND 归属后替换完整快照，旧 revision 不覆盖当前窗口。
+        """串行交给平台驱动登记窗口，确保登记不能发生在输入或恢复中途。
 
         Args:
-            registration (DesktopWindowRegistration): 仅包含 pet/chat 的主进程快照。
-
+            registration (DesktopWindowRegistration): Electron 提供的完整窗口身份快照。
         Returns:
-            dict: 是否接受及供 Electron 退出兜底使用的恢复记录路径。
+            dict: 驱动返回的接收结果和崩溃恢复文件位置。
         """
-        def register(_cancelled: threading.Event) -> dict:
-            """登记与操作共用工作线程，身份变化不能发生在输入或恢复中途。
+        def register(cancelled: threading.Event) -> dict:
+            """由工作线程先检查停止，再让驱动验证和保存窗口身份。
 
             Args:
-                _cancelled (threading.Event): 本次等待的取消状态，关闭时不能迟到登记。
+                cancelled (threading.Event): 当前登记请求的停止通知。
             Returns:
-                dict: 接受标记及隔离恢复记录路径。
+                dict: 平台驱动的登记回执。
             """
-            self._check(_cancelled)
-            if self._owner_pid and registration.owner_pid != self._owner_pid:
-                raise ValueError("窗口所有者与当前 Electron 进程不一致")
-            if self._registration and registration.revision <= self._registration.revision:
-                return {"accepted": False, "window_restore_path": str(self._restore_path)}
-            native = self._native()
-            for handle in registration.windows.model_dump().values():
-                if handle is not None and int(handle) >= 1 << (ctypes.sizeof(ctypes.c_void_p) * 8):
-                    raise ValueError("桌面窗口句柄超出指针范围")
-                if handle is not None and native.window_owner(int(handle)) != registration.owner_pid:
-                    raise ValueError("桌面窗口句柄不存在或不属于登记进程")
-            self._owner_pid = registration.owner_pid
-            self._registration = registration
-            return {"accepted": True, "window_restore_path": str(self._restore_path)}
+            self._check(cancelled)
+            return self._get_driver().register_windows(registration)
+
         return await self._run(register)
 
     def _check(self, cancelled: threading.Event) -> None:
@@ -186,94 +164,6 @@ class DesktopController:
             cancelled.wait(min(0.025, max(0, deadline - time.monotonic())))
         self._check(cancelled)
 
-    def _write_restore_record(self, windows: list[dict]) -> None:
-        """先原子保存可恢复窗口，后续才允许调用系统隐藏。
-
-        Args:
-            windows (list[dict]): 本次原本可见窗口的角色及十进制句柄。
-        """
-        self._restore_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self._restore_path.with_suffix(".tmp")
-        record = {"owner_pid": self._owner_pid, "backend_pid": os.getpid(), "windows": windows}
-        temporary.write_text(json.dumps(record), encoding="utf-8")
-        temporary.replace(self._restore_path)
-
-    @contextmanager
-    def _window_guard(self, cancelled: threading.Event) -> Iterator[None]:
-        """操作期间隐藏指定窗口，结束后只恢复原本可见且没有被最小化的对象。
-
-        Args:
-            cancelled (threading.Event): 当前操作的停止通知，恢复阶段不再读取。
-        Yields:
-            None: 窗口已完成隐藏和缓冲，可以执行本次桌面观察与输入。
-        """
-        self._check(cancelled)
-        if self._owner_pid and self._registration is None:
-            raise RuntimeError("桌面窗口尚未登记，不能开始屏幕操作")
-        native = self._native()
-        # 1. 上次清理未完成时先重试匹配窗口；不允许新记录覆盖仍隐藏窗口的恢复身份。
-        if self._restore_path.exists():
-            record = json.loads(self._restore_path.read_text(encoding="utf-8"))
-            known = self._registration.windows.model_dump() if self._registration else {}
-            if record.get("owner_pid") != self._owner_pid:
-                # 1.1. 整个应用重启后 PID 已变化；旧窗口均销毁的记录不能永久阻塞新应用。
-                if any(native.window_owner(int(item["hwnd"])) == record.get("owner_pid")
-                       for item in record.get("windows", [])):
-                    raise RuntimeError("已有窗口恢复记录仍属于存活的旧 Electron，不能覆盖")
-            else:
-                remaining = [item for item in record.get("windows", [])
-                             if item.get("role") in known and known[item["role"]] == item.get("hwnd")]
-                self._restore_windows(remaining)
-            self._restore_path.unlink(missing_ok=True)
-        hidden: list[dict] = []
-        if self._settings_reader().hide_on_screenshot and self._registration:
-            # 2. 只处理登记角色；已销毁的句柄跳过，绝不枚举同进程其他窗口。
-            for role, handle in self._registration.windows.model_dump().items():
-                if handle is not None:
-                    hwnd = int(handle)
-                    if native.window_owner(hwnd) == self._owner_pid and native.visible(hwnd) and not native.minimized(hwnd):
-                        hidden.append({"role": role, "hwnd": handle})
-        if hidden:
-            self._write_restore_record(hidden)
-        try:
-            # 3. 隐藏请求发出不等于完成，确认系统状态后才进入捕获缓冲。
-            deadline = time.monotonic() + 1
-            for window in hidden:
-                hwnd = int(window["hwnd"])
-                native.hide(hwnd)
-                while native.visible(hwnd):
-                    if time.monotonic() >= deadline:
-                        raise RuntimeError("隐藏桌面窗口超时")
-                    self._pause(0.01, cancelled)
-            if hidden:
-                self._pause(0.12, cancelled)
-            yield
-        finally:
-            # 4. 清理不再检查停止；失败时保留原记录，供下次操作或 Electron 崩溃恢复使用。
-            self._restore_windows(hidden)
-            if hidden:
-                self._restore_path.unlink(missing_ok=True)
-
-    def _restore_windows(self, windows: list[dict]) -> None:
-        """尝试全部本次匹配窗口，一个恢复失败不会跳过其余窗口。
-
-        Args:
-            windows (list[dict]): 已核对角色身份的本次隐藏窗口或未完成恢复记录。
-        Raises:
-            RuntimeError: 至少一个存活且未最小化的窗口恢复失败。
-        """
-        native = self._native()
-        failures = []
-        for window in windows:
-            hwnd = int(window["hwnd"])
-            try:
-                if native.window_owner(hwnd) == self._owner_pid and not native.minimized(hwnd):
-                    native.show_inactive(hwnd)
-            except Exception as exc:
-                failures.append(str(exc))
-        if failures:
-            raise RuntimeError("桌面窗口恢复失败：" + "; ".join(failures))
-
     async def capture_screen(self, *, stop_requested: StopRequested | None = None) -> ScreenCapture:
         """隐藏配置要求的窗口、取得主屏图像并清理，再返回给工具。
 
@@ -290,59 +180,85 @@ class DesktopController:
             Returns:
                 ScreenCapture: 经过窗口清理的观察结果。
             """
-            with self._window_guard(cancelled):
+            driver = self._get_driver()
+            with driver.window_guard(hide=self._settings_reader().hide_on_screenshot,
+                                     check=lambda: self._check(cancelled)):
                 self._check(cancelled)
-                return self._native().capture()
+                return driver.capture()
         return await self._run(capture, stop_requested)
 
-    async def perform_action(self, action: ScreenAction, *, stop_requested: StopRequested | None = None) -> ScreenActionResult:
-        """执行已获准动作并截图，清理失败或捕获失败均保留已发生动作的状态。
+    async def perform_actions(
+        self, actions: tuple[ScreenAction, ...], *, stop_requested: StopRequested | None = None,
+    ) -> ScreenActionResult:
+        """在同一把锁及窗口隐藏期间顺序执行整批动作，结束时只捕获一次截图。
 
         Args:
-            action (ScreenAction): Pipeline 已获准的鼠标位置、输入内容及等待配置。
+            actions (tuple[ScreenAction, ...]): Pipeline 已整批获准的鼠标、输入和等待配置。
             stop_requested (StopRequested | None): 当前轮次的只读停止状态。
+
         Returns:
-            ScreenActionResult: 未开始、部分或不确定、已完成及可选截图和错误。
+            ScreenActionResult: 真实执行程度、已完成数量及可选的最终截图；失败不重试余下动作。
         """
+        actions = tuple(actions)
+
         def perform(cancelled: threading.Event) -> ScreenActionResult:
-            """按输入阶段记录副作用，异常时返回具体执行程度。
+            """由独占桌面线程执行整批动作，异常也先清理剪贴板和窗口再返回。
 
             Args:
-                cancelled (threading.Event): 当前动作的停止通知。
+                cancelled (threading.Event): 当前批次的停止通知。
+
             Returns:
-                ScreenActionResult: 保留已发生输入的程度以及捕获或清理错误。
+                ScreenActionResult: 保留已发生输入的程度和完成数量，以及捕获或清理错误。
             """
             status = "not_started"
+            completed = 0
             screenshot = None
             try:
-                # 1. 参数和剪贴板预检查必须先于鼠标动作，避免拒绝输入后仍产生点击。
-                if not all(math.isfinite(value) and 0 <= value <= 1 for value in (action.x_ratio, action.y_ratio)):
-                    raise ValueError("屏幕比例坐标无效")
-                if action.operation not in {"click", "double", "right", "scroll"} or not 0 <= action.wait_seconds <= 60:
-                    raise ValueError("屏幕动作参数无效")
-                native = self._native()
-                with native.input_guard(action.text):
-                    with self._window_guard(cancelled):
-                        self._check(cancelled)
-                        status = "partial_or_unknown"
-                        native.mouse_action(action, lambda: self._check(cancelled))
-                        self._check(cancelled)
-                        if action.text:
-                            native.paste(action.text, lambda: self._check(cancelled))
+                # 1. 先校验全部动作，避免执行了前面的动作才发现后面的坐标或配置无效。
+                if not actions:
+                    raise ValueError("屏幕动作数组不能为空")
+                for action in actions:
+                    if not all(math.isfinite(value) and 0 <= value <= 1 for value in (action.x_ratio, action.y_ratio)):
+                        raise ValueError("屏幕比例坐标无效")
+                    if action.operation not in {"click", "double", "right", "scroll"}:
+                        raise ValueError("屏幕动作参数无效")
+                    if type(action.wait_seconds) is not int or not 0 <= action.wait_seconds <= 60:
+                        raise ValueError("等待时长必须是 0 到 60 之间的整数")
+                    if action.operation == "scroll" and action.scroll_direction not in {"up", "down"}:
+                        raise ValueError("滚动方向必须是 up 或 down")
+                    if not isinstance(action.text, str) or type(action.press_enter) is not bool:
+                        raise ValueError("文字或回车参数无效")
+                driver = self._get_driver()
+                # 2. 整批只保存一次剪贴板。只要有任意动作需要输入，就必须在第一次点击前预检查。
+                clipboard_text = next((action.text for action in actions if action.text), "")
+                with driver.input_guard(clipboard_text):
+                    with driver.window_guard(hide=self._settings_reader().hide_on_screenshot,
+                                             check=lambda: self._check(cancelled)):
+                        for action in actions:
+                            # 3. 每个鼠标和键盘阶段检查停止；一旦失败就退出循环，绝不重试或继续。
                             self._check(cancelled)
-                            if action.press_enter:
-                                native.press_enter()
-                        status = "completed"
-                        # 2. 页面等待和截图失败不能把已完成的输入改成未执行。
-                        self._pause(action.wait_seconds, cancelled)
-                        screenshot = native.capture()
-                return ScreenActionResult(status, screenshot)
+                            status = "partial_or_unknown"
+                            driver.mouse_action(action, lambda: self._check(cancelled))
+                            self._check(cancelled)
+                            if action.text:
+                                driver.paste(action.text, lambda: self._check(cancelled))
+                                self._check(cancelled)
+                                if action.press_enter:
+                                    driver.press_enter()
+                            completed += 1
+                            status = "completed" if completed == len(actions) else "partial_or_unknown"
+                            # 3.1. 当前动作的等待失败不会抹去已完成数量，也不会放行下一动作。
+                            self._pause(action.wait_seconds, cancelled)
+                        # 4. 完成整个数组后才截图；捕获或清理失败仍保留全部输入已完成的事实。
+                        screenshot = driver.capture()
+                return ScreenActionResult(status, screenshot, completed_actions=completed, total_actions=len(actions))
             except Exception as exc:
-                return ScreenActionResult(status, screenshot, str(exc))
+                return ScreenActionResult(status, screenshot, str(exc), completed, len(actions))
+
         try:
             return await self._run(perform, stop_requested)
         except DesktopStopped as exc:
-            return ScreenActionResult("not_started", error=str(exc))
+            return ScreenActionResult("not_started", error=str(exc), total_actions=len(actions))
 
     async def close(self) -> None:
         """封住入口，等当前工作及清理退出，最后在同一线程释放原生资源。"""
@@ -350,9 +266,9 @@ class DesktopController:
         async with self._lock:
             if self._closed:
                 return
-            if self._adapter is not None:
+            if self._driver is not None:
                 try:
-                    await asyncio.get_running_loop().run_in_executor(self._executor, self._adapter.close)
+                    await asyncio.get_running_loop().run_in_executor(self._executor, self._driver.close)
                 finally:
                     self._executor.shutdown(wait=True)
                     self._closed = True
