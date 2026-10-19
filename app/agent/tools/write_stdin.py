@@ -10,9 +10,9 @@ class WriteStdinArguments(BaseModel):
     """校验输入与增量读取参数；空字符串表示只读取。"""
 
     model_config = ConfigDict(extra="forbid")
-    task_id: StrictStr = Field(min_length=1, description="exec_command 返回的任务编号。")
-    chars: StrictStr = Field(default="", description="原样发送的输入，不自动补换行；空字符串只读取。")
-    yield_time_ms: int = Field(default=10000, ge=0, le=30000, strict=True, description="本次等待毫秒数，范围 0～30000，超时不终止进程。")
+    task_id: StrictStr = Field(min_length=1, description="需要交互的任务编号。")
+    chars: StrictStr = Field(default="", description="给该任务终端发送的输入，不自动补换行符，如需换行，你得自己换。若为空字符串，则仅读取任务的输出增量。")
+    yield_time_ms: int = Field(default=10000, ge=0, le=30000, strict=True, description="等待命令执行的毫秒数；默认10000表示10秒，超时不终止命令，转为后台运行。该值为0时表示不等待，直接使用后台运行")
 
 
 class WriteStdinTool(BaseTool):
@@ -20,11 +20,12 @@ class WriteStdinTool(BaseTool):
 
     name = "write_stdin"
     description = (
-        "向 exec_command 返回的 task_id 原样发送 chars，不自动补换行；chars 为空时只读取增量。"
-        "默认等待 10 秒；0 表示立即读取，超时不结束任务。管道和 PTY 均可交互。"
-        "任务结束后只返回状态，不返回剩余正文；完整日志引用由完成通知提供。"
-        "不要因等待超时自动重发输入。PTY 中可发送 \\u0003 中断前台命令。"
-        "Windows PTY 中按回车发送 \\r，普通管道和 Unix 通常使用 \\n；工具不会转换。"
+        "与任务进程交互。向编号为 task_id 的任务继续发送输入并返回输出增量，chars 为空时只返回输出增量。"
+        "无论是否启用 PTY ，均可与任务交互。"
+        "任务后台运行时，你可以重复调用本工具读取命令的输出增量或继续向其发送输入。"
+        "任务运行结束时，会将完成状态和完整输出日志位置主动通知你。"
+        "不要因等待超时而随便重发输入。PTY 中可发送 \\u0003 中断命令执行。"
+        "Windows PTY 中使用 \\r 换行，普通管道和 Unix 通常使用 \\n；本工具不会帮你转换。"
     )
     parameters_schema = WriteStdinArguments.model_json_schema()
 
@@ -49,4 +50,4 @@ class WriteStdinTool(BaseTool):
             )
         except (ValueError, KeyError, PermissionError) as exc:
             return failure(str(exc))
-        return ToolResult.success(result.render())
+        return ToolResult.success(result.render(include_task_id=False))

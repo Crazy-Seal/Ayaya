@@ -103,7 +103,6 @@ class TaskSupervisor:
             raise ValueError("新任务必须提供工具名")
         if self._closing:
             raise RuntimeError("任务运行器正在关闭")
-        self._validate_wait(yield_time_ms)
         # 1. 日志和进程均创建成功，且运行记录已提交，才将任务身份交给工具。
         task_id = uuid4().hex
         directory = self.spool_dir / task_id
@@ -145,16 +144,6 @@ class TaskSupervisor:
             return TaskLaunchResult(task_id, record.status == TaskStatus.RUNNING, "", record.status,
                                     record.exit_code, error=f"读取任务输出失败，请勿重复执行命令：{exc}")
 
-    @staticmethod
-    def _validate_wait(value: int) -> None:
-        """校验直接调用运行器时的等待预算。
-
-        Args:
-            value (int): 本次等待毫秒数。
-        """
-        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 30000:
-            raise ValueError("yield_time_ms 必须是 0～30000 的整数")
-
     async def _owned(self, session_id: str, task_id: str) -> TaskRecord:
         """先检查持久任务归属，不泄露其他聊天的进程或文件。
 
@@ -183,43 +172,37 @@ class TaskSupervisor:
         Returns:
             TaskLaunchResult: 增量、结束提示或明确的输入发送结果。
         """
-        self._validate_wait(yield_time_ms)
         record = await self._owned(session_id, task_id)
         live = self._live.get(task_id)
         if record.status != TaskStatus.RUNNING or live is None:
             missing = record.status == TaskStatus.RUNNING and live is None
             return TaskLaunchResult(task_id, record.status == TaskStatus.RUNNING, "", record.status,
-                                    record.exit_code, input_status="not_sent" if chars else "none",
+                                    record.exit_code,
                                     error="运行器未持有此进程，不能继续交互；请等待状态恢复" if missing else
                                     "任务已结束，输入未发送" if chars else None)
         async with live.interaction:
             record = await self._owned(session_id, task_id)
-            input_status = "none"
             error = None
             # 1. 终态提交之后不再写入；写入途中断开时不能承诺输入一个字节也没发送。
             if chars and record.status == TaskStatus.RUNNING:
                 try:
                     await live.process.write(chars.encode("utf-8"))
-                    input_status = "sent"
                 except (OSError, RuntimeError) as exc:
-                    input_status = "unknown"
                     error = f"输入发送中断，可能已有部分输入发送，请勿重试：{exc}"
             elif chars:
-                input_status = "not_sent"
                 error = "任务已结束，输入未发送"
             try:
-                return await self._observe(session_id, task_id, live, yield_time_ms,
-                                           input_status=input_status, error=error)
+                return await self._observe(session_id, task_id, live, yield_time_ms, error=error)
             except OSError as exc:
-                # 2. 输入可能已经发送，后续日志读取失败也必须保留输入状态，禁止建议重发。
+                # 2. 保留已有输入错误；写入成功但读取失败时直接说明输入已写入，不能建议重发。
                 record = await self._owned(session_id, task_id)
+                input_detail = f"{error}；" if error else "输入已写入；" if chars else ""
                 return TaskLaunchResult(task_id, record.status == TaskStatus.RUNNING, "", record.status,
-                                        record.exit_code, input_status=input_status,
-                                        error=f"读取任务输出失败，请勿重发输入：{exc}")
+                                        record.exit_code,
+                                        error=f"{input_detail}读取任务输出失败：{exc}")
 
     async def _observe(self, session_id: str, task_id: str, live: RunningTerminal, wait_ms: int,
-                       *, initial: bool = False, input_status: str = "none",
-                       error: str | None = None) -> TaskLaunchResult:
+                       *, initial: bool = False, error: str | None = None) -> TaskLaunchResult:
         """等待日志变化并提取一页，不让等待阻塞日志写入和终态提交。
 
         Args:
@@ -228,7 +211,6 @@ class TaskSupervisor:
             live (RunningTerminal): 运行期间的游标和通知事件。
             wait_ms (int): 本次剩余等待预算。
             initial (bool): 初次启动可返回同步完成的有限正文。
-            input_status (str): 本次输入是否已经发送。
             error (str | None): 输入阶段已经产生的错误。
 
         Returns:
@@ -242,7 +224,7 @@ class TaskSupervisor:
             ended = record.status != TaskStatus.RUNNING
             if ended and not initial:
                 return TaskLaunchResult(task_id, False, "", record.status, record.exit_code,
-                                        input_status=input_status, error=error)
+                                        error=error)
             # 1.1. 给页末 UTF-8 字符补齐预留三字节，最终提取量仍不超过 64KiB。
             page = await self.read_output(task_id, live.offset, TASK_OUTPUT_PAGE_MAX_BYTES - 3)
             # 2. 初次 exec 等待完成或预算耗尽；后续读取已有增量时立即返回。
@@ -255,7 +237,7 @@ class TaskSupervisor:
                 if output:
                     live.offset = page["next_offset"]
                 return TaskLaunchResult(task_id, not ended, output, record.status, record.exit_code,
-                                        page["has_more"] if output else False, input_status, error)
+                                        error=error)
             try:
                 await asyncio.wait_for(live.changed.wait(), remaining)
             except asyncio.TimeoutError:

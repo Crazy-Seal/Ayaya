@@ -417,11 +417,12 @@ def test_foreground_result_is_bounded_but_spool_keeps_full_output(tmp_path) -> N
                 cwd=str(tmp_path), yield_time_ms=3000,
             )
             assert len(result.output.encode("utf-8")) <= 64 * 1024
-            assert result.has_more
             assert "task-output://" not in result.render()
             record = await supervisor.get(result.task_id)
             assert record is not None
             assert (tmp_path / "tasks" / result.task_id / "output.log").stat().st_size > 100000
+            remaining = await supervisor.read_output(result.task_id, len(result.output.encode("utf-8")), 64 * 1024)
+            assert (result.output + remaining["text"]).splitlines() == ["x" * 100000]
         finally:
             await supervisor.close()
 

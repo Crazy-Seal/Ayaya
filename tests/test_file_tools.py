@@ -193,7 +193,7 @@ def test_exec_command_preserves_output_for_unified_normalization(tmp_path: Path,
 
     # 2. 核对公开结果和持久状态，确保场景中的输入、通知或副作用未重复。
     assert result.endswith("x" * 60_000)
-    assert "task_id: task" in result
+    assert "task_id=task" in result
 
 
 def test_apply_patch_adds_updates_and_deletes_files(tmp_path: Path, monkeypatch) -> None:

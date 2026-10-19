@@ -16,19 +16,19 @@ class ExecCommandArguments(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     cmd: StrictStr = Field(min_length=1, description="使用当前 Shell 语法编写的命令。")
-    workdir: StrictStr | None = Field(default=None, description="工作区内的工作目录，省略时使用工作区根目录。")
-    tty: StrictBool = Field(default=False, description="是否使用 PTY；普通管道也能写入 stdin。")
-    yield_time_ms: int = Field(default=10000, ge=0, le=30000, strict=True, description="本次等待毫秒数；0 表示立即返回，超时不终止进程。")
+    workdir: StrictStr | None = Field(default=None, description="工作区内的工作目录，省略时默认使用工作区根目录。")
+    tty: StrictBool = Field(default=False, description="是否使用 PTY 虚拟终端")
+    yield_time_ms: int = Field(default=10000, ge=0, le=30000, strict=True, description="等待命令执行的毫秒数；默认10000表示10秒，超时不终止命令，转为后台运行。该值为0时表示不等待，直接使用后台运行")
 
 
 class ExecCommandTool(BaseTool):
-    """启动命令并返回当前输出，超时后保留同一受管进程。"""
+    """运行Shell命令"""
 
     name = "exec_command"
     description = (
-        "执行当前默认 Shell 命令。默认等待 10 秒，0 表示启动后立即返回；等待结束不会杀死进程。"
-        "使用返回的 task_id 调用 write_stdin 读取增量或发送输入。短结果直接返回，长结果由系统统一保存和裁剪。"
-        "任务结束时会主动通知状态和完整日志引用。禁止运行损害系统的命令。"
+        "启动一个当前默认的 Shell 终端任务，执行对应的 Shell 命令。"
+        "任务后台运行时，你可以根据本工具返回的任务编号 task_id ，调用 write_stdin 读取命令的输出增量或继续向其发送输入。"
+        "任务运行结束时，会将完成状态和完整输出日志位置主动通知你。禁止运行可能损害计算机系统的命令。"
     )
     parameters_schema = ExecCommandArguments.model_json_schema()
 
@@ -74,5 +74,5 @@ class ExecCommandTool(BaseTool):
                 origin_tool_call_id=context.origin_tool_call_id or None,
             )
         except (OSError, RuntimeError) as exc:
-            return failure(f"启动或登记任务失败；命令可能已有操作，请勿自动重试：{exc}", "unknown")
+            return failure(f"启动或登记任务失败；命令可能已有操作，请勿自动重试：{exc}")
         return ToolResult.success(result.render())

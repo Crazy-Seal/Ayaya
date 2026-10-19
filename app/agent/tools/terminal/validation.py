@@ -28,17 +28,13 @@ def validate_input(text: str) -> None:
         raise ValueError("检测到潜在危险命令，已阻止执行；输入未发送。")
 
 
-def failure(message: str, input_status: str = "not_sent") -> ToolResult:
-    """构造不会让模型误以为命令已经执行的错误观察。
+def failure(message: str) -> ToolResult:
+    """直接返回调用失败的原因，不附加输入状态或固定操作提示。
 
     Args:
         message (str): 校验或运行器提供的失败原因。
-        input_status (str): 校验前失败为 not_sent，进程创建期间失败为 unknown。
 
     Returns:
-        ToolResult: 包含原因、重试提示和停止条件的结果。
+        ToolResult: 模型可读的简短错误说明。
     """
-    return ToolResult.success(
-        f"status: error\nsummary: {message}\ninput_status: {input_status}\n"
-        "next_actions: 检查参数、任务状态或权限后再操作；不要自动重放已发送的输入。"
-    )
+    return ToolResult.success(f"错误：{message}")

@@ -71,19 +71,23 @@ def test_duplex_terminal_input_completion_and_full_log(tmp_path: Path, tty: bool
             started = await supervisor.launch("chat", "interactive", [sys.executable, "-u", "-c", command],
                                               cwd=str(tmp_path), tty=tty, yield_time_ms=0, tool_name="exec_command")
             observed = started.output
+            assert started.task_id in started.render() and "仍在运行" in started.render()
             while "READY" not in observed:
                 chunk = await supervisor.interact("chat", started.task_id, yield_time_ms=3000)
                 assert chunk.background, (chunk, observed)
                 observed += chunk.output
             sent = await supervisor.interact("chat", started.task_id, chars="hello\r" if tty and os.name == "nt" else "hello\n", yield_time_ms=3000)
-            assert sent.input_status == "sent"
+            assert sent.error is None
             ended = await wait_ended(supervisor, started.task_id)
             assert ended.status == TaskStatus.COMPLETED and ended.exit_code == 0
             assert ended.tool_name == "exec_command"
             polled = await supervisor.interact("chat", started.task_id, yield_time_ms=0)
             assert not polled.background and polled.output == ""
             rejected = await supervisor.interact("chat", started.task_id, chars="again\n", yield_time_ms=0)
-            assert rejected.input_status == "not_sent" and rejected.error
+            assert "输入未发送" in rejected.error
+            finished = await WriteStdinTool().execute({"task_id": started.task_id}, context_for(supervisor))
+            assert "已完成" in finished.text and "退出码 0" in finished.text
+            assert "RESULT:hello" not in finished.text and started.task_id not in finished.text
             notices = await inbox.read_task_terminals()
             assert len(notices) == 1
             payload = notices[0].payload
@@ -123,14 +127,90 @@ def test_pipe_reads_only_increment_and_does_not_add_newline(tmp_path: Path) -> N
             first = started.output or (await supervisor.interact("chat", started.task_id, yield_time_ms=3000)).output
             assert first == "Hel"
             assert (await supervisor.interact("chat", started.task_id, yield_time_ms=0)).output == ""
-            second = await supervisor.interact("chat", started.task_id, chars="a", yield_time_ms=3000)
-            assert second.output == "lo,Wo"
-            third = await supervisor.interact("chat", started.task_id, chars="b", yield_time_ms=3000)
-            assert third.output == "rld!"
-            assert first + second.output + third.output == "Hello,World!"
+            context = context_for(supervisor)
+            second = await WriteStdinTool().execute(
+                {"task_id": started.task_id, "chars": "a", "yield_time_ms": 3000}, context,
+            )
+            assert "仍在运行" in second.text and started.task_id not in second.text
+            third = await WriteStdinTool().execute(
+                {"task_id": started.task_id, "chars": "b", "yield_time_ms": 3000}, context,
+            )
+            assert "仍在运行" in third.text and started.task_id not in third.text
+            assert first + second.text.split("\n\n", 1)[1] + third.text.split("\n\n", 1)[1] == "Hello,World!"
             assert (await supervisor.get(started.task_id)).status == TaskStatus.RUNNING
             await supervisor.interact("chat", started.task_id, chars="c", yield_time_ms=3000)
             await wait_ended(supervisor, started.task_id)
+        finally:
+            await supervisor.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("failure_stage", ["write", "read"])
+def test_stdin_errors_explain_input_in_plain_text(tmp_path: Path, monkeypatch, failure_stage: str) -> None:
+    """输入部分发送或发送后读取失败时，用错误正文说明实际情况，不暴露状态枚举。
+
+    Args:
+        tmp_path (Path): 临时进程工作目录和日志目录。
+        monkeypatch (pytest.MonkeyPatch): 仅在本次交互期间注入 I/O 故障。
+        failure_stage (str): 在写入途中或后续读取日志时制造故障。
+    """
+    from app.agent.tools.terminal.process import PipeProcess
+
+    async def scenario() -> None:
+        """使用真实管道进程确认输入已产生作用，并检查模型收到的错误说明。"""
+        supervisor = TaskSupervisor(db_path=str(tmp_path / "db"), spool_dir=tmp_path / "logs")
+        original_write = PipeProcess.write
+
+        async def partial_write(process: PipeProcess, data: bytes) -> None:
+            """向真实进程发送首字节后报错，模拟发送途中断开。
+
+            Args:
+                process (PipeProcess): 当前真实管道进程。
+                data (bytes): 本次工具准备发送的完整输入。
+            """
+            await original_write(process, data[:1])
+            raise BrokenPipeError("injected write failure")
+
+        async def reject_read(task_id: str, offset: int, limit: int) -> dict:
+            """只拒绝交互阶段读取日志，不影响后台输出收集。
+
+            Args:
+                task_id (str): 当前任务编号。
+                offset (int): 本次输出读取起点。
+                limit (int): 本次读取字节上限。
+
+            Raises:
+                OSError: 模拟任务日志暂时不可读取。
+            """
+            raise OSError("injected read failure")
+
+        try:
+            command = (
+                "import sys; print('READY',flush=True); value=sys.stdin.read(1); "
+                "print('GOT:'+value,flush=True); sys.stdin.read(1)"
+            )
+            started = await supervisor.launch(
+                "chat", "input error", [sys.executable, "-u", "-c", command],
+                cwd=str(tmp_path), yield_time_ms=0,
+            )
+            observed = started.output
+            while "READY" not in observed:
+                observed += (await supervisor.interact("chat", started.task_id, yield_time_ms=3000)).output
+            with monkeypatch.context() as patcher:
+                if failure_stage == "write":
+                    patcher.setattr(PipeProcess, "write", partial_write)
+                else:
+                    patcher.setattr(supervisor, "read_output", reject_read)
+                result = await WriteStdinTool().execute(
+                    {"task_id": started.task_id, "chars": "a", "yield_time_ms": 3000}, context_for(supervisor),
+                )
+            expected = "可能已有部分输入发送" if failure_stage == "write" else "输入已写入"
+            assert expected in result.text and f"injected {failure_stage} failure" in result.text
+            assert started.task_id not in result.text
+            observed = result.text
+            while "GOT:a" not in observed:
+                observed += (await supervisor.interact("chat", started.task_id, yield_time_ms=3000)).output
         finally:
             await supervisor.close()
 
@@ -163,7 +243,7 @@ def test_tool_defaults_dynamic_shell_and_short_and_long_results(tmp_path: Path, 
             assert "ok" in result.text and "task-output://" not in result.text
             assert "tool-result://" not in ToolResultNormalizer().normalize(result, session_id="chat").text
             invalid = await WriteStdinTool().execute({"task_id": "unknown", "yield_time_ms": -1}, context)
-            assert "status: error" in invalid.text
+            assert invalid.text.startswith("错误：")
             large = "x" * 60000
             from app.agent.tools.core.base import ToolResult
 
