@@ -12,7 +12,7 @@ __pycache__/
 tmp_*.txt
 
 # ===== Local runtime data =====
-memory/sqlite/*.sqlite3
+/memory/
 agent_workspace/
 
 # ===== Frontend local data/build artifacts =====
@@ -46,9 +46,6 @@ CLAUDE.md
 # ===== demo =====
 app/agent/memory/diary_demo.py
 app/agent/memory/import_demo.py
-
-# ===== memory data =====
-/memory/
 
 # ===== docs =====
 /docs/
