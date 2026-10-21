@@ -20,7 +20,7 @@ import pytest
 
 from app.agent.agent import AgentConfig
 from app.agent.context import ContextStrategyConfig, ModelInputCoordinator
-from app.agent.core.event_router import EventRouter, EventType
+from app.agent.core.events import EventType
 from app.agent.core.pipeline import ExecutionPipeline
 from app.agent.core.plugin_manager import PluginManager
 from app.agent.core.tool_manager import ToolManager
@@ -147,7 +147,6 @@ class _PipelineHarness:
         for t in tools:
             self.tool_manager.register(t)
         self.plugin_manager = PluginManager()
-        self.event_router = EventRouter()
         self.llm_client = llm
         self.pipeline = ExecutionPipeline(
             prompt_source=self.config,
@@ -159,7 +158,6 @@ class _PipelineHarness:
                 self.llm_client,
                 accounting_key="test",
             ),
-            emit_event=self.event_router.emit,
         )
 
 

@@ -218,7 +218,6 @@ def tool(
     *,
     description: str,
     name: str | None = None,
-    is_resumable: bool = False,
     compressible: bool = False,
     persist_oversized_result: bool = True,
     authorization_timing: str = "before_execute",
@@ -235,7 +234,6 @@ def tool(
     Args:
         description (str): 必填的非空模型说明，描述工具用途、调用时机及操作约束。
         name (str | None): 覆盖工具名（默认取函数名）。
-        is_resumable (bool): 标记为可恢复工具（execute 内靠 context.resume_data 分支）。
         compressible (bool): 标记旧工具结果允许从活跃模型上下文回收，不代表允许重放工具。
         persist_oversized_result (bool): 超过模型预览预算时是否允许保存完整结果。
         authorization_timing (str): 授权发生在执行前，或只读准备完成后。
@@ -304,7 +302,6 @@ def tool(
             "name": tool_name,
             "description": description,
             "parameters_schema": schema,
-            "is_resumable": is_resumable,
             "compressible": compressible,
             "persist_oversized_result": persist_oversized_result,
             "authorization_timing": authorization_timing,

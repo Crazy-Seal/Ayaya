@@ -10,7 +10,7 @@ import pytest
 
 from app.agent.context import ContextStrategyConfig, ModelInputCoordinator
 from app.agent.context._compaction import COMPRESSED_TOOL_RESULT
-from app.agent.core.event_router import EventRouter, EventType
+from app.agent.core.events import EventType
 from app.agent.core.pipeline import ExecutionPipeline
 from app.agent.core.plugin_manager import PluginManager
 from app.agent.core.tool_manager import ToolManager
@@ -98,7 +98,6 @@ async def run(model, state, *, checkpoint_error=False):
         prompt_source=SimpleNamespace(system_prompt="固定提示"), llm_client=model,
         tool_manager=ToolManager(), plugin_manager=PluginManager(),
         model_input=model_input,
-        emit_event=EventRouter().emit,
     )
     checkpoints = []
 

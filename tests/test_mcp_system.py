@@ -15,7 +15,7 @@ from app.agent.agent import Agent, AgentConfig
 from app.agent.tools.core.base import BaseTool, ToolContext, ToolResult
 from app.agent.tools.authorization.manager import ToolAuthorization
 from app.agent.tools.results.normalizer import ToolResultNormalizer
-from app.agent.core.event_router import AgentEvent, EventType
+from app.agent.core.events import AgentEvent, EventType
 from app.agent.state import AgentState
 from app.agent.mcp.adapter import MCPToolAdapter, build_exposed_tool_name
 from app.mcp.identity import server_identity_fingerprint, tool_contract_fingerprint
@@ -718,9 +718,6 @@ def _tool_context(
     return ToolContext(
         session_id="session-a",
         state=SimpleNamespace(),
-        emit_event=lambda *_args: None,
-        get_checkpoint=lambda: {},
-        set_checkpoint=lambda _data: None,
         resume_data=resume_data,
         resume_state=resume_state,
     )

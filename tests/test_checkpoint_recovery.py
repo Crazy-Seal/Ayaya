@@ -1,4 +1,3 @@
-from app.agent.core.event_router import EventRouter
 from tests.runtime_support import checkpoint_probe
 from app.agent.models.openai_message_names import MCP_TOOL_IMAGE_MESSAGE_NAME, TOOL_IMAGE_MESSAGE_NAME
 from tests.model_capture import result_parts
@@ -13,7 +12,7 @@ from app.agent.agent import Agent, AgentConfig
 from app.agent.state.manager import INTERRUPTED_TOOL_RESULT
 from app.agent.runtime.turn_control import TurnControl
 from app.agent.context import ContextStrategyConfig, ModelInputCoordinator
-from app.agent.core.event_router import EventType
+from app.agent.core.events import EventType
 from app.agent.core.pipeline import ExecutionPipeline
 from app.agent.plugins.base import BasePlugin, HookContext, PluginHook
 from app.agent.plugins.memory import MemoryPlugin
@@ -101,7 +100,6 @@ class ImageStepTool(BaseTool):
     name = "image_step"
     description = "执行返回图片的测试步骤"
     parameters_schema = {"type": "object", "properties": {"label": {"type": "string"}}}
-    is_resumable = True
 
     async def execute(self, args: dict, context: ToolContext) -> ToolResult:
         """管道或插件管理器调用时执行本用例预设的结果、状态修改或异常分支。
@@ -143,7 +141,6 @@ class ResumableScreenshotTool(BaseTool):
     name = "screenshot"
     description = "测试截屏中断"
     parameters_schema = {"type": "object", "properties": {}}
-    is_resumable = True
 
     def __init__(self, resumed_calls: list[bool]):
         """保存本用例的脚本输入和依赖，初始化测试对象的执行记录。
@@ -174,7 +171,6 @@ class PhasedInterruptTool(BaseTool):
     name = "phased_interrupt"
     description = "按指定阶段数暂停，验证恢复路径"
     parameters_schema = {"type": "object", "properties": {"stages": {"type": "integer"}}}
-    is_resumable = True
 
     async def execute(self, args: dict, context: ToolContext) -> ToolResult:
         """管道或插件管理器调用时执行本用例预设的结果、状态修改或异常分支。
@@ -1291,7 +1287,6 @@ def test_checkpoint_failure_keeps_tool_marked_pending() -> None:
             self.plugin_manager = PluginManager()
             self.tool_manager = ToolManager()
             self.tool_manager.register(StepTool())
-            self.event_router = EventRouter()
             self.llm_client = ScriptedLLM([[tool_call("call-a", label="A")]])
 
     async def scenario() -> None:
@@ -1307,7 +1302,6 @@ def test_checkpoint_failure_keeps_tool_marked_pending() -> None:
                 agent.llm_client,
                 accounting_key="test",
             ),
-            emit_event=agent.event_router.emit,
         )
         state = AgentState.create_new("test")
         state.add_user_message("执行工具")

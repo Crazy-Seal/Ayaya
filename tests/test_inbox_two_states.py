@@ -9,7 +9,7 @@ from app.agent.state.manager import SessionStateManager
 from app.agent.state.model import AgentState
 from app.agent.agent import Agent, AgentConfig
 from app.agent.context import ContextStrategyConfig
-from app.agent.core.event_router import AgentEvent, EventType
+from app.agent.core.events import AgentEvent, EventType
 from app.interaction.interaction_contract import ChannelCommand
 from app.orchestration.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.orchestration.task_supervisor import TaskSupervisor

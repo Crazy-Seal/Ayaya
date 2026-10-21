@@ -43,15 +43,9 @@ def context(desktop, **kwargs):
         desktop (DesktopOperations): 当前测试显式注入的桌面接口，不访问生产屏幕。
         kwargs (dict): 本用例传给工具的审批材料或停止回调。
     """
-    async def emit(_kind, _data):
-        """本用例只观察工具结果，不处理展示事件。
-
-        Args:
-            _kind (str): 工具输出的事件类别，本用例不向窗口发送。
-            _data (Any): 本次事件的业务载荷，本用例只检查工具结果。
-        """
-        pass
-    return ToolContext("s", None, emit, lambda: {}, lambda _data: None, desktop=desktop, **kwargs)
+    return ToolContext(
+        session_id="s", state=None, desktop=desktop, **kwargs,
+    )
 
 
 def test_screenshot_returns_image_without_execution_interrupt() -> None:
@@ -217,19 +211,10 @@ def test_pipeline_screen_permissions_and_first_call_stop_port(policy, tool_name,
         manager.register((control_screen if tool_name == "control_screen" else control_screen_with_vlm)())
         desktop = CheckedDesktop()
 
-        async def emit(_kind, _data):
-            """本用例消费事件流，不建立前端连接。
-
-            Args:
-                _kind (str): 工具输出的事件类别，本用例不向窗口发送。
-                _data (Any): 本次事件的业务载荷，本用例只检查工具结果。
-            """
-            pass
-
         pipeline = ExecutionPipeline(prompt_source=settings, llm_client=model, tool_manager=manager,
                                      plugin_manager=PluginManager(), model_input=ModelInputCoordinator(
                                          settings.context_strategy, model, accounting_key="screen-test"),
-                                     emit_event=emit, tool_authorization=authorization, desktop=desktop)
+                                     tool_authorization=authorization, desktop=desktop)
         state = AgentState(session_id="s")
         state.add_user_message("点击目标")
         runtime = RuntimeContext.capture()

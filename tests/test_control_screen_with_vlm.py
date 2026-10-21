@@ -16,21 +16,10 @@ def _context(resume_data=None, resume_state=None) -> ToolContext:
     Returns:
         ToolContext: 供外层用例断言使用的预设结果。
     """
-    async def emit_event(_event_type, _data):
-        """接收本次工具发布的事件；该用例不依赖事件内容。
-
-        Args:
-            _event_type (Any): 工具回调发布的事件类型。
-            _data (Any): 需要解析或保存的结构化数据。
-        """
-        return None
 
     return ToolContext(
         session_id="test",
         state=None,
-        emit_event=emit_event,
-        get_checkpoint=lambda: {},
-        set_checkpoint=lambda _data: None,
         resume_data=resume_data,
         resume_state=resume_state,
     )

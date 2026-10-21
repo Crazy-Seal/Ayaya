@@ -4,7 +4,7 @@ from tests.model_capture import capture_input
 import asyncio
 from pathlib import Path
 
-from app.agent.core.event_router import AgentEvent, EventType
+from app.agent.core.events import AgentEvent, EventType
 from app.agent.agent import Agent, AgentConfig
 from app.agent.context import ContextStrategyConfig
 from app.agent.models.llm_client import StreamChunk

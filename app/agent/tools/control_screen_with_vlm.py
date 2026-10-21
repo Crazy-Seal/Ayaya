@@ -19,7 +19,6 @@ from app.schemas.runtime_types import AUTHORIZATION_GRANTED_KIND
         "按 actions 数组顺序操作用户屏幕，返回整批操作后的最后截图。每个动作提供 target 目标描述即可，"
         "VLM 会根据同一张截图，一次定位全部目标。" + BATCH_SCREEN_INSTRUCTIONS
     ),
-    is_resumable=True,
     compressible=True,
     authorization_timing="after_prepare",
 )

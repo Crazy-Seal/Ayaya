@@ -49,8 +49,12 @@ def context_for(supervisor: TaskSupervisor, session_id: str = "chat") -> ToolCon
     Returns:
         ToolContext: 无模型和生产存储依赖的上下文。
     """
-    return ToolContext(session_id, None, lambda *_: None, lambda: {}, lambda _: None,
-                       task_launcher=supervisor, origin_tool_name="exec_command")
+    return ToolContext(
+        session_id=session_id,
+        state=None,
+        task_launcher=supervisor,
+        origin_tool_name="exec_command",
+    )
 
 
 @pytest.mark.parametrize("tty", [False, True])

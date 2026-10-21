@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from app.dependencies import (
     get_runtime_scheduler, get_interaction_event_hub, get_channel_subscription_service,
 )
-from app.agent.core.event_router import AgentEvent, EventType
+from app.agent.core.events import AgentEvent, EventType
 from app.agent.state.manager import SessionStateManager
 from app.interaction.interaction_event_hub import InteractionEventHub
 from app.services.channel_subscription_service import ChannelSubscriptionService

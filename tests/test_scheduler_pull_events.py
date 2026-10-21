@@ -5,7 +5,7 @@ from functools import partial
 from tests.runtime_support import finish_test_turn
 import pytest
 
-from app.agent.core.event_router import AgentEvent, EventType
+from app.agent.core.events import AgentEvent, EventType
 from app.agent.state.manager import SessionStateManager
 from app.agent.state.model import AgentState
 from app.agent.state.messages import ToolCall

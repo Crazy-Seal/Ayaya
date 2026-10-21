@@ -1,5 +1,5 @@
 from app.agent.state.manager import task_result_messages
-from app.agent.core.event_router import AgentEvent, EventType
+from app.agent.core.events import AgentEvent, EventType
 from app.services.channel_subscription_service import ChannelSubscriptionService
 from tests.model_capture import result_parts
 """通过持久输入、快照与生命周期入口验证退出后的执行意图作废。"""

@@ -5,7 +5,7 @@ from pathlib import Path
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Protocol, TYPE_CHECKING
+from typing import Any, Protocol, TYPE_CHECKING
 from app.schemas.desktop import DesktopOperations, StopRequested
 
 from app.schemas.runtime_types import (
@@ -109,9 +109,6 @@ class ToolContext:
     Attributes:
         session_id (str): 共享 Ayaya 会话标识。
         state (Any): 当前 Agent 状态。
-        emit_event (Callable[[str, Any], Awaitable[None]]): 通知 Agent 内部事件的异步回调，不直接编码 SSE。
-        get_checkpoint (Callable[[], dict]): 读取工具恢复中间态的回调。
-        set_checkpoint (Callable[[dict], None]): 更新工具恢复中间态的回调。
         resume_data (dict | None): 当前工具的人工审批决定。
         resume_state (dict | None): 中断前保存的工具中间状态。
         authorization_grant (dict | None): 绑定当前调用的单次授权快照。
@@ -124,9 +121,6 @@ class ToolContext:
     """
     session_id: str
     state: Any  # AgentState（避免循环引用，使用 Any）
-    emit_event: Callable[[str, Any], Awaitable[None]]  # 通知 Agent 内部事件，由运行时负责渠道发布
-    get_checkpoint: Callable[[], dict]                  # 获取当前 checkpoint
-    set_checkpoint: Callable[[dict], None]              # 设置 checkpoint
     resume_data: dict | None = None                     # 中断恢复时用户回传的数据
     resume_state: dict | None = None                    # 中断前工具暂存的中间态（恢复执行时读取）
     authorization_grant: dict | None = None             # 当前调用绑定的单次授权快照
@@ -293,7 +287,6 @@ class BaseTool(ABC):
     name: str                    # 工具名称
     description: str             # 工具描述（给 LLM 看）
     parameters_schema: dict      # JSON Schema 格式的参数定义
-    is_resumable: bool = False   # 是否为可恢复工具（execute 内靠 context.resume_data 分支）
     compressible: bool = False   # 旧结果是否允许从活跃模型上下文回收，不代表允许重放工具
     persist_oversized_result: bool = True  # 超长结果是否允许保存为 tool-result artifact
     authorization_timing: str = "before_execute"

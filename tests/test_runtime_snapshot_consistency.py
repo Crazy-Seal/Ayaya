@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from app.agent.core.event_router import AgentEvent, EventType
+from app.agent.core.events import AgentEvent, EventType
 from app.agent.state.manager import SessionStateManager
 from app.interaction.interaction_contract import ChannelCommand, InteractionEvent
 from app.interaction.interaction_event_hub import InteractionEventHub

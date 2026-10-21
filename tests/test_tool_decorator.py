@@ -97,8 +97,7 @@ def test_execute_distinguishes_omitted_and_explicit_arguments(explicit_schema, p
     """
     observed = {}
     context = ToolContext(
-        session_id="defaults-test", state=None, emit_event=None,
-        get_checkpoint=None, set_checkpoint=None,
+        session_id="defaults-test", state=None,
     )
 
     async def sample_tool(
@@ -279,8 +278,7 @@ def test_model_description_is_independent_of_docstring_and_context() -> None:
         return ToolResult.success(query)
 
     expected_context = ToolContext(
-        session_id="description-test", state=None, emit_event=None,
-        get_checkpoint=None, set_checkpoint=None,
+        session_id="description-test", state=None,
     )
     function = encoded_tool(sample_tool())["function"]
     assert function == {

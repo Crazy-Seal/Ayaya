@@ -11,7 +11,7 @@ from typing import AsyncIterator, Callable
 from uuid import uuid4
 
 from app.agent.agent import Agent
-from app.agent.core.event_router import AgentEvent, EventType
+from app.agent.core.events import AgentEvent, EventType
 from app.agent.runtime.session_inbox import InboxEnvelope
 from app.agent.runtime.turn_control import TurnControl
 from app.agent.state.manager import SessionStateManager

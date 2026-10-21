@@ -10,7 +10,7 @@ import pytest
 
 from app.agent.agent import Agent, AgentConfig
 from app.agent.context import ContextStrategyConfig
-from app.agent.core.event_router import AgentEvent, EventType
+from app.agent.core.events import AgentEvent, EventType
 from app.agent.memory.store.chat_history_store import ChatHistoryStore
 from app.agent.models.llm_client import StreamChunk
 from app.agent.plugins.base import BasePlugin, HookContext, PluginHook
@@ -608,7 +608,6 @@ class PausingTool(BaseTool):
     name = "activation_pause"
     description = "等待激活生命周期测试结果"
     parameters_schema = {"type": "object", "properties": {}}
-    is_resumable = True
 
     def __init__(self, kind: InterruptKind) -> None:
         """保存首次执行需要返回的中断类别。

@@ -12,7 +12,7 @@ from typing import Sequence
 from app.agent.models.contracts import InputMessage, ToolDefinition
 
 import logging
-from typing import Any, AsyncIterator, Awaitable, Callable, Protocol
+from typing import Any, AsyncIterator, Protocol
 from app.schemas.desktop import DesktopOperations, StopRequested
 
 from app.schemas.runtime_types import (
@@ -22,7 +22,7 @@ from app.schemas.runtime_types import (
 from app.agent.context import ModelInputCoordinator, RuntimeContext
 from app.agent.state.manager import SessionStateManager
 from app.agent.runtime.turn_control import TurnInterrupted
-from app.agent.core.event_router import EventType, AgentEvent
+from app.agent.core.events import EventType, AgentEvent
 from app.agent.core.plugin_manager import PluginManager
 from app.agent.core.response_filter import AssistantTimePrefixFilter
 from app.agent.core.tool_manager import ToolManager
@@ -70,9 +70,6 @@ class StreamingLLMClient(Protocol):
         ...
 
 
-EventEmitter = Callable[[EventType, Any], Awaitable[None]]
-
-
 class ExecutionPipeline:
     """执行模型与工具循环，在安全点响应停止信号并保留完整工具协议。
 
@@ -81,7 +78,6 @@ class ExecutionPipeline:
         _llm_client (StreamingLLMClient): 可替换的流式模型客户端。
         _tool_manager (ToolManager): 本地及 MCP 工具注册管理器。
         _plugin_manager (PluginManager): 插件生命周期与执行钩子的分发器。
-        _emit_event (EventEmitter): Agent 内部事件通知回调。
         _tool_result_normalizer (ToolResultNormalizer): 工具输出与媒体的统一规范化器。
         _model_input (ModelInputCoordinator): 模型消息投影、上下文压缩和溢出恢复协调器。
         _tool_authorization (ToolAuthorization | None): 工具单次授权验证器。
@@ -96,7 +92,6 @@ class ExecutionPipeline:
         tool_manager: ToolManager,
         plugin_manager: PluginManager,
         model_input: ModelInputCoordinator,
-        emit_event: EventEmitter,
         tool_authorization: ToolAuthorization | None = None,
         task_launcher: TaskLauncher | None = None,
         desktop: DesktopOperations | None = None,
@@ -109,7 +104,6 @@ class ExecutionPipeline:
             tool_manager (ToolManager): 本地及 MCP 工具注册管理器。
             plugin_manager (PluginManager): 插件生命周期与执行钩子的分发器。
             model_input (ModelInputCoordinator): 模型消息投影、上下文压缩和溢出恢复协调器。
-            emit_event (EventEmitter): Agent 内部事件通知回调。
             tool_authorization (ToolAuthorization | None): 工具单次授权验证器。
             task_launcher (TaskLauncher | None): 工具使用的共享进程启动端口。
             desktop (DesktopOperations | None): 应用共享桌面接口，管道只注入、不负责关闭。
@@ -118,7 +112,6 @@ class ExecutionPipeline:
         self._llm_client = llm_client
         self._tool_manager = tool_manager
         self._plugin_manager = plugin_manager
-        self._emit_event = emit_event
         self._tool_result_normalizer = ToolResultNormalizer()
         self._model_input = model_input
         self._tool_authorization = tool_authorization
@@ -612,9 +605,6 @@ class ExecutionPipeline:
         context = ToolContext(
             session_id=state.session_id,
             state=state,
-            emit_event=self._emit_event,
-            get_checkpoint=state.to_checkpoint,
-            set_checkpoint=lambda d: state.update_extra(d),
             resume_data=effective_resume_data,
             resume_state=tool_resume_state,
             authorization_grant=grant,
@@ -739,9 +729,6 @@ class ExecutionPipeline:
         context = ToolContext(
             session_id=state.session_id,
             state=state,
-            emit_event=self._emit_event,
-            get_checkpoint=state.to_checkpoint,
-            set_checkpoint=lambda data: state.update_extra(data),
             resume_data={"kind": AUTHORIZATION_GRANTED_KIND},
             resume_state=resume_state,
             authorization_grant=grant,

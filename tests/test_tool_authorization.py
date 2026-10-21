@@ -19,7 +19,7 @@ from app.agent.tools.authorization.models import (
 from app.agent.tools.core.base import ToolResult
 from app.agent.core.tool_manager import ToolManager
 from app.agent.context import ContextStrategyConfig, ModelInputCoordinator
-from app.agent.core.event_router import EventType
+from app.agent.core.events import EventType
 from app.agent.core.pipeline import ExecutionPipeline
 from app.agent.core.plugin_manager import PluginManager
 from app.agent.plugins.base import PluginHook
@@ -613,7 +613,6 @@ def _pipeline(policy: ToolPolicy) -> tuple[ExecutionPipeline, _CountingTool]:
             llm,
             accounting_key="test",
         ),
-        emit_event=lambda _event, _data: None,
         tool_authorization=authorization,
     )
     return pipeline, tool
@@ -693,7 +692,6 @@ def test_after_prepare_tool_cannot_request_protected_effect_before_authorization
                 llm,
                 accounting_key="test",
             ),
-            emit_event=lambda _event, _data: None,
             tool_authorization=authorization,
         )
         state = AgentState(session_id="session")
@@ -734,7 +732,6 @@ def test_after_prepare_hooks_span_the_logical_call_and_rejection_has_no_after_ho
                 llm,
                 accounting_key="test",
             ),
-            emit_event=lambda _event, _data: None,
             tool_authorization=authorization,
         )
         state = AgentState(session_id="session")

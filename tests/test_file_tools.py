@@ -212,8 +212,6 @@ def test_exec_command_preserves_output_for_unified_normalization(tmp_path: Path,
 
     context = ToolContext(
         session_id="s", state=None,
-        emit_event=lambda *_args: None,
-        get_checkpoint=lambda: {}, set_checkpoint=lambda _value: None,
         task_launcher=_Launcher(),
     )
 

@@ -22,7 +22,7 @@ from app.agent.context import (
 )
 from app.agent.core.tool_manager import ToolManager
 from app.agent.core.plugin_manager import PluginManager
-from app.agent.core.event_router import EventRouter, EventType, AgentEvent
+from app.agent.core.events import EventType, AgentEvent
 from app.agent.core.pipeline import ExecutionPipeline
 from app.agent.models.llm_client import LLMClient, LLMConfig
 from app.agent.plugins.base import BasePlugin, PluginHook
@@ -69,7 +69,6 @@ class Agent:
         tool_authorization (ToolAuthorization | None): 工具单次授权验证器。
         tool_manager (ToolManager): 本地及 MCP 工具注册管理器。
         plugin_manager (PluginManager): 插件生命周期与执行钩子的分发器。
-        event_router (EventRouter): Agent 内部事件订阅器。
         llm_client (LLMClient | None): 可替换的流式模型客户端。
         pipeline (ExecutionPipeline): 模型工具执行管道。
         _initialized (bool): 工具和插件是否已经完成初始化。
@@ -119,7 +118,6 @@ class Agent:
         self.plugin_manager = PluginManager()
         self._owns_state_manager = session_state_manager is None
         self.session_state_manager = session_state_manager or SessionStateManager(config.session_id, db_path)
-        self.event_router = EventRouter()
         # LLM 客户端
         self.llm_client = llm_client
         if self.llm_client is None:
@@ -149,7 +147,6 @@ class Agent:
             tool_manager=self.tool_manager,
             plugin_manager=self.plugin_manager,
             model_input=model_input,
-            emit_event=self.event_router.emit,
             tool_authorization=self.tool_authorization,
             task_launcher=task_launcher,
             desktop=desktop,
@@ -370,31 +367,6 @@ class Agent:
             origin_channel=origin_channel,
             turn_control=turn_control,
             release_queued=inbox_input is not None,
-        )) as managed_events:
-            async for event in managed_events:
-                yield event
-
-
-    async def run_runtime_input(
-        self, message: RuntimeInputMessage, *,
-        inbox_input: InboxEnvelope,
-        turn_control: TurnControl | None = None,
-        receive_task_notifications: bool = False,
-    ) -> AsyncIterator[AgentEvent]:
-        """将单条内部通知转交批量运行入口，不伪装成真人消息。
-
-        Args:
-            message (RuntimeInputMessage): 真人文本或类型声明对应的内部通知。
-            inbox_input (InboxEnvelope): 随本次 checkpoint 原子交付的单条输入快照。
-            turn_control (TurnControl | None): 当前 run 的停止与引导控制器。
-            receive_task_notifications (bool): 是否在模型安全点交付任务通知。
-
-        Yields:
-            AgentEvent: 按执行顺序产生的 Agent 事件。
-        """
-        # 显式等待下层迭代关闭，保证响应和借用资源在返回前完成清理。
-        async with aclosing(self.run_runtime_inputs(
-            (message,), inbox_inputs=(inbox_input,), turn_control=turn_control, receive_task_notifications=receive_task_notifications,
         )) as managed_events:
             async for event in managed_events:
                 yield event

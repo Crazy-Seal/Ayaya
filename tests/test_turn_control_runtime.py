@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from app.agent.agent import Agent
-from app.agent.core.event_router import AgentEvent, EventType
+from app.agent.core.events import AgentEvent, EventType
 from app.agent.runtime.turn_control import TurnControl, TurnInterrupted
 from app.agent.state import AgentState
 from app.agent.state.manager import SessionStateManager

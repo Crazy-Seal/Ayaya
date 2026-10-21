@@ -6,7 +6,7 @@ import pytest
 
 from app.agent.agent import Agent, AgentConfig
 from app.agent.context import ContextStrategyConfig
-from app.agent.core.event_router import EventType
+from app.agent.core.events import EventType
 from app.agent.models.llm_client import StreamChunk
 from app.agent.state.manager import SessionStateManager
 from app.agent.state.messages import ToolCall

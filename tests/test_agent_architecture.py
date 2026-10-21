@@ -14,7 +14,7 @@ from app.agent.context import (
     ModelInputCoordinator,
     build_token_accounting_key,
 )
-from app.agent.core.event_router import AgentEvent, EventRouter, EventType
+from app.agent.core.events import AgentEvent, EventType
 from app.agent.core.pipeline import ExecutionPipeline
 from app.agent.core.plugin_manager import PluginManager
 from app.agent.core.tool_manager import ToolManager
@@ -154,7 +154,6 @@ def _pipeline(
         ExecutionPipeline: 供外层用例断言使用的预设结果。
     """
     config = _config()
-    router = EventRouter()
     return ExecutionPipeline(
         prompt_source=config,
         llm_client=llm,
@@ -165,7 +164,6 @@ def _pipeline(
             llm,
             accounting_key=accounting_key,
         ),
-        emit_event=router.emit,
     )
 
 
