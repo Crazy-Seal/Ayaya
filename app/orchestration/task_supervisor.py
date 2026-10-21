@@ -8,7 +8,6 @@ from dataclasses import dataclass, field
 import logging
 import os
 from pathlib import Path
-from typing import Awaitable, Callable
 from uuid import uuid4
 
 from app.schemas.runtime_types import TaskStatus
@@ -49,30 +48,36 @@ class TaskSupervisor:
     Attributes:
         records (TaskRecordDao): 任务事实及终态通知的事务入口。
         spool_dir (Path): 完整输出目录。
-        on_terminal (Callable | None): 终态提交后唤醒所属聊天。
-        on_status (Callable | None): 状态提交后通知界面。
+        _events (asyncio.Queue[TaskRecord | None]): 已保存的任务记录，由 Scheduler 独占读取。
+        _events_closed (bool): 进程收尾后是否已结束记录来源。
     """
 
-    def __init__(self, *, db_path: str | None = None, spool_dir: Path | None = None,
-                 on_terminal: Callable[[str], Awaitable[None]] | None = None,
-                 on_status: Callable[[TaskRecord], Awaitable[None]] | None = None) -> None:
-        """保存持久化和通知依赖，应用级共享，不随单轮 Agent 关闭。
+    def __init__(self, *, db_path: str | None = None, spool_dir: Path | None = None) -> None:
+        """准备持久化和记录队列，应用级共享，不随单轮 Agent 关闭。
 
         Args:
             db_path (str | None): 当前环境的 SQLite 路径。
             spool_dir (Path | None): 当前环境的任务输出目录。
-            on_terminal (Callable | None): 提交完成通知后调用的唤醒函数。
-            on_status (Callable | None): 提交任务状态后调用的界面发布函数。
         """
         self.records = TaskRecordDao(db_path)
         self.spool_dir = Path(spool_dir or get_data_dir() / "tasks")
-        self.on_terminal = on_terminal
-        self.on_status = on_status
+        self._events: asyncio.Queue[TaskRecord | None] = asyncio.Queue()
+        self._events_closed = False
         self._live: dict[str, RunningTerminal] = {}
         self._watchers: dict[str, asyncio.Task[None]] = {}
         self._force_stops: dict[str, asyncio.Task[None]] = {}
         self._stopping: set[str] = set()
         self._closing = False
+
+    async def next_event(self) -> TaskRecord | None:
+        """供 Scheduler 唯一消费任务等待已保存记录，不读取终端日志。
+
+        Returns:
+            TaskRecord | None: 下一条记录；关闭后先读完积压，再持续返回空值。
+        """
+        if self._events_closed and self._events.empty():
+            return None
+        return await self._events.get()
 
     async def recover_orphaned(self) -> None:
         """重启后将失去进程所有权的任务标记 orphaned，并创建唯一通知。"""
@@ -123,23 +128,23 @@ class TaskSupervisor:
         self._live[task_id] = live
         self._watchers[task_id] = asyncio.create_task(self._watch(task_id, live, output_path))
         try:
-            await self._publish_status(task_id)
+            await self._enqueue_background_record(task_id)
             # 2. 初次启动允许返回同步完成的正文；等待不取消独立输出收集任务。
             async with live.interaction:
                 result = await self._observe(session_id, task_id, live, yield_time_ms, initial=True)
             if result.background:
                 await self.records.mark_background(task_id)
-                await self._publish_status(task_id)
+                await self._enqueue_background_record(task_id)
             return result
         except asyncio.CancelledError:
             # 3. 单轮停止只移交同一进程，不能取消 watcher 或重新执行原命令。
             await self.records.mark_background(task_id)
-            await self._publish_status(task_id)
+            await self._enqueue_background_record(task_id)
             raise
         except OSError as exc:
             # 4. 首次读取失败时任务仍由 watcher 管理，保留编号并报告错误，不能谎称进程未启动。
             await self.records.mark_background(task_id)
-            await self._publish_status(task_id)
+            await self._enqueue_background_record(task_id)
             record = await self._owned(session_id, task_id)
             return TaskLaunchResult(task_id, record.status == TaskStatus.RUNNING, "", record.status,
                                     record.exit_code, error=f"读取任务输出失败，请勿重复执行命令：{exc}")
@@ -310,21 +315,18 @@ class TaskSupervisor:
             self._stopping.discard(task_id)
             live.changed.set()
 
-    async def _publish_status(self, task_id: str) -> None:
-        """状态已经提交后通知界面，通知失败不撤销任务事实。
+    async def _enqueue_background_record(self, task_id: str) -> None:
+        """后台状态已经提交后暂存记录，不等待会话或界面处理。
 
         Args:
             task_id (str): 需要重新读取已提交状态的任务编号。
         """
         record = await self.get(task_id)
-        if self.on_status is not None and record is not None and record.background:
-            try:
-                await self.on_status(record)
-            except Exception:
-                logger.exception("发布任务状态失败: %s", task_id)
+        if record is not None and record.background:
+            self._events.put_nowait(record)
 
     async def finish_once(self, task_id: str, status: TaskStatus, exit_code: int | None) -> bool:
-        """只保存状态和日志引用，事务提交成功后才唤醒 Agent。
+        """原子保存终态与 Inbox 通知，成功后暂存记录供 Scheduler 检查。
 
         Args:
             task_id (str): 任务编号。
@@ -334,18 +336,16 @@ class TaskSupervisor:
         Returns:
             bool: 是否首次完成提交。
         """
+        # 1. 数据库保证首次终态与唯一通知一起提交，重复提交不再产生记录事件。
         if not await self.records.finish_once(task_id, status, exit_code):
             return False
+        # 2. 先让终端调用结束等待，再暂存记录；进程清理不等待会话取得锁。
         live = self._live.get(task_id)
         if live is not None:
             live.changed.set()
-        await self._publish_status(task_id)
         record = await self.get(task_id)
-        if self.on_terminal is not None and record is not None:
-            try:
-                await self.on_terminal(record.session_id)
-            except Exception:
-                logger.exception("唤醒任务所属聊天失败: %s", record.session_id)
+        if record is not None:
+            self._events.put_nowait(record)
         return True
 
     async def get(self, task_id: str) -> TaskRecord | None:
@@ -484,8 +484,9 @@ class TaskSupervisor:
         return True
 
     async def close(self) -> None:
-        """停止进程并等待输出收尾，取消剩余等待后再关闭数据库。"""
+        """停止进程并等待输出收尾，关闭数据库后结束记录来源。"""
         self._closing = True
+        # 1. 终态记录由 watcher 在收尾时入队，不能提前结束来源。
         for task_id in tuple(self._live):
             await self.stop(task_id)
         watchers = tuple(self._watchers.values())
@@ -494,4 +495,10 @@ class TaskSupervisor:
             for task in pending:
                 task.cancel()
             await asyncio.gather(*watchers, return_exceptions=True)
-        await self.records.close()
+        try:
+            await self.records.close()
+        finally:
+            # 2. 存储关闭失败也通知消费者结束；保留前面的积压记录，重复关闭不追加标记。
+            if not self._events_closed:
+                self._events_closed = True
+                self._events.put_nowait(None)

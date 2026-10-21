@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from app.agent.plugins.base import HookContext, PluginHook
-from app.agent.state.manager import StateManager
+from app.agent.state.manager import SessionStateManager
 from app.agent.memory.memories.diary import DiaryMemory
 from app.agent.memory.memories.episodic import EpisodicMemory
 from app.agent.memory.store.chat_history_store import ChatHistoryStore
@@ -37,7 +37,7 @@ def test_protocol_store_freezes_ten_complete_turns_and_five_history_turns(tmp_pa
     async def scenario():
         """由外层测试调用，完成“协议历史按边界选十轮当前批次及五轮前情”的异步步骤。"""
         db_path = tmp_path / "agent.sqlite3"
-        manager = StateManager("session", db_path=str(db_path))
+        manager = SessionStateManager("session", db_path=str(db_path))
         try:
             state = AgentState.create_new("session")
             for index in range(15):
@@ -68,7 +68,7 @@ def test_completed_turn_query_does_not_accept_a_chunk_head_fragment(tmp_path: Pa
     async def scenario():
         """由外层测试调用，完成“分块开头不完整轮次不会当作完整历史”的异步步骤。"""
         db_path = tmp_path / "agent.sqlite3"
-        manager = StateManager("session", db_path=str(db_path))
+        manager = SessionStateManager("session", db_path=str(db_path))
         try:
             state = AgentState.create_new("session")
             state.add_user_message("请读取文件")

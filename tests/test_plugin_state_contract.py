@@ -169,7 +169,7 @@ def test_agent_commits_response_and_in_place_changes_after_rejected_replacement(
         await agent.register_plugin(plugin)
         try:
             events = [event async for event in agent.run("开始")]
-            saved = await agent.state_manager.load()
+            saved = await agent.session_state_manager.load()
             assert events[-1].type == EventType.DONE
             assert [event.data for event in events if event.type == EventType.TEXT_CHUNK] == [
                 "已保存的回复"

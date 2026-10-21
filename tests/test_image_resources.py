@@ -266,7 +266,7 @@ def test_user_image_is_saved_before_first_protocol_commit(
         return ["stored.png"]
 
     monkeypatch.setattr(
-        agent_module,
+        state_manager_module,
         "save_multiple_images",
         save_images,
         raising=False,
@@ -280,18 +280,20 @@ def test_user_image_is_saved_before_first_protocol_commit(
         """
         agent = _make_agent(tmp_path / "agent.sqlite3")
         try:
-            state = await agent._commit_user_input(
-                AgentState.create_new("image-test"),
+            state = AgentState.create_new("image-test")
+            async for _ in agent._commit_user_input(
+                state,
                 "看看这张图",
                 [image],
-            )
-            db = await agent.state_manager._get_db()
+            ):
+                pass
+            db = await agent.session_state_manager._state_dao._get_db()
             row = (await db.execute_fetchall(
                 "SELECT message_json, CASE WHEN json_extract(message_json,'$.content[1].storage_ref') IS NULL THEN NULL ELSE json_array(json_extract(message_json,'$.content[1].storage_ref')) END FROM conversation_messages"
             ))[0]
             return state, row
         finally:
-            await agent.state_manager.close()
+            await agent.session_state_manager.close()
 
     state, row = asyncio.run(scenario())
     message = state.messages[-1]
@@ -323,7 +325,7 @@ def test_text_input_does_not_save_images(monkeypatch, tmp_path: Path) -> None:
         raise AssertionError("纯文本输入不应保存图片")
 
     monkeypatch.setattr(
-        agent_module,
+        state_manager_module,
         "save_multiple_images",
         unexpected_save,
         raising=False,
@@ -337,13 +339,16 @@ def test_text_input_does_not_save_images(monkeypatch, tmp_path: Path) -> None:
         """
         agent = _make_agent(tmp_path / "agent.sqlite3")
         try:
-            return await agent._commit_user_input(
-                AgentState.create_new("image-test"),
+            state = AgentState.create_new("image-test")
+            async for _ in agent._commit_user_input(
+                state,
                 "只有文字",
                 None,
-            )
+            ):
+                pass
+            return state
         finally:
-            await agent.state_manager.close()
+            await agent.session_state_manager.close()
 
     state = asyncio.run(scenario())
     assert isinstance(state.messages[-1], HumanMessage)
@@ -376,7 +381,7 @@ def test_image_save_failure_does_not_block_user_commit(
         raise OSError("disk unavailable")
 
     monkeypatch.setattr(
-        agent_module,
+        state_manager_module,
         "save_multiple_images",
         fail_save,
         raising=False,
@@ -390,18 +395,20 @@ def test_image_save_failure_does_not_block_user_commit(
         """
         agent = _make_agent(tmp_path / "agent.sqlite3")
         try:
-            state = await agent._commit_user_input(
-                AgentState.create_new("image-test"),
+            state = AgentState.create_new("image-test")
+            async for _ in agent._commit_user_input(
+                state,
                 "继续聊天",
                 ["data:image/png;base64,AA=="],
-            )
-            db = await agent.state_manager._get_db()
+            ):
+                pass
+            db = await agent.session_state_manager._state_dao._get_db()
             row = (await db.execute_fetchall(
                 "SELECT message_json, CASE WHEN json_extract(message_json,'$.content[1].storage_ref') IS NULL THEN NULL ELSE json_array(json_extract(message_json,'$.content[1].storage_ref')) END FROM conversation_messages"
             ))[0]
             return state, row
         finally:
-            await agent.state_manager.close()
+            await agent.session_state_manager.close()
 
     state, row = asyncio.run(scenario())
     payload = json.loads(row[0])
@@ -433,12 +440,12 @@ def test_tool_image_is_externalized_for_protocol_but_kept_in_checkpoint(
         Returns:
             tuple[dict, dict, list[str]]: 供外层用例断言使用的预设结果。
         """
-        manager = agent_module.StateManager("tool-image", db_path=str(tmp_path / "agent.sqlite3"))
+        manager = agent_module.SessionStateManager("tool-image", db_path=str(tmp_path / "agent.sqlite3"))
         try:
             state = AgentState.create_new("tool-image")
             _append_tool_image(state, image)
             await manager.save(state, checkpoint_type="completed")
-            db = await manager._get_db()
+            db = await manager._state_dao._get_db()
             protocol_raw, attachments_raw = (await db.execute_fetchall(
                 "SELECT message_json, CASE WHEN json_extract(message_json,'$.content[1].storage_ref') IS NULL THEN NULL ELSE json_array(json_extract(message_json,'$.content[1].storage_ref')) END FROM conversation_messages WHERE message_type='tool'"
             ))[0]
@@ -494,7 +501,7 @@ def test_tool_image_protocol_row_upgrades_after_transient_save_failure(
         Returns:
             tuple[dict, str | None, dict, str | None]: 供外层用例断言使用的预设结果。
         """
-        manager = state_manager_module.StateManager(
+        manager = state_manager_module.SessionStateManager(
             "retry-tool-image",
             db_path=str(tmp_path / "agent.sqlite3"),
         )
@@ -502,7 +509,7 @@ def test_tool_image_protocol_row_upgrades_after_transient_save_failure(
             state = AgentState.create_new("retry-tool-image")
             _append_tool_image(state, "data:image/png;base64,AA==")
             await manager.save(state, checkpoint_type="completed")
-            db = await manager._get_db()
+            db = await manager._state_dao._get_db()
             first_raw, first_attachments = (await db.execute_fetchall(
                 "SELECT message_json, CASE WHEN json_extract(message_json,'$.content[1].storage_ref') IS NULL THEN NULL ELSE json_array(json_extract(message_json,'$.content[1].storage_ref')) END FROM conversation_messages WHERE message_type='tool'"
             ))[0]
@@ -557,7 +564,7 @@ def test_tool_image_save_exception_preserves_base64_and_checkpoint(
         Returns:
             tuple[dict, dict, str | None]: 供外层用例断言使用的预设结果。
         """
-        manager = state_manager_module.StateManager(
+        manager = state_manager_module.SessionStateManager(
             "failed-tool-image",
             db_path=str(tmp_path / "agent.sqlite3"),
         )
@@ -565,7 +572,7 @@ def test_tool_image_save_exception_preserves_base64_and_checkpoint(
             state = AgentState.create_new("failed-tool-image")
             _append_tool_image(state, "data:image/png;base64,AA==")
             await manager.save(state, checkpoint_type="completed")
-            db = await manager._get_db()
+            db = await manager._state_dao._get_db()
             protocol_raw, attachments = (await db.execute_fetchall(
                 "SELECT message_json, CASE WHEN json_extract(message_json,'$.content[1].storage_ref') IS NULL THEN NULL ELSE json_array(json_extract(message_json,'$.content[1].storage_ref')) END FROM conversation_messages WHERE message_type='tool'"
             ))[0]

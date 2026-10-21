@@ -209,16 +209,14 @@ def test_permission_service_groups_local_and_mcp_tools_and_marks_unavailable(
                 return [MCPToolDescriptor("read", "读取远端文件", {"type": "object"})]
 
         manager = Manager()
-        authorization = ToolAuthorization(
-            chat_dao.get_chat_settings,
-            catalog=UnifiedToolCatalog(
+        service = ToolPermissionService(
+            chat_dao,
+            UnifiedToolCatalog(
                 LocalToolCatalogAdapter(),
                 MCPToolCatalogAdapter(mcp_dao, manager),
             ),
-            settings_writer=chat_dao.update_chat_settings,
-            mutation_coordinator=SettingsMutationCoordinator(),
+            SettingsMutationCoordinator(),
         )
-        service = ToolPermissionService(authorization)
 
         policies = service.list_policies("session")
         by_key = {item.stable_key: item for item in policies}
@@ -241,7 +239,7 @@ def test_permission_service_groups_local_and_mcp_tools_and_marks_unavailable(
             chat_dao.get_chat_settings("session").tool_permissions["local:read_file"]
             == ToolPolicy.DENY
         )
-        await authorization.set_policy(
+        await service.set_policy(
             "session",
             ToolIdentity.local("read_file"),
             ToolPolicy.ALLOW,

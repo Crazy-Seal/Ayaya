@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.agent.runtime.session_inbox import SessionInbox
+from app.agent.state.manager import SessionStateManager
 from app.agent.tools.core.base import ToolContext
 from app.agent.tools.exec_command import ExecCommandArguments, ExecCommandTool
 from app.agent.tools.write_stdin import WriteStdinArguments, WriteStdinTool
@@ -65,7 +65,7 @@ def test_duplex_terminal_input_completion_and_full_log(tmp_path: Path, tty: bool
         """以等待输入的真实 Python 程序验证两种 Adapter。"""
         path = str(tmp_path / "db.sqlite3")
         supervisor = TaskSupervisor(db_path=path, spool_dir=tmp_path / "logs")
-        inbox = SessionInbox("chat", path)
+        inbox = SessionStateManager("chat", path)
         try:
             command = "import sys; print('READY', flush=True); value=input(); print('RESULT:'+value, flush=True)"
             started = await supervisor.launch("chat", "interactive", [sys.executable, "-u", "-c", command],
@@ -333,19 +333,19 @@ def test_many_completion_notices_keep_all_tool_names_and_references(tmp_path: Pa
     Args:
         tmp_path (Path): 隔离任务和 Inbox 数据库。
     """
-    from app.orchestration.agent_runtime_scheduler import AgentRuntimeScheduler
+    from app.agent.state.manager import task_result_messages
 
     async def scenario() -> None:
         """在真实 Inbox 中领取多种工具的完成通知，再走模型消息转换。"""
         path = str(tmp_path / "db")
-        records, inbox = TaskRecordDao(path), SessionInbox("chat", path)
+        records, inbox = TaskRecordDao(path), SessionStateManager("chat", path)
         try:
             for index in range(90):
                 name = "exec_command" if index % 2 == 0 else "other_tool"
                 await records.insert_running(f"task-{index}", "chat", "command", 1, "unused", tool_name=name)
                 await records.finish_once(f"task-{index}", TaskStatus.COMPLETED, 0)
             claims = await inbox.read_task_terminals()
-            messages = AgentRuntimeScheduler._task_result_messages(claims)
+            messages = task_result_messages(claims)
             text = "\n".join(message.result for message in messages)
             assert len(messages) > 1
             assert "other_tool" in text and "exec_command" in text

@@ -4,7 +4,7 @@ import asyncio
 from pathlib import Path
 
 from app.agent.state import AgentState
-from app.agent.state.manager import StateManager
+from app.agent.state.manager import SessionStateManager
 from app.agent.state.messages import TextContent, ImageContent, ToolCall, ToolMessage
 from app.crud.chat_history_dao import ChatHistoryDao
 
@@ -13,7 +13,7 @@ def test_first_tool_image_is_durable_while_next_tool_remains_pending(tmp_path: P
     """第一项工具完成后可恢复其图片，后续未执行调用仍保持待处理。"""
     async def scenario() -> None:
         """使用隔离 SQLite 保存并重新载入未完成批次。"""
-        manager = StateManager("session", str(tmp_path / "state.sqlite"))
+        manager = SessionStateManager("session", str(tmp_path / "state.sqlite"))
         state = AgentState.create_new("session")
         state.add_user_message("读取")
         a, b = ToolCall("a", "read_image", {}), ToolCall("b", "read_file", {})

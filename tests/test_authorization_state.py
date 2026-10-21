@@ -9,9 +9,8 @@ import pytest
 import aiosqlite
 
 from app.agent.core.event_router import AgentEvent, EventType
-from app.agent.runtime.session_inbox import SessionInbox
+from app.agent.state.manager import SessionStateManager
 from app.agent.state import AgentState
-from app.agent.state.manager import StateManager
 from app.agent.state.messages import ToolCall
 from app.orchestration.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.interaction.interaction_contract import ChannelCommand
@@ -127,8 +126,9 @@ class WaitingAgent:
         Yields:
             AgentEvent: 屏障结束时的完成事件，测试正常清理会先取消等待。
         """
+        yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": kwargs.get("origin_channel", "desktop"), "resumed": False})
         if message == "建立本次审批":
-            manager = StateManager("s", self.path)
+            manager = SessionStateManager("s", self.path)
             try:
                 state = approval_state()
                 await manager.save(state, checkpoint_type="intermediate", inbox_inputs=(kwargs["inbox_input"],))
@@ -153,32 +153,33 @@ def make_scheduler(path: str) -> AgentRuntimeScheduler:
     Returns:
         AgentRuntimeScheduler: 使用真实持久化与事件发布的调度器。
     """
-    def state_factory(session: str) -> StateManager:
+    def state_factory(session: str) -> SessionStateManager:
         """为 Scheduler 的读取与保存创建隔离连接。
 
         Args:
             session (str): 需要访问的会话。
 
         Returns:
-            StateManager: 测试数据库访问对象。
+            SessionStateManager: 测试数据库访问对象。
         """
-        return StateManager(session, path)
+        return SessionStateManager(session, path)
 
-    def inbox_factory(session: str) -> SessionInbox:
+    def inbox_factory(session: str) -> SessionStateManager:
         """为命令提交和 worker 创建真实隔离输入队列。
 
         Args:
             session (str): 需要访问的会话。
 
         Returns:
-            SessionInbox: 测试数据库输入队列。
+            SessionStateManager: 测试数据库输入队列。
         """
-        return SessionInbox(session, path)
+        return SessionStateManager(session, path)
 
-    def agent_factory(session: str) -> WaitingAgent:
+    def agent_factory(session: str, _manager) -> WaitingAgent:
         """在输入已保存后阻塞后续回答，不参与审批保存规则。
 
         Args:
+            _manager (SessionStateManager): worker 拥有并借给本次执行的会话状态业务对象。
             session (str): 即将回答的会话。
 
         Returns:
@@ -188,8 +189,7 @@ def make_scheduler(path: str) -> AgentRuntimeScheduler:
 
     return AgentRuntimeScheduler(
         agent_factory=agent_factory,
-        inbox_factory=inbox_factory, state_manager_factory=state_factory,
-    )
+    session_state_manager_factory=state_factory, )
 
 
 @pytest.mark.parametrize("operation", ["approve", "cancel"])
@@ -206,7 +206,7 @@ def test_decision_save_failure_publishes_nothing_and_retry_uses_persisted_state(
         """使用真实触发器拒绝状态保存，通过公开命令和事件流核对失败与重试。"""
         path = str(tmp_path / "state.sqlite3")
         scheduler = make_scheduler(path)
-        manager = StateManager("s", path)
+        manager = SessionStateManager("s", path)
         next_event = None
         try:
             await scheduler.start()
@@ -265,7 +265,7 @@ def test_steer_inbox_failure_preserves_approval_and_retry_saves_input_first(tmp_
         """用两个触发器分别注入 Inbox 失败和检查新消息先于决定持久保存。"""
         path = str(tmp_path / "state.sqlite3")
         scheduler = make_scheduler(path)
-        manager = StateManager("s", path)
+        manager = SessionStateManager("s", path)
         try:
             await scheduler.start()
             await manager.save(approval_state(), checkpoint_type="intermediate")

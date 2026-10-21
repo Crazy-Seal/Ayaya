@@ -8,7 +8,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.agent.context._compaction import ContextCompressionPolicy
-from app.agent.state.manager import StateManager
+from app.agent.state.manager import SessionStateManager
 from app.agent.state import AgentState
 from app.agent.state.messages import (
     MessageContractError,
@@ -31,7 +31,7 @@ def test_checkpoint_and_protocol_log_are_saved_atomically(tmp_path: Path) -> Non
     async def scenario() -> None:
         """由外层测试调用，完成“checkpoint 和协议日志在同一事务保存”的异步步骤。"""
         db_path = tmp_path / "agent.sqlite3"
-        manager = StateManager("session", db_path=str(db_path))
+        manager = SessionStateManager("session", db_path=str(db_path))
         try:
             state = AgentState.create_new("session")
             state.add_user_message("你好")
@@ -42,7 +42,7 @@ def test_checkpoint_and_protocol_log_are_saved_atomically(tmp_path: Path) -> Non
             state.add_assistant_message("完成")
             await manager.save(state, checkpoint_type="completed")
 
-            db = await manager._get_db()
+            db = await manager._state_dao._get_db()
             rows = await db.execute_fetchall(
                 "SELECT message_type, message_json FROM conversation_messages ORDER BY id"
             )
@@ -81,7 +81,7 @@ def test_history_dao_projects_visible_rows_before_pagination(tmp_path: Path) -> 
             list[dict]: 供外层用例断言使用的预设结果。
         """
         db_path = tmp_path / "agent.sqlite3"
-        manager = StateManager("session", db_path=str(db_path))
+        manager = SessionStateManager("session", db_path=str(db_path))
         try:
             state = AgentState.create_new("session")
             state.add_user_message("问题")
@@ -127,7 +127,7 @@ def test_history_dao_keeps_projection_order_across_small_query_chunks(tmp_path: 
             tuple[list[dict], list[dict]]: 供外层用例断言使用的预设结果。
         """
         db_path = tmp_path / "agent.sqlite3"
-        manager = StateManager("session", db_path=str(db_path))
+        manager = SessionStateManager("session", db_path=str(db_path))
         try:
             state = AgentState.create_new("session")
             state.add_user_message("question")
@@ -162,7 +162,7 @@ def test_tool_image_is_archived_inside_its_tool_result(tmp_path: Path) -> None:
     """历史只保存完整工具结果，图片带文件引用并继承调用身份。"""
     async def scenario() -> None:
         """通过保存及历史接口验证图片归属，不产生独立媒体行。"""
-        manager=StateManager("s",str(tmp_path/"state.sqlite"))
+        manager=SessionStateManager("s",str(tmp_path/"state.sqlite"))
         state=AgentState.create_new("s")
         call=ToolCall("c","read_image",{})
         state.record_assistant_step("",(call,))
@@ -184,7 +184,7 @@ def test_screenshot_compaction_preserves_original_history(tmp_path: Path) -> Non
     """checkpoint 图片被压缩后，历史仍保留原文件引用和图片气泡。"""
     async def scenario() -> None:
         """在隔离 SQLite 中比较压缩前后可见历史。"""
-        manager=StateManager("s",str(tmp_path/"state.sqlite"))
+        manager=SessionStateManager("s",str(tmp_path/"state.sqlite"))
         state=AgentState.create_new("s")
         call=ToolCall("c","screenshot",{})
         state.record_assistant_step("",(call,))
@@ -219,9 +219,9 @@ def test_history_dao_raises_for_missing_message_type_but_keeps_legacy_notice(
             tuple[MessageContractError, list[dict]]: 供外层用例断言使用的预设结果。
         """
         db_path = tmp_path / "agent.sqlite3"
-        manager = StateManager("session", db_path=str(db_path))
+        manager = SessionStateManager("session", db_path=str(db_path))
         try:
-            db = await manager._get_db()
+            db = await manager._state_dao._get_db()
             await db.execute(
                 """
                 INSERT INTO conversation_messages (

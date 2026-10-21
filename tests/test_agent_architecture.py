@@ -1,3 +1,4 @@
+from tests.runtime_support import checkpoint_probe
 from tests.model_capture import capture_input
 import ast
 import asyncio
@@ -366,14 +367,14 @@ def test_runtime_registrations_remain_visible_to_constructed_pipeline(tmp_path) 
     assert events[-1].type == EventType.DONE
 
 
-def test_agent_run_uses_preloaded_state_without_loading_again(tmp_path) -> None:
-    """验证Agent 执行复用已加载状态。
+def test_agent_run_loads_execution_state_once(tmp_path) -> None:
+    """验证 Agent 自行加载执行状态一次。
 
     Args:
         tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
     """
     async def scenario() -> tuple[list, AgentState]:
-        """由外层测试调用，完成“Agent 执行复用已加载状态”的异步步骤。
+        """由外层测试调用，完成“Agent 自行加载执行状态一次”的异步步骤。
 
         Returns:
             tuple[list, AgentState]: 供外层用例断言使用的预设结果。
@@ -385,19 +386,24 @@ def test_agent_run_uses_preloaded_state_without_loading_again(tmp_path) -> None:
         )
         state = AgentState.create_new("architecture-test")
 
-        async def reject_duplicate_load() -> AgentState:
-            """如果 Agent 再次加载已提供的状态就主动失败，防止隐藏重复数据库读取。
+        load_calls = 0
 
-            该定义仅用于外层用例：验证Agent 执行复用已加载状态。
+        async def tracked_load() -> AgentState:
+            """记录 Agent 读取次数，并返回本次唯一状态，防止恢复时产生第二份执行状态。
+
+            该定义仅用于外层用例：验证 Agent 自行加载执行状态一次。
             """
-            raise AssertionError("预加载状态不应再次从 checkpoint 读取")
+            nonlocal load_calls
+            load_calls += 1
+            return state
 
-        agent.state_manager.load = reject_duplicate_load  # type: ignore[method-assign]
+        agent.session_state_manager.load = tracked_load  # type: ignore[method-assign]
         try:
             events = [
                 event
-                async for event in agent.run("开始", initial_state=state)
+                async for event in agent.run("开始")
             ]
+            assert load_calls == 1
             return events, state
         finally:
             await agent.close()
@@ -408,14 +414,14 @@ def test_agent_run_uses_preloaded_state_without_loading_again(tmp_path) -> None:
     assert state.messages[0].text == "开始"
 
 
-def test_agent_resume_uses_preloaded_state_without_loading_again(tmp_path) -> None:
-    """验证Agent 恢复复用已加载状态。
+def test_agent_resume_loads_execution_state_once(tmp_path) -> None:
+    """验证 Agent 自行加载恢复状态一次。
 
     Args:
         tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
     """
     async def scenario() -> tuple[list, AgentState]:
-        """由外层测试调用，完成“Agent 恢复复用已加载状态”的异步步骤。
+        """由外层测试调用，完成“Agent 自行加载恢复状态一次”的异步步骤。
 
         Returns:
             tuple[list, AgentState]: 供外层用例断言使用的预设结果。
@@ -428,49 +434,56 @@ def test_agent_resume_uses_preloaded_state_without_loading_again(tmp_path) -> No
         state = AgentState.create_new("architecture-test")
         state.set_interrupt({"type": "test", "request_id": "request-1"})
 
-        async def reject_duplicate_load() -> AgentState:
-            """如果 Agent 再次加载已提供的状态就主动失败，防止隐藏重复数据库读取。
+        load_calls = 0
 
-            该定义仅用于外层用例：验证Agent 恢复复用已加载状态。
+        async def tracked_load() -> AgentState:
+            """记录 Agent 读取次数，并返回本次唯一状态，防止恢复时产生第二份执行状态。
+
+            该定义仅用于外层用例：验证 Agent 自行加载恢复状态一次。
             """
-            raise AssertionError("预加载状态不应再次从 checkpoint 读取")
+            nonlocal load_calls
+            load_calls += 1
+            return state
 
         async def resume_without_tools(
             resumed_state: AgentState,
             _resume_data: dict,
-            checkpoint=None,
+            session_state_manager=None,
             runtime_context=None,
+            *, receive_task_notifications=False,
         ):
             """记录恢复时提供的状态，用于确认 Agent 复用已经加载的恢复材料。
 
-            该定义仅用于外层用例：验证Agent 恢复复用已加载状态。
+            该定义仅用于外层用例：验证 Agent 自行加载恢复状态一次。
 
             Args:
                 resumed_state (AgentState): 从中断恢复后传入的会话状态。
                 _resume_data (dict): 本次模拟审批或桌面回报的数据。
-                checkpoint (Any): 测试注入的状态保存回调。
+                session_state_manager (Any): Pipeline 借用的状态业务对象。
                 runtime_context (Any): 当前模型轮次的临时上下文。
+                receive_task_notifications (bool): 是否在模型安全点接收任务通知。
             """
             resumed_state.clear_interrupt()
             yield AgentEvent(EventType.TEXT_CHUNK, "继续")
 
-        agent.state_manager.load = reject_duplicate_load  # type: ignore[method-assign]
+        agent.session_state_manager.load = tracked_load  # type: ignore[method-assign]
         agent.pipeline.resume_tools = resume_without_tools  # type: ignore[method-assign]
         try:
             events = [
                 event
                 async for event in agent.resume(
-                    {"approved": True},
-                    initial_state=state,
+                    "request-1",
+                    resume_data={"executed": True},
                 )
             ]
+            assert load_calls == 1
             return events, state
         finally:
             await agent.close()
 
     events, state = asyncio.run(scenario())
 
-    assert [event.type for event in events] == [EventType.TEXT_CHUNK, EventType.DONE]
+    assert [event.type for event in events] == [EventType.RUN_STARTED, EventType.TEXT_CHUNK, EventType.DONE]
     assert state.interrupt_data is None
 
 

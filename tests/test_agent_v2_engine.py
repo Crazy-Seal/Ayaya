@@ -1,3 +1,4 @@
+from tests.runtime_support import checkpoint_probe
 from app.agent.models.openai_message_names import SCREENSHOT_COMPRESSED_NAME, SCREENSHOT_MESSAGE_NAME
 from tests.model_capture import result_parts
 from app.agent.state.messages import ProviderData
@@ -521,7 +522,7 @@ def test_pipeline_checkpoints_screenshot_compaction_before_llm_call():
             snapshots.append(deepcopy(current.to_checkpoint()))
             return len(snapshots)
 
-        events = await _drain(agent.pipeline.execute(state, checkpoint=checkpoint))
+        events = await _drain(agent.pipeline.execute(state, session_state_manager=checkpoint_probe(checkpoint)))
         return llm, snapshots, events
 
     llm, snapshots, events = asyncio.run(run())

@@ -1,6 +1,7 @@
 """agent 工厂 - 把 ChatSettings 映射为 Agent。"""
 
 from app.agent.agent import Agent, AgentConfig
+from app.agent.state.manager import SessionStateManager
 from app.agent.memory.manager import get_memory_manager
 from app.schemas.chat_settings import (
     MEMORY_DEFAULT_CONFIG,
@@ -36,6 +37,7 @@ def build_agent(
     tool_authorization: ToolAuthorization | None = None,
     task_launcher: TaskLauncher | None = None,
     desktop: DesktopOperations | None = None,
+    session_state_manager: SessionStateManager | None = None,
 ) -> Agent:
     """按会话设置创建 Agent，并注入共享授权与任务启动端口。
 
@@ -45,6 +47,7 @@ def build_agent(
         tool_authorization (ToolAuthorization | None): 工具单次授权验证器。
         task_launcher (TaskLauncher | None): 工具使用的共享进程启动端口。
         desktop (DesktopOperations | None): 应用共享桌面接口，各会话使用同一实例。
+        session_state_manager (SessionStateManager | None): worker 拥有并借给本次 Agent 的业务对象。
 
     Returns:
         Agent: 按最新会话设置装配的 Agent，尚未开始模型轮次。
@@ -76,6 +79,7 @@ def build_agent(
             tool_authorization=tool_authorization,
             task_launcher=task_launcher,
             desktop=desktop,
+            session_state_manager=session_state_manager,
         )
     return Agent(
         config,
@@ -85,4 +89,5 @@ def build_agent(
         tool_authorization=tool_authorization,
         task_launcher=task_launcher,
         desktop=desktop,
+        session_state_manager=session_state_manager,
     )

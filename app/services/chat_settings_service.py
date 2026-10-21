@@ -1,3 +1,4 @@
+from app.agent.memory.manager import get_memory_manager
 from app.crud.chat_settings_dao import ChatSettingsDao
 from app.crud.mcp_settings_dao import MCPSettingsDao
 from app.mcp.identity import server_identity_fingerprint
@@ -9,7 +10,7 @@ from app.services.settings_mutation import SettingsMutationCoordinator
 
 
 class ChatSettingsService:
-    """管理模型配置，并协调模型级 MCP 权限的安全写入。"""
+    """管理模型配置，协调模型级 MCP 权限写入及保存后的记忆缓存失效。"""
 
     def __init__(
         self,
@@ -32,7 +33,7 @@ class ChatSettingsService:
         self.mutation_coordinator = mutation_coordinator or SettingsMutationCoordinator()
 
     async def add_chat_settings(self, chat_settings: ChatSettings) -> ChatSettings:
-        """新增模型配置并正规化 MCP 权限。
+        """新增模型配置并正规化 MCP 权限，保存成功后让记忆装配使用新配置。
 
         Args:
             chat_settings (ChatSettings): 待新增的模型配置。
@@ -41,16 +42,19 @@ class ChatSettingsService:
             ChatSettings: 已保存的模型配置。
         """
         async with self.mutation_coordinator.lock:
-            return self.chat_settings_dao.add_chat_settings(self._sanitize_mcp(chat_settings, None))
+            saved = self.chat_settings_dao.add_chat_settings(self._sanitize_mcp(chat_settings, None))
+            get_memory_manager.cache_clear()
+            return saved
 
     async def delete_chat_settings(self, session_id: str) -> None:
-        """删除指定会话对应的模型配置。
+        """删除指定会话配置，成功后清除记忆工厂中的旧配置实例。
 
         Args:
             session_id (str): 待删除配置的会话 ID。
         """
         async with self.mutation_coordinator.lock:
             self.chat_settings_dao.delete_chat_settings(session_id)
+            get_memory_manager.cache_clear()
 
     def get_chat_settings_by_session(self, session_id: str) -> ChatSettings:
         """按会话读取 DAO 中经过校验和规范化的模型设置。
@@ -67,7 +71,7 @@ class ChatSettingsService:
         return self.chat_settings_dao.get_chat_settings(session_id)
 
     async def update_chat_settings(self, chat_settings: ChatSettings) -> ChatSettings:
-        """更新模型配置并安全合并 MCP 权限。
+        """更新模型配置并安全合并 MCP 权限，保存成功后使旧记忆配置失效。
 
         Args:
             chat_settings (ChatSettings): 更新后的完整模型配置。
@@ -81,7 +85,9 @@ class ChatSettingsService:
             except KeyError:
                 existing = None
             sanitized = self._sanitize_mcp(chat_settings, existing)
-            return self.chat_settings_dao.update_chat_settings(chat_settings.session_id, sanitized)
+            saved = self.chat_settings_dao.update_chat_settings(chat_settings.session_id, sanitized)
+            get_memory_manager.cache_clear()
+            return saved
 
     def _sanitize_mcp(
         self,

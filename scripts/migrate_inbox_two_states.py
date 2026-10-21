@@ -14,7 +14,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.agent.runtime.session_inbox import INBOX_SCHEMA_SQL
+from app.crud.session_inbox_dao import INBOX_SCHEMA_SQL
 
 
 def migrate(path: Path, *, apply: bool = False, confirm_app_stopped: bool = False) -> dict:

@@ -1,3 +1,4 @@
+from tests.runtime_support import checkpoint_probe
 from app.agent.models.contracts import ModelContextOverflowError
 from tests.model_capture import result_parts
 from tests.model_capture import capture_input
@@ -113,7 +114,7 @@ async def run(model, state, *, checkpoint_error=False):
             raise RuntimeError("checkpoint 写入失败")
         checkpoints.append(deepcopy(state.messages))
 
-    events = [event async for event in pipeline.execute(state, checkpoint=save)]
+    events = [event async for event in pipeline.execute(state, session_state_manager=checkpoint_probe(save))]
     return events, checkpoints, model_input
 
 

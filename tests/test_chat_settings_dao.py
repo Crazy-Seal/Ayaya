@@ -8,47 +8,6 @@ from app.agent.context import ContextStrategyConfig
 from app.schemas.chat_settings import AgentPluginSettings, ChatSettings
 
 
-def test_clearing_chat_settings_cache_also_clears_memory_manager_cache(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    """验证清除设置缓存也清除记忆管理器工厂缓存。
-
-    Args:
-        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
-        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
-    """
-    import app.agent.memory as memory_package
-
-    cleared: list[bool] = []
-
-    class FakeMemoryManagerFactory:
-        """提供当前用例所需的 FakeMemoryManagerFactory 测试替身，执行记录仅供外层断言使用。
-
-        该定义仅用于外层用例：验证清除设置缓存也清除记忆管理器工厂缓存。
-        """
-        @staticmethod
-        def cache_clear() -> None:
-            """记录记忆工厂缓存清理调用，确认设置修改同步使旧实例失效。
-
-            该定义仅用于外层用例：验证清除设置缓存也清除记忆管理器工厂缓存。
-            """
-            cleared.append(True)
-
-    monkeypatch.setattr(
-        memory_package,
-        "get_memory_manager",
-        FakeMemoryManagerFactory(),
-    )
-    dao = ChatSettingsDao(config_file=tmp_path / "chat_settings.yaml")
-    dao._cache["session"] = object()
-
-    dao._clear_caches()
-
-    assert dao._cache == {}
-    assert cleared == [True]
-
-
 def test_skills_survive_round_trip(tmp_path: Path) -> None:
     """验证技能设置经 YAML 保存读取仍完整。
 

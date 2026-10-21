@@ -7,8 +7,7 @@ from pathlib import Path
 import pytest
 
 from app.agent.core.event_router import AgentEvent, EventType
-from app.agent.runtime.session_inbox import SessionInbox
-from app.agent.state.manager import StateManager
+from app.agent.state.manager import SessionStateManager
 from app.interaction.interaction_contract import ChannelCommand, InteractionEvent
 from app.interaction.interaction_event_hub import InteractionEventHub
 from app.orchestration.agent_runtime_scheduler import AgentRuntimeScheduler
@@ -84,7 +83,7 @@ def test_event_during_inbox_query_reaches_old_and_new_connection(
         release_agent = asyncio.Event()
         block_query = False
 
-        class WaitingInbox(SessionInbox):
+        class WaitingInbox(SessionStateManager):
             """只暂停状态查询，领取和保存仍使用真实 SQLite。"""
 
             async def pending_humans(self, *, origin_channel=None):
@@ -114,6 +113,7 @@ def test_event_during_inbox_query_reaches_old_and_new_connection(
                 Yields:
                     AgentEvent: 已知片段及指定的并发事件。
                 """
+                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": kwargs.get("origin_channel", "desktop"), "resumed": False})
                 yield AgentEvent(EventType.TEXT_CHUNK, "今天")
                 await release_agent.wait()
                 yield AgentEvent(event_type, data)
@@ -123,10 +123,11 @@ def test_event_during_inbox_query_reaches_old_and_new_connection(
             async def close(self):
                 """测试执行对象没有外部资源。"""
 
-        def factory(session_id):
+        def factory(session_id, _manager):
             """创建本次隔离执行。
 
             Args:
+                _manager (SessionStateManager): worker 拥有并借给本次执行的会话状态业务对象。
                 session_id (str): 当前会话。
 
             Returns:
@@ -137,8 +138,7 @@ def test_event_during_inbox_query_reaches_old_and_new_connection(
         subscriptions = ChannelSubscriptionService(path)
         scheduler = AgentRuntimeScheduler(
             agent_factory=factory, subscriptions=subscriptions,
-            inbox_factory=partial(WaitingInbox, db_path=path),
-            state_manager_factory=partial(StateManager, db_path=path),
+            session_state_manager_factory=partial(WaitingInbox, db_path=path),
         )
         hub = InteractionEventHub(scheduler, subscriptions=subscriptions)
         await scheduler.start()

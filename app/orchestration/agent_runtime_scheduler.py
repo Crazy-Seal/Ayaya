@@ -2,25 +2,25 @@
 
 from __future__ import annotations
 
+from contextlib import aclosing
+
 import asyncio
 from dataclasses import asdict, dataclass, field, replace
-from functools import partial
 import logging
 from typing import AsyncIterator, Callable
 from uuid import uuid4
 
 from app.agent.agent import Agent
 from app.agent.core.event_router import AgentEvent, EventType
-from app.agent.runtime.session_inbox import InboxEnvelope, SessionInbox
+from app.agent.runtime.session_inbox import InboxEnvelope
 from app.agent.runtime.turn_control import TurnControl
-from app.agent.state.manager import StateManager
-from app.agent.state.model import AgentState
-from app.agent.state.messages import HumanMessage, TaskResultMessage
+from app.agent.state.manager import SessionStateManager
+from app.agent.state.messages import ImageContent
 from app.crud.task_record_dao import TaskRecord
 from app.schemas.runtime_types import (
     ApprovalDecisionKind, AuthorizationResolutionKind, CommandKind, DESKTOP_CHANNEL,
     InboxDeliveryMode, InboxKind, InteractionEventKind, SessionPhase,
-    TaskResultStatus, TaskStatus, TurnInterruptReason, TurnPhase, RuntimePhase, InboxStatus,
+    TaskStatus, TurnInterruptReason, TurnPhase, RuntimePhase, InboxStatus,
 )
 from app.interaction.interaction_contract import ChannelCommand, CommandReceipt, InteractionEvent
 from app.orchestration.task_supervisor import TaskSupervisor
@@ -29,7 +29,6 @@ from app.services.channel_subscription_service import ChannelSubscriptionService
 
 logger = logging.getLogger(__name__)
 INPUT_DELIVERY_MAX_ATTEMPTS = 4
-TASK_NOTICE_BATCH_MAX_CHARS = 8192
 AGENT_TO_INTERACTION_EVENT = {
     EventType.TEXT_CHUNK: InteractionEventKind.TEXT_CHUNK,
     EventType.TOOL_CALL: InteractionEventKind.TOOL_CALL,
@@ -48,12 +47,14 @@ class _CurrentTurn:
         origin (str): 本轮输入渠道。
         control (TurnControl | None): 本次 Agent 的控制对象；审批等待时可为空。
         approval (dict | None): 给界面显示的审批内容，有效性仍以 checkpoint 为准。
+        started (bool): 本次执行是否已经报告开始，输入重试不重复报告。
     """
 
     run_id: str
     origin: str
     control: TurnControl | None = None
     approval: dict | None = None
+    started: bool = False
 
 
 @dataclass
@@ -97,40 +98,39 @@ class AgentRuntimeScheduler:
 
     Attributes:
         subscriptions (ChannelSubscriptionService): 命令入口与 Hub 共用的配置。
-        task_supervisor (TaskSupervisor | None): 查询和停止后台任务的共享对象，不拥有其生命周期。
+        task_supervisor (TaskSupervisor | None): 查询、停止后台任务并读取记录的共享对象，不拥有其生命周期。
         phase (RuntimePhase): 后端执行入口的生命周期。
         _sessions (dict[str, _SessionState]): 内存会话记录，不表示已经持久保存。
         _output (asyncio.Queue): 由唯一 Hub 读取的临时事件队列。
         _epoch (str): 本次 Scheduler 实例的事件编号标识。
         _lifecycle_lock (asyncio.Lock): 启动、命令受理与开始退出之间的互斥。
+        _task_reader (asyncio.Task | None): 主动读取 Supervisor 已保存记录的唯一任务。
     """
 
     def __init__(
-        self, *, agent_factory: Callable[[str], Agent],
+        self, *, agent_factory: Callable[[str, SessionStateManager], Agent],
         subscriptions: ChannelSubscriptionService | None = None,
-        inbox_factory: Callable[[str], SessionInbox] = SessionInbox,
-        state_manager_factory: Callable[[str], StateManager] = StateManager,
+        session_state_manager_factory: Callable[[str], SessionStateManager] = SessionStateManager,
         task_supervisor: TaskSupervisor | None = None,
     ) -> None:
         """保存执行依赖，尚不创建 worker 或 Agent。
 
         Args:
-            agent_factory (Callable[[str], Agent]): 按会话创建本次 Agent。
+            agent_factory (Callable[[str, SessionStateManager], Agent]): 按会话创建本次 Agent。
             subscriptions (ChannelSubscriptionService | None): 应用注入的共享配置，测试可省略。
-            inbox_factory (Callable[[str], SessionInbox]): 会话持久输入访问对象工厂。
-            state_manager_factory (Callable[[str], StateManager]): checkpoint 访问对象工厂。
+            session_state_manager_factory (Callable[[str], SessionStateManager]): 当前会话的状态业务对象工厂。
             task_supervisor (TaskSupervisor | None): 共享任务查询与停止入口。
         """
         self.subscriptions = subscriptions or ChannelSubscriptionService()
         self.task_supervisor = task_supervisor
         self._agent_factory = agent_factory
-        self._inbox_factory = inbox_factory
-        self._state_manager_factory = state_manager_factory
+        self._manager_factory = session_state_manager_factory
         self._sessions: dict[str, _SessionState] = {}
         self._output: asyncio.Queue[InteractionEvent | None] = asyncio.Queue()
         self._output_closed = False
         self._epoch = uuid4().hex
         self._lifecycle_lock = asyncio.Lock()
+        self._task_reader: asyncio.Task[None] | None = None
         self.phase = RuntimePhase.INITIALIZING
 
     def _session(self, session_id: str) -> _SessionState:
@@ -171,7 +171,7 @@ class AgentRuntimeScheduler:
         return await self._output.get()
 
     async def start(self) -> None:
-        """清理旧输入和未结束轮次，再开放命令；共享资源由应用另行启动。
+        """清理旧输入和未结束轮次，再开放命令并启动唯一任务记录消费者。
 
         Raises:
             RuntimeError: 已关闭的实例不能重新启动。
@@ -184,29 +184,30 @@ class AgentRuntimeScheduler:
             await self._reset_inbox()
             await self._finalize_abandoned_sessions()
             self.phase = RuntimePhase.RUNNING
+            if self.task_supervisor is not None:
+                self._task_reader = asyncio.create_task(self._receive_task_records(self.task_supervisor))
 
     async def _reset_inbox(self) -> None:
         """作废旧未交付真人意图，保留任务通知和已交付消息。"""
-        inbox = self._inbox_factory("__runtime_init__")
+        manager = self._manager_factory("__runtime_init__")
         try:
-            await SessionInbox.reset_after_restart(inbox.db_path)
+            await manager.reset_after_restart()
         finally:
-            await inbox.close()
+            await manager.close()
 
     async def _finalize_abandoned_sessions(self) -> None:
         """只保存未结束轮次的终止事实，不创建 Agent 或重跑工具。"""
-        manager = self._state_manager_factory("__runtime_init__")
+        manager = self._manager_factory("__runtime_init__")
         try:
-            await manager.load()
-            sessions = await StateManager.unfinished_sessions(manager.db_path)
+            sessions = await manager.unfinished_sessions()
         finally:
             await manager.close()
         for session_id in sessions:
-            manager = self._state_manager_factory(session_id)
+            manager = self._manager_factory(session_id)
             partial = self._session(session_id).shutdown_partial or ("", False, DESKTOP_CHANNEL, None)
             try:
-                await Agent.finalize_abandoned_turn(
-                    manager, partial=partial[0], partial_persisted=partial[1],
+                await manager.finalize_abandoned_turn(
+                    partial=partial[0], partial_persisted=partial[1],
                     origin_channel=partial[2], partial_message_id=partial[3],
                 )
             finally:
@@ -232,11 +233,11 @@ class AgentRuntimeScheduler:
             }
             sequence = session.sequence
         # 2. 查询独立的数据库事实，Hub 会缓冲查询期间到达的后续事件。
-        inbox = self._inbox_factory(session_id)
+        manager = self._manager_factory(session_id)
         try:
-            pending = await inbox.pending_humans()
+            pending = await manager.pending_humans()
         finally:
-            await inbox.close()
+            await manager.close()
         payload["pending_inputs"] = [
             {"input_sequence": item.id, "origin_channel": item.origin_channel, "delivery_mode": item.delivery_mode}
             for item in pending
@@ -273,7 +274,7 @@ class AgentRuntimeScheduler:
                     raise ValueError("该会话未订阅此渠道")
             except ValueError as exc:
                 return CommandReceipt(False, str(exc))
-            # 1. Supervisor 的状态回调可能记录同会话事件，停止进程不持会话锁等待它。
+            # 1. 停止进程只校验任务归属，不需要占用会话执行状态的锁。
             if command.kind == CommandKind.STOP_BACKGROUND_TASK:
                 return await self._stop_background_task(command)
             handlers = {
@@ -319,11 +320,11 @@ class AgentRuntimeScheduler:
         sequence = command.payload.get("input_sequence")
         if not isinstance(sequence, int):
             return CommandReceipt(False, "缺少排队消息编号")
-        inbox = self._inbox_factory(command.session_id)
+        manager = self._manager_factory(command.session_id)
         try:
-            cancelled = await inbox.cancel_queued(sequence, command.origin_channel)
+            cancelled = await manager.cancel_queued(sequence, command.origin_channel)
         finally:
-            await inbox.close()
+            await manager.close()
         if cancelled:
             self._emit(InteractionEvent(command.session_id, InteractionEventKind.QUEUED_CANCELLED,
                 {"input_sequence": sequence}, origin_channel=command.origin_channel))
@@ -378,11 +379,11 @@ class AgentRuntimeScheduler:
             target_is_active = current is not None and command.target_run_id == current.run_id and not committing
             if not target_is_active and not committing and current is not None:
                 queued = True
-        inbox = self._inbox_factory(command.session_id)
+        manager = self._manager_factory(command.session_id)
         try:
-            envelope = await inbox.submit_human(command.origin_channel, message, images=images, queued=queued)
+            envelope = await manager.submit_human(command.origin_channel, message, images=images, queued=queued)
         finally:
-            await inbox.close()
+            await manager.close()
         # 2. 保存失败不会打断旧回答；保存成功后获得本次启动的执行资格。
         session.activated = True
         if not queued and phase == SessionPhase.RUNNING and control is not None:
@@ -406,20 +407,18 @@ class AgentRuntimeScheduler:
             actor (str): 取消审批的来源渠道。
         """
         session = self._session(session_id)
-        manager = self._state_manager_factory(session_id)
+        manager = self._manager_factory(session_id)
         try:
-            state = await manager.load()
-            interrupt = state.interrupt_data or {}
-            if not state.cancel_pending_interrupt():
+            cancelled = await manager.cancel_pending_interrupt()
+            if cancelled is None:
                 return
-            await manager.save(state, checkpoint_type="intermediate")
-            origin = str(interrupt.get("origin_channel") or DESKTOP_CHANNEL)
+            request_id, origin = cancelled
             run_id = session.current.run_id if session.current else None
             # 1. 持久决定保存成功才结束旧轮次，两个事件之间不等待。
             session.current = None
             self._emit(InteractionEvent(session_id, InteractionEventKind.AUTHORIZATION_RESOLVED,
                 {"outcome": AuthorizationResolutionKind.CANCELLED, "actor_channel": actor},
-                origin_channel=origin, request_id=str(interrupt.get("request_id") or "")))
+                origin_channel=origin, request_id=request_id))
             self._emit(InteractionEvent(session_id, InteractionEventKind.RUN_COMPLETED,
                 {"value": {"interrupted": True}}, origin_channel=origin, run_id=run_id))
         finally:
@@ -441,23 +440,13 @@ class AgentRuntimeScheduler:
         if steer and not str(decision.get("message") or "").strip():
             return CommandReceipt(False, "引导消息不能为空")
         session = self._session(command.session_id)
-        manager = self._state_manager_factory(command.session_id)
+        manager = self._manager_factory(command.session_id)
         try:
-            state = await manager.load()
-            interrupt = state.get_pending_authorization(command.request_id)
-            if interrupt is None:
+            origin = await manager.record_authorization_decision(
+                command.request_id, decision, command.origin_channel,
+            )
+            if origin is None:
                 return CommandReceipt(False, "审批请求已处理或过期")
-            origin = str(interrupt.get("origin_channel") or DESKTOP_CHANNEL)
-            # 1. 新指令仍先单独提交，失败时不能关闭审批；不改变既有事务边界。
-            if steer:
-                inbox = self._inbox_factory(command.session_id)
-                try:
-                    await inbox.submit_human(command.origin_channel, decision["message"])
-                finally:
-                    await inbox.close()
-            if not state.record_authorization_decision(command.request_id, decision):
-                return CommandReceipt(False, "审批请求已处理或过期")
-            await manager.save(state, checkpoint_type="intermediate")
             # 2. 决定只存在 checkpoint；内存只保留待处理请求编号。
             if session.current:
                 session.current.approval = None
@@ -491,24 +480,40 @@ class AgentRuntimeScheduler:
             session.worker = asyncio.create_task(self._drain(session_id))
         session.wakeup.set()
 
-    async def notify_task_terminal(self, session_id: str) -> None:
-        """Supervisor 保存终态及通知后唤醒，不由旧任务自行获得激活资格。
+    async def _receive_task_records(self, supervisor: TaskSupervisor) -> None:
+        """启动后独占读取任务记录，来源结束或最终关闭时退出。
 
         Args:
-            session_id (str): 已保存通知所属会话。
+            supervisor (TaskSupervisor): 应用注入的共享记录来源，读取不影响其进程生命周期。
         """
-        self._ensure_running(session_id)
+        try:
+            while True:
+                record = await supervisor.next_event()
+                if record is None:
+                    return
+                if self.phase == RuntimePhase.RUNNING:
+                    await self._handle_task_record(record)
+        except Exception:
+            logger.exception("读取任务记录失败")
+            raise
 
-    async def record_task_status(self, record: TaskRecord) -> None:
-        """接收已持久保存的任务展示状态，加入统一事件编号。
+    async def _handle_task_record(self, record: TaskRecord) -> None:
+        """读取任务记录后更新显示，并按当前执行资格提醒 worker 检查 Inbox。
 
         Args:
-            record (TaskRecord): Supervisor 已保存的后台任务记录。
+            record (TaskRecord): Supervisor 已保存的状态；终态通知已在同一事务提交。
         """
         async with self._session(record.session_id).lock:
-            self._emit(InteractionEvent(record.session_id, InteractionEventKind.TASK_STATUS,
-                {"task_id": record.task_id, "status": record.status,
-                 "exit_code": record.exit_code, "tool_name": record.tool_name}, task_id=record.task_id))
+            # 1. 等锁期间可能开始关闭，此时既不发布显示事件，也不激活会话。
+            if self.phase != RuntimePhase.RUNNING:
+                return
+            if record.background:
+                self._emit(InteractionEvent(record.session_id, InteractionEventKind.TASK_STATUS,
+                    {"task_id": record.task_id, "status": record.status,
+                     "exit_code": record.exit_code, "tool_name": record.tool_name}, task_id=record.task_id))
+            # 2. 记录仅提示重新检查；输入内容和是否已交付仍由持久 Inbox 决定。
+            if record.status != TaskStatus.RUNNING:
+                self._ensure_running(record.session_id)
 
     async def _consume_events(
         self, session_id: str, origin: str, run_id: str, stream: AsyncIterator[AgentEvent],
@@ -524,106 +529,46 @@ class AgentRuntimeScheduler:
         session = self._session(session_id)
         error_reported = False
         try:
-            async for event in stream:
-                async with session.lock:
-                    # 1. 业务状态在 Scheduler 内改变，不等待连接或通过通知回调改变。
-                    if event.type == EventType.INTERRUPT and session.current:
-                        session.current.approval = event.data
-                    elif event.type in {EventType.DONE, EventType.ERROR}:
-                        session.current = None
-                    self._emit(InteractionEvent(
-                        session_id, AGENT_TO_INTERACTION_EVENT[event.type], {"value": event.data},
-                        origin_channel=origin, run_id=run_id,
-                        request_id=(event.data or {}).get("request_id") if event.type == EventType.INTERRUPT else None,
-                    ))
-                    error_reported = error_reported or event.type == EventType.ERROR
+            # 显式等待下层迭代关闭，保证响应和借用资源在返回前完成清理。
+            async with aclosing(stream) as managed_events:
+                async for event in managed_events:
+                    async with session.lock:
+                        # 1. 业务状态在 Scheduler 内改变，不等待连接或通过通知回调改变。
+                        if event.type == EventType.RUN_STARTED:
+                            # 1.1. Agent 已加载并核验状态；重试沿用身份，不重复发布开始。
+                            current = session.current
+                            if current is not None and not current.started:
+                                origin = event.data["origin_channel"]
+                                current.origin = origin
+                                current.started = True
+                                self._emit(InteractionEvent(session_id, InteractionEventKind.RUN_STARTED,
+                                    {"resumed": True} if event.data["resumed"] else {},
+                                    origin_channel=origin, run_id=run_id))
+                            continue
+                        if event.type == EventType.HUMAN_INPUT_COMMITTED:
+                            # 1.2. 只转出已保存真人事实，字段沿用原通知，不改变当前轮次。
+                            message = event.data["message"]
+                            self._emit(InteractionEvent(session_id, InteractionEventKind.HUMAN_MESSAGE,
+                                {"message": message.text,
+                                 "images": [part.url for part in message.content if isinstance(part, ImageContent)],
+                                 "input_sequence": event.data["input_sequence"], "message_id": message.message_id},
+                                origin_channel=message.origin_channel))
+                            continue
+                        if event.type == EventType.INTERRUPT and session.current:
+                            session.current.approval = event.data
+                        elif event.type in {EventType.DONE, EventType.ERROR}:
+                            session.current = None
+                        self._emit(InteractionEvent(
+                            session_id, AGENT_TO_INTERACTION_EVENT[event.type], {"value": event.data},
+                            origin_channel=origin, run_id=run_id,
+                            request_id=(event.data or {}).get("request_id") if event.type == EventType.INTERRUPT else None,
+                        ))
+                        error_reported = error_reported or event.type == EventType.ERROR
         except Exception:
             # 2. 未报告的异常交给本轮入口处理；已有错误结果时仅记录后续源流清理失败。
             if not error_reported:
                 raise
             logger.exception("会话 %s 已报告错误，结束输出时再次失败", session_id)
-
-    @staticmethod
-    def _task_result_message(inputs: tuple[InboxEnvelope, ...]) -> TaskResultMessage:
-        """把 Inbox 中的任务结束通知整理成 Agent 能读取的 TaskResultMessage。
-
-        Args:
-            inputs (tuple[InboxEnvelope, ...]): 本次从 Inbox 读取的任务通知，包含任务编号、状态和日志引用。
-
-        Returns:
-            TaskResultMessage: 任务完成、失败、停止或未知的结果消息，不伪装成用户发送的消息。
-        """
-        # 1. 一条通知直接转成消息，stopped 表示取消，orphaned 表示结果未知，不能当作成功。
-        if len(inputs) == 1:
-            payload = inputs[0].payload
-            status = payload.get("status")
-            return TaskResultMessage(
-                task_id=str(payload["task_id"]), task_name=str(payload["task_name"]),
-                status=(TaskResultStatus.CANCELLED if status == TaskStatus.STOPPED else
-                        TaskResultStatus.COMPLETED if status == TaskStatus.COMPLETED else
-                        TaskResultStatus.ORPHANED if status == TaskStatus.ORPHANED else TaskResultStatus.FAILED),
-                result=AgentRuntimeScheduler._task_notice_text(payload),
-            )
-        # 2. 多条通知合并成一条消息；状态相同则保留该状态，不同时用 mixed，按完整条目分批保留全部日志引用。
-        statuses = {item.payload.get("status") for item in inputs}
-        mapped_statuses = {
-            TaskResultStatus.CANCELLED if status == TaskStatus.STOPPED else
-            TaskResultStatus.COMPLETED if status == TaskStatus.COMPLETED else
-            TaskResultStatus.ORPHANED if status == TaskStatus.ORPHANED else TaskResultStatus.FAILED
-            for status in statuses
-        }
-        combined_status = mapped_statuses.pop() if len(mapped_statuses) == 1 else TaskResultStatus.MIXED
-        details = "\n".join(
-            f"{item.payload['task_id']} [{item.payload.get('status')}]: "
-            f"{AgentRuntimeScheduler._task_notice_text(item.payload)}"
-            for item in inputs
-        )
-        return TaskResultMessage(
-            task_id="batch:" + ",".join(str(item.payload["task_id"]) for item in inputs),
-            task_name=f"{len(inputs)} 个后台任务",
-            status=combined_status,
-            result=details,
-        )
-
-    @staticmethod
-    def _task_notice_text(payload: dict) -> str:
-        """格式化新通知元信息，同时保留重启前旧摘要通知的读取兼容。
-
-        Args:
-            payload (dict): 从持久 Inbox 读取的一条任务通知。
-
-        Returns:
-            str: 新通知只包含工具、退出码和日志引用，旧通知保留既有摘要。
-        """
-        if payload.get("output_ref"):
-            return (f"tool_name: {payload.get('tool_name') or '未知工具'}\n"
-                    f"exit_code: {payload.get('exit_code')}\n"
-                    f"output_ref: {payload['output_ref']}")
-        return str(payload.get("result") or "")
-
-    @staticmethod
-    def _task_result_messages(inputs: tuple[InboxEnvelope, ...]) -> tuple[TaskResultMessage, ...]:
-        """按完整任务条目拆批，所有引用都进入消息，不截断后面的任务。
-
-        Args:
-            inputs (tuple[InboxEnvelope, ...]): 本次已查询的全部终态通知。
-
-        Returns:
-            tuple[TaskResultMessage, ...]: 按原顺序分组的全部结果消息。
-        """
-        batches = []
-        group = []
-        size = 0
-        for input_record in inputs:
-            item_size = len(AgentRuntimeScheduler._task_notice_text(input_record.payload)) + len(str(input_record.payload["task_id"])) + 64
-            if group and size + item_size > TASK_NOTICE_BATCH_MAX_CHARS:
-                batches.append(AgentRuntimeScheduler._task_result_message(tuple(group)))
-                group, size = [], 0
-            group.append(input_record)
-            size += item_size
-        if group:
-            batches.append(AgentRuntimeScheduler._task_result_message(tuple(group)))
-        return tuple(batches)
 
     async def _drain(self, session_id: str) -> None:
         """检查审批恢复和持久输入，没有工作时等待输入、审批或任务通知。
@@ -632,7 +577,7 @@ class AgentRuntimeScheduler:
             session_id (str): 本 worker 唯一负责的会话。
         """
         session = self._session(session_id)
-        inbox = self._inbox_factory(session_id)
+        manager = self._manager_factory(session_id)
         try:
             while self.phase == RuntimePhase.RUNNING:
                 # 1. 必须在所有工作检查之前 clear；查询期间的新通知不能被事后擦除。
@@ -640,13 +585,13 @@ class AgentRuntimeScheduler:
                 async with session.lock:
                     request_id = session.resume_request_id
                     session.resume_request_id = None
-                    batch = () if request_id is not None else await inbox.read_activation_batch(
+                    batch = () if request_id is not None else await manager.read_activation_batch(
                         kind=InboxKind.HUMAN if session.phase == SessionPhase.PENDING_INTERRUPT else None,
                         include_queued=session.phase != SessionPhase.PENDING_INTERRUPT,
                     )
                 # 2. 保存过的审批优先继续；执行期间不持会话锁，命令才能发出停止或引导。
                 if request_id is not None or batch:
-                    keep_running = await self._execute_turn(session_id, inbox, batch, request_id)
+                    keep_running = await self._execute_turn(session_id, manager, batch, request_id)
                     if not keep_running:
                         async with session.lock:
                             # 2.1. 清理期间真人输入可能已重新激活；此时当前 worker 继续处理。
@@ -660,7 +605,7 @@ class AgentRuntimeScheduler:
             await self._record_failure(session_id, DESKTOP_CHANNEL, None, exc)
         finally:
             try:
-                await inbox.close()
+                await manager.close()
             except Exception:
                 logger.exception("关闭会话 %s 的输入连接失败", session_id)
 
@@ -680,13 +625,13 @@ class AgentRuntimeScheduler:
                 {"detail": str(exc)}, origin_channel=origin, run_id=run_id))
 
     async def _execute_turn(
-        self, session_id: str, inbox: SessionInbox, batch: tuple[InboxEnvelope, ...], request_id: str | None,
+        self, session_id: str, manager: SessionStateManager, batch: tuple[InboxEnvelope, ...], request_id: str | None,
     ) -> bool:
         """创建和交付输入，未交付失败最多尝试四次，已交付执行不重跑。
 
         Args:
             session_id (str): 当前会话。
-            inbox (SessionInbox): 当前 worker 的持久输入访问对象。
+            manager (SessionStateManager): worker 拥有并借给本次 Agent 的会话状态业务对象。
             batch (tuple[InboxEnvelope, ...]): 准备交付的输入，审批恢复时为空。
             request_id (str | None): 从 checkpoint 恢复的审批请求。
 
@@ -700,58 +645,38 @@ class AgentRuntimeScheduler:
         run_id = None
         control = None
         try:
-            restored = None
-            # 1. 审批决定只从持久状态读取，恢复原回答，不重试已执行过的工具。
-            if request_id is not None:
-                manager = self._state_manager_factory(session_id)
-                try:
-                    restored = await manager.load()
-                finally:
-                    await manager.close()
-                interrupt = restored.interrupt_data or {}
-                if interrupt.get("request_id") != request_id:
-                    return True
-                decision = interrupt["runtime_decision"]
-                origin = str(interrupt.get("origin_channel") or DESKTOP_CHANNEL)
-                run_id = session.current.run_id if session.current else None
+            # 1. 恢复只传请求编号；状态、持久决定和有效性由 Agent 自行加载核验。
+            if request_id is not None and session.current is not None:
+                origin = session.current.origin
+                run_id = session.current.run_id
             attempts = INPUT_DELIVERY_MAX_ATTEMPTS if batch else 1
             for attempt in range(attempts):
                 agent = None
                 try:
                     # 2. 每次重试创建独立 Agent；首次创建成功才建立轮次，重试沿用身份和控制。
-                    agent = self._agent_factory(session_id)
+                    agent = self._agent_factory(session_id, manager)
                     if control is None:
                         async with session.lock:
                             run_id = run_id or uuid4().hex
                             control = TurnControl(run_id)
                             session.current = _CurrentTurn(run_id, origin, control)
-                            self._emit(InteractionEvent(session_id, InteractionEventKind.RUN_STARTED,
-                                {"resumed": True} if request_id is not None else {},
-                                origin_channel=origin, run_id=run_id))
-                    before_next_llm = partial(self._deliver_task_notices_before_model, agent, inbox)
                     if request_id is not None:
-                        stream = agent.resume(decision, initial_state=restored, turn_control=control,
-                            before_next_llm=before_next_llm)
+                        stream = agent.resume(request_id, turn_control=control, receive_task_notifications=True)
                     elif human is not None:
-                        runtime_kwargs = (
-                            {"inbox_inputs": batch, "runtime_inputs": self._task_result_messages(terminals)}
-                            if terminals else {}
-                        )
                         stream = agent.run(
                             human.payload["message"], images=human.payload.get("images"), origin_channel=origin,
-                            inbox_input=human, turn_control=control, before_next_llm=before_next_llm,
-                            on_input_committed=partial(self._publish_committed_human_message, session_id, human),
-                            **runtime_kwargs,
+                            inbox_input=human, inbox_inputs=batch, turn_control=control,
+                            receive_task_notifications=True,
                         )
                     else:
-                        stream = agent.run_runtime_inputs(self._task_result_messages(terminals),
-                            inbox_inputs=terminals, turn_control=control, before_next_llm=before_next_llm)
+                        stream = agent.run_runtime_inputs(inbox_inputs=terminals,
+                            turn_control=control, receive_task_notifications=True)
                     await self._consume_events(session_id, origin, run_id, stream)
                     return True
                 except Exception as exc:
                     # 3. 仅异常路径核对交付事实；已保存输入不能因为后续执行失败重新运行。
                     item = human or (batch[0] if batch else None)
-                    status = await inbox.status(item.id) if item is not None else InboxStatus.DELIVERED
+                    status = await manager.status(item.id) if item is not None else InboxStatus.DELIVERED
                     if status is None:
                         async with session.lock:
                             session.current = None
@@ -770,7 +695,7 @@ class AgentRuntimeScheduler:
                     async with session.lock:
                         failed = None
                         if human is not None:
-                            await inbox.discard_human_input(human.id)
+                            await manager.discard_human_input(human.id)
                             failed = {"input_sequence": human.id, "message": human.payload["message"],
                                       "images": human.payload.get("images") or []}
                         session.activated = False
@@ -801,34 +726,6 @@ class AgentRuntimeScheduler:
                     if session.current.approval is None and session.resume_request_id is None:
                         session.current = None
 
-    async def _deliver_task_notices_before_model(self, agent: Agent, inbox: SessionInbox, state: AgentState) -> None:
-        """Pipeline 每次调用模型前读取任务通知，沿用 Agent 的原子交付。
-
-        Args:
-            agent (Agent): 当前执行对象。
-            inbox (SessionInbox): 当前会话的输入访问对象。
-            state (AgentState): 本次模型将使用的状态。
-        """
-        inputs = await inbox.read_task_terminals()
-        if inputs:
-            await agent.commit_runtime_inputs(state, self._task_result_messages(inputs), inputs)
-
-    async def _publish_committed_human_message(
-        self, session_id: str, input_record: InboxEnvelope, message: HumanMessage,
-    ) -> None:
-        """Agent 已保存真人消息后通知显示，不等待模型片段。
-
-        Args:
-            session_id (str): 会话编号。
-            input_record (InboxEnvelope): 已交付的原输入记录。
-            message (HumanMessage): 已保存且有稳定编号的真人消息。
-        """
-        async with self._session(session_id).lock:
-            self._emit(InteractionEvent(session_id, InteractionEventKind.HUMAN_MESSAGE,
-                {"message": message.text, "images": input_record.payload.get("images") or [],
-                 "input_sequence": input_record.id, "message_id": message.message_id},
-                origin_channel=message.origin_channel))
-
     async def begin_shutdown(self) -> None:
         """封住新命令、捕获正文并请求 worker 取消，不关闭外部共享资源。"""
         async with self._lifecycle_lock:
@@ -857,9 +754,18 @@ class AgentRuntimeScheduler:
             session.worker = None
 
     async def close(self) -> None:
-        """等待 worker、保存终止记录并关闭输出，共享资源须由应用先清理。"""
+        """等待 worker 和记录消费者，保存终止记录并关闭输出；共享资源仍由应用清理。"""
         await self.begin_shutdown()
         await self.wait_for_workers()
+        # 1. 不等待 Supervisor 关闭；独立关闭 Scheduler 也必须结束记录等待或会话锁等待。
+        if self._task_reader is not None:
+            if not self._task_reader.done():
+                self._task_reader.cancel()
+            results = await asyncio.gather(self._task_reader, return_exceptions=True)
+            for result in results:
+                if isinstance(result, Exception):
+                    logger.error("任务记录消费者异常退出", exc_info=(type(result), result, result.__traceback__))
+            self._task_reader = None
         async with self._lifecycle_lock:
             if self.phase == RuntimePhase.STOPPED:
                 return
@@ -869,7 +775,7 @@ class AgentRuntimeScheduler:
                 self._sessions.clear()
                 self.phase = RuntimePhase.STOPPED
             finally:
-                # 1. 保存失败也结束输出等待；关闭期间不承诺交付最后的展示通知。
+                # 2. 保存失败也结束输出等待；关闭期间不承诺交付最后的展示通知。
                 self._output_closed = True
                 while not self._output.empty():
                     self._output.get_nowait()

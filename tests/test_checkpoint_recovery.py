@@ -1,3 +1,5 @@
+from app.agent.core.event_router import EventRouter
+from tests.runtime_support import checkpoint_probe
 from app.agent.models.openai_message_names import MCP_TOOL_IMAGE_MESSAGE_NAME, TOOL_IMAGE_MESSAGE_NAME
 from tests.model_capture import result_parts
 from tests.model_capture import capture_input
@@ -7,14 +9,15 @@ from pathlib import Path
 
 import pytest
 
-from app.agent.agent import Agent, AgentConfig, INTERRUPTED_TOOL_RESULT
+from app.agent.agent import Agent, AgentConfig
+from app.agent.state.manager import INTERRUPTED_TOOL_RESULT
 from app.agent.runtime.turn_control import TurnControl
 from app.agent.context import ContextStrategyConfig, ModelInputCoordinator
 from app.agent.core.event_router import EventType
 from app.agent.core.pipeline import ExecutionPipeline
 from app.agent.plugins.base import BasePlugin, HookContext, PluginHook
 from app.agent.plugins.memory import MemoryPlugin
-from app.agent.state.manager import CheckpointType, StateManager
+from app.agent.state.manager import CheckpointType, SessionStateManager
 from app.agent.state.messages import (AssistantMessage, HumanMessage, ImageContent, ToolMessage, ToolCall, ToolMessage)
 from app.agent.models.llm_client import StreamChunk
 from app.agent.state import AgentState
@@ -275,7 +278,7 @@ def test_all_interrupt_paths_save_hook_updates_before_emitting(
         if plugin_fails:
             await agent.register_plugin(FailingInterruptPlugin())
         await agent.register_plugin(plugin)
-        reader = StateManager("checkpoint-test", db_path=str(db_path))
+        reader = SessionStateManager("checkpoint-test", db_path=str(db_path))
 
         async def observe(stream, expected_call: str, expected_count: int) -> None:
             """记录本次模型输入用量观察，供用例检查只有成功响应才更新基线。
@@ -318,8 +321,11 @@ def test_all_interrupt_paths_save_hook_updates_before_emitting(
         try:
             await observe(agent.run("开始"), "first", 1)
             if path != "normal":
+                waiting = await reader.load()
+                resume_id = waiting.interrupt_data["request_id"]
+                await reader.record_authorization_decision(resume_id, {"kind": "approve"})
                 await observe(
-                    agent.resume({"approved": True}),
+                    agent.resume(resume_id),
                     "first" if path == "same_tool" else "second", 2,
                 )
             assert plugin.invocations == 1
@@ -382,14 +388,14 @@ def test_interrupt_paths_respect_checkpoint_failure_and_optional_storage(
             return 1
 
         callback = checkpoint if storage == "failure" else None
-        stream = agent.pipeline.execute(state, checkpoint=callback)
+        stream = agent.pipeline.execute(state, session_state_manager=checkpoint_probe(callback))
         events = []
         try:
             if path != "normal":
                 initial = await drain(stream)
                 assert initial[-1].type == EventType.INTERRUPT
                 fail = True
-                stream = agent.pipeline.resume_tools(state, {"approved": True}, checkpoint=callback)
+                stream = agent.pipeline.resume_tools(state, {"approved": True}, session_state_manager=checkpoint_probe(callback))
             if storage == "failure":
                 with pytest.raises(RuntimeError, match="中断保存失败"):
                     async for event in stream:
@@ -453,16 +459,16 @@ async def drain(stream) -> list:
     return [event async for event in stream]
 
 
-async def checkpoint_types(manager: StateManager) -> list[str]:
+async def checkpoint_types(manager: SessionStateManager) -> list[str]:
     """读取临时数据库中的 checkpoint 类型，检查保存顺序。
 
     Args:
-        manager (StateManager): 本用例的临时数据库状态管理器。
+        manager (SessionStateManager): 本用例的临时数据库状态管理器。
 
     Returns:
         list[str]: 供外层用例断言使用的预设结果。
     """
-    db = await manager._get_db()
+    db = await manager._state_dao._get_db()
     async with db.execute(
         """
         SELECT checkpoint_type FROM checkpoints
@@ -526,9 +532,9 @@ def test_stop_during_llm_saves_visible_partial_and_completed_checkpoint(tmp_path
             await asyncio.wait_for(first_chunk.wait(), 1)
             control.request("stop")
             await asyncio.wait_for(task, 1)
-            state = await agent.state_manager.load()
+            state = await agent.session_state_manager.load()
             assert state.messages[-1].text == "已经展示的回答……（被用户打断）"
-            assert agent.state_manager.last_loaded_checkpoint_type == "completed"
+            assert agent.session_state_manager.last_loaded_checkpoint_type == "completed"
             assert events[-1].type == EventType.DONE
         finally:
             await agent.close()
@@ -592,7 +598,7 @@ def test_stop_flushes_incomplete_time_prefix_before_saving_partial(tmp_path: Pat
             assert [event.data for event in events if event.type == EventType.TEXT_CHUNK] == [
                 "[发送时间：", "……（被用户打断）",
             ]
-            state = await agent.state_manager.load()
+            state = await agent.session_state_manager.load()
             assert state.messages[-1].text == "[发送时间：……（被用户打断）"
         finally:
             await agent.close()
@@ -725,9 +731,9 @@ def test_response_commit_hooks_wrap_completed_checkpoint(tmp_path: Path) -> None
             StepTool(),
         )
         await agent.plugin_manager.register(CommitOrderPlugin(order))
-        original_save = agent.state_manager.save
+        original_save = agent.session_state_manager.save
 
-        async def tracked_save(state, *, checkpoint_type):
+        async def tracked_save(state, *, checkpoint_type, **kwargs):
             """记录状态保存时机后调用临时数据库保存，供检查与插件和模型的先后顺序。
 
             该定义仅用于外层用例：验证最终回复提交钩子包围完成 checkpoint 保存。
@@ -736,11 +742,11 @@ def test_response_commit_hooks_wrap_completed_checkpoint(tmp_path: Path) -> None
                 state (Any): 当前会话的内存 AgentState；保存由调用方负责。
                 checkpoint_type (Any): 本次保存中间执行进度或完整轮次的类型。
             """
-            checkpoint_id = await original_save(state, checkpoint_type=checkpoint_type)
+            checkpoint_id = await original_save(state, checkpoint_type=checkpoint_type, **kwargs)
             order.append(f"save_{checkpoint_type}")
             return checkpoint_id
 
-        agent.state_manager.save = tracked_save
+        agent.session_state_manager.save = tracked_save
         try:
             async for event in agent.run("开始"):
                 if event.type == EventType.DONE:
@@ -777,9 +783,9 @@ def test_activation_input_commit_hooks_wrap_intermediate_checkpoint(tmp_path: Pa
             StepTool(),
         )
         await agent.plugin_manager.register(ActivationInputCommitOrderPlugin(order))
-        original_save = agent.state_manager.save
+        original_save = agent.session_state_manager.save
 
-        async def tracked_save(state, *, checkpoint_type):
+        async def tracked_save(state, *, checkpoint_type, **kwargs):
             """真实保存成功后记录 checkpoint 类别，不改变事务结果。
 
             Args:
@@ -789,11 +795,11 @@ def test_activation_input_commit_hooks_wrap_intermediate_checkpoint(tmp_path: Pa
             Returns:
                 int: 实际保存成功的 checkpoint 编号。
             """
-            checkpoint_id = await original_save(state, checkpoint_type=checkpoint_type)
+            checkpoint_id = await original_save(state, checkpoint_type=checkpoint_type, **kwargs)
             order.append(f"save_{checkpoint_type}")
             return checkpoint_id
 
-        agent.state_manager.save = tracked_save
+        agent.session_state_manager.save = tracked_save
         try:
             await drain(agent.run("本轮新输入"))
             return order
@@ -830,7 +836,7 @@ def test_intermediate_checkpoint_failure_skips_after_activation_input_hook(
         )
         await agent.plugin_manager.register(ActivationInputCommitOrderPlugin(order))
 
-        async def failing_save(state, *, checkpoint_type):
+        async def failing_save(state, *, checkpoint_type, **kwargs):
             """模拟输入事务失败，让激活入口停止后续处理。
 
             Args:
@@ -844,7 +850,7 @@ def test_intermediate_checkpoint_failure_skips_after_activation_input_hook(
             order.append("save_intermediate_failed")
             raise RuntimeError("模拟 intermediate 保存失败")
 
-        agent.state_manager.save = failing_save
+        agent.session_state_manager.save = failing_save
         try:
             with pytest.raises(RuntimeError, match="intermediate 保存失败"):
                 await drain(agent.run("本轮新输入"))
@@ -926,7 +932,7 @@ def test_failed_user_input_commit_keeps_pending_long_term_memory_batch(
             tuple[int, int, list[str]]: 供外层用例断言使用的预设结果。
         """
         db_path = tmp_path / "checkpoints.sqlite3"
-        seed = StateManager("checkpoint-test", db_path=str(db_path))
+        seed = SessionStateManager("checkpoint-test", db_path=str(db_path))
         try:
             state = AgentState.create_new("checkpoint-test")
             state.add_user_message("已完成的输入")
@@ -943,7 +949,7 @@ def test_failed_user_input_commit_keeps_pending_long_term_memory_batch(
         )
         await register_memory(failed_agent)
 
-        async def failing_save(state, *, checkpoint_type):
+        async def failing_save(state, *, checkpoint_type, **kwargs):
             """在 checkpoint 保存阶段主动抛错，验证后续模型或提交后钩子不会执行。
 
             该定义仅用于外层用例：验证真人输入提交失败时保留待提取长期记忆批次。
@@ -955,14 +961,14 @@ def test_failed_user_input_commit_keeps_pending_long_term_memory_batch(
             assert checkpoint_type == "intermediate"
             raise RuntimeError("模拟 intermediate 保存失败")
 
-        failed_agent.state_manager.save = failing_save
+        failed_agent.session_state_manager.save = failing_save
         try:
             with pytest.raises(RuntimeError, match="intermediate 保存失败"):
                 await drain(failed_agent.run("第一次重试"))
         finally:
             await failed_agent.close()
 
-        persisted = StateManager("checkpoint-test", db_path=str(db_path))
+        persisted = SessionStateManager("checkpoint-test", db_path=str(db_path))
         try:
             counter_after_failure = (
                 await persisted.load()
@@ -980,7 +986,7 @@ def test_failed_user_input_commit_keeps_pending_long_term_memory_batch(
             events = await drain(retry_agent.run("第二次重试"))
             assert events[-1].type == EventType.DONE
             counter_after_retry = (
-                await retry_agent.state_manager.load()
+                await retry_agent.session_state_manager.load()
             ).long_term_memory_turn_counter
         finally:
             await retry_agent.close()
@@ -1010,9 +1016,9 @@ def test_completed_checkpoint_failure_skips_after_commit_hook(tmp_path: Path) ->
             StepTool(),
         )
         await agent.plugin_manager.register(CommitOrderPlugin(order))
-        original_save = agent.state_manager.save
+        original_save = agent.session_state_manager.save
 
-        async def failing_save(state, *, checkpoint_type):
+        async def failing_save(state, *, checkpoint_type, **kwargs):
             """在 checkpoint 保存阶段主动抛错，验证后续模型或提交后钩子不会执行。
 
             该定义仅用于外层用例：验证完成 checkpoint 保存失败不执行提交后钩子。
@@ -1024,16 +1030,16 @@ def test_completed_checkpoint_failure_skips_after_commit_hook(tmp_path: Path) ->
             if checkpoint_type == "completed":
                 order.append("save_completed_failed")
                 raise RuntimeError("模拟 completed 保存失败")
-            return await original_save(state, checkpoint_type=checkpoint_type)
+            return await original_save(state, checkpoint_type=checkpoint_type, **kwargs)
 
-        agent.state_manager.save = failing_save
+        agent.session_state_manager.save = failing_save
         try:
             with pytest.raises(RuntimeError, match="completed 保存失败"):
                 await drain(agent.run("开始"))
         finally:
             await agent.close()
 
-        manager = StateManager("checkpoint-test", db_path=str(db_path))
+        manager = SessionStateManager("checkpoint-test", db_path=str(db_path))
         try:
             persisted = await manager.load()
             return order, persisted.long_term_memory_turn_counter
@@ -1069,12 +1075,12 @@ def test_completed_tool_results_survive_later_llm_failure(tmp_path: Path) -> Non
             events = await drain(agent.run("执行三个步骤"))
             assert events[-1].type == EventType.ERROR
 
-            state = await agent.state_manager.load()
+            state = await agent.session_state_manager.load()
             tool_messages = [item for item in state.messages if isinstance(item, ToolMessage)]
             assert [item.text for item in tool_messages] == ["完成 A", "完成 B", "完成 C"]
             assert state.pending_tool_calls == ()
             assert state.long_term_memory_turn_counter == 1
-            assert await checkpoint_types(agent.state_manager) == ["intermediate"]
+            assert await checkpoint_types(agent.session_state_manager) == ["intermediate"]
         finally:
             await agent.close()
 
@@ -1101,7 +1107,7 @@ def test_new_message_after_llm_failure_counts_each_committed_human_input(tmp_pat
         try:
             events = await drain(first_agent.run("first human message"))
             assert events[-1].type == EventType.ERROR
-            failed_state = await first_agent.state_manager.load()
+            failed_state = await first_agent.session_state_manager.load()
             assert failed_state.long_term_memory_turn_counter == 1
         finally:
             await first_agent.close()
@@ -1114,7 +1120,7 @@ def test_new_message_after_llm_failure_counts_each_committed_human_input(tmp_pat
         try:
             events = await drain(second_agent.run("please continue"))
             assert events[-1].type == EventType.DONE
-            completed_state = await second_agent.state_manager.load()
+            completed_state = await second_agent.session_state_manager.load()
             assert completed_state.long_term_memory_turn_counter == 2
         finally:
             await second_agent.close()
@@ -1139,8 +1145,8 @@ def test_initial_empty_response_keeps_user_intermediate_checkpoint(tmp_path: Pat
             events = await drain(agent.run("在吗"))
             assert events[-1].type == EventType.ERROR
             assert "finish_reason=stop" in events[-1].data
-            assert await checkpoint_types(agent.state_manager) == ["intermediate"]
-            state = await agent.state_manager.load()
+            assert await checkpoint_types(agent.session_state_manager) == ["intermediate"]
+            state = await agent.session_state_manager.load()
             assert isinstance(state.messages[-1], HumanMessage)
             assert "在吗" in state.messages[-1].text
         finally:
@@ -1171,11 +1177,11 @@ def test_empty_response_after_tool_keeps_intermediate_checkpoint(tmp_path: Path)
             assert events[-1].type == EventType.ERROR
             assert "finish_reason=stop" in events[-1].data
 
-            state = await agent.state_manager.load()
+            state = await agent.session_state_manager.load()
             tool_messages = [item for item in state.messages if isinstance(item, ToolMessage)]
             assert [item.text for item in tool_messages] == ["完成 A"]
             assert state.pending_tool_calls == ()
-            assert await checkpoint_types(agent.state_manager) == ["intermediate"]
+            assert await checkpoint_types(agent.session_state_manager) == ["intermediate"]
         finally:
             await agent.close()
 
@@ -1197,7 +1203,7 @@ def test_tool_error_result_is_checkpointed(tmp_path: Path) -> None:
         )
         try:
             await drain(agent.run("执行失败工具"))
-            state = await agent.state_manager.load()
+            state = await agent.session_state_manager.load()
             tool_messages = [item for item in state.messages if isinstance(item, ToolMessage)]
             assert tool_messages[-1].text == "错误: 测试工具失败"
             assert state.pending_tool_calls == ()
@@ -1240,7 +1246,7 @@ def test_partial_tool_batch_is_marked_interrupted_without_retry(tmp_path: Path) 
         )
         try:
             await drain(second_agent.run("新的用户消息"))
-            state = await second_agent.state_manager.load()
+            state = await second_agent.session_state_manager.load()
             by_id = {
                 item.tool_call_id: item.text
                 for item in state.messages
@@ -1251,7 +1257,7 @@ def test_partial_tool_batch_is_marked_interrupted_without_retry(tmp_path: Path) 
             assert by_id["call-c"] == INTERRUPTED_TOOL_RESULT
             assert recovery_tool.executed == []
             assert state.pending_tool_calls == ()
-            assert await checkpoint_types(second_agent.state_manager) == [
+            assert await checkpoint_types(second_agent.session_state_manager) == [
                 "completed",
                 "completed",
             ]
@@ -1273,7 +1279,6 @@ def test_checkpoint_failure_keeps_tool_marked_pending() -> None:
 
             该定义仅用于外层用例：验证checkpoint 保存失败时工具仍标记未完成。
             """
-            from app.agent.core.event_router import EventRouter
             from app.agent.core.plugin_manager import PluginManager
             from app.agent.core.tool_manager import ToolManager
 
@@ -1331,7 +1336,7 @@ def test_checkpoint_failure_keeps_tool_marked_pending() -> None:
             return 1
 
         with pytest.raises(RuntimeError, match="checkpoint 写入失败"):
-            await drain(pipeline.execute(state, checkpoint=checkpoint))
+            await drain(pipeline.execute(state, session_state_manager=checkpoint_probe(checkpoint)))
 
         persisted = AgentState.from_checkpoint(snapshots[0])
         assert [item.id for item in persisted.pending_tool_calls] == ["call-a"]
@@ -1392,7 +1397,7 @@ def test_last_tool_checkpoint_flushes_all_batch_images(tmp_path: Path) -> None:
 
         try:
             with pytest.raises(asyncio.CancelledError):
-                await drain(agent.pipeline.execute(state, checkpoint=checkpoint))
+                await drain(agent.pipeline.execute(state, session_state_manager=checkpoint_probe(checkpoint)))
         finally:
             await agent.close()
         return snapshots
@@ -1480,7 +1485,7 @@ def test_resumed_last_tool_checkpoint_flushes_deferred_images(tmp_path: Path) ->
                 await drain(agent.pipeline.resume_tools(
                     state,
                     {"kind": "approve"},
-                    checkpoint=checkpoint,
+                    session_state_manager=checkpoint_probe(checkpoint),
                 ))
         finally:
             await agent.close()
@@ -1530,7 +1535,7 @@ def test_chat_resolves_unresolved_interrupt_before_new_message(tmp_path: Path) -
         try:
             events = await drain(second_agent.run("新消息"))
             assert events[-1].type == EventType.DONE
-            after = await second_agent.state_manager.load()
+            after = await second_agent.session_state_manager.load()
             assert after.interrupt_data is None
             assert any(
                 isinstance(message, ToolMessage)
@@ -1582,7 +1587,7 @@ def test_new_message_cancels_interrupted_tool_batch_before_starting_turn(
             events = await drain(second_agent.run("改做别的事情"))
             assert any(event.type == EventType.TEXT_CHUNK for event in events)
 
-            state = await second_agent.state_manager.load()
+            state = await second_agent.session_state_manager.load()
             tool_results = {
                 message.tool_call_id: message.text
                 for message in state.messages
@@ -1642,7 +1647,7 @@ def test_cancelling_interrupted_batch_flushes_prior_images_after_all_tool_slots(
         try:
             events = await drain(second_agent.run("改做别的事情"))
             assert events[-1].type == EventType.DONE
-            return await second_agent.state_manager.load(), resumed_calls
+            return await second_agent.session_state_manager.load(), resumed_calls
         finally:
             await second_agent.close()
 
@@ -1688,7 +1693,7 @@ def test_successful_turn_replaces_intermediate_with_completed(tmp_path: Path) ->
         try:
             events = await drain(agent.run("执行一步"))
             assert events[-1].type == EventType.DONE
-            assert await checkpoint_types(agent.state_manager) == ["completed"]
+            assert await checkpoint_types(agent.session_state_manager) == ["completed"]
         finally:
             await agent.close()
 

@@ -9,7 +9,8 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
-from app.agent.state.manager import LATEST_CHECKPOINT_SQL, StateManager
+from app.agent.state.manager import SessionStateManager
+from app.crud.agent_state_dao import AgentStateDao, LATEST_CHECKPOINT_SQL
 from app.agent.memory.store.chat_history_store import ChatHistoryStore
 from app.crud.chat_history_dao import ChatHistoryDao
 from app.agent.state import AgentState, TokenBaseline
@@ -17,16 +18,16 @@ from app.agent.state.messages import (HumanMessage, PROTOCOL_MESSAGE_TYPES, Tool
 from app.runtime import get_agent_state_db, get_chat_history_db, get_checkpoint_db
 
 
-async def checkpoint_rows(manager: StateManager) -> list[tuple[int, str, str]]:
+async def checkpoint_rows(manager: SessionStateManager) -> list[tuple[int, str, str]]:
     """只读查询临时数据库中的 checkpoint 行，供验证清理和保留规则。
 
     Args:
-        manager (StateManager): 本用例的临时数据库状态管理器。
+        manager (SessionStateManager): 本用例的临时数据库状态管理器。
 
     Returns:
         list[tuple[int, str, str]]: 供外层用例断言使用的预设结果。
     """
-    db = await manager._get_db()
+    db = await manager._state_dao._get_db()
     async with db.execute(
         """
         SELECT id, checkpoint_type, state_json FROM checkpoints
@@ -49,12 +50,12 @@ def test_latest_checkpoint_query_does_not_require_temp_sort(tmp_path: Path) -> N
         Returns:
             list[str]: 供外层用例断言使用的预设结果。
         """
-        manager = StateManager(
+        manager = SessionStateManager(
             "test-session",
             db_path=str(tmp_path / "checkpoints.sqlite3"),
         )
         try:
-            db = await manager._get_db()
+            db = await manager._state_dao._get_db()
             rows = await db.execute_fetchall(
                 f"EXPLAIN QUERY PLAN {LATEST_CHECKPOINT_SQL}",
                 ("test-session",),
@@ -76,13 +77,13 @@ def test_intermediate_checkpoint_replaces_previous_one_atomically(tmp_path: Path
     """
     async def scenario() -> None:
         """由外层测试调用，完成“中间 checkpoint 在事务中替换上一份中间记录”的异步步骤。"""
-        manager = StateManager("test-session", db_path=str(tmp_path / "checkpoints.sqlite3"))
+        manager = SessionStateManager("test-session", db_path=str(tmp_path / "checkpoints.sqlite3"))
         try:
             first = AgentState.create_new("test-session")
             first.add_assistant_message("第一个中间态")
             first_id = await manager.save(first, checkpoint_type="intermediate")
 
-            db = await manager._get_db()
+            db = await manager._state_dao._get_db()
             await db.execute("""
                 CREATE TRIGGER prevent_intermediate_delete
                 BEFORE DELETE ON checkpoints
@@ -124,19 +125,19 @@ def test_completed_checkpoint_removes_intermediate_and_keeps_latest_thirty(
     """
     async def scenario() -> None:
         """由外层测试调用，完成“完成保存删除中间记录并保留最近三十份完成记录”的异步步骤。"""
-        manager = StateManager("test-session", db_path=str(tmp_path / "checkpoints.sqlite3"))
+        manager = SessionStateManager("test-session", db_path=str(tmp_path / "checkpoints.sqlite3"))
         try:
             state = AgentState.create_new("test-session")
             await manager.save(state, checkpoint_type="intermediate")
 
-            total = StateManager.MAX_COMPLETED_CHECKPOINTS_PER_SESSION + 5
+            total = AgentStateDao.MAX_COMPLETED_CHECKPOINTS_PER_SESSION + 5
             for index in range(total):
                 state = AgentState.create_new("test-session")
                 state.add_assistant_message(f"完成态 {index}")
                 await manager.save(state, checkpoint_type="completed")
 
             rows = await checkpoint_rows(manager)
-            assert len(rows) == StateManager.MAX_COMPLETED_CHECKPOINTS_PER_SESSION
+            assert len(rows) == AgentStateDao.MAX_COMPLETED_CHECKPOINTS_PER_SESSION
             assert {row[1] for row in rows} == {"completed"}
             first_retained = AgentState.from_checkpoint(json.loads(rows[0][2]))
             assert first_retained.messages[-1].text == "完成态 5"
@@ -145,7 +146,7 @@ def test_completed_checkpoint_removes_intermediate_and_keeps_latest_thirty(
             intermediate.add_assistant_message("最新中间态")
             await manager.save(intermediate, checkpoint_type="intermediate")
             rows = await checkpoint_rows(manager)
-            assert len(rows) == StateManager.MAX_COMPLETED_CHECKPOINTS_PER_SESSION + 1
+            assert len(rows) == AgentStateDao.MAX_COMPLETED_CHECKPOINTS_PER_SESSION + 1
             assert [row[1] for row in rows].count("intermediate") == 1
             assert (await manager.load()).messages[-1].text == "最新中间态"
         finally:
@@ -168,7 +169,7 @@ def test_token_baseline_is_persisted_in_checkpoint(tmp_path: Path) -> None:
     """
     async def scenario() -> None:
         """由外层测试调用，完成“真实 token 基线保存到 checkpoint”的异步步骤。"""
-        manager = StateManager("test-session", db_path=str(tmp_path / "agent.sqlite3"))
+        manager = SessionStateManager("test-session", db_path=str(tmp_path / "agent.sqlite3"))
         try:
             state = AgentState.create_new("test-session")
             state.token_baseline = TokenBaseline(
@@ -197,14 +198,14 @@ def test_checkpoint_and_visible_history_are_saved_atomically(tmp_path: Path) -> 
     """
     async def scenario() -> None:
         """由外层测试调用，完成“checkpoint 与可见历史原子保存”的异步步骤。"""
-        manager = StateManager("test-session", db_path=str(tmp_path / "agent.sqlite3"))
+        manager = SessionStateManager("test-session", db_path=str(tmp_path / "agent.sqlite3"))
         try:
             state = AgentState.create_new("test-session")
             state.add_user_message("你好")
             state.add_assistant_message("你好呀")
             await manager.save(state, checkpoint_type="completed")
 
-            db = await manager._get_db()
+            db = await manager._state_dao._get_db()
             rows = await db.execute_fetchall(
                 "SELECT message_type,message_id FROM conversation_messages WHERE session_id=? ORDER BY id",
                 ("test-session",),
@@ -256,7 +257,7 @@ def test_mcp_tool_image_is_not_persisted_as_human_history(tmp_path: Path) -> Non
     """
     async def scenario() -> None:
         """由外层测试调用，完成“MCP 工具图片不会保存为真人历史”的异步步骤。"""
-        manager = StateManager("test-session", db_path=str(tmp_path / "agent.sqlite3"))
+        manager = SessionStateManager("test-session", db_path=str(tmp_path / "agent.sqlite3"))
         try:
             state = AgentState.create_new("test-session")
             state.add_user_message("真实问题")
@@ -266,7 +267,7 @@ def test_mcp_tool_image_is_not_persisted_as_human_history(tmp_path: Path) -> Non
             state.add_assistant_message("完成")
             await manager.save(state, checkpoint_type="completed")
 
-            db = await manager._get_db()
+            db = await manager._state_dao._get_db()
             rows = await ChatHistoryDao(db_path=tmp_path / "agent.sqlite3").list_chat_history_async(
                 "test-session"
             )
@@ -296,12 +297,12 @@ def test_fresh_state_database_creates_checkpoint_and_protocol_log_tables(
         Returns:
             set[str]: 供外层用例断言使用的预设结果。
         """
-        manager = StateManager(
+        manager = SessionStateManager(
             "test-session",
             db_path=str(tmp_path / "agent.sqlite3"),
         )
         try:
-            db = await manager._get_db()
+            db = await manager._state_dao._get_db()
             rows = await db.execute_fetchall(
                 "SELECT name FROM sqlite_master WHERE type='table'"
             )
@@ -327,12 +328,12 @@ def test_fresh_database_message_type_check_uses_shared_protocol_types(
         Returns:
             str: 供外层用例断言使用的预设结果。
         """
-        manager = StateManager(
+        manager = SessionStateManager(
             "test-session",
             db_path=str(tmp_path / "agent.sqlite3"),
         )
         try:
-            db = await manager._get_db()
+            db = await manager._state_dao._get_db()
             rows = await db.execute_fetchall(
                 "SELECT sql FROM sqlite_master "
                 "WHERE type='table' AND name='conversation_messages'"
@@ -365,7 +366,7 @@ def test_chat_history_store_honors_previous_input_high_watermark(tmp_path: Path)
             tuple[int, list[str]]: 供外层用例断言使用的预设结果。
         """
         db_path = tmp_path / "agent.sqlite3"
-        manager = StateManager("test-session", db_path=str(db_path))
+        manager = SessionStateManager("test-session", db_path=str(db_path))
         store = ChatHistoryStore(db_path=db_path)
         try:
             state = AgentState.create_new("test-session")
@@ -406,8 +407,8 @@ def test_latest_protocol_id_uses_session_scoped_monotonic_high_watermark(tmp_pat
             tuple[int, int]: 供外层用例断言使用的预设结果。
         """
         db_path = tmp_path / "agent.sqlite3"
-        first = StateManager("first", db_path=str(db_path))
-        second = StateManager("second", db_path=str(db_path))
+        first = SessionStateManager("first", db_path=str(db_path))
+        second = SessionStateManager("second", db_path=str(db_path))
         try:
             first_state = AgentState.create_new("first")
             first_state.add_user_message("first-1")
@@ -447,7 +448,7 @@ def test_narrow_history_queries_do_not_use_full_row_loader(tmp_path: Path) -> No
             tuple[int, int, int]: 供外层用例断言使用的预设结果。
         """
         db_path = tmp_path / "agent.sqlite3"
-        manager = StateManager("session", db_path=str(db_path))
+        manager = SessionStateManager("session", db_path=str(db_path))
         try:
             state = AgentState.create_new("session")
             for index in range(15):

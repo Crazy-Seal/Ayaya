@@ -15,9 +15,9 @@ from app.agent.memory.store.chat_history_store import ChatHistoryStore
 from app.agent.models.llm_client import StreamChunk
 from app.agent.plugins.base import BasePlugin, HookContext, PluginHook
 from app.agent.plugins.memory import MemoryPlugin
-from app.agent.runtime.session_inbox import InboxEnvelope, SessionInbox
+from app.agent.state.manager import SessionStateManager
+from app.agent.runtime.session_inbox import InboxEnvelope
 from app.agent.state import AgentState
-from app.agent.state.manager import StateManager
 from app.agent.state.messages import BaseMessage, HumanMessage, TaskResultMessage, ToolCall
 from app.agent.tools.core.base import BaseTool, ToolContext, ToolResult
 from app.crud.task_record_dao import TaskRecordDao
@@ -199,11 +199,11 @@ async def make_agent(db_path: Path, model: QueuedModel, hooks: list[PluginHook])
     return agent
 
 
-async def seed_history(manager: StateManager, completed: int, counter: int) -> None:
+async def seed_history(manager: SessionStateManager, completed: int, counter: int) -> None:
     """保存明确编号的完整旧轮次，作为待消费批次的真实材料。
 
     Args:
-        manager (StateManager): 临时数据库中的状态访问对象。
+        manager (SessionStateManager): 临时数据库中的状态访问对象。
         completed (int): 已经有普通助手回复的旧轮次数。
         counter (int): 尚未消费的真人输入计数。
     """
@@ -328,10 +328,11 @@ def test_mid_turn_notification_preserves_batch_until_next_activation(tmp_path: P
         agents = [await make_agent(db_path, model, hooks) for model in models]
         remaining = list(agents)
 
-        def create_agent(session_id: str) -> Agent:
+        def create_agent(session_id: str, _manager) -> Agent:
             """把预先装配的真实 Agent 依次交给生产调度路径。
 
             Args:
+                _manager (SessionStateManager): worker 拥有并借给本次执行的会话状态业务对象。
                 session_id (str): 本次激活的会话编号。
 
             Returns:
@@ -340,35 +341,34 @@ def test_mid_turn_notification_preserves_batch_until_next_activation(tmp_path: P
             assert session_id == SESSION_ID
             return remaining.pop(0)
 
-        def create_inbox(session_id: str) -> SessionInbox:
+        def create_inbox(session_id: str) -> SessionStateManager:
             """为调度器提供同一临时数据库的真实 Inbox。
 
             Args:
                 session_id (str): 请求访问的会话编号。
 
             Returns:
-                SessionInbox: 对应会话的持久输入访问对象。
+                SessionStateManager: 对应会话的持久输入访问对象。
             """
-            return SessionInbox(session_id, str(db_path))
+            return SessionStateManager(session_id, str(db_path))
 
-        def create_manager(session_id: str) -> StateManager:
+        def create_manager(session_id: str) -> SessionStateManager:
             """为调度器提供隔离状态访问对象。
 
             Args:
                 session_id (str): 请求访问的会话编号。
 
             Returns:
-                StateManager: 同一 SQLite 中的会话状态访问对象。
+                SessionStateManager: 同一 SQLite 中的会话状态访问对象。
             """
-            return StateManager(session_id, str(db_path))
+            return SessionStateManager(session_id, str(db_path))
 
         manager = create_manager(SESSION_ID)
         inbox = create_inbox(SESSION_ID)
         records = TaskRecordDao(str(db_path))
         subscriptions = ChannelSubscriptionService()
         scheduler = AgentRuntimeScheduler(
-            subscriptions=subscriptions, agent_factory=create_agent, inbox_factory=create_inbox,
-            state_manager_factory=create_manager,
+            subscriptions=subscriptions, agent_factory=create_agent, session_state_manager_factory=create_inbox,
         )
         hub = InteractionEventHub(scheduler, subscriptions=subscriptions)
         await hub.start()
@@ -448,7 +448,7 @@ def test_frozen_history_range_excludes_later_completed_activations(tmp_path: Pat
         memory = bind_memory(db_path, monkeypatch)
         model = QueuedModel()
         agent = await make_agent(db_path, model, [])
-        manager = StateManager(SESSION_ID, str(db_path))
+        manager = SessionStateManager(SESSION_ID, str(db_path))
         try:
             # 1. 记录已有十轮的截止位置；计数置零表示旧批次已处理，避免准备额外任务。
             await seed_history(manager, 10, 0)
@@ -493,8 +493,8 @@ def test_runtime_only_activation_extracts_previous_batch_without_counting_notice
         hooks: list[PluginHook] = []
         model = QueuedModel()
         agent = await make_agent(db_path, model, hooks)
-        manager = StateManager(SESSION_ID, str(db_path))
-        inbox = SessionInbox(SESSION_ID, str(db_path))
+        manager = SessionStateManager(SESSION_ID, str(db_path))
+        inbox = SessionStateManager(SESSION_ID, str(db_path))
         records = TaskRecordDao(str(db_path))
         try:
             # 1. 上一批十轮已经完整；本次通知只启动新激活，不增加真人计数。
@@ -545,20 +545,11 @@ def test_mixed_activation_and_repeated_notices_use_one_activation_hook_pair(tmp_
         hooks: list[PluginHook] = []
         model = QueuedModel()
         agent = await make_agent(db_path, model, hooks)
-        manager = StateManager(SESSION_ID, str(db_path))
-        inbox = SessionInbox(SESSION_ID, str(db_path))
+        manager = SessionStateManager(SESSION_ID, str(db_path))
+        inbox = SessionStateManager(SESSION_ID, str(db_path))
         records = TaskRecordDao(str(db_path))
         running: asyncio.Task | None = None
 
-        async def deliver_notifications(state: AgentState) -> None:
-            """由真实模型前回调读取并提交当前已到达的任务通知。
-
-            Args:
-                state (AgentState): 管道已闭合工具协议、准备下次模型请求的状态。
-            """
-            inputs = await inbox.read_task_terminals()
-            if inputs:
-                await agent.commit_runtime_inputs(state, tuple(terminal_message(input_record) for input_record in inputs), inputs)
 
         try:
             # 1. 真人和既有任务通知同批读取，通过真人入口只执行一组激活钩子。
@@ -569,8 +560,7 @@ def test_mixed_activation_and_repeated_notices_use_one_activation_hook_pair(tmp_
             terminals = tuple(input_record for input_record in batch if input_record.kind == "task_terminal")
             running = asyncio.create_task(drain(agent.run(
                 "human-10", inbox_inputs=batch,
-                runtime_inputs=tuple(terminal_message(input_record) for input_record in terminals),
-                before_next_llm=deliver_notifications,
+                receive_task_notifications=True,
             )))
             await asyncio.wait_for(model.requests.get(), WAIT_SECONDS)
 
@@ -662,19 +652,10 @@ def test_resuming_original_turn_does_not_commit_another_activation(tmp_path: Pat
         model = QueuedModel()
         agent = await make_agent(db_path, model, hooks)
         agent.register_tool(PausingTool(kind))
-        manager = StateManager(SESSION_ID, str(db_path))
-        inbox = SessionInbox(SESSION_ID, str(db_path))
+        manager = SessionStateManager(SESSION_ID, str(db_path))
+        inbox = SessionStateManager(SESSION_ID, str(db_path))
         records = TaskRecordDao(str(db_path))
 
-        async def deliver_notifications(state: AgentState) -> None:
-            """原工具恢复并闭合后，在模型请求前保存已到达的通知。
-
-            Args:
-                state (AgentState): 原轮次恢复后的当前状态。
-            """
-            inputs = await inbox.read_task_terminals()
-            if inputs:
-                await agent.commit_runtime_inputs(state, tuple(terminal_message(input_record) for input_record in inputs), inputs)
 
         try:
             # 1. 达到阈值的真人输入已持久提交，但工具中断使该轮尚无普通助手回复。
@@ -692,7 +673,11 @@ def test_resuming_original_turn_does_not_commit_another_activation(tmp_path: Pat
             await publish_terminal(records, db_path, "during-interrupt")
             model.replies.put_nowait((StreamChunk(content="reply-10"),))
             result = {"kind": "approve"} if kind == InterruptKind.AUTHORIZATION_REQUEST else {"executed": True}
-            resumed = await drain(agent.resume(result, before_next_llm=deliver_notifications))
+            waiting = await manager.load()
+            request_id = waiting.interrupt_data["request_id"]
+            if kind == InterruptKind.AUTHORIZATION_REQUEST:
+                await manager.record_authorization_decision(request_id, result)
+            resumed = await drain(agent.resume(request_id, resume_data=result, receive_task_notifications=True))
             saved = await manager.load()
             assert resumed[-1].type == EventType.DONE
             assert not saved.is_interrupted()
@@ -726,8 +711,8 @@ def test_failed_activation_commit_preserves_batch_and_retry_extracts_frozen_hist
         hooks: list[PluginHook] = []
         models = [QueuedModel(), QueuedModel()]
         agents = [await make_agent(db_path, model, hooks) for model in models]
-        manager = StateManager(SESSION_ID, str(db_path))
-        inbox = SessionInbox(SESSION_ID, str(db_path))
+        manager = SessionStateManager(SESSION_ID, str(db_path))
+        inbox = SessionStateManager(SESSION_ID, str(db_path))
         records = TaskRecordDao(str(db_path))
 
         def activate(agent: Agent, inputs: tuple[InboxEnvelope, ...]) -> AsyncIterator[AgentEvent]:

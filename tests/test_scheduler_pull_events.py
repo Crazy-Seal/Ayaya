@@ -6,8 +6,7 @@ from tests.runtime_support import finish_test_turn
 import pytest
 
 from app.agent.core.event_router import AgentEvent, EventType
-from app.agent.runtime.session_inbox import SessionInbox
-from app.agent.state.manager import StateManager
+from app.agent.state.manager import SessionStateManager
 from app.agent.state.model import AgentState
 from app.agent.state.messages import ToolCall
 from app.interaction.interaction_contract import ChannelCommand
@@ -40,6 +39,7 @@ def test_receipt_does_not_reserve_run_and_hub_fans_out(tmp_path) -> None:
                 Yields:
                     AgentEvent: 文字和本轮完成事件。
                 """
+                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": kwargs.get("origin_channel", "desktop"), "resumed": False})
                 yield AgentEvent(EventType.TEXT_CHUNK, message)
                 await release.wait()
                 yield AgentEvent(EventType.DONE, None)
@@ -47,10 +47,11 @@ def test_receipt_does_not_reserve_run_and_hub_fans_out(tmp_path) -> None:
             async def close(self):
                 """释放测试执行对象，无外部资源。"""
 
-        def factory(session_id):
+        def factory(session_id, _manager):
             """创建测试 Agent。
 
             Args:
+                _manager (SessionStateManager): worker 拥有并借给本次执行的会话状态业务对象。
                 session_id (str): 当前会话编号。
 
             Returns:
@@ -61,8 +62,7 @@ def test_receipt_does_not_reserve_run_and_hub_fans_out(tmp_path) -> None:
         subscriptions = ChannelSubscriptionService(path)
         scheduler = AgentRuntimeScheduler(
             agent_factory=factory, subscriptions=subscriptions,
-            inbox_factory=partial(SessionInbox, db_path=path),
-            state_manager_factory=partial(StateManager, db_path=path),
+            session_state_manager_factory=partial(SessionStateManager, db_path=path),
         )
         hub = InteractionEventHub(scheduler, subscriptions=subscriptions)
         await scheduler.start()
@@ -125,6 +125,7 @@ def test_failed_turn_returns_idle_without_duplicate_errors(tmp_path, failure, ex
                 Yields:
                     AgentEvent: 当前测试阶段的事件。
                 """
+                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": kwargs.get("origin_channel", "desktop"), "resumed": False})
                 await finish_test_turn(path, (kwargs["inbox_input"],), message=message)
                 if failure == "stream":
                     yield AgentEvent(EventType.TEXT_CHUNK, "片段")
@@ -140,10 +141,11 @@ def test_failed_turn_returns_idle_without_duplicate_errors(tmp_path, failure, ex
                 if failure == "cleanup":
                     raise RuntimeError("清理失败")
 
-        def factory(session_id):
+        def factory(session_id, _manager):
             """按指定位置失败或创建 Agent。
 
             Args:
+                _manager (SessionStateManager): worker 拥有并借给本次执行的会话状态业务对象。
                 session_id (str): 会话编号。
 
             Returns:
@@ -158,8 +160,7 @@ def test_failed_turn_returns_idle_without_duplicate_errors(tmp_path, failure, ex
             return Agent()
 
         scheduler = AgentRuntimeScheduler(
-            agent_factory=factory, inbox_factory=partial(SessionInbox, db_path=path),
-            state_manager_factory=partial(StateManager, db_path=path),
+            agent_factory=factory, session_state_manager_factory=partial(SessionStateManager, db_path=path),
         )
         await scheduler.start()
         waiting = None
@@ -200,7 +201,7 @@ def test_pending_approval_steer_or_decision_wakes_worker_immediately(tmp_path, a
         release_approval_cleanup = asyncio.Event()
         should_block = False
 
-        class Inbox(SessionInbox):
+        class Inbox(SessionStateManager):
             """在审批等待的空查询处暂停，所有读取仍来自 SQLite。"""
 
             async def read_activation_batch(self, **kwargs):
@@ -232,8 +233,9 @@ def test_pending_approval_steer_or_decision_wakes_worker_immediately(tmp_path, a
                 Yields:
                     AgentEvent: 审批或正常完成。
                 """
+                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": kwargs.get("origin_channel", "desktop"), "resumed": False})
                 nonlocal should_block
-                manager = StateManager("s", path)
+                manager = SessionStateManager("s", path)
                 try:
                     state = await manager.load()
                     if message == "旧指令":
@@ -262,7 +264,7 @@ def test_pending_approval_steer_or_decision_wakes_worker_immediately(tmp_path, a
                 finally:
                     await manager.close()
 
-            async def resume(self, decision, *, initial_state, **kwargs):
+            async def resume(self, request_id, **kwargs):
                 """检查 Scheduler 从 checkpoint 取得决定，避免依赖内存副本。
 
                 Args:
@@ -273,17 +275,24 @@ def test_pending_approval_steer_or_decision_wakes_worker_immediately(tmp_path, a
                 Yields:
                     AgentEvent: 恢复后完成。
                 """
-                assert decision == initial_state.interrupt_data["runtime_decision"] == {"kind": "approve"}
+                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": True})
+                manager = SessionStateManager("s", path)
+                try:
+                    restored = await manager.load_for_resume(request_id)
+                    assert restored.interrupt_data["runtime_decision"] == {"kind": "approve"}
+                finally:
+                    await manager.close()
                 processed.set()
                 yield AgentEvent(EventType.DONE, None)
 
             async def close(self):
                 """本替身不拥有外部资源。"""
 
-        def factory(session_id):
+        def factory(session_id, _manager):
             """创建审批测试执行对象。
 
             Args:
+                _manager (SessionStateManager): worker 拥有并借给本次执行的会话状态业务对象。
                 session_id (str): 当前会话。
 
             Returns:
@@ -292,8 +301,7 @@ def test_pending_approval_steer_or_decision_wakes_worker_immediately(tmp_path, a
             return ApprovalAgent()
 
         scheduler = AgentRuntimeScheduler(
-            agent_factory=factory, inbox_factory=partial(Inbox, db_path=path),
-            state_manager_factory=partial(StateManager, db_path=path),
+            agent_factory=factory, session_state_manager_factory=partial(Inbox, db_path=path),
         )
         await scheduler.start()
         operation = None

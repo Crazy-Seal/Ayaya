@@ -7,6 +7,7 @@
 tool_call_id/tool_args/resume_state）写入 state.interrupt_data，使恢复能
 在另一个请求（甚至进程重启后）重入同一工具——无需依赖存活的协程。
 """
+from contextlib import aclosing
 from typing import Sequence
 from app.agent.models.contracts import InputMessage, ToolDefinition
 
@@ -19,6 +20,7 @@ from app.schemas.runtime_types import (
     InterruptKind,
 )
 from app.agent.context import ModelInputCoordinator, RuntimeContext
+from app.agent.state.manager import SessionStateManager
 from app.agent.runtime.turn_control import TurnInterrupted
 from app.agent.core.event_router import EventType, AgentEvent
 from app.agent.core.plugin_manager import PluginManager
@@ -27,7 +29,6 @@ from app.agent.core.tool_manager import ToolManager
 from app.agent.state.messages import ProviderData
 from app.agent.models.llm_client import StreamChunk
 from app.agent.plugins.base import PluginHook
-from app.agent.state.manager import CheckpointType
 from app.agent.state.messages import (
     HumanMessage,
     ToolCall,
@@ -41,25 +42,6 @@ from app.agent.tools.authorization.models import AuthorizationRequired, ToolInvo
 logger = logging.getLogger(__name__)
 
 
-class CheckpointCallback(Protocol):
-    """持久化回调必须显式声明 checkpoint 类型。"""
-
-    async def __call__(
-        self,
-        state: AgentState,
-        *,
-        checkpoint_type: CheckpointType,
-    ) -> int:
-        """执行管道在关键进度点调用，等待当前状态持久保存后才继续模型或工具操作。
-
-        Args:
-            state (AgentState): 当前会话的内存 AgentState；保存由调用方负责。
-            checkpoint_type (CheckpointType): 本次保存中间执行进度或完整轮次的类型。
-
-        Returns:
-            int: 已提交 checkpoint 的数据库编号。
-        """
-        ...
 
 
 class SystemPromptSource(Protocol):
@@ -148,15 +130,17 @@ class ExecutionPipeline:
     async def execute(
         self,
         state: AgentState,
-        checkpoint: CheckpointCallback | None = None,
+        session_state_manager: SessionStateManager | None = None,
         runtime_context: RuntimeContext | None = None,
+        *, receive_task_notifications: bool = False,
     ) -> AsyncIterator[AgentEvent]:
         """确定本轮真人输入标识，运行调用钩子后进入模型工具循环。
 
         Args:
             state (AgentState): 当前 Agent 状态。
-            checkpoint (CheckpointCallback | None): 持久化管道进度的异步回调。
+            session_state_manager (SessionStateManager | None): 借用的会话状态业务对象，不负责关闭。
             runtime_context (RuntimeContext | None): 本轮临时上下文，不写入持久消息。
+            receive_task_notifications (bool): 是否在安全点查询待交付任务通知。
 
         Yields:
             AgentEvent: 按执行顺序产生的 Agent 事件。
@@ -168,25 +152,29 @@ class ExecutionPipeline:
         await self._plugin_manager.run_hooks(
             PluginHook.ON_INVOKE, state, data={"runtime_context": runtime_context}
         )
-        async for event in self._run_loop(
-            state, checkpoint, runtime_context
-        ):
-            yield event
+        # 显式等待下层迭代关闭，保证响应和借用资源在返回前完成清理。
+        async with aclosing(self._run_loop(
+            state, session_state_manager, runtime_context, receive_task_notifications=receive_task_notifications
+        )) as managed_events:
+            async for event in managed_events:
+                yield event
 
     async def resume_tools(
         self,
         state: AgentState,
         resume_data: dict,
-        checkpoint: CheckpointCallback | None = None,
+        session_state_manager: SessionStateManager | None = None,
         runtime_context: RuntimeContext | None = None,
+        *, receive_task_notifications: bool = False,
     ) -> AsyncIterator[AgentEvent]:
         """先重入中断工具，再处理剩余调用，最后继续模型循环。
 
         Args:
             state (AgentState): 当前 Agent 状态。
             resume_data (dict): 当前等待工具的人工审批决定。
-            checkpoint (CheckpointCallback | None): 持久化管道进度的异步回调。
+            session_state_manager (SessionStateManager | None): 借用的会话状态业务对象，不负责关闭。
             runtime_context (RuntimeContext | None): 本轮临时上下文，不写入持久消息。
+            receive_task_notifications (bool): 是否在安全点查询待交付任务通知。
 
         Yields:
             AgentEvent: 按执行顺序产生的 Agent 事件。
@@ -226,7 +214,7 @@ class ExecutionPipeline:
             if result.interrupt:
                 yield await self._commit_interrupt(
                     state, interrupted_call, result.interrupt,
-                    result.resume_state, pending_actions, checkpoint,
+                    result.resume_state, pending_actions, session_state_manager,
                 )
                 return
 
@@ -234,7 +222,7 @@ class ExecutionPipeline:
                 state,
                 interrupted_call,
                 result,
-                checkpoint,
+                session_state_manager,
             )
             if runtime_context and runtime_context.turn_control:
                 runtime_context.turn_control.check()
@@ -257,7 +245,7 @@ class ExecutionPipeline:
             if result.interrupt:
                 yield await self._commit_interrupt(
                     state, tool_call, result.interrupt,
-                    result.resume_state, pending_actions[i + 1:], checkpoint,
+                    result.resume_state, pending_actions[i + 1:], session_state_manager,
                 )
                 return
 
@@ -265,32 +253,36 @@ class ExecutionPipeline:
                 state,
                 tool_call,
                 result,
-                checkpoint,
+                session_state_manager,
             )
             if runtime_context and runtime_context.turn_control:
                 runtime_context.turn_control.check()
 
         # 3. 回到 LLM 循环（不重跑 ON_INVOKE）
         runtime_context = runtime_context or RuntimeContext.capture()
-        async for event in self._run_loop(
-            state, checkpoint, runtime_context
-        ):
-            yield event
+        # 显式等待下层迭代关闭，保证响应和借用资源在返回前完成清理。
+        async with aclosing(self._run_loop(
+            state, session_state_manager, runtime_context, receive_task_notifications=receive_task_notifications
+        )) as managed_events:
+            async for event in managed_events:
+                yield event
 
     # ==================== 核心循环 ====================
 
     async def _run_loop(
         self,
         state: AgentState,
-        checkpoint: CheckpointCallback | None = None,
+        session_state_manager: SessionStateManager | None = None,
         runtime_context: RuntimeContext | None = None,
+        *, receive_task_notifications: bool = False,
     ) -> AsyncIterator[AgentEvent]:
         """在每次模型调用前接收内部通知，流式输出文本并依次执行工具。
 
         Args:
             state (AgentState): 当前 Agent 状态。
-            checkpoint (CheckpointCallback | None): 持久化管道进度的异步回调。
+            session_state_manager (SessionStateManager | None): 借用的会话状态业务对象，不负责关闭。
             runtime_context (RuntimeContext | None): 本轮临时上下文，不写入持久消息。
+            receive_task_notifications (bool): 是否在安全点查询待交付任务通知。
 
         Yields:
             AgentEvent: 按执行顺序产生的 Agent 事件。
@@ -300,8 +292,8 @@ class ExecutionPipeline:
         """
         while True:
             # 1. 模型调用前交付当前后台通知，然后设置 LLM 安全点和片段缓冲。
-            if runtime_context and runtime_context.before_next_llm:
-                await runtime_context.before_next_llm(state)
+            if receive_task_notifications and session_state_manager is not None:
+                await session_state_manager.deliver_pending(state)
             if runtime_context and runtime_context.turn_control:
                 runtime_context.turn_control.start_llm()
             # 2. 执行 BEFORE_LLM 钩子，通知插件即将准备本次模型输入。
@@ -319,7 +311,7 @@ class ExecutionPipeline:
             try:
                 runtime_context = runtime_context or RuntimeContext.capture()
                 # 3.1. 逐项读取模型输出，等待任务可被停止，但会话收尾任务仍保留。
-                llm_stream = self._call_llm(state, runtime_context, checkpoint)
+                llm_stream = self._call_llm(state, runtime_context, session_state_manager)
                 try:
                     while True:
                         try:
@@ -402,7 +394,7 @@ class ExecutionPipeline:
                     runtime_context.turn_control.partial_message_id = state.messages[-1].message_id
 
             if tool_calls:
-                await self._checkpoint(state, checkpoint)
+                await self._checkpoint(state, session_state_manager)
 
             # 6. 没有工具调用时结束本轮，由 Agent 执行最终提交。
             if not tool_calls:
@@ -429,7 +421,7 @@ class ExecutionPipeline:
                     remaining = tool_calls[i + 1:]
                     yield await self._commit_interrupt(
                         state, tool_call, result.interrupt,
-                        result.resume_state, remaining, checkpoint,
+                        result.resume_state, remaining, session_state_manager,
                     )
                     return
 
@@ -437,7 +429,7 @@ class ExecutionPipeline:
                     state,
                     tool_call,
                     result,
-                    checkpoint,
+                    session_state_manager,
                 )
                 if runtime_context.turn_control:
                     runtime_context.turn_control.check()
@@ -445,16 +437,16 @@ class ExecutionPipeline:
     @staticmethod
     async def _checkpoint(
         state: AgentState,
-        checkpoint: CheckpointCallback | None,
+        session_state_manager: SessionStateManager | None,
     ) -> None:
         """在启用持久化的执行入口中保存工具进度。
 
         Args:
             state (AgentState): 当前会话的内存 AgentState；保存由调用方负责。
-            checkpoint (CheckpointCallback | None): 执行管道在继续模型或工具之前调用的持久保存回调。
+            session_state_manager (SessionStateManager | None): 执行管道借用的会话状态业务对象。
         """
-        if checkpoint is not None:
-            await checkpoint(state, checkpoint_type="intermediate")
+        if session_state_manager is not None:
+            await session_state_manager.save_progress(state)
 
     # ==================== LLM 调用 ====================
 
@@ -462,14 +454,14 @@ class ExecutionPipeline:
         self,
         state: AgentState,
         runtime_context: RuntimeContext,
-        checkpoint: CheckpointCallback | None = None,
+        session_state_manager: SessionStateManager | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """调用 LLM，保留文本、工具调用和终止原因。
 
         Args:
             state (AgentState): 当前会话的内存 AgentState；保存由调用方负责。
             runtime_context (RuntimeContext): 本轮时间、来源、检索背景和停止信号组成的临时上下文。
-            checkpoint (CheckpointCallback | None): 执行管道在继续模型或工具之前调用的持久保存回调。
+            session_state_manager (SessionStateManager | None): 执行管道借用的会话状态业务对象。
         """
         tools = self._tool_manager.get_tools()
         produced = False
@@ -485,7 +477,7 @@ class ExecutionPipeline:
                 latest_prompt_tokens = 0
                 has_valid_output = False
                 if prepared.state_changed:
-                    await self._checkpoint(state, checkpoint)
+                    await self._checkpoint(state, session_state_manager)
                 try:
                     stream = self._llm_client.astream(prepared.messages, tools=tools or None)
                     try:
@@ -798,7 +790,7 @@ class ExecutionPipeline:
         state: AgentState,
         tool_call: ToolCall,
         result: ToolResult,
-        checkpoint: CheckpointCallback | None,
+        session_state_manager: SessionStateManager | None,
     ) -> None:
         """完整提交一个已经执行完成的工具调用。
 
@@ -809,14 +801,14 @@ class ExecutionPipeline:
             state (AgentState): 当前 Agent 状态。
             tool_call (ToolCall): 已执行完成的工具调用。
             result (ToolResult): 工具执行结果。
-            checkpoint (CheckpointCallback | None): intermediate checkpoint 持久化回调。
+            session_state_manager (SessionStateManager | None): 中间进度的会话状态业务对象。
         """
         # 1. 完整结果立即进入状态；不再为 API 排列拆出或延迟图片。
         state.record_tool_result(tool_call, result.content, compressible=bool(
             getattr(self._tool_manager.get(tool_call.name), "compressible", False)))
         if result.state_updates:
             state.update_extra(result.state_updates)
-        await self._checkpoint(state, checkpoint)
+        await self._checkpoint(state, session_state_manager)
 
     async def _commit_interrupt(
         self,
@@ -825,12 +817,12 @@ class ExecutionPipeline:
         interrupt: InterruptEvent,
         resume_state: dict,
         pending_actions: list[ToolCall],
-        checkpoint: CheckpointCallback | None,
+        session_state_manager: SessionStateManager | None,
     ) -> AgentEvent:
         """统一中断迁移：写入路由、执行钩子、保存，再构造客户端事件。
 
         钩子的原地修改一并保存；保存失败时不产生中断事件。
-        未配置持久化回调时仍支持独立执行 Pipeline。
+        未配置会话状态管理器时仍支持独立执行 Pipeline。
 
         Args:
             state (AgentState): 当前会话的内存 AgentState；保存由调用方负责。
@@ -838,7 +830,7 @@ class ExecutionPipeline:
             interrupt (InterruptEvent): 当前工具要求等待审批或桌面处理的中断事件。
             resume_state (dict): 工具继续执行所需的私有恢复材料。
             pending_actions (list[ToolCall]): 当前中断之后尚未执行的同批工具调用。
-            checkpoint (CheckpointCallback | None): 执行管道在继续模型或工具之前调用的持久保存回调。
+            session_state_manager (SessionStateManager | None): 执行管道借用的会话状态业务对象。
         """
         interrupt.tool_name = tool_call.name
         interrupt.tool_call_id = tool_call.id
@@ -852,7 +844,7 @@ class ExecutionPipeline:
         await self._plugin_manager.run_hooks(
             PluginHook.ON_INTERRUPT, state, data={"interrupt": interrupt},
         )
-        await self._checkpoint(state, checkpoint)
+        await self._checkpoint(state, session_state_manager)
         return AgentEvent(EventType.INTERRUPT, interrupt.to_client())
 
     # ==================== 助手消息 ====================

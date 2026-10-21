@@ -13,8 +13,7 @@ from app.dependencies import (
     get_runtime_scheduler, get_interaction_event_hub, get_channel_subscription_service,
 )
 from app.agent.core.event_router import AgentEvent, EventType
-from app.agent.runtime.session_inbox import SessionInbox
-from app.agent.state.manager import StateManager
+from app.agent.state.manager import SessionStateManager
 from app.interaction.interaction_event_hub import InteractionEventHub
 from app.services.channel_subscription_service import ChannelSubscriptionService
 from app.routes.agent import router as agent_router
@@ -43,28 +42,28 @@ def test_http_command_reaches_real_scheduler_and_sse_subscriber(tmp_path, delive
     class Agent:
         """只替代模型执行，保留真人输入的真实保存和交付通知。"""
 
-        async def run(self, message, *, origin_channel, inbox_input, on_input_committed, **kwargs):
+        async def run(self, message, *, origin_channel, inbox_input, **kwargs):
             """保存输入后通知界面，再保存正常结果并结束。
 
             Args:
                 message (str): HTTP 提交的用户正文。
                 origin_channel (str): 输入来源渠道。
                 inbox_input (InboxEnvelope): Scheduler 读取的输入。
-                on_input_committed (Callable): 保存成功后由替身调用的显示通知。
                 **kwargs (dict): 本轮控制等未使用参数。
 
             Yields:
                 AgentEvent: 文字及正常完成事件。
             """
+            yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": origin_channel, "resumed": False})
             if delivery_failure:
                 raise RuntimeError("交付失败")
-            manager = StateManager("s", path)
+            manager = SessionStateManager("s", path)
             try:
                 # 1. checkpoint 与 Inbox 交付同事务保存后，才通知显示真人消息。
                 state = await manager.load()
                 human = state.add_user_message(message, origin_channel=origin_channel)
                 await manager.save(state, checkpoint_type="intermediate", inbox_inputs=(inbox_input,))
-                await on_input_committed(human)
+                yield AgentEvent(EventType.HUMAN_INPUT_COMMITTED, {"message": human, "input_sequence": inbox_input.id})
                 yield AgentEvent(EventType.TEXT_CHUNK, "收到：" + message)
                 # 2. 模拟真实 Agent 的正常完成事务，队列仅在这里放行。
                 await manager.save(state, checkpoint_type="completed", release_queued=True)
@@ -75,10 +74,11 @@ def test_http_command_reaches_real_scheduler_and_sse_subscriber(tmp_path, delive
         async def close(self):
             """替身无额外资源，存储连接由 run 清理。"""
 
-    def create_agent(session_id):
+    def create_agent(session_id, _manager):
         """为真实 Scheduler 提供测试执行对象。
 
         Args:
+            _manager (SessionStateManager): worker 拥有并借给本次执行的会话状态业务对象。
             session_id (str): 被调度的会话。
 
         Returns:
@@ -90,8 +90,7 @@ def test_http_command_reaches_real_scheduler_and_sse_subscriber(tmp_path, delive
     subscriptions = ChannelSubscriptionService(path)
     scheduler = AgentRuntimeScheduler(
         agent_factory=create_agent, subscriptions=subscriptions,
-        inbox_factory=partial(SessionInbox, db_path=path),
-        state_manager_factory=partial(StateManager, db_path=path),
+        session_state_manager_factory=partial(SessionStateManager, db_path=path),
     )
     hub = InteractionEventHub(scheduler, subscriptions=subscriptions)
 
@@ -218,10 +217,11 @@ def test_http_command_reaches_real_scheduler_and_sse_subscriber(tmp_path, delive
 
 def test_unknown_command_keeps_http_200_business_rejection() -> None:
     """验证类型整理没有把未知命令提前变成 HTTP 422 或启动 Agent。"""
-    def unexpected_agent(session_id: str):
+    def unexpected_agent(session_id: str, _manager):
         """禁止未知命令触发真实执行。
 
         Args:
+            _manager (SessionStateManager): worker 拥有并借给本次执行的会话状态业务对象。
             session_id (str): 测试的共享会话标识。
 
         Raises:

@@ -13,7 +13,9 @@ logger = logging.getLogger(__name__)
 
 
 class EventType(str, Enum):
-    """定义 Agent 对外产出的文字、工具、中断、错误和轮次结束事件类别。"""
+    """定义 Agent 对外报告的输入提交、文字、工具、中断、错误和轮次结束事实。"""
+    RUN_STARTED = "run_started"  # 已加载并核验本次执行，由 Scheduler 发布既有开始事件
+    HUMAN_INPUT_COMMITTED = "human_input_committed"  # 真人输入及其交付状态已保存
     TEXT_CHUNK = "text_chunk"       # 文本分片
     TOOL_CALL = "tool_call"         # 工具调用
     INTERRUPT = "interrupt"         # 中断

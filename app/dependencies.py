@@ -16,6 +16,7 @@ from app.interaction.interaction_event_hub import InteractionEventHub
 from app.services.channel_subscription_service import ChannelSubscriptionService
 from app.orchestration.task_supervisor import TaskSupervisor
 from app.orchestration.agent_factory import build_agent
+from app.agent.state.manager import SessionStateManager
 from app.mcp.mcp_connection_manager import MCPConnectionManager
 from app.services.mcp_service import MCPService
 from app.services.chat_settings_service import ChatSettingsService
@@ -133,20 +134,12 @@ def get_mcp_connection_manager() -> MCPConnectionManager:
 
 @lru_cache(maxsize=1)
 def get_tool_authorization() -> ToolAuthorization:
-    """提供按调用读取最新会话配置的统一工具授权层。"""
-    chat_dao = get_chat_settings_dao()
-    return ToolAuthorization(
-        chat_dao.get_chat_settings,
-        catalog=UnifiedToolCatalog(
-            LocalToolCatalogAdapter(),
-            MCPToolCatalogAdapter(
-                get_mcp_settings_dao(),
-                get_mcp_connection_manager(),
-            ),
-        ),
-        settings_writer=chat_dao.update_chat_settings,
-        mutation_coordinator=get_settings_mutation_coordinator(),
-    )
+    """装配执行时使用的工具授权对象，每次判断只读取当前会话配置。
+
+    Returns:
+        ToolAuthorization: 多次 Agent 执行共享的权限与审批判断对象。
+    """
+    return ToolAuthorization(get_chat_settings_dao().get_chat_settings)
 
 
 @lru_cache(maxsize=1)
@@ -181,11 +174,12 @@ def get_runtime_scheduler() -> AgentRuntimeScheduler:
     authorization = get_tool_authorization()
     supervisor = get_task_supervisor()
     desktop = get_desktop_controller()
-    def create_agent(session_id: str):
+    def create_agent(session_id: str, session_state_manager: SessionStateManager):
         """真正执行时读取会话设置，创建本次 Agent。
 
         Args:
             session_id (str): 当前执行会话。
+            session_state_manager (SessionStateManager): worker 借给本次执行的业务对象。
 
         Returns:
             Agent: 注入共享工具依赖的本次执行对象。
@@ -196,6 +190,7 @@ def get_runtime_scheduler() -> AgentRuntimeScheduler:
             authorization,
             supervisor,
             desktop,
+            session_state_manager=session_state_manager,
         )
 
     scheduler = AgentRuntimeScheduler(
@@ -203,10 +198,6 @@ def get_runtime_scheduler() -> AgentRuntimeScheduler:
         subscriptions=get_channel_subscription_service(),
         task_supervisor=supervisor,
     )
-    # 1. 任务终态只通知已激活会话，初始化和关闭期间保留事实，不自行启动 Agent。
-    supervisor.on_terminal = scheduler.notify_task_terminal
-
-    supervisor.on_status = scheduler.record_task_status
     return scheduler
 
 
@@ -272,17 +263,30 @@ def get_mcp_service(
 
 
 def get_tool_permission_service(
-    authorization: ToolAuthorization = Depends(get_tool_authorization),
+    chat_settings_dao: ChatSettingsDao = Depends(get_chat_settings_dao),
+    mcp_settings_dao: MCPSettingsDao = Depends(get_mcp_settings_dao),
+    connection_manager: MCPConnectionManager = Depends(get_mcp_connection_manager),
+    mutation_coordinator: SettingsMutationCoordinator = Depends(get_settings_mutation_coordinator),
 ) -> ToolPermissionService:
-    """FastAPI 解析授权依赖后组装工具权限服务。
+    """为权限设置页装配配置存储、工具目录及共用写入锁。
 
     Args:
-        authorization (ToolAuthorization): 按最新设置校验工具权限的统一授权对象。
+        chat_settings_dao (ChatSettingsDao): 当前应用共享的会话配置存储。
+        mcp_settings_dao (MCPSettingsDao): 工具目录查询所需的 MCP 服务配置。
+        connection_manager (MCPConnectionManager): 提供当前服务身份和工具目录的共享连接管理器。
+        mutation_coordinator (SettingsMutationCoordinator): 与会话设置、MCP 服务共用的配置写入锁。
 
     Returns:
-        ToolPermissionService: 使用共享授权对象的权限服务。
+        ToolPermissionService: 独立处理权限配置的应用服务，不持有执行时授权对象。
     """
-    return ToolPermissionService(authorization)
+    return ToolPermissionService(
+        chat_settings_dao,
+        UnifiedToolCatalog(
+            LocalToolCatalogAdapter(),
+            MCPToolCatalogAdapter(mcp_settings_dao, connection_manager),
+        ),
+        mutation_coordinator,
+    )
 
 
 @lru_cache(maxsize=1)

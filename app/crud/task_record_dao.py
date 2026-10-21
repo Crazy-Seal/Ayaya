@@ -9,7 +9,7 @@ import os
 
 import aiosqlite
 
-from app.agent.runtime.session_inbox import append_task_terminal_in_transaction, ensure_inbox_schema
+from app.crud.session_inbox_dao import append_task_terminal_in_transaction, ensure_inbox_schema
 from app.runtime import get_checkpoint_db
 from app.schemas.runtime_types import TaskStatus
 

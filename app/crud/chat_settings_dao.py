@@ -98,12 +98,9 @@ class ChatSettingsDao:
             yaml.safe_dump(data, file, allow_unicode=True, sort_keys=False)
         temp_file.replace(self.config_file)
 
-    def _clear_caches(self) -> None:
-        """设置文件保存成功后清除本对象设置缓存和记忆管理器工厂缓存，后续装配读取新配置。"""
+    def _clear_cache(self) -> None:
+        """设置文件保存成功后清除本对象的设置缓存，其他模块的缓存由应用层协调。"""
         self._cache.clear()
-        # 清除 MemoryManager 工厂缓存
-        from app.agent.memory import get_memory_manager
-        get_memory_manager.cache_clear()
 
     @staticmethod
     def _to_chat_settings(item: dict) -> ChatSettings:
@@ -140,7 +137,7 @@ class ChatSettingsDao:
         )
 
     def add_chat_settings(self, chat_settings: ChatSettings) -> ChatSettings:
-        """确认会话编号未重复后保存新配置，文件保存成功后清除设置及记忆管理器缓存。
+        """确认会话编号未重复后保存新配置，文件保存成功后清除本对象的设置缓存。
 
         Args:
             chat_settings (ChatSettings): 当前会话的模型、角色及插件设置。
@@ -160,7 +157,7 @@ class ChatSettingsDao:
 
         chat_models.append(chat_settings.model_dump(mode="json"))
         self._save_chat_settings_file(data)
-        self._clear_caches()
+        self._clear_cache()
         return chat_settings
 
     def get_chat_settings(self, session_id: str) -> ChatSettings:
@@ -188,7 +185,7 @@ class ChatSettingsDao:
         raise KeyError(f"session_id not found: {session_id}")
 
     def delete_chat_settings(self, session_id: str) -> None:
-        """删除指定会话配置，保存成功后清除关联缓存。
+        """删除指定会话配置，保存成功后清除本对象的设置缓存。
 
         Args:
             session_id (str): 当前操作所属的会话编号。
@@ -203,13 +200,13 @@ class ChatSettingsDao:
             if item["session_id"] == session_id:
                 del chat_models[index]
                 self._save_chat_settings_file(data)
-                self._clear_caches()
+                self._clear_cache()
                 return
 
         raise KeyError(f"session_id not found: {session_id}")
 
     def update_chat_settings(self, session_id: str, chat_settings: ChatSettings) -> ChatSettings:
-        """替换已存在会话的整项设置，保存成功后清除关联缓存。
+        """替换已存在会话的整项设置，保存成功后清除本对象的设置缓存。
 
         Args:
             session_id (str): 当前操作所属的会话编号。
@@ -228,7 +225,7 @@ class ChatSettingsDao:
             if item["session_id"] == session_id:
                 chat_models[index] = chat_settings.model_dump(mode="json")
                 self._save_chat_settings_file(data)
-                self._clear_caches()
+                self._clear_cache()
                 return chat_settings
 
         raise KeyError(f"session_id not found: {session_id}")
@@ -259,7 +256,7 @@ class ChatSettingsDao:
             affected.append(item["session_id"])
         if affected:
             self._save_chat_settings_file(data)
-            self._clear_caches()
+            self._clear_cache()
         return affected
 
     def reconcile_mcp_server_tools(
@@ -302,7 +299,7 @@ class ChatSettingsDao:
             affected.append(item["session_id"])
         if affected:
             self._save_chat_settings_file(data)
-            self._clear_caches()
+            self._clear_cache()
         return affected
 
     def invalidate_mcp_server_identity(self, server_id: str) -> list[str]:
@@ -329,7 +326,7 @@ class ChatSettingsDao:
             affected.append(item["session_id"])
         if affected:
             self._save_chat_settings_file(data)
-            self._clear_caches()
+            self._clear_cache()
         return affected
 
     def count_mcp_server_references(self, server_id: str) -> int:
