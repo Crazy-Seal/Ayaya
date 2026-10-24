@@ -7,6 +7,8 @@ from dataclasses import replace
 import json
 import logging
 
+from app.schemas.runtime_types import ApprovalDecisionKind, CheckpointType, DESKTOP_CHANNEL, InboxKind, InboxStatus, InterruptKind, TaskResultStatus, TaskStatus
+from app.schemas.message_types import ImageContextState
 from app.agent.runtime.session_inbox import InboxEnvelope
 from app.agent.state.model import AgentState
 from app.agent.state.messages import (
@@ -14,9 +16,8 @@ from app.agent.state.messages import (
     TaskResultMessage, text_content, with_text,
 )
 from app.agent.utils.domain.images import save_multiple_images
-from app.crud.agent_state_dao import AgentStateDao, CheckpointType
+from app.crud.agent_state_dao import AgentStateDao
 from app.crud.session_inbox_dao import SessionInboxDao
-from app.schemas.runtime_types import DESKTOP_CHANNEL, InboxKind, InboxStatus, InterruptKind, TaskResultStatus, TaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -204,7 +205,7 @@ class SessionStateManager:
         Returns:
             int: 已保存的 checkpoint 编号。
         """
-        return await self.save(state, checkpoint_type="intermediate")
+        return await self.save(state, checkpoint_type=CheckpointType.INTERMEDIATE)
 
     async def complete_turn(self, state: AgentState, *, release_queued: bool = False) -> int:
         """按 Agent 的最终提交决定保存完成状态，不运行响应钩子。
@@ -218,7 +219,7 @@ class SessionStateManager:
         """
         # 1. 完成状态与背景清空一起提交，下一轮只读取新的临时内容。
         state.clear_temporary_context()
-        return await self.save(state, checkpoint_type="completed", release_queued=release_queued)
+        return await self.save(state, checkpoint_type=CheckpointType.COMPLETED, release_queued=release_queued)
 
     async def save_interrupt_origin(self, state: AgentState, origin_channel: str) -> None:
         """发布中断前补充原回答来源，已经保存来源的请求不重复提交。
@@ -271,7 +272,7 @@ class SessionStateManager:
                                        origin_channel=origin_channel)
         # 2. 计数与消息同事务保存；提交后的模型失败不撤销真人事实。
         state.increment_long_term_memory_turn_counter()
-        await self.save(state, checkpoint_type="intermediate", inbox_inputs=inputs)
+        await self.save(state, checkpoint_type=CheckpointType.INTERMEDIATE, inbox_inputs=inputs)
         return human
 
     async def commit_runtime_inputs(self, state: AgentState, messages: tuple[RuntimeInputMessage, ...] | None,
@@ -287,7 +288,7 @@ class SessionStateManager:
         for message in task_result_messages(inputs) if messages is None else messages:
             state.append_input(message)
         # 2. 内部消息不增加真人计数，原子交付成功后调用方才继续执行。
-        await self.save(state, checkpoint_type="intermediate", inbox_inputs=inputs)
+        await self.save(state, checkpoint_type=CheckpointType.INTERMEDIATE, inbox_inputs=inputs)
 
     async def deliver_pending(self, state: AgentState) -> None:
         """由 Pipeline 在工具协议闭合、下一模型请求前交付已到达的任务通知。
@@ -316,7 +317,7 @@ class SessionStateManager:
         if interrupt is None:
             return None
         # 1. 引导正文沿用现有独立受理事务，失败不能关闭审批。
-        if decision.get("kind") == "steer":
+        if decision.get("kind") == ApprovalDecisionKind.STEER:
             await self.submit_human(actor_channel, decision["message"])
         if not state.record_authorization_decision(request_id, decision):
             return None
@@ -362,7 +363,7 @@ class SessionStateManager:
             rewritten_message_id = previous.message_id
         # 2. 终止轮次清空背景并保存 completed，不放行队列。
         state.clear_temporary_context()
-        await self.save(state, checkpoint_type="completed", rewritten_message_id=rewritten_message_id)
+        await self.save(state, checkpoint_type=CheckpointType.COMPLETED, rewritten_message_id=rewritten_message_id)
 
     async def unfinished_sessions(self) -> list[str]:
         """查询需要无执行收尾的会话，查询本身不启动 Agent。
@@ -371,7 +372,7 @@ class SessionStateManager:
             list[str]: 最新 checkpoint 未完成或工具协议未闭合的会话。
         """
         return [session for session, state, kind in await self._state_dao.latest_checkpoints()
-                if kind == "intermediate" or state.get("interrupt_data") or state.get("pending_tool_calls")]
+                if kind == CheckpointType.INTERMEDIATE or state.get("interrupt_data") or state.get("pending_tool_calls")]
 
     async def reset_after_restart(self) -> None:
         """按现有启动关闭规则作废 pending 真人意图，保留任务通知和交付事实。"""
@@ -497,7 +498,7 @@ class SessionStateManager:
                 continue
             groups: dict[str, list[tuple[int, ImageContent]]] = {}
             for index, part in enumerate(message.content):
-                if isinstance(part, ImageContent) and part.context_state == "available" and not part.storage_ref:
+                if isinstance(part, ImageContent) and part.context_state == ImageContextState.AVAILABLE and not part.storage_ref:
                     groups.setdefault(part.media_kind, []).append((index, part))
             parts = list(message.content)
             changed = False
@@ -536,7 +537,7 @@ class SessionStateManager:
             Exception: 持久保存失败，原 checkpoint 和协议记录保持不变。
         """
         state = await self.load()
-        if self._state_dao.last_loaded_checkpoint_type != "intermediate" and not (
+        if self._state_dao.last_loaded_checkpoint_type != CheckpointType.INTERMEDIATE and not (
             state.interrupt_data or state.pending_tool_calls
         ):
             return False
@@ -575,5 +576,5 @@ class SessionStateManager:
                 state.add_assistant_message(partial + suffix, origin_channel=origin_channel)
         # 3. 清空已结束轮次的背景，与终止状态一起保存，不运行响应钩子或放行队列。
         state.clear_temporary_context()
-        await self.save(state, checkpoint_type="completed", rewritten_message_id=rewritten_message_id)
+        await self.save(state, checkpoint_type=CheckpointType.COMPLETED, rewritten_message_id=rewritten_message_id)
         return True

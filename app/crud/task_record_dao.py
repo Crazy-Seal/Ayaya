@@ -9,6 +9,7 @@ import os
 
 import aiosqlite
 
+from app.schemas.tool_types import TASK_OUTPUT_URI_PREFIX
 from app.crud.session_inbox_dao import append_task_terminal_in_transaction, ensure_inbox_schema
 from app.runtime import get_checkpoint_db
 from app.schemas.runtime_types import TaskStatus
@@ -251,7 +252,7 @@ class TaskRecordDao:
                 await append_task_terminal_in_transaction(
                     db, session_id=session_id, task_id=task_id, task_name=command,
                     status=status.value if isinstance(status, TaskStatus) else status, result="",
-                    tool_name=tool_name, exit_code=exit_code, output_ref=f"task-output://{task_id}",
+                    tool_name=tool_name, exit_code=exit_code, output_ref=f"{TASK_OUTPUT_URI_PREFIX}{task_id}",
                 )
                 await db.commit()
                 return True

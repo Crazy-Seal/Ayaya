@@ -1,7 +1,8 @@
 """在屏幕工具与桌面模块之间转换明确动作和副作用结果。"""
 
+from app.schemas.desktop import ScreenActionStatus, ScreenAction, ScreenActionResult
+from app.schemas.message_types import MediaKind
 from app.agent.tools.core.base import ToolResult
-from app.schemas.desktop import ScreenAction, ScreenActionResult
 
 
 def screen_action(data: dict) -> ScreenAction:
@@ -26,8 +27,8 @@ def screen_tool_result(result: ScreenActionResult) -> ToolResult:
     Returns:
         ToolResult: 交给现有 Pipeline 保存的文本与可选截图。
     """
-    messages = {"completed": "屏幕操作完成", "not_started": "屏幕操作未执行",
-                "partial_or_unknown": "屏幕操作可能已部分执行，请先观察屏幕，不要直接重复操作"}
+    messages = {ScreenActionStatus.COMPLETED: "屏幕操作完成", ScreenActionStatus.NOT_STARTED: "屏幕操作未执行",
+                ScreenActionStatus.PARTIAL_OR_UNKNOWN: "屏幕操作可能已部分执行，请先观察屏幕，不要直接重复操作"}
     content = messages[result.status]
     if result.total_actions:
         content += f"；已完整完成 {result.completed_actions}/{result.total_actions} 个动作"
@@ -35,7 +36,7 @@ def screen_tool_result(result: ScreenActionResult) -> ToolResult:
             content += "；后续动作未继续执行，不能直接重放整批动作"
     if result.error:
         content += f"：{result.error}"
-    if result.screenshot is None and result.status == "completed":
+    if result.screenshot is None and result.status == ScreenActionStatus.COMPLETED:
         content += "；未取得操作后的截图"
     return ToolResult.success(content, image_url=result.screenshot.data_url if result.screenshot else None,
-                              media_kind="screenshot")
+                              media_kind=MediaKind.SCREENSHOT)

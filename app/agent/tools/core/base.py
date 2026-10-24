@@ -6,6 +6,8 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Protocol, TYPE_CHECKING
+from app.schemas.tool_types import AuthorizationTiming
+from app.schemas.message_types import MediaKind
 from app.schemas.desktop import DesktopOperations, StopRequested
 
 from app.schemas.runtime_types import (
@@ -206,7 +208,7 @@ class ToolResult:
     @classmethod
     def success(cls, content: str, state_updates: dict | None = None,
                 image_url: str | None = None, image_urls: list[str] | None = None,
-                media_kind: str = "tool") -> "ToolResult":
+                media_kind: MediaKind = MediaKind.TOOL) -> "ToolResult":
         """把内置工具的文字与图片立即组成完整业务结果。
 
         Args:
@@ -214,7 +216,7 @@ class ToolResult:
             state_updates (dict | None): 随结果交给状态的更新。
             image_url (str | None): 一张工具图片。
             image_urls (list[str] | None): 多张工具图片。
-            media_kind (str): tool、screenshot 或 mcp。
+            media_kind (MediaKind): tool、screenshot 或 mcp。
         Returns:
             ToolResult: 完整有序内容，尚未规范化或保存。
         """
@@ -289,7 +291,7 @@ class BaseTool(ABC):
     parameters_schema: dict      # JSON Schema 格式的参数定义
     compressible: bool = False   # 旧结果是否允许从活跃模型上下文回收，不代表允许重放工具
     persist_oversized_result: bool = True  # 超长结果是否允许保存为 tool-result artifact
-    authorization_timing: str = "before_execute"
+    authorization_timing: AuthorizationTiming = AuthorizationTiming.BEFORE_EXECUTE
 
     @abstractmethod
     async def execute(

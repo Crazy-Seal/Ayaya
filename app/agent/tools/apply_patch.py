@@ -4,13 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated
 
+from app.schemas.tool_types import PatchKind
 from app.agent.tools.core.decorator import tool
 from app.agent.utils.infra.safe_path import safe_path
-
-
-PatchKind = Literal["add", "update", "delete"]
 
 
 @dataclass
@@ -30,9 +28,9 @@ class _Operation:
 
 
 _HEADERS = {
-    "*** Add File: ": "add",
-    "*** Update File: ": "update",
-    "*** Delete File: ": "delete",
+    "*** Add File: ": PatchKind.ADD,
+    "*** Update File: ": PatchKind.UPDATE,
+    "*** Delete File: ": PatchKind.DELETE,
 }
 
 
@@ -127,7 +125,7 @@ def _parse_patch(patch: str) -> list[_Operation]:
         seen_paths.add(path)
         index += 1
 
-        if kind == "add":
+        if kind == PatchKind.ADD:
             content_lines: list[str] = []
             while index < len(lines) - 1 and _operation_header(lines[index]) is None:
                 if not lines[index].startswith("+"):
@@ -138,7 +136,7 @@ def _parse_patch(patch: str) -> list[_Operation]:
             if content_lines:
                 content += "\n"
             operations.append(_Operation(kind=kind, path=path, content=content))
-        elif kind == "update":
+        elif kind == PatchKind.UPDATE:
             hunks, index = _parse_update_hunks(lines, index)
             operations.append(_Operation(kind=kind, path=path, hunks=hunks))
         else:
@@ -167,14 +165,14 @@ def _prepare_changes(operations: list[_Operation]) -> dict[Path, str | None]:
     prepared: dict[Path, str | None] = {}
     for operation in operations:
         path = safe_path(operation.path)
-        if operation.kind == "add":
+        if operation.kind == PatchKind.ADD:
             if path.exists():
                 raise ValueError(f"文件已存在，无法新增: {operation.path}")
             prepared[path] = operation.content
             continue
         if not path.is_file():
             raise ValueError(f"文件不存在: {operation.path}")
-        if operation.kind == "delete":
+        if operation.kind == PatchKind.DELETE:
             prepared[path] = None
             continue
 
@@ -257,9 +255,9 @@ async def apply_patch(
         operations = _parse_patch(patch)
         prepared = _prepare_changes(operations)
         _write_changes(prepared)
-        added = sum(operation.kind == "add" for operation in operations)
-        updated = sum(operation.kind == "update" for operation in operations)
-        deleted = sum(operation.kind == "delete" for operation in operations)
+        added = sum(operation.kind == PatchKind.ADD for operation in operations)
+        updated = sum(operation.kind == PatchKind.UPDATE for operation in operations)
+        deleted = sum(operation.kind == PatchKind.DELETE for operation in operations)
         return f"已应用补丁：新增 {added}，修改 {updated}，删除 {deleted}。"
     except Exception as exc:
         return f"错误: {exc}"

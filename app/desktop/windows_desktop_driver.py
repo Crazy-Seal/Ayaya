@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Iterator
 
-from app.schemas.desktop import DesktopWindowRegistration, ScreenAction, ScreenCapture
+from app.schemas.desktop import ScreenOperation, ScrollDirection, DesktopWindowRegistration, ScreenAction, ScreenCapture
 
 
 class WindowsDesktopDriver:
@@ -308,16 +308,16 @@ class WindowsDesktopDriver:
         y = min(height - 1, max(0, round(action.y_ratio * height)))
         self._input.moveTo(x, y)
         check()
-        if action.operation == "click":
+        if action.operation == ScreenOperation.CLICK:
             self._input.click()
-        elif action.operation == "double":
+        elif action.operation == ScreenOperation.DOUBLE:
             self._input.doubleClick(interval=0.1)
-        elif action.operation == "right":
-            self._input.click(button="right")
-        elif action.operation == "scroll":
-            if action.scroll_direction not in {"up", "down"}:
+        elif action.operation == ScreenOperation.RIGHT:
+            self._input.click(button=ScreenOperation.RIGHT)
+        elif action.operation == ScreenOperation.SCROLL:
+            if action.scroll_direction not in {ScrollDirection.UP, ScrollDirection.DOWN}:
                 raise ValueError("滚动方向无效")
-            self._input.scroll(6 if action.scroll_direction == "up" else -6)
+            self._input.scroll(6 if action.scroll_direction == ScrollDirection.UP else -6)
 
     def _owner_window(self) -> int:
         """本线程创建 message-only 窗口，写入剪贴板时不能使用空所有者。

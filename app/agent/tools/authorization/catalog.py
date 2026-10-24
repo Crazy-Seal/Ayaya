@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
 
+from app.schemas.tool_types import MCP_TOOL_KEY_PREFIX, ToolSource
 from app.agent.tools.core.registry import ToolRegistry
 from app.crud.mcp_settings_dao import MCPSettingsDao
 from app.schemas.chat_settings import ChatSettings
@@ -19,7 +19,7 @@ class ToolCatalogEntry:
     """权限页所需的来源无关工具目录项。"""
 
     stable_key: str
-    source: Literal["local", "mcp"]
+    source: ToolSource
     name: str
     display_name: str
     description: str
@@ -50,7 +50,7 @@ class LocalToolCatalogAdapter:
             identity = ToolIdentity.local(name)
             result.append(ToolCatalogEntry(
                 stable_key=identity.stable_key,
-                source="local",
+                source=ToolSource.LOCAL,
                 name=name,
                 display_name=getattr(tool_class, "display_name", None) or name,
                 description=(getattr(tool_class, "description", "") or "").strip(),
@@ -103,7 +103,7 @@ class MCPToolCatalogAdapter:
                 self._connection_manager.get_tools(server_id) if available else []
             )
             names = {descriptor.name for descriptor in descriptors}
-            prefix = f"mcp:{server_id}:"
+            prefix = f"{MCP_TOOL_KEY_PREFIX}{server_id}:"
             names.update(
                 key[len(prefix):]
                 for key in settings.tool_permissions
@@ -116,7 +116,7 @@ class MCPToolCatalogAdapter:
                 is_available = available and descriptor is not None
                 result.append(ToolCatalogEntry(
                     stable_key=identity.stable_key,
-                    source="mcp",
+                    source=ToolSource.MCP,
                     name=name,
                     display_name=name,
                     description=(descriptor.description if descriptor else "") or "",

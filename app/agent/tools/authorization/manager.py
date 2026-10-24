@@ -7,6 +7,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Callable, TYPE_CHECKING
 
+from app.schemas.tool_types import ToolSource, AuthorizationTiming
 from app.schemas.runtime_types import (
     ApprovalDecisionKind, InterruptKind,
 )
@@ -72,7 +73,7 @@ def descriptor_for_tool(tool: Any) -> ToolDescriptor:
             "description": getattr(tool, "description", "") or "",
             "input_schema": schema,
             "authorization_timing": getattr(
-                tool, "authorization_timing", "before_execute"
+                tool, "authorization_timing", AuthorizationTiming.BEFORE_EXECUTE
             ),
         })
     )
@@ -83,7 +84,7 @@ def descriptor_for_tool(tool: Any) -> ToolDescriptor:
         description=getattr(tool, "description", "") or "",
         input_schema=schema,
         contract_fingerprint=contract,
-        authorization_timing=getattr(tool, "authorization_timing", "before_execute"),
+        authorization_timing=getattr(tool, "authorization_timing", AuthorizationTiming.BEFORE_EXECUTE),
     )
 
 
@@ -129,13 +130,13 @@ class ToolAuthorization:
         """
         try:
             settings = self._settings_loader(session_id)
-            if identity.source == "mcp":
+            if identity.source == ToolSource.MCP:
                 server = settings.mcp.servers.get(identity.server_id or "")
                 if server is None or not server.enabled:
                     return ToolPolicy.DENY
             policy = settings.tool_permissions.get(identity.stable_key)
             # 1. 内存设置和测试注入也遵循权限改名规则，不依赖 YAML 已经完成补齐。
-            if policy is None and identity.source == "local":
+            if policy is None and identity.source == ToolSource.LOCAL:
                 legacy = settings.tool_permissions.get("local:run_ps")
                 if identity.name == "exec_command" and legacy is not None:
                     policy = legacy
@@ -201,7 +202,7 @@ class ToolAuthorization:
             return (
                 policy == ToolPolicy.ALLOW
                 or (
-                    invocation.descriptor.authorization_timing == "after_prepare"
+                    invocation.descriptor.authorization_timing == AuthorizationTiming.AFTER_PREPARE
                     and invocation.prepared_action is None
                 )
             )
@@ -243,7 +244,7 @@ class ToolAuthorization:
 
         # 2. 需要先准备具体动作的工具，此处仅允许只读准备；返回动作后再次检查权限。
         if (
-            invocation.descriptor.authorization_timing == "after_prepare"
+            invocation.descriptor.authorization_timing == AuthorizationTiming.AFTER_PREPARE
             and invocation.prepared_action is None
         ):
             return Granted()

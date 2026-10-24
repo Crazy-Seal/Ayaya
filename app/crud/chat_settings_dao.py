@@ -2,9 +2,10 @@ from pathlib import Path
 
 import yaml
 
+from app.schemas.tool_types import LOCAL_TOOL_KEY_PREFIX, MCP_TOOL_KEY_PREFIX
+from app.schemas.tool_permissions import ToolPolicy, TOOL_PERMISSIONS_SCHEMA_VERSION
 from app.schemas.chat_settings import ChatSettings
 from app.runtime import get_chat_settings_file
-from app.schemas.tool_permissions import TOOL_PERMISSIONS_SCHEMA_VERSION
 
 
 def _known_local_tool_names() -> list[str]:
@@ -35,13 +36,13 @@ def _reconcile_local_tool_permissions(item: dict) -> bool:
     if "exec_command" in names and "local:exec_command" not in permissions and legacy is not None:
         permissions["local:exec_command"] = legacy
         changed = True
-    if "write_stdin" in names and "local:write_stdin" not in permissions and legacy == "deny":
-        permissions["local:write_stdin"] = "deny"
+    if "write_stdin" in names and "local:write_stdin" not in permissions and legacy == ToolPolicy.DENY.value:
+        permissions["local:write_stdin"] = ToolPolicy.DENY.value
         changed = True
     for name in names:
-        key = f"local:{name}"
+        key = f"{LOCAL_TOOL_KEY_PREFIX}{name}"
         if key not in permissions:
-            permissions[key] = "ask"
+            permissions[key] = ToolPolicy.ASK.value
             changed = True
     if item.get("tool_permissions") != permissions:
         item["tool_permissions"] = permissions
@@ -247,7 +248,7 @@ class ChatSettingsDao:
                 continue
             del servers[server_id]
             item["mcp"] = {"servers": servers}
-            prefix = f"mcp:{server_id}:"
+            prefix = f"{MCP_TOOL_KEY_PREFIX}{server_id}:"
             item["tool_permissions"] = {
                 key: value
                 for key, value in (item.get("tool_permissions") or {}).items()
@@ -283,7 +284,7 @@ class ChatSettingsDao:
             if not isinstance(policy, dict):
                 continue
             same_identity = policy.get("identity_fingerprint") == identity_fingerprint
-            prefix = f"mcp:{server_id}:"
+            prefix = f"{MCP_TOOL_KEY_PREFIX}{server_id}:"
             previous_permissions = item.get("tool_permissions") or {}
             item["tool_permissions"] = {
                 key: value
@@ -291,8 +292,8 @@ class ChatSettingsDao:
                 if not key.startswith(prefix)
             }
             item["tool_permissions"].update({
-                f"{prefix}{name}": previous_permissions.get(f"{prefix}{name}", "ask")
-                if same_identity else "ask"
+                f"{prefix}{name}": previous_permissions.get(f"{prefix}{name}", ToolPolicy.ASK.value)
+                if same_identity else ToolPolicy.ASK.value
                 for name in tool_names
             })
             policy["identity_fingerprint"] = identity_fingerprint
@@ -317,10 +318,10 @@ class ChatSettingsDao:
             policy = (((item.get("mcp") or {}).get("servers") or {}).get(server_id))
             if not isinstance(policy, dict):
                 continue
-            prefix = f"mcp:{server_id}:"
+            prefix = f"{MCP_TOOL_KEY_PREFIX}{server_id}:"
             permissions = item.get("tool_permissions") or {}
             item["tool_permissions"] = {
-                key: "ask" if key.startswith(prefix) else value
+                key: ToolPolicy.ASK.value if key.startswith(prefix) else value
                 for key, value in permissions.items()
             }
             affected.append(item["session_id"])

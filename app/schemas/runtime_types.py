@@ -1,6 +1,18 @@
 """运行时各分类的稳定取值；只依赖标准库，不引用任何执行或持久化实现。"""
 
-from enum import Enum
+from enum import Enum, StrEnum
+
+
+class CheckpointType(StrEnum):
+    """区分仍可恢复执行和已经结束的会话快照。
+
+    Attributes:
+        INTERMEDIATE (CheckpointType): 保存执行进度，启动时检查恢复。
+        COMPLETED (CheckpointType): 保存已结束的轮次。
+    """
+
+    INTERMEDIATE = "intermediate"
+    COMPLETED = "completed"
 
 
 # 固定桌面渠道不是渠道枚举，未来 Adapter 的渠道标识仍可自由注册。
@@ -123,8 +135,6 @@ class InterruptKind(str, Enum):
         AUTHORIZATION_REQUEST (InterruptKind): 人工审批，协议值为 authorization_request。
     """
     AUTHORIZATION_REQUEST = "authorization_request"
-
-
 
 
 class ApprovalDecisionKind(str, Enum):

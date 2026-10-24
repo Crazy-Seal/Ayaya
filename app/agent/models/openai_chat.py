@@ -5,7 +5,8 @@ import logging
 from typing import Any, AsyncIterator, Sequence
 
 from openai import AsyncOpenAI, OpenAI
-from app.agent.models.contracts import InputMessage, LLMConfig, LLMResponse, StreamChunk, TokenUsage, ToolDefinition, ModelContextOverflowError, ProjectedMessage
+from app.agent.models.contracts import ModelFinishReason, InputMessage, LLMConfig, LLMResponse, StreamChunk, TokenUsage, ToolDefinition, ModelContextOverflowError, ProjectedMessage
+from app.schemas.message_types import COMPRESSED_SCREENSHOT_PLACEHOLDER, MediaKind, ImageContextState
 from app.agent.state.messages import (BaseMessage, HumanMessage, AssistantMessage, ToolMessage, SystemMessage,
     ContextSummaryMessage, TaskResultMessage, EnvironmentPerceptionMessage, SubagentMessage,
     ImageContent, TextContent, ToolCall, ProviderData, text_content, notification_text, to_json_value)
@@ -269,7 +270,7 @@ class OpenAIChatCompletionsAdapter:
             for slot in tool_acc:
                 yield StreamChunk(tool_call=self._build_tool_call({**slot, "config": self.config}))
 
-            yield StreamChunk(finish_reason="refused" if refused else self._finish_reason(final_reason or "stop"),
+            yield StreamChunk(finish_reason=ModelFinishReason.REFUSED if refused else self._finish_reason(final_reason or "stop"),
                               provider_data=self._provider_data(assistant_extra, self.config))
 
         except Exception as e:
@@ -330,7 +331,7 @@ class OpenAIChatCompletionsAdapter:
             content=text_content(message.content or ""),
             provider_data=self._provider_data(getattr(message, "extra_content", None), self.config),
             tool_calls=tool_calls,
-            finish_reason="refused" if getattr(message, "refusal", None) else self._finish_reason(getattr(choice, "finish_reason", None)),
+            finish_reason=ModelFinishReason.REFUSED if getattr(message, "refusal", None) else self._finish_reason(getattr(choice, "finish_reason", None)),
             usage=self._usage(getattr(completion, "usage", None)),
         )
 
@@ -376,7 +377,7 @@ class OpenAIChatCompletionsAdapter:
                 raise
 
             choice = completion.choices[0]
-            finish_reason = choice.finish_reason or "unknown"
+            finish_reason = choice.finish_reason or ModelFinishReason.UNKNOWN
             content = choice.message.content or ""
             content_length = len(content)
 
@@ -446,14 +447,17 @@ class OpenAIChatCompletionsAdapter:
                             ("prompt_tokens", "completion_tokens", "total_tokens")))
 
     @staticmethod
-    def _finish_reason(reason: str | None) -> str:
+    def _finish_reason(reason: str | None) -> ModelFinishReason:
         """把 SDK 原因转换成稳定的项目结束语义。
 
         Args:
             reason (str | None): 供应商返回的生成结束原因。
+
+        Returns:
+            ModelFinishReason: 供执行管道判断的项目结束原因。
         """
-        return {"stop": "completed", "tool_calls": "tool_calls", "length": "length",
-                "content_filter": "refused"}.get(reason, "unknown")
+        return {"stop": ModelFinishReason.COMPLETED, "tool_calls": ModelFinishReason.TOOL_CALLS, "length": ModelFinishReason.LENGTH,
+                "content_filter": ModelFinishReason.REFUSED}.get(reason, ModelFinishReason.UNKNOWN)
 
     @staticmethod
     def _provider_data(extra: Any, config: LLMConfig) -> ProviderData | None:
@@ -504,7 +508,7 @@ class OpenAIChatCompletionsAdapter:
         """
         return [part.to_dict() if isinstance(part, TextContent) else {
             "type": "image_url", "image_url": {"url": part.url, **({"detail": part.detail} if part.detail else {})}}
-            for part in content if isinstance(part, TextContent) or part.context_state == "available"]
+            for part in content if isinstance(part, TextContent) or part.context_state == ImageContextState.AVAILABLE]
 
     def encode_messages(self, messages: Sequence[InputMessage]) -> list[dict]:
         """把业务消息投影为完整请求，整批工具结果之后再发送图片。
@@ -533,14 +537,14 @@ class OpenAIChatCompletionsAdapter:
                 result.append({"role": "tool", "name": message.tool_name, "tool_call_id": message.tool_call_id, "content": message.text})
                 images = [part for part in message.content if isinstance(part, ImageContent)]
                 if images:
-                    available = [part for part in images if part.context_state == "available"]
+                    available = [part for part in images if part.context_state == ImageContextState.AVAILABLE]
                     if available:
                         kind = available[0].media_kind
-                        name = {"screenshot": SCREENSHOT_MESSAGE_NAME, "mcp": MCP_TOOL_IMAGE_MESSAGE_NAME}.get(kind, TOOL_IMAGE_MESSAGE_NAME)
+                        name = {MediaKind.SCREENSHOT: SCREENSHOT_MESSAGE_NAME, MediaKind.MCP: MCP_TOOL_IMAGE_MESSAGE_NAME}.get(kind, TOOL_IMAGE_MESSAGE_NAME)
                         deferred.append({"role": "user", "name": name, "content": [
                             {"type": "text", "text": f"[系统消息]工具 {message.tool_name} 返回图片: "}, *self._encode_content(available)]})
-                    if any(part.context_state == "compacted" for part in images):
-                        deferred.append({"role": "user", "name": SCREENSHOT_COMPRESSED_NAME, "content": "[系统消息]已被压缩的旧截图"})
+                    if any(part.context_state == ImageContextState.COMPACTED for part in images):
+                        deferred.append({"role": "user", "name": SCREENSHOT_COMPRESSED_NAME, "content": COMPRESSED_SCREENSHOT_PLACEHOLDER})
                 # 1.1. 一批结果齐全后才展开图片，避免图片打断 SDK 工具协议。
                 if not expected:
                     result.extend(deferred)
@@ -647,6 +651,6 @@ class OpenAIChatCompletionsAdapter:
                          self._provider_data(getattr(call, "extra_content", None), self.config))
                  for call in choice.message.tool_calls or []]
         return LLMResponse(text_content(choice.message.content or ""), calls,
-                           "refused" if getattr(choice.message, "refusal", None) else self._finish_reason(choice.finish_reason),
+                           ModelFinishReason.REFUSED if getattr(choice.message, "refusal", None) else self._finish_reason(choice.finish_reason),
                            self._provider_data(getattr(choice.message, "extra_content", None), self.config),
                            self._usage(getattr(completion, "usage", None)))

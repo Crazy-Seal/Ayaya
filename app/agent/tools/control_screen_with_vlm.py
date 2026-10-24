@@ -4,6 +4,7 @@ from typing import Annotated
 
 from pydantic import Field
 
+from app.schemas.tool_types import AuthorizationTiming
 from app.agent.models.vlm import VLMService
 from app.agent.tools.core.base import ToolContext, ToolResult
 from app.agent.tools.core.decorator import tool
@@ -20,7 +21,7 @@ from app.schemas.runtime_types import AUTHORIZATION_GRANTED_KIND
         "VLM 会根据同一张截图，一次定位全部目标。" + BATCH_SCREEN_INSTRUCTIONS
     ),
     compressible=True,
-    authorization_timing="after_prepare",
+    authorization_timing=AuthorizationTiming.AFTER_PREPARE,
 )
 async def control_screen_with_vlm(
     actions: Annotated[list[ScreenActionArguments], "按执行顺序排列的动作数组，至少包含一个动作；所有目标必须已存在于当前截图中。", Field(min_length=1)],

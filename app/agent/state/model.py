@@ -9,6 +9,8 @@ from typing import Any, Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
+from app.schemas.runtime_types import DESKTOP_CHANNEL, ApprovalDecisionKind, AuthorizationResolutionKind, InterruptKind
+from app.schemas.message_types import MediaKind
 from app.agent.state.messages import (
     AssistantMessage,
     BaseMessage,
@@ -24,7 +26,6 @@ from app.agent.state.messages import (
     to_json_value,
 )
 from app.agent.state.time import normalize_utc, utc_now
-from app.schemas.runtime_types import ApprovalDecisionKind, AuthorizationResolutionKind, InterruptKind
 
 
 CHECKPOINT_SCHEMA_VERSION = 3
@@ -115,7 +116,7 @@ class AgentState(BaseModel):
         *,
         image_urls: Sequence[str] = (),
         image_filenames: Sequence[str] = (),
-        origin_channel: str = "desktop",
+        origin_channel: str = DESKTOP_CHANNEL,
     ) -> HumanMessage:
         """构造带来源的真人消息并追加到经过协议校验的输入序列。
 
@@ -142,7 +143,7 @@ class AgentState(BaseModel):
         content: str,
         tool_calls: Sequence[ToolCall] = (),
         *,
-        origin_channel: str = "desktop",
+        origin_channel: str = DESKTOP_CHANNEL,
         provider_data: ProviderData | None = None,
     ) -> AssistantMessage:
         """记录带来源的 Assistant 步骤，上一批工具未闭合时禁止开始下一批。
@@ -166,7 +167,7 @@ class AgentState(BaseModel):
         self.pending_tool_calls = calls
         return message
 
-    def add_assistant_message(self, content: str, *, origin_channel: str = "desktop") -> AssistantMessage:
+    def add_assistant_message(self, content: str, *, origin_channel: str = DESKTOP_CHANNEL) -> AssistantMessage:
         """通过统一 Assistant 步骤入口记录纯文本回复及来源。
 
         Args:
@@ -283,7 +284,7 @@ class AgentState(BaseModel):
         self.set_pending_tool_calls([call for call, _content, _images in entries])
         for call, content, images in entries:
             self.record_tool_result(
-                call, (*text_content(content), *(ImageContent(url, media_kind="screenshot") for url in images)),
+                call, (*text_content(content), *(ImageContent(url, media_kind=MediaKind.SCREENSHOT) for url in images)),
             )
         # 3. 在内存中清除中断和待执行信息；调用方随后统一保存工具结果与清理后的状态。
         self.clear_interrupt()

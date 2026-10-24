@@ -1,12 +1,24 @@
 """主模型完整输入的 token 预算与真实基线校准。"""
 
 from dataclasses import dataclass
+from enum import StrEnum
 from hashlib import sha256
-from typing import Literal
 
 from app.agent.context.config import ContextStrategyConfig
 from app.agent.state.model import TokenBaseline
 from app.agent.utils.domain.token_estimation import RoughTokenEstimator, stable_json
+
+
+class TokenEstimateSource(StrEnum):
+    """表示本次输入用量估算采用的依据。
+
+    Attributes:
+        ROUGH (TokenEstimateSource): 只使用本地粗估。
+        ACTUAL_DELTA (TokenEstimateSource): 在真实用量上叠加粗估差值。
+    """
+
+    ROUGH = "rough"
+    ACTUAL_DELTA = "actual_delta"
 
 
 @dataclass(frozen=True)
@@ -16,7 +28,7 @@ class TokenAssessment:
     Attributes:
         rough_prompt_tokens (int): 按本地规则粗估的输入 token 数。
         estimated_prompt_tokens (int): 使用兼容的真实用量基线校准后的输入 token 数。
-        source (Literal["rough", "actual_delta"]): 本次使用粗估，还是在真实用量上叠加粗估差值。
+        source (TokenEstimateSource): 本次使用粗估，还是在真实用量上叠加粗估差值。
         accounting_key (str): 模型、协议和地址组成的计量配置标识。
         estimator_version (int): 粗估规则版本，版本不同则不能复用基线。
         static_fingerprint (str): 系统提示词和工具定义的摘要，用于判断基线是否兼容。
@@ -24,7 +36,7 @@ class TokenAssessment:
 
     rough_prompt_tokens: int
     estimated_prompt_tokens: int
-    source: Literal["rough", "actual_delta"]
+    source: TokenEstimateSource
     accounting_key: str
     estimator_version: int
     static_fingerprint: str
@@ -127,11 +139,11 @@ class ContextBudgetService(RoughTokenEstimator):
                 + rough
                 - baseline.rough_prompt_tokens,
             )
-            source: Literal["rough", "actual_delta"] = "actual_delta"
+            source: TokenEstimateSource = TokenEstimateSource.ACTUAL_DELTA
         else:
             # 2. 没有可复用基线时退回本地粗估，避免引用另一种模型请求的用量。
             estimated = rough
-            source = "rough"
+            source = TokenEstimateSource.ROUGH
         return TokenAssessment(
             rough_prompt_tokens=rough,
             estimated_prompt_tokens=estimated,

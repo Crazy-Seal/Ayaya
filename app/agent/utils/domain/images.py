@@ -4,28 +4,27 @@ import base64
 import logging
 import os
 from pathlib import Path
-from typing import Literal
 import uuid
 from datetime import datetime
 
+from app.schemas.message_types import MediaKind
 from app.runtime import get_images_dir
 
 logger = logging.getLogger(__name__)
 
-ImageCategory = Literal["tool", "screenshot", "mcp"]
-IMAGE_CATEGORIES = frozenset({"tool", "screenshot", "mcp"})
+IMAGE_CATEGORIES = frozenset({MediaKind.TOOL, MediaKind.SCREENSHOT, MediaKind.MCP})
 
 
 def save_image_to_disk(
     image_data: str,
     *,
-    category: ImageCategory | None = None,
+    category: MediaKind | None = None,
 ) -> str | None:
     """保存单张图片到磁盘。
 
     Args:
         image_data (str): 图片数据，可以是完整 data URL 或纯 base64
-        category (ImageCategory | None): 区分真人附件、截图、本地工具及 MCP 图片的保存子目录。
+        category (MediaKind | None): 区分真人附件、截图、本地工具及 MCP 图片的保存子目录。
 
     Returns:
         str | None: 文件名（相对路径），失败返回 None
@@ -88,13 +87,13 @@ def save_image_to_disk(
 def save_multiple_images(
     images: list[str],
     *,
-    category: ImageCategory | None = None,
+    category: MediaKind | None = None,
 ) -> list[str]:
     """保存多张图片到磁盘。
 
     Args:
         images (list[str]): 图片数据列表
-        category (ImageCategory | None): 区分真人附件、截图、本地工具及 MCP 图片的保存子目录。
+        category (MediaKind | None): 区分真人附件、截图、本地工具及 MCP 图片的保存子目录。
 
     Returns:
         list[str]: 文件名列表（相对路径）

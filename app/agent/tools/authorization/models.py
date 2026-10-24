@@ -5,12 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal, TypeAlias
 
+from app.schemas.tool_types import LOCAL_TOOL_KEY_PREFIX, MCP_TOOL_KEY_PREFIX, ToolSource, AuthorizationTiming
 from app.agent.tools.core.base import InterruptEvent, ToolResult
 from app.schemas.runtime_types import ApprovalDecisionKind
-
-
-ToolSource = Literal["local", "mcp"]
-AuthorizationTiming = Literal["before_execute", "after_prepare"]
 
 
 @dataclass(frozen=True)
@@ -31,7 +28,7 @@ class ToolIdentity:
         Returns:
             ToolIdentity: source 为 local 的工具身份。
         """
-        return cls(source="local", name=name)
+        return cls(source=ToolSource.LOCAL, name=name)
 
     @classmethod
     def mcp(cls, server_id: str, name: str) -> "ToolIdentity":
@@ -44,7 +41,7 @@ class ToolIdentity:
         Returns:
             ToolIdentity: 包含 server_id 的 MCP 工具身份。
         """
-        return cls(source="mcp", server_id=server_id, name=name)
+        return cls(source=ToolSource.MCP, server_id=server_id, name=name)
 
     @property
     def stable_key(self) -> str:
@@ -56,11 +53,11 @@ class ToolIdentity:
         Raises:
             ValueError: MCP 工具身份缺少服务编号。
         """
-        if self.source == "local":
-            return f"local:{self.name}"
+        if self.source == ToolSource.LOCAL:
+            return f"{LOCAL_TOOL_KEY_PREFIX}{self.name}"
         if not self.server_id:
             raise ValueError("MCP 工具身份缺少 server_id")
-        return f"mcp:{self.server_id}:{self.name}"
+        return f"{MCP_TOOL_KEY_PREFIX}{self.server_id}:{self.name}"
 
 
 @dataclass(frozen=True)
@@ -72,7 +69,7 @@ class ToolDescriptor:
     description: str
     input_schema: dict[str, Any]
     contract_fingerprint: str
-    authorization_timing: AuthorizationTiming = "before_execute"
+    authorization_timing: AuthorizationTiming = AuthorizationTiming.BEFORE_EXECUTE
     available: bool = True
     unavailable_reason: str | None = None
 

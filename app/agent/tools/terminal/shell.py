@@ -1,6 +1,7 @@
 """探测当前主机 Shell，并为工具描述和实际启动提供同一份配置。"""
 
 from dataclasses import dataclass
+from enum import StrEnum
 from functools import lru_cache
 import os
 import shutil
@@ -8,17 +9,37 @@ import subprocess
 import sys
 
 
+class ShellKind(StrEnum):
+    """区分命令构造使用的 Shell 语法。
+
+    Attributes:
+        PWSH (ShellKind): PowerShell 7。
+        POWERSHELL (ShellKind): Windows PowerShell。
+        CMD (ShellKind): Windows 命令提示符。
+        ZSH (ShellKind): Zsh。
+        BASH (ShellKind): Bash。
+        SH (ShellKind): POSIX Shell。
+    """
+
+    PWSH = "pwsh"
+    POWERSHELL = "powershell"
+    CMD = "cmd"
+    ZSH = "zsh"
+    BASH = "bash"
+    SH = "sh"
+
+
 @dataclass(frozen=True)
 class ShellEnvironment:
     """保存已经探测成功的 Shell 信息。
 
     Attributes:
-        kind (str): Shell 类型，决定命令语法和启动参数。
+        kind (ShellKind): Shell 类型，决定命令语法和启动参数。
         executable (str): 实际执行程序的绝对路径。
         version (str): 探测到的版本说明。
     """
 
-    kind: str
+    kind: ShellKind
     executable: str
     version: str
 
@@ -31,14 +52,14 @@ class ShellEnvironment:
         Returns:
             list[str]: 可直接传给进程 Adapter 的程序和参数。
         """
-        if self.kind in {"pwsh", "powershell"}:
+        if self.kind in {ShellKind.PWSH, ShellKind.POWERSHELL}:
             prefix = (
                 "$utf8 = New-Object System.Text.UTF8Encoding($false);"
                 "[Console]::InputEncoding = $utf8;"
                 "[Console]::OutputEncoding = $utf8;$OutputEncoding = $utf8;"
             )
             return [self.executable, "-NoLogo", "-NoProfile", "-Command", prefix + text]
-        if self.kind == "cmd":
+        if self.kind == ShellKind.CMD:
             return [self.executable, "/d", "/s", "/c", "chcp 65001 >nul & " + text]
         return [self.executable, "-c", text]
 
@@ -67,19 +88,19 @@ def detect_shell() -> ShellEnvironment:
         RuntimeError: 所有候选 Shell 均不存在或无法正常启动。
     """
     candidates = (
-        ("pwsh", "powershell", "cmd") if os.name == "nt" else
-        ("zsh", "bash", "sh") if sys.platform == "darwin" else ("bash", "sh")
+        (ShellKind.PWSH, ShellKind.POWERSHELL, ShellKind.CMD) if os.name == "nt" else
+        (ShellKind.ZSH, ShellKind.BASH, ShellKind.SH) if sys.platform == "darwin" else (ShellKind.BASH, ShellKind.SH)
     )
     # 1. 每个候选既检查路径也实际运行，避免仅发现损坏的可执行文件。
     for kind in candidates:
         executable = shutil.which(kind)
         if not executable:
             continue
-        if kind in {"pwsh", "powershell"}:
+        if kind in {ShellKind.PWSH, ShellKind.POWERSHELL}:
             args = ["-NoLogo", "-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()"]
-        elif kind == "cmd":
+        elif kind == ShellKind.CMD:
             args = ["/d", "/c", "ver"]
-        elif kind == "sh":
+        elif kind == ShellKind.SH:
             args = ["-c", "printf '%s' 'POSIX sh（未提供独立版本号）'"]
         else:
             args = ["--version"]

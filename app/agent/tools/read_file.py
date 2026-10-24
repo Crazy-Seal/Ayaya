@@ -2,8 +2,9 @@
 
 from pathlib import Path
 import asyncio
-from typing import Annotated, Literal
+from typing import Annotated
 
+from app.schemas.tool_types import FileReadUnit, TASK_OUTPUT_URI_PREFIX, TOOL_RESULT_URI_PREFIX
 from app.agent.tools.core.base import ToolContext
 from app.agent.tools.core.decorator import tool
 from app.agent.tools.results.artifacts import ToolResultArtifactStore
@@ -51,7 +52,7 @@ def _resolve_path(path: str, context: ToolContext) -> Path:
     Raises:
         ValueError: 引用属于其他会话，或普通路径越过工作区。
     """
-    if path.startswith("tool-result://"):
+    if path.startswith(TOOL_RESULT_URI_PREFIX):
         return ToolResultArtifactStore().resolve(context.session_id, path)
     return safe_path(path)
 
@@ -69,7 +70,7 @@ async def read_file(
     path: Annotated[str, "被读取的文件路径、tool-result URI 或完成通知中的 task-output URI。"],
     start: Annotated[int | None, "可选起始位置，从 0 开始且包含。"] = None,
     end: Annotated[int | None, "可选结束位置，不包含。"] = None,
-    unit: Annotated[Literal["line", "character"], "范围单位：line 或 character。"] = "line",
+    unit: Annotated[FileReadUnit, "范围单位：line 或 character。"] = FileReadUnit.LINE,
     context: ToolContext | None = None,
 ) -> str:
     """读取 UTF-8 文本；普通文件支持行或字符范围，task-output 日志固定按字符分页。
@@ -78,7 +79,7 @@ async def read_file(
         path (str): 普通路径、tool-result URI 或 task-output URI。
         start (int | None): 可选起始位置，从 0 开始且包含。
         end (int | None): 可选结束位置，不包含。
-        unit (Literal['line', 'character']): 范围单位：line 或 character。
+        unit (FileReadUnit): 范围单位：line 或 character。
         context (ToolContext | None): 执行管道提供的工具运行上下文。
     """
     try:
@@ -89,7 +90,7 @@ async def read_file(
             raise ValueError("读取范围无效：必须满足 0 <= start <= end")
 
         # 1. 任务日志先校验聊天归属，再在线程中流式读取；该 URI 的 start/end 始终是字符位置。
-        if path.startswith("task-output://"):
+        if path.startswith(TASK_OUTPUT_URI_PREFIX):
             if context.task_launcher is None:
                 raise ValueError("任务日志读取器未就绪")
             resolved = await context.task_launcher.resolve_output(context.session_id, path)
@@ -97,9 +98,9 @@ async def read_file(
 
         # utf-8-sig 同时兼容普通 UTF-8 与带 BOM 的文本。
         text = _resolve_path(path, context).read_text(encoding="utf-8-sig")
-        if unit == "character":
+        if unit == FileReadUnit.CHARACTER:
             return text[normalized_start:end]
-        if unit == "line":
+        if unit == FileReadUnit.LINE:
             return "\n".join(text.splitlines()[normalized_start:end])
         raise ValueError("unit 必须是 line 或 character")
     except UnicodeDecodeError:

@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 from uuid import uuid4
 
+from app.schemas.tool_types import TASK_OUTPUT_URI_PREFIX
 from app.schemas.runtime_types import TaskStatus
 from app.agent.tools.terminal.models import TaskLaunchResult
 from app.crud.task_record_dao import TaskRecord, TaskRecordDao
@@ -380,7 +381,7 @@ class TaskSupervisor:
         Returns:
             Path: 当前聊天拥有的日志路径。
         """
-        prefix = "task-output://"
+        prefix = TASK_OUTPUT_URI_PREFIX
         if not reference.startswith(prefix):
             raise ValueError("无效任务日志引用")
         record = await self._owned(session_id, reference[len(prefix):])

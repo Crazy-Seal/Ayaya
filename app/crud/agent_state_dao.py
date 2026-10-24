@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any, Literal
+from typing import Any
 
 import aiosqlite
 
+from app.schemas.runtime_types import CheckpointType
+from app.schemas.message_types import ImageContextState, MessageType
 from app.agent.state.messages import (
     BaseMessage,
     PROTOCOL_MESSAGE_TYPES,
@@ -26,7 +28,6 @@ from app.runtime import get_checkpoint_db
 
 logger = logging.getLogger(__name__)
 
-CheckpointType = Literal["intermediate", "completed"]
 
 LATEST_CHECKPOINT_SQL = """
 SELECT id, state_json, checkpoint_type FROM checkpoints
@@ -62,7 +63,7 @@ class AgentStateDao:
             "SELECT session_id,state_json,checkpoint_type FROM checkpoints AS current "
             "WHERE id=(SELECT MAX(id) FROM checkpoints WHERE session_id=current.session_id)"
         )
-        return [(str(session), json.loads(payload), kind) for session, payload, kind in rows]
+        return [(str(session), json.loads(payload), CheckpointType(kind)) for session, payload, kind in rows]
 
     def __init__(self, session_id: str, db_path: str | None = None):
         """绑定会话和数据库路径；首次读写时才创建连接及共享表。
@@ -152,7 +153,7 @@ class AgentStateDao:
             incoming = json.loads(row[7])
             image_parts = [part for part in incoming.get("content", []) if isinstance(part, dict)
                            and part.get("type") == "image_url" and part.get("storage_ref")
-                           and part.get("context_state") == "available"] if isinstance(incoming.get("content"), list) else []
+                           and part.get("context_state") == ImageContextState.AVAILABLE] if isinstance(incoming.get("content"), list) else []
             if not image_parts:
                 continue
             found = await db.execute_fetchall("SELECT message_json FROM conversation_messages WHERE session_id=? AND message_id=?", (row[0], row[1]))
@@ -165,7 +166,7 @@ class AgentStateDao:
             changed = False
             # 1. 只修改未外置的图片地址与引用，原文字、来源和压缩状态保持初次归档值。
             for old, new in zip(original_images, image_parts, strict=True):
-                if not old.get("storage_ref") and old.get("context_state") == "available":
+                if not old.get("storage_ref") and old.get("context_state") == ImageContextState.AVAILABLE:
                     old["storage_ref"] = new["storage_ref"]
                     old["image_url"]["url"] = new["storage_ref"]
                     changed = True
@@ -187,7 +188,7 @@ class AgentStateDao:
             row = await cursor.fetchone()
         if row:
             checkpoint_id, state_json, checkpoint_type = row
-            self.last_loaded_checkpoint_type = checkpoint_type
+            self.last_loaded_checkpoint_type = CheckpointType(checkpoint_type)
             state = AgentState.from_checkpoint(json.loads(state_json))
             logger.info("从 checkpoint %s 恢复状态: %s", checkpoint_id, self.session_id)
             return state
@@ -241,7 +242,7 @@ class AgentStateDao:
             checkpoint_id = cursor.lastrowid
             if checkpoint_id is None:
                 raise RuntimeError("数据库未返回 checkpoint ID")
-            if checkpoint_type == "intermediate":
+            if checkpoint_type == CheckpointType.INTERMEDIATE:
                 await db.execute(
                     """
                     DELETE FROM checkpoints
@@ -265,7 +266,7 @@ class AgentStateDao:
                 rewritten = next(
                     (row for row in protocol_rows if row[1] == rewritten_message_id), None,
                 )
-                if rewritten is None or rewritten[6] != "assistant":
+                if rewritten is None or rewritten[6] != MessageType.ASSISTANT:
                     raise ValueError("仅允许重写当前状态中的 assistant 消息")
                 result = await db.execute(
                     "UPDATE conversation_messages SET message_json = ? "
@@ -286,7 +287,7 @@ class AgentStateDao:
             raise
         logger.info(
             "保存%s checkpoint %s: %s",
-            "中间态" if checkpoint_type == "intermediate" else "完成态",
+            "中间态" if checkpoint_type == CheckpointType.INTERMEDIATE else "完成态",
             checkpoint_id,
             self.session_id,
         )

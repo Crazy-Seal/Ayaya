@@ -1,7 +1,8 @@
 """校验屏幕工具的整批动作，生成审批和桌面执行共用的数据。"""
 
-from typing import Annotated, Any, Literal, TypeVar
+from typing import Annotated, Any, TypeVar
 
+from app.schemas.desktop import ScreenOperation, ScrollDirection
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr, field_validator, model_validator
 
 
@@ -44,11 +45,11 @@ class ScreenActionArguments(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     target: StrictStr = Field(min_length=1, description="要操作的目标元素描述，例如页面上方的搜索框。")
-    operation: Literal["click", "double", "right", "scroll"] = Field(default="double", description="操作方式：click 单击、double 双击、right 右键、scroll 滚动。")
+    operation: ScreenOperation = Field(default=ScreenOperation.DOUBLE, description="操作方式：click 单击、double 双击、right 右键、scroll 滚动。")
     text: StrictStr = Field(default="", description="鼠标操作后输入的文字；空字符串表示不输入。")
     press_enter: StrictBool = Field(default=True, description="输入文字后是否按回车；没有输入文字时不按回车。")
     wait_seconds: int = Field(default=3, ge=0, le=60, strict=True, description="该动作完成后的等待秒数，范围 0～60。")
-    scroll_direction: Literal["none", "down", "up"] = Field(default="down", description="滚动方向。scroll 操作只使用 down 或 up；其他操作忽略此字段。")
+    scroll_direction: ScrollDirection = Field(default=ScrollDirection.DOWN, description="滚动方向。scroll 操作只使用 down 或 up；其他操作忽略此字段。")
 
     @field_validator("target")
     @classmethod
@@ -79,7 +80,7 @@ class ScreenActionArguments(BaseModel):
         Raises:
             ValueError: 滚动操作没有指定向上或向下。
         """
-        if self.operation == "scroll" and self.scroll_direction == "none":
+        if self.operation == ScreenOperation.SCROLL and self.scroll_direction == ScrollDirection.NONE:
             raise ValueError("滚动操作的 scroll_direction 必须是 down 或 up。")
         return self
 

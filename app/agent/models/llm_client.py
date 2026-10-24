@@ -1,7 +1,7 @@
 """统一模型入口：装配适配器，调用方只处理 Ayaya 消息。"""
 
 from typing import Any, AsyncIterator, Sequence
-from app.agent.models.contracts import InputMessage, LLMConfig, LLMResponse, StreamChunk, TokenUsage, ToolDefinition, ModelAdapter, ModelContextOverflowError
+from app.agent.models.contracts import OPENAI_CHAT_COMPLETIONS, InputMessage, LLMConfig, LLMResponse, StreamChunk, TokenUsage, ToolDefinition, ModelAdapter, ModelContextOverflowError
 from app.agent.state.messages import BaseMessage
 
 
@@ -25,7 +25,7 @@ class LLMClient:
         self.config = config
         if adapter is not None:
             self._adapter = adapter
-        elif config.api_format == "openai_chat_completions":
+        elif config.api_format == OPENAI_CHAT_COMPLETIONS:
             # 1. 只有选择该格式时才导入厂商实现，未知格式不能静默回退。
             from app.agent.models.openai_chat import OpenAIChatCompletionsAdapter
             self._adapter = OpenAIChatCompletionsAdapter(config, sdk_client=sdk_client)
@@ -133,7 +133,7 @@ class LLMClient:
         await self.close()
 
 
-def create_llm_client(model: str, api_key: str, base_url: str = "https://api.openai.com/v1", temperature: float = 0.7, timeout: float = 120.0, *, api_format: str = "openai_chat_completions") -> LLMClient:
+def create_llm_client(model: str, api_key: str, base_url: str = "https://api.openai.com/v1", temperature: float = 0.7, timeout: float = 120.0, *, api_format: str = OPENAI_CHAT_COMPLETIONS) -> LLMClient:
     """将调用方参数组合为配置，不读取或改写持久设置。
 
     Args:

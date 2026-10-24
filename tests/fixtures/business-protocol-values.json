@@ -1,0 +1,20 @@
+{
+  "MessageType": ["human", "system", "assistant", "tool", "context_summary", "task_result", "environment_perception", "subagent"],
+  "MediaKind": ["human", "tool", "screenshot", "mcp"],
+  "ImageContextState": ["available", "compacted"],
+  "HistoryRole": ["Human", "AI", "AI_Tool_Calling"],
+  "ToolSource": ["local", "mcp"],
+  "AuthorizationTiming": ["before_execute", "after_prepare"],
+  "PlanItemStatus": ["pending", "in_progress", "completed"],
+  "FileReadUnit": ["line", "character"],
+  "PatchKind": ["add", "update", "delete"],
+  "CheckpointType": ["intermediate", "completed"],
+  "ScreenOperation": ["click", "double", "right", "scroll"],
+  "ScrollDirection": ["none", "down", "up"],
+  "ScreenActionStatus": ["not_started", "partial_or_unknown", "completed"],
+  "MCPServerStatus": ["disabled", "disconnected", "connecting", "available", "error"],
+  "MCPTransport": ["stdio", "streamable_http"],
+  "ModelFinishReason": ["completed", "tool_calls", "length", "refused", "unknown"],
+  "TokenEstimateSource": ["rough", "actual_delta"],
+  "ShellKind": ["pwsh", "powershell", "cmd", "zsh", "bash", "sh"]
+}

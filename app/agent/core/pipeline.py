@@ -9,7 +9,7 @@ tool_call_id/tool_args/resume_state）写入 state.interrupt_data，使恢复能
 """
 from contextlib import aclosing
 from typing import Sequence
-from app.agent.models.contracts import InputMessage, ToolDefinition
+from app.agent.models.contracts import ModelFinishReason, InputMessage, ToolDefinition
 
 import logging
 from typing import Any, AsyncIterator, Protocol
@@ -41,8 +41,6 @@ from app.agent.tools.authorization.manager import ToolAuthorization, descriptor_
 from app.agent.tools.authorization.models import AuthorizationRequired, ToolInvocation
 
 logger = logging.getLogger(__name__)
-
-
 
 
 class SystemPromptSource(Protocol):
@@ -303,7 +301,7 @@ class ExecutionPipeline:
             # 3. 准备本次模型输出的正文、工具调用和时间前缀缓冲。
             accumulated_content = ""
             tool_calls: list[ToolCall] = []
-            finish_reason: str | None = None
+            finish_reason: ModelFinishReason | None = None
             provider_data: ProviderData | None = None
             time_prefix_filter = AssistantTimePrefixFilter()
 
@@ -348,7 +346,7 @@ class ExecutionPipeline:
                         runtime_context.turn_control.check()
 
                 if not tool_calls and not accumulated_content.strip():
-                    reason = finish_reason or "unknown"
+                    reason = finish_reason or ModelFinishReason.UNKNOWN
                     raise RuntimeError(f"模型未返回有效文本（finish_reason={reason}）")
             # 3.2. 先冲刷时间前缀过滤器的剩余正文，确保已展示片段能够保存。
             except TurnInterrupted:
@@ -491,7 +489,7 @@ class ExecutionPipeline:
                             has_valid_output = has_valid_output or bool(
                                 chunk.tool_call or (chunk.content and chunk.content.strip())
                             )
-                            if chunk.finish_reason == "refused":
+                            if chunk.finish_reason == ModelFinishReason.REFUSED:
                                 raise RuntimeError("触发 API 内容过滤")
                             yield chunk
                     finally:

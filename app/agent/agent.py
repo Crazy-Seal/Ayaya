@@ -10,6 +10,7 @@ from contextlib import aclosing
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, TYPE_CHECKING
 
+from app.agent.models.contracts import OPENAI_CHAT_COMPLETIONS
 from app.schemas.runtime_types import (
     DESKTOP_CHANNEL, InboxKind,
 )
@@ -51,7 +52,7 @@ class AgentConfig:
     api_key: str
     context_strategy: ContextStrategyConfig
     base_url: str = "https://api.openai.com/v1"
-    api_format: str = "openai_chat_completions"
+    api_format: str = OPENAI_CHAT_COMPLETIONS
     temperature: float = 0.7
     system_prompt: str = ""
     tools: list[str] = field(default_factory=list)
@@ -611,7 +612,6 @@ class Agent:
         yield AgentEvent(EventType.DONE, None)
 
 
-
     async def _finalize_response(
         self, state: AgentState, *, release_queued: bool = False,
         turn_control: TurnControl | None = None,
@@ -641,7 +641,6 @@ class Agent:
         )
 
     # ==================== 运行时操作 ====================
-
 
 
     def register_tool(self, tool: BaseTool) -> None:

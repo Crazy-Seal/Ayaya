@@ -9,6 +9,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, TypeVar
 
+from app.schemas.desktop import ScreenOperation, ScrollDirection, ScreenActionStatus
 from app.desktop.driver import DesktopDriver
 from app.schemas.desktop import (
     DesktopSettings, DesktopWindowRegistration, ScreenAction, ScreenActionResult,
@@ -210,7 +211,7 @@ class DesktopController:
             Returns:
                 ScreenActionResult: 保留已发生输入的程度和完成数量，以及捕获或清理错误。
             """
-            status = "not_started"
+            status = ScreenActionStatus.NOT_STARTED
             completed = 0
             screenshot = None
             try:
@@ -220,11 +221,11 @@ class DesktopController:
                 for action in actions:
                     if not all(math.isfinite(value) and 0 <= value <= 1 for value in (action.x_ratio, action.y_ratio)):
                         raise ValueError("屏幕比例坐标无效")
-                    if action.operation not in {"click", "double", "right", "scroll"}:
+                    if action.operation not in {ScreenOperation.CLICK, ScreenOperation.DOUBLE, ScreenOperation.RIGHT, ScreenOperation.SCROLL}:
                         raise ValueError("屏幕动作参数无效")
                     if type(action.wait_seconds) is not int or not 0 <= action.wait_seconds <= 60:
                         raise ValueError("等待时长必须是 0 到 60 之间的整数")
-                    if action.operation == "scroll" and action.scroll_direction not in {"up", "down"}:
+                    if action.operation == ScreenOperation.SCROLL and action.scroll_direction not in {ScrollDirection.UP, ScrollDirection.DOWN}:
                         raise ValueError("滚动方向必须是 up 或 down")
                     if not isinstance(action.text, str) or type(action.press_enter) is not bool:
                         raise ValueError("文字或回车参数无效")
@@ -237,7 +238,7 @@ class DesktopController:
                         for action in actions:
                             # 3. 每个鼠标和键盘阶段检查停止；一旦失败就退出循环，绝不重试或继续。
                             self._check(cancelled)
-                            status = "partial_or_unknown"
+                            status = ScreenActionStatus.PARTIAL_OR_UNKNOWN
                             driver.mouse_action(action, lambda: self._check(cancelled))
                             self._check(cancelled)
                             if action.text:
@@ -246,7 +247,7 @@ class DesktopController:
                                 if action.press_enter:
                                     driver.press_enter()
                             completed += 1
-                            status = "completed" if completed == len(actions) else "partial_or_unknown"
+                            status = ScreenActionStatus.COMPLETED if completed == len(actions) else ScreenActionStatus.PARTIAL_OR_UNKNOWN
                             # 3.1. 当前动作的等待失败不会抹去已完成数量，也不会放行下一动作。
                             self._pause(action.wait_seconds, cancelled)
                         # 4. 完成整个数组后才截图；捕获或清理失败仍保留全部输入已完成的事实。
@@ -258,7 +259,7 @@ class DesktopController:
         try:
             return await self._run(perform, stop_requested)
         except DesktopStopped as exc:
-            return ScreenActionResult("not_started", error=str(exc), total_actions=len(actions))
+            return ScreenActionResult(ScreenActionStatus.NOT_STARTED, error=str(exc), total_actions=len(actions))
 
     async def close(self) -> None:
         """封住入口，等当前工作及清理退出，最后在同一线程释放原生资源。"""

@@ -7,6 +7,7 @@ import json
 import re
 from typing import Any, TYPE_CHECKING
 
+from app.schemas.message_types import MediaKind
 from app.agent.state.messages import TextContent, ImageContent, content_text
 from app.agent.tools.core.base import BaseTool, ToolContext, ToolResult
 from app.agent.tools.authorization.manager import ToolAuthorization
@@ -186,7 +187,7 @@ class MCPToolAdapter(BaseTool):
                 mime_value = getattr(part, "mimeType", getattr(part, "mime_type", ""))
                 mime_type = mime_value if isinstance(mime_value, str) else ""
                 encoded = data if isinstance(data, str) else str(data)
-                blocks.append(ImageContent(f"data:{mime_type};base64,{encoded}", media_kind="mcp"))
+                blocks.append(ImageContent(f"data:{mime_type};base64,{encoded}", media_kind=MediaKind.MCP))
             elif part_type != "text":
                 unsupported_count += 1
 

@@ -3,6 +3,7 @@
 from collections.abc import Iterable, Sequence
 from dataclasses import replace
 
+from app.schemas.message_types import COMPRESSED_SCREENSHOT_PLACEHOLDER, MediaKind, ImageContextState
 from app.agent.state.messages import (
     AssistantMessage,
     BaseMessage,
@@ -15,7 +16,6 @@ from app.agent.utils.domain.weighted_text import weighted_char_count
 
 
 COMPRESSED_TOOL_RESULT = "[工具结果已被压缩]"
-COMPRESSED_SCREENSHOT_PLACEHOLDER = "[系统消息]已被压缩的旧截图"
 MIN_TOOL_RESULT_COMPRESSION_WEIGHT = 50
 CONTEXT_SUMMARY_PREFIX = "[系统提示：前情摘要]"
 
@@ -50,7 +50,7 @@ class ContextCompressionPolicy:
             message = messages[index]
             if (
                 is_screenshot_message(message)
-                and any(isinstance(part, ImageContent) and part.context_state == "available" for part in message.content)
+                and any(isinstance(part, ImageContent) and part.context_state == ImageContextState.AVAILABLE for part in message.content)
                 and human_count_after >= ttl_human_messages
             ):
                 targets.add(index)
@@ -63,7 +63,7 @@ class ContextCompressionPolicy:
             for index, message in enumerate(messages)
             if index not in targets
             and is_screenshot_message(message)
-            and any(isinstance(part, ImageContent) and part.context_state == "available" for part in message.content)
+            and any(isinstance(part, ImageContent) and part.context_state == ImageContextState.AVAILABLE for part in message.content)
         ]
         excess = max(len(remaining) - max_screenshots, 0)
         targets.update(remaining[:excess])
@@ -75,8 +75,8 @@ class ContextCompressionPolicy:
             assert isinstance(message, ToolMessage)
             candidate[index] = replace(
                 message,
-                content=tuple(replace(part, url="", context_state="compacted")
-                    if isinstance(part, ImageContent) and part.media_kind == "screenshot" else part for part in message.content),
+                content=tuple(replace(part, url="", context_state=ImageContextState.COMPACTED)
+                    if isinstance(part, ImageContent) and part.media_kind == MediaKind.SCREENSHOT else part for part in message.content),
             )
         return tuple(candidate), len(targets)
 

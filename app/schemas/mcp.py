@@ -1,9 +1,40 @@
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+class MCPServerStatus(StrEnum):
+    """表示本应用管理的 MCP 连接状态。
+
+    Attributes:
+        DISABLED (MCPServerStatus): 全局配置已禁用。
+        DISCONNECTED (MCPServerStatus): 尚未连接或已经断开。
+        CONNECTING (MCPServerStatus): 正在连接服务。
+        AVAILABLE (MCPServerStatus): 连接和工具目录可用。
+        ERROR (MCPServerStatus): 连接或调用出现错误。
+    """
+
+    DISABLED = "disabled"
+    DISCONNECTED = "disconnected"
+    CONNECTING = "connecting"
+    AVAILABLE = "available"
+    ERROR = "error"
+
+
+class MCPTransport(StrEnum):
+    """区分 MCP 服务的连接方式。
+
+    Attributes:
+        STDIO (MCPTransport): 通过标准输入输出连接。
+        STREAMABLE_HTTP (MCPTransport): 通过流式 HTTP 连接。
+    """
+
+    STDIO = "stdio"
+    STREAMABLE_HTTP = "streamable_http"
 
 
 SERVER_ID_PATTERN = r"^[A-Za-z0-9_-]{1,32}$"
@@ -55,7 +86,7 @@ class MCPServerConfigBase(BaseModel):
 class StdioMCPServerConfig(MCPServerConfigBase):
     """定义通过本地标准输入输出连接的 MCP Server。"""
 
-    transport: Literal["stdio"] = "stdio"
+    transport: Literal[MCPTransport.STDIO] = MCPTransport.STDIO
     command: str = Field(min_length=1)
     args: list[str] = Field(default_factory=list)
     cwd: str | None = None
@@ -88,7 +119,7 @@ class StdioMCPServerConfig(MCPServerConfigBase):
 class StreamableHttpMCPServerConfig(MCPServerConfigBase):
     """定义通过 Streamable HTTP 连接的 MCP Server。"""
 
-    transport: Literal["streamable_http"] = "streamable_http"
+    transport: Literal[MCPTransport.STREAMABLE_HTTP] = MCPTransport.STREAMABLE_HTTP
     url: str
     headers: dict[str, str] = Field(default_factory=dict)
 

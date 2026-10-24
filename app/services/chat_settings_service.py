@@ -1,3 +1,4 @@
+from app.schemas.tool_types import MCP_TOOL_KEY_PREFIX
 from app.agent.memory.manager import get_memory_manager
 from app.crud.chat_settings_dao import ChatSettingsDao
 from app.crud.mcp_settings_dao import MCPSettingsDao
@@ -110,7 +111,7 @@ class ChatSettingsService:
         permissions = {
             key: value
             for key, value in chat_settings.tool_permissions.items()
-            if not key.startswith("mcp:")
+            if not key.startswith(MCP_TOOL_KEY_PREFIX)
         }
         # 1. 保存设置时按当前服务目录过滤已删除服务，并重新核对权限绑定的真实身份。
         for server_id, incoming in chat_settings.mcp.servers.items():
@@ -147,7 +148,7 @@ class ChatSettingsService:
                     identity_fingerprint=identity,
                 )
                 for name in tool_names:
-                    key = f"mcp:{server_id}:{name}"
+                    key = f"{MCP_TOOL_KEY_PREFIX}{server_id}:{name}"
                     permissions[key] = (
                         chat_settings.tool_permissions.get(key, ToolPolicy.ASK)
                         if key in existing.tool_permissions
@@ -167,7 +168,7 @@ class ChatSettingsService:
                 identity_fingerprint=fingerprint,
             )
             permissions.update({
-                f"mcp:{server_id}:{name}": ToolPolicy.ASK
+                f"{MCP_TOOL_KEY_PREFIX}{server_id}:{name}": ToolPolicy.ASK
                 for name in tool_names
             })
 
@@ -191,7 +192,7 @@ class ChatSettingsService:
         """
         if settings is None:
             return []
-        prefix = f"mcp:{server_id}:"
+        prefix = f"{MCP_TOOL_KEY_PREFIX}{server_id}:"
         return [
             key[len(prefix):]
             for key in settings.tool_permissions

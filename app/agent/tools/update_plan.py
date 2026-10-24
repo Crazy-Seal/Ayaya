@@ -1,9 +1,10 @@
 """update_plan 工具 - 更新计划列表"""
 
-from typing import Annotated, Literal
+from typing import Annotated
 
 from pydantic import BaseModel, Field
 
+from app.schemas.tool_types import PlanItemStatus
 from app.agent.tools.core.base import ToolContext, ToolResult
 from app.agent.tools.core.decorator import tool
 
@@ -33,13 +34,13 @@ class TodoManager:
         in_progress_count = 0
         for i, item in enumerate(items):
             text = str(item.get("text", "")).strip()
-            status = str(item.get("status", "pending")).lower()
+            status = str(item.get("status", PlanItemStatus.PENDING)).lower()
             item_id = str(item.get("id", str(i + 1)))
             if not text:
                 raise ValueError(f"Item {item_id}: text required")
-            if status not in ("pending", "in_progress", "completed"):
+            if status not in (PlanItemStatus.PENDING, PlanItemStatus.IN_PROGRESS, PlanItemStatus.COMPLETED):
                 raise ValueError(f"Item {item_id}: invalid status '{status}'")
-            if status == "in_progress":
+            if status == PlanItemStatus.IN_PROGRESS:
                 in_progress_count += 1
             validated.append({"id": item_id, "text": text, "status": status})
         if in_progress_count > 1:
@@ -58,9 +59,9 @@ class TodoManager:
             return "事项列表为空"
         lines = []
         for item in self.items:
-            marker = {"pending": "[ ]", "in_progress": "[>]", "completed": "[x]"}[item["status"]]
+            marker = {PlanItemStatus.PENDING: "[ ]", PlanItemStatus.IN_PROGRESS: "[>]", PlanItemStatus.COMPLETED: "[x]"}[item["status"]]
             lines.append(f"{marker} #{item['id']}: {item['text']}")
-        done = sum(1 for t in self.items if t["status"] == "completed")
+        done = sum(1 for t in self.items if t["status"] == PlanItemStatus.COMPLETED)
         lines.append(f"\n({done}/{len(self.items)} 已完成)")
         return "\n".join(lines)
 
@@ -70,7 +71,7 @@ class TodoItem(BaseModel):
     """计划中的一项任务，包含稳定编号、任务描述和待办、进行中或完成状态。"""
     id: str = Field(description="序号。")
     text: str = Field(description="任务描述。")
-    status: Literal["pending", "in_progress", "completed"] = Field(description="任务状态。")
+    status: PlanItemStatus = Field(description="任务状态。")
 
 
 @tool(

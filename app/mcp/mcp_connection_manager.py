@@ -12,6 +12,7 @@ import httpx
 from mcp.shared.exceptions import McpError
 from mcp.types import CONNECTION_CLOSED
 
+from app.schemas.mcp import MCPServerStatus
 from app.mcp.identity import server_identity_fingerprint, tool_contract_fingerprint
 from app.mcp.process_env import build_mcp_process_env
 from app.mcp.limits import limit_instructions, validate_tool_catalog
@@ -70,7 +71,7 @@ class _Connection:
     """保存一个 MCP Server 的进程级连接状态。"""
 
     config: MCPServerConfig
-    status: str = "disconnected"
+    status: MCPServerStatus = MCPServerStatus.DISCONNECTED
     generation: _Generation | None = None
     tools: list[MCPToolDescriptor] = field(default_factory=list)
     instructions: str | None = None
@@ -148,18 +149,18 @@ class MCPConnectionManager:
                 state.config = config
             if not config.enabled:
                 if state.generation is not None:
-                    await self._disconnect_state_locked(state, status="disabled")
+                    await self._disconnect_state_locked(state, status=MCPServerStatus.DISABLED)
                 state.config = config
-                state.status = "disabled"
+                state.status = MCPServerStatus.DISABLED
                 state.last_error = None
                 raise MCPServerDisabledError(f"MCP Server '{server_id}' 已禁用")
-            if state.status == "available" and state.generation is not None:
+            if state.status == MCPServerStatus.AVAILABLE and state.generation is not None:
                 return list(state.tools)
 
             if state.generation is not None:
                 await self._disconnect_state_locked(state)
 
-            state.status = "connecting"
+            state.status = MCPServerStatus.CONNECTING
             state.last_error = None
             context_manager = self._session_factory(config)
             try:
@@ -181,7 +182,7 @@ class MCPConnectionManager:
                 )
                 state.instructions = limit_instructions(getattr(initialize_result, "instructions", None))
                 state.tools = tools
-                state.status = "available"
+                state.status = MCPServerStatus.AVAILABLE
                 return list(tools)
             except Exception as exc:
                 try:
@@ -190,7 +191,7 @@ class MCPConnectionManager:
                     pass
                 state.generation = None
                 state.tools = []
-                state.status = "error"
+                state.status = MCPServerStatus.ERROR
                 state.last_error = self._sanitize_error(config, exc)
                 logger.error("MCP '%s' 连接失败: %s", server_id, state.last_error)
                 raise MCPConnectionError(f"MCP '{server_id}' 连接失败: {state.last_error}") from exc
@@ -211,7 +212,7 @@ class MCPConnectionManager:
                     latest = None
                 if latest is not None:
                     state.config = latest
-                    state.status = "disabled" if not latest.enabled else "disconnected"
+                    state.status = MCPServerStatus.DISABLED if not latest.enabled else MCPServerStatus.DISCONNECTED
 
     async def reconnect(self, server_id: str) -> list[MCPToolDescriptor]:
         """断开并重新连接指定 MCP Server。
@@ -228,7 +229,7 @@ class MCPConnectionManager:
             await self.disconnect(server_id)
             state = self._connections.setdefault(server_id, _Connection(config=config))
             state.config = config
-            state.status = "disabled"
+            state.status = MCPServerStatus.DISABLED
             raise MCPServerDisabledError(f"MCP Server '{server_id}' 已禁用")
         await self.disconnect(server_id)
         return await self.connect(server_id)
@@ -280,7 +281,7 @@ class MCPConnectionManager:
             raw_tools = validate_tool_catalog(listed.tools)
             tools = [self._to_descriptor(tool) for tool in raw_tools]
             return {
-                "status": "available",
+                "status": MCPServerStatus.AVAILABLE,
                 "instructions": limit_instructions(getattr(initialized, "instructions", None)),
                 "tools": [self._descriptor_view(tool) for tool in tools],
             }
@@ -331,7 +332,7 @@ class MCPConnectionManager:
         config = self._find_config(server_id)
         if not config.enabled:
             return {
-                "status": "disabled",
+                "status": MCPServerStatus.DISABLED,
                 "tool_count": 0,
                 "last_error": None,
                 "instructions": None,
@@ -339,7 +340,7 @@ class MCPConnectionManager:
         state = self._connections.get(server_id)
         if state is None:
             return {
-                "status": "disconnected",
+                "status": MCPServerStatus.DISCONNECTED,
                 "tool_count": 0,
                 "last_error": None,
                 "instructions": None,
@@ -372,7 +373,7 @@ class MCPConnectionManager:
             str | None: 可用且配置未漂移时的身份指纹，否则返回 ``None``。
         """
         state = self._connections.get(server_id)
-        if state is None or state.status != "available" or state.generation is None:
+        if state is None or state.status != MCPServerStatus.AVAILABLE or state.generation is None:
             return None
         current = self._find_config(server_id)
         if state.config != current:
@@ -409,7 +410,7 @@ class MCPConnectionManager:
         if (
             state is None
             or state.config != config
-            or state.status != "available"
+            or state.status != MCPServerStatus.AVAILABLE
             or state.generation is None
         ):
             if state is not None and state.generation is not None:
@@ -429,7 +430,7 @@ class MCPConnectionManager:
                 state.generation is not generation
                 or not generation.accepting_calls
                 or state.config != config
-                or state.status != "available"
+                or state.status != MCPServerStatus.AVAILABLE
             ):
                 raise MCPConnectionError(
                     f"MCP_CONNECTION_DRAINING: MCP Server '{server_id}' 正在关闭或重连"
@@ -461,7 +462,7 @@ class MCPConnectionManager:
                 async with generation.lease_lock:
                     generation.accepting_calls = False
                 if state.generation is generation:
-                    state.status = "error"
+                    state.status = MCPServerStatus.ERROR
                     state.last_error = failure_message
         finally:
             # 4. 成功、失败或取消都减少进行中数量；最后一项结束后通知连接清理流程。
@@ -526,19 +527,19 @@ class MCPConnectionManager:
         """
         async with state.lifecycle_lock:
             if state.generation is generation:
-                await self._disconnect_state_locked(state, status="error")
+                await self._disconnect_state_locked(state, status=MCPServerStatus.ERROR)
 
     async def _disconnect_state_locked(
         self,
         state: _Connection,
         *,
-        status: str | None = None,
+        status: MCPServerStatus | None = None,
     ) -> None:
         """在持有生命周期锁时排空并关闭当前连接代。
 
         Args:
             state (_Connection): 要关闭的 Server 连接状态。
-            status (str | None): 关闭后覆盖写入的状态。
+            status (MCPServerStatus | None): 关闭后覆盖写入的状态。
         """
         generation = state.generation
         if generation is not None:
@@ -556,7 +557,7 @@ class MCPConnectionManager:
                 )
         state.tools = []
         state.instructions = None
-        state.status = status or ("disabled" if not state.config.enabled else "disconnected")
+        state.status = status or (MCPServerStatus.DISABLED if not state.config.enabled else MCPServerStatus.DISCONNECTED)
 
     @staticmethod
     def _to_descriptor(tool: Any) -> MCPToolDescriptor:

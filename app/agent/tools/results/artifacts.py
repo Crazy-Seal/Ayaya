@@ -9,11 +9,11 @@ from pathlib import Path
 from urllib.parse import quote, unquote
 from uuid import uuid4
 
+from app.schemas.tool_types import TOOL_RESULT_URI_PREFIX
 from app.runtime import get_tool_results_dir
 
 
 _ARTIFACT_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
-_URI_PREFIX = "tool-result://"
 
 
 @dataclass(frozen=True)
@@ -75,7 +75,7 @@ class ToolResultArtifactStore:
         finally:
             temporary.unlink(missing_ok=True)
 
-        uri = f"{_URI_PREFIX}{session_segment}/{artifact_id}"
+        uri = f"{TOOL_RESULT_URI_PREFIX}{session_segment}/{artifact_id}"
         return ToolResultArtifact(artifact_id=artifact_id, uri=uri, path=path)
 
     def resolve(self, session_id: str, uri: str) -> Path:
@@ -85,9 +85,9 @@ class ToolResultArtifactStore:
             session_id (str): 当前操作所属的会话编号。
             uri (str): 完整工具结果的 tool-result:// 会话内引用。
         """
-        if not isinstance(uri, str) or not uri.startswith(_URI_PREFIX):
+        if not isinstance(uri, str) or not uri.startswith(TOOL_RESULT_URI_PREFIX):
             raise ValueError("不是有效的 tool-result URI")
-        remainder = uri[len(_URI_PREFIX):]
+        remainder = uri[len(TOOL_RESULT_URI_PREFIX):]
         session_segment, separator, artifact_id = remainder.partition("/")
         if not separator or "/" in artifact_id:
             raise ValueError("tool-result URI 格式无效")

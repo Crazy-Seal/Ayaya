@@ -7,30 +7,19 @@ from dataclasses import dataclass, field, fields, replace
 from datetime import datetime
 import json
 from types import MappingProxyType
-from typing import Any, ClassVar, Iterator, Literal, Mapping, Sequence, cast, get_args
+from typing import Any, ClassVar, Iterator, Mapping, Sequence
 from uuid import uuid4
 
+from app.schemas.message_types import MessageType, MediaKind, ImageContextState
 from app.schemas.runtime_types import DESKTOP_CHANNEL, TaskResultStatus
 from app.agent.state.time import normalize_utc, utc_now
 
 
-MessageType = Literal[
-    "human",
-    "system",
-    "assistant",
-    "tool",
-        "context_summary",
-    "task_result",
-    "environment_perception",
-    "subagent",
-]
-MediaKind = Literal["screenshot", "tool", "mcp"]
-
-_STORAGE_MESSAGE_TYPES = cast(tuple[MessageType, ...], get_args(MessageType))
+_STORAGE_MESSAGE_TYPES = tuple(MessageType)
 PROTOCOL_MESSAGE_TYPES: tuple[MessageType, ...] = tuple(
     message_type
     for message_type in _STORAGE_MESSAGE_TYPES
-    if message_type not in {"system", "context_summary", "environment_perception"}
+    if message_type not in {MessageType.SYSTEM, MessageType.CONTEXT_SUMMARY, MessageType.ENVIRONMENT_PERCEPTION}
 )
 
 
@@ -236,25 +225,27 @@ class ImageContent:
     Attributes:
         url (str): 图片地址、data URL 或历史中的相对文件路径。
         detail (str | None): 图片处理提示，模型适配器决定如何使用。
-        media_kind (str): human、tool、screenshot 或 mcp。
+        media_kind (MediaKind): human、tool、screenshot 或 mcp。
         storage_ref (str | None): 已保存的本地相对路径。
-        context_state (str): available 表示可以发送；compacted 表示不能重载图片。
+        context_state (ImageContextState): available 表示可以发送；compacted 表示不能重载图片。
     """
     url: str
     detail: str | None = None
-    media_kind: str = "human"
+    media_kind: MediaKind = MediaKind.HUMAN
     storage_ref: str | None = None
-    context_state: str = "available"
+    context_state: ImageContextState = ImageContextState.AVAILABLE
 
     def __post_init__(self) -> None:
         """检查图片来源和压缩状态，已压缩截图不得保留可发送地址。"""
-        if self.media_kind not in {"human", "tool", "screenshot", "mcp"}:
+        if self.media_kind not in set(MediaKind):
             raise ValueError("未知图片类别")
-        if self.context_state not in {"available", "compacted"}:
+        if self.context_state not in set(ImageContextState):
             raise ValueError("未知图片上下文状态")
-        if not isinstance(self.url, str) or self.context_state == "available" and not self.url:
+        object.__setattr__(self, "media_kind", MediaKind(self.media_kind))
+        object.__setattr__(self, "context_state", ImageContextState(self.context_state))
+        if not isinstance(self.url, str) or self.context_state == ImageContextState.AVAILABLE and not self.url:
             raise ValueError("可用图片必须有地址")
-        if self.context_state == "compacted" and (self.media_kind != "screenshot" or self.url):
+        if self.context_state == ImageContextState.COMPACTED and (self.media_kind != MediaKind.SCREENSHOT or self.url):
             raise ValueError("压缩截图不能保留模型图片地址")
         if self.storage_ref is not None and (not isinstance(self.storage_ref, str) or not self.storage_ref):
             raise ValueError("图片文件引用必须是非空字符串")
@@ -270,8 +261,8 @@ class ImageContent:
         image = {"url": self.url}
         if self.detail is not None:
             image["detail"] = self.detail
-        return {"type": "image_url", "image_url": image, "media_kind": self.media_kind,
-                "storage_ref": self.storage_ref, "context_state": self.context_state}
+        return {"type": "image_url", "image_url": image, "media_kind": self.media_kind.value,
+                "storage_ref": self.storage_ref, "context_state": self.context_state.value}
 
 
 ContentPart = TextContent | ImageContent
@@ -308,8 +299,8 @@ def content_from_json(value: object) -> tuple[ContentPart, ...]:
         elif block.get("type") == "image_url":
             image = _require_mapping(block.get("image_url"), "content[].image_url")
             parts.append(ImageContent(url=_require_string(image.get("url"), "image_url.url"),
-                detail=image.get("detail"), media_kind=block.get("media_kind", "human"),
-                storage_ref=block.get("storage_ref"), context_state=block.get("context_state", "available")))
+                detail=image.get("detail"), media_kind=block.get("media_kind", MediaKind.HUMAN),
+                storage_ref=block.get("storage_ref"), context_state=block.get("context_state", ImageContextState.AVAILABLE)))
         else:
             raise MessageContractError("未知内容块类型")
     return tuple(parts)
@@ -476,7 +467,7 @@ class BaseMessage(ABC):
         Returns:
             dict[str, Any]: 包含身份、时间与完整业务字段的独立 JSON 对象。
         """
-        result: dict[str, Any] = {"message_type": self.message_type}
+        result: dict[str, Any] = {"message_type": self.message_type.value}
         for item in fields(self):
             value = getattr(self, item.name)
             if item.name == "created_at":
@@ -514,7 +505,7 @@ class BaseMessage(ABC):
 @dataclass(frozen=True, slots=True, kw_only=True)
 class HumanMessage(BaseMessage):
     """保存真人发送的完整有序正文和入口渠道。"""
-    message_type: ClassVar[MessageType] = "human"
+    message_type: ClassVar[MessageType] = MessageType.HUMAN
     content: tuple[ContentPart, ...]
     origin_channel: str = DESKTOP_CHANNEL
 
@@ -538,7 +529,7 @@ class HumanMessage(BaseMessage):
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AssistantMessage(BaseMessage):
     """保存模型正文、工具调用和可持久恢复材料。"""
-    message_type: ClassVar[MessageType] = "assistant"
+    message_type: ClassVar[MessageType] = MessageType.ASSISTANT
     content: tuple[ContentPart, ...] = ()
     tool_calls: tuple[ToolCall, ...] = ()
     origin_channel: str = DESKTOP_CHANNEL
@@ -567,7 +558,7 @@ class AssistantMessage(BaseMessage):
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ToolMessage(BaseMessage):
     """保存一次工具调用的完整文字、图片和结果压缩许可。"""
-    message_type: ClassVar[MessageType] = "tool"
+    message_type: ClassVar[MessageType] = MessageType.TOOL
     content: tuple[ContentPart, ...]
     tool_name: str
     tool_call_id: str
@@ -593,7 +584,7 @@ class ToolMessage(BaseMessage):
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SystemMessage(BaseMessage):
     """保存临时系统提示词，不进入 AgentState 和历史。"""
-    message_type: ClassVar[MessageType] = "system"
+    message_type: ClassVar[MessageType] = MessageType.SYSTEM
     text: str
 
     def __post_init__(self) -> None:
@@ -623,7 +614,7 @@ class ContextSummaryMessage(BaseMessage):
         covered_effective_date (str): 覆盖边界对应的日记有效日期。
         compression_ratio (float): 摘要粗估 token 数与原内容粗估 token 数之比。
     """
-    message_type: ClassVar[MessageType] = "context_summary"
+    message_type: ClassVar[MessageType] = MessageType.CONTEXT_SUMMARY
     content: str
     summary_schema_version: int
     covered_through_message_id: str
@@ -655,7 +646,6 @@ class ContextSummaryMessage(BaseMessage):
         return self.content
 
 
-
     @property
     def enters_protocol_log(self) -> bool:
         """排除压缩产生的摘要，协议日志继续保留原始对话事实。
@@ -682,7 +672,7 @@ class TaskResultMessage(RuntimeInputMessage):
         status (TaskResultStatus): 交付给模型的通知终态，不与受管进程状态混用。
         result (str): 桌面执行结果或任务终态输出摘要。
     """
-    message_type: ClassVar[MessageType] = "task_result"
+    message_type: ClassVar[MessageType] = MessageType.TASK_RESULT
     task_id: str
     task_name: str
     status: TaskResultStatus
@@ -714,8 +704,6 @@ class TaskResultMessage(RuntimeInputMessage):
         return self.result
 
 
-
-
 @dataclass(frozen=True, slots=True, kw_only=True)
 class EnvironmentPerceptionMessage(BaseMessage):
     """提供本次模型请求的环境背景，只在请求末尾临时组装。
@@ -724,7 +712,7 @@ class EnvironmentPerceptionMessage(BaseMessage):
         perception_kind (str): 本次背景的类别。
         description (str): 从 State 临时条目组装的背景正文。
     """
-    message_type: ClassVar[MessageType] = "environment_perception"
+    message_type: ClassVar[MessageType] = MessageType.ENVIRONMENT_PERCEPTION
     perception_kind: str
     description: str
 
@@ -760,12 +748,10 @@ class EnvironmentPerceptionMessage(BaseMessage):
         return False
 
 
-
-
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SubagentMessage(RuntimeInputMessage):
     """保存子 Agent 返回的结果及其身份，作为内部通知交给当前会话继续处理。"""
-    message_type: ClassVar[MessageType] = "subagent"
+    message_type: ClassVar[MessageType] = MessageType.SUBAGENT
     subagent_id: str
     subagent_name: str
     result: str
@@ -793,8 +779,6 @@ class SubagentMessage(RuntimeInputMessage):
         return self.result
 
 
-
-
 def message_from_storage_format(data: Mapping[str, Any]) -> BaseMessage:
     """按新业务类型严格恢复消息，拒绝旧协议和未知字段。
 
@@ -805,10 +789,10 @@ def message_from_storage_format(data: Mapping[str, Any]) -> BaseMessage:
     Raises:
         MessageContractError: 类型、字段或正文不合法。
     """
-    constructors = {"human": HumanMessage, "assistant": AssistantMessage, "tool": ToolMessage,
-        "system": SystemMessage, "context_summary": ContextSummaryMessage,
-        "task_result": TaskResultMessage, "environment_perception": EnvironmentPerceptionMessage,
-        "subagent": SubagentMessage}
+    constructors = {MessageType.HUMAN: HumanMessage, MessageType.ASSISTANT: AssistantMessage, MessageType.TOOL: ToolMessage,
+        MessageType.SYSTEM: SystemMessage, MessageType.CONTEXT_SUMMARY: ContextSummaryMessage,
+        MessageType.TASK_RESULT: TaskResultMessage, MessageType.ENVIRONMENT_PERCEPTION: EnvironmentPerceptionMessage,
+        MessageType.SUBAGENT: SubagentMessage}
     kind = data.get("message_type")
     if kind not in constructors:
         raise MessageContractError(f"未知或缺失的 message_type: {kind!r}；需要先迁移旧格式")
@@ -816,9 +800,9 @@ def message_from_storage_format(data: Mapping[str, Any]) -> BaseMessage:
     values = dict(data)
     del values["message_type"]
     try:
-        if kind in {"human", "assistant", "tool"}:
+        if kind in {MessageType.HUMAN, MessageType.ASSISTANT, MessageType.TOOL}:
             values["content"] = content_from_json(values.get("content"))
-        if kind == "assistant":
+        if kind == MessageType.ASSISTANT:
             values["tool_calls"] = tuple(ToolCall.from_dict(call) for call in values.get("tool_calls", []))
             if values.get("provider_data"):
                 values["provider_data"] = ProviderData.from_dict(values["provider_data"])
@@ -839,8 +823,12 @@ def notification_text(message: BaseMessage) -> str:
         str: 供历史、记忆和日志使用的业务文字。
     """
     if isinstance(message, TaskResultMessage):
-        labels = {"completed": "完成", "failed": "失败", "cancelled": "取消", "orphaned": "状态未知", "mixed": "状态汇总"}
-        return f"[后台任务{labels[message.status.value]}] {message.task_name}\n{message.result}"
+        labels = {TaskResultStatus.COMPLETED: "完成",
+                  TaskResultStatus.FAILED: "失败",
+                  TaskResultStatus.CANCELLED: "取消",
+                  TaskResultStatus.ORPHANED: "状态未知",
+                  TaskResultStatus.MIXED: "状态汇总"}
+        return f"[后台任务{labels[message.status.value]}：{message.task_name}]\n{message.result}"
     if isinstance(message, EnvironmentPerceptionMessage):
         return f"[环境感知：{message.perception_kind}]\n{message.description}"
     if isinstance(message, SubagentMessage):
@@ -887,7 +875,7 @@ def is_screenshot_message(message: BaseMessage) -> bool:
     Returns:
         bool: 满足该业务条件时返回 True。
     """
-    return isinstance(message, ToolMessage) and any(isinstance(part, ImageContent) and part.media_kind == "screenshot" for part in message.content)
+    return isinstance(message, ToolMessage) and any(isinstance(part, ImageContent) and part.media_kind == MediaKind.SCREENSHOT for part in message.content)
 
 
 def is_system_injected_user_message(message: BaseMessage) -> bool:

@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 import aiosqlite
 
+from app.schemas.message_types import LEGACY_TOOL_NOTICE_KIND
 from app.agent.state.messages import (
     AssistantMessage,
     BaseMessage,
@@ -159,7 +160,7 @@ class ChatHistoryStore:
                 f"""
                 SELECT id, message_id, created_at, message_json, record_kind, message_type
                 FROM {self.TABLE_NAME}
-                WHERE {' AND '.join(clauses)} AND record_kind <> 'legacy_tool_notice'
+                WHERE {' AND '.join(clauses)} AND record_kind <> '{LEGACY_TOOL_NOTICE_KIND}'
                 ORDER BY id ASC
                 """,
                 params,
@@ -236,7 +237,7 @@ class ChatHistoryStore:
                 f"""
                 SELECT created_at
                 FROM {self.TABLE_NAME}
-                WHERE {' AND '.join(clauses)} AND record_kind <> 'legacy_tool_notice'
+                WHERE {' AND '.join(clauses)} AND record_kind <> '{LEGACY_TOOL_NOTICE_KIND}'
                 ORDER BY id DESC
                 """,
                 params,
@@ -307,7 +308,7 @@ class ChatHistoryStore:
                 f"""
                 SELECT id, message_id, created_at, message_json, record_kind, message_type
                 FROM {self.TABLE_NAME}
-                WHERE {' AND '.join(clauses)} AND record_kind <> 'legacy_tool_notice'
+                WHERE {' AND '.join(clauses)} AND record_kind <> '{LEGACY_TOOL_NOTICE_KIND}'
                 ORDER BY id DESC
                 LIMIT ?
                 """,
@@ -392,7 +393,7 @@ class ChatHistoryStore:
                     f"""
                     SELECT id, message_id, created_at, message_json, record_kind, message_type
                     FROM {self.TABLE_NAME}
-                    WHERE {' AND '.join(clauses)} AND record_kind <> 'legacy_tool_notice'
+                    WHERE {' AND '.join(clauses)} AND record_kind <> '{LEGACY_TOOL_NOTICE_KIND}'
                     ORDER BY id DESC
                     LIMIT ?
                     """,

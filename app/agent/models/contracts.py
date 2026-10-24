@@ -3,9 +3,31 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any, Mapping, Protocol, Sequence, AsyncIterator
 
 from app.agent.state.messages import BaseMessage, ContentPart, ProviderData, ToolCall, content_text
+
+
+OPENAI_CHAT_COMPLETIONS = "openai_chat_completions"
+
+
+class ModelFinishReason(StrEnum):
+    """表示模型适配器转换后的项目结束原因。
+
+    Attributes:
+        COMPLETED (ModelFinishReason): 正文正常结束。
+        TOOL_CALLS (ModelFinishReason): 模型要求调用工具。
+        LENGTH (ModelFinishReason): 达到输出长度限制。
+        REFUSED (ModelFinishReason): 模型拒绝生成。
+        UNKNOWN (ModelFinishReason): 供应商未提供可识别的结束原因。
+    """
+
+    COMPLETED = "completed"
+    TOOL_CALLS = "tool_calls"
+    LENGTH = "length"
+    REFUSED = "refused"
+    UNKNOWN = "unknown"
 
 
 @dataclass(frozen=True)
@@ -42,7 +64,7 @@ class LLMConfig:
     temperature: float = 0.7
     timeout: float = 120.0
     max_retries: int = 3
-    api_format: str = "openai_chat_completions"
+    api_format: str = OPENAI_CHAT_COMPLETIONS
 
 
 @dataclass(frozen=True)
@@ -80,13 +102,13 @@ class LLMResponse:
     Attributes:
         content (tuple[ContentPart, ...]): 完整响应的业务正文。
         tool_calls (list[ToolCall]): 模型要求执行的完整调用。
-        finish_reason (str): completed、tool_calls、length、refused 或 unknown。
+        finish_reason (ModelFinishReason): completed、tool_calls、length、refused 或 unknown。
         provider_data (ProviderData | None): 归属当前调用的专用恢复材料。
         usage (TokenUsage | None): 供应商可选报告的真实用量。
     """
     content: tuple[ContentPart, ...]
     tool_calls: list[ToolCall] = field(default_factory=list)
-    finish_reason: str = "completed"
+    finish_reason: ModelFinishReason = ModelFinishReason.COMPLETED
     provider_data: ProviderData | None = None
     usage: TokenUsage | None = None
 
@@ -130,13 +152,13 @@ class StreamChunk:
     Attributes:
         content (str | None): 本次到达的正文片段。
         tool_call (ToolCall | None): 累积完参数后的完整工具调用。
-        finish_reason (str | None): 缺失表示仍在生成，否则使用项目结束语义。
+        finish_reason (ModelFinishReason | None): 缺失表示仍在生成，否则使用项目结束语义。
         usage (TokenUsage | None): 此片段报告的用量。
         provider_data (ProviderData | None): 流结束时保存的专用恢复材料。
     """
     content: str | None = None
     tool_call: ToolCall | None = None
-    finish_reason: str | None = None
+    finish_reason: ModelFinishReason | None = None
     usage: TokenUsage | None = None
     provider_data: ProviderData | None = None
 

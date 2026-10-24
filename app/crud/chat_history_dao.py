@@ -4,6 +4,7 @@ import logging
 import aiosqlite
 from datetime import datetime, timezone
 
+from app.schemas.message_types import HistoryRole, LEGACY_TOOL_NOTICE_KIND
 from app.agent.state.messages import (
     AssistantMessage,
     HumanMessage,
@@ -85,8 +86,8 @@ class ChatHistoryDao:
             timestamp = ChatHistoryDao._to_local_time_text(created_at)
             base = {"id": message_id or str(row_id), "timestamp": timestamp, "images": None}
             # 1. 旧工具提示只供展示，不能伪造完整调用或进入领域解码。
-            if kind == "legacy_tool_notice":
-                return [{**base, "role": "AI_Tool_Calling", "content": str(payload.get("content", ""))}]
+            if kind == LEGACY_TOOL_NOTICE_KIND:
+                return [{**base, "role": HistoryRole.AI_TOOL_CALLING, "content": str(payload.get("content", ""))}]
             message = message_from_history(message_json=payload, message_type=message_type,
                                            message_id=message_id, created_at=created_at)
         except (ValueError, TypeError) as exc:
@@ -94,19 +95,19 @@ class ChatHistoryDao:
         images = [part.storage_ref or part.url for part in getattr(message, "content", ())
                   if isinstance(part, ImageContent) and (part.storage_ref or part.url)]
         if isinstance(message, HumanMessage):
-            return [{**base, "role": "Human", "content": message.text,
+            return [{**base, "role": HistoryRole.HUMAN, "content": message.text,
                      "images": images or None, "origin_channel": message.origin_channel}]
         # 2. 工具文字仍隐藏，图片保持独立可见气泡并使用稳定派生编号。
         if isinstance(message, ToolMessage):
-            return [{**base, "id": f"{message.message_id}:images", "role": "AI",
+            return [{**base, "id": f"{message.message_id}:images", "role": HistoryRole.AI,
                      "content": f"[系统消息]工具 {message.tool_name} 返回图片: ", "images": images}] if images else []
         if not isinstance(message, AssistantMessage):
             return []
         result = []
         if message.text:
-            result.append({**base, "role": "AI", "content": message.text, "origin_channel": message.origin_channel})
+            result.append({**base, "role": HistoryRole.AI, "content": message.text, "origin_channel": message.origin_channel})
         if message.tool_calls:
-            result.append({**base, "id": f"{message.message_id}:tools", "role": "AI_Tool_Calling",
+            result.append({**base, "id": f"{message.message_id}:tools", "role": HistoryRole.AI_TOOL_CALLING,
                 "content": "调用了工具: " + ", ".join(call.name for call in message.tool_calls), "origin_channel": message.origin_channel})
         return result
 

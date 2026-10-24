@@ -13,6 +13,7 @@
 """
 
 import inspect
+from enum import Enum
 import json
 import types
 import typing
@@ -21,6 +22,7 @@ from typing import Any, Callable, Type, Union, Literal, get_args, get_origin
 from pydantic import BaseModel
 from pydantic.fields import FieldInfo
 
+from app.schemas.tool_types import AuthorizationTiming
 from app.agent.tools.core.base import BaseTool, ToolContext, ToolResult
 from app.agent.tools.core.schema import tool_parameters_schema
 from app.agent.utils.infra.log import log_tool_call_result
@@ -77,7 +79,9 @@ def _inline_defs(node: Any, defs: dict) -> Any:
         ref = node.get("$ref")
         if isinstance(ref, str) and ref.startswith("#/$defs/"):
             target = defs.get(ref.split("/")[-1], {})
-            return _inline_defs(dict(target), defs)
+            # 枚举定义提供允许值，引用字段自身保留工具说明和默认值。
+            combined = {**target, **{key: value for key, value in node.items() if key != "$ref"}}
+            return _inline_defs(combined, defs)
         return {k: _inline_defs(v, defs) for k, v in node.items()}
     if isinstance(node, list):
         return [_inline_defs(v, defs) for v in node]
@@ -143,6 +147,10 @@ def _json_type(tp: Any) -> dict:
         return {"type": "array"}
     if origin is dict:
         return {"type": "object"}
+
+    # 固定业务枚举保留原参数允许值，模型仍然只接收字符串。
+    if isinstance(tp, type) and issubclass(tp, Enum):
+        return _parameter_schema(tp)
 
     # Pydantic 模型 → 嵌套 object schema
     if isinstance(tp, type) and issubclass(tp, BaseModel):
@@ -220,7 +228,7 @@ def tool(
     name: str | None = None,
     compressible: bool = False,
     persist_oversized_result: bool = True,
-    authorization_timing: str = "before_execute",
+    authorization_timing: AuthorizationTiming = AuthorizationTiming.BEFORE_EXECUTE,
     parameters_schema: dict | None = None,
 ) -> Any:
     """将显式模型说明与异步函数包装为 BaseTool 类，不读取函数的维护文档。
@@ -236,7 +244,7 @@ def tool(
         name (str | None): 覆盖工具名（默认取函数名）。
         compressible (bool): 标记旧工具结果允许从活跃模型上下文回收，不代表允许重放工具。
         persist_oversized_result (bool): 超过模型预览预算时是否允许保存完整结果。
-        authorization_timing (str): 授权发生在执行前，或只读准备完成后。
+        authorization_timing (AuthorizationTiming): 授权发生在执行前，或只读准备完成后。
         parameters_schema (dict | None): 逃生口——直接给定 JSON Schema，跳过自动推导。
             用于嵌套/复杂参数（如 update_plan 的 array-of-object），签名无法表达时。
         func (Callable | None): 需要包装或检查签名的函数。
