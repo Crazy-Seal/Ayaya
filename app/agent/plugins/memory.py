@@ -6,7 +6,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.agent.plugins.base import BasePlugin, HookContext, PluginHook
-from app.agent.state.model import AgentState
+from app.agent.state.model import AgentState, TemporaryContextItem
 from app.agent.memory.manager import get_memory_manager
 from app.agent.state.messages import (
     HumanMessage,
@@ -16,6 +16,7 @@ from app.agent.utils.infra.background_tasks import create_background_task
 logger = logging.getLogger(__name__)
 
 MEMORY_HISTORY_HUMAN_MESSAGES = 5
+MEMORY_CONTEXT_KEY = "memory.recalled"
 
 
 class MemoryPluginConfig(BaseModel):
@@ -121,7 +122,7 @@ class MemoryPlugin(BasePlugin):
 
         Args:
             state (AgentState): 当前 Agent 状态。
-            runtime_context (对象): 本轮临时上下文，不写入持久消息。
+            runtime_context (对象): 提供本轮真人输入编号的运行数据。
         """
         # 1. 只找本轮 latest_human_message_id，不从旧真人消息推断后台唤醒的查询。
         current_human = next(
@@ -142,9 +143,13 @@ class MemoryPlugin(BasePlugin):
         except Exception as e:
             logger.warning("[MemoryPlugin] 记忆检索失败: %s", e)
             ctx = ""
-        runtime_context.recalled_memory = (
-            f"{MEMORY_PREAMBLE}\n\n{ctx}" if ctx and ctx.strip() else ""
-        )
+        # 3. 召回结果随本轮 checkpoint 保存，审批恢复后继续由统一组装流程读取。
+        if ctx and ctx.strip():
+            state.set_temporary_context(MEMORY_CONTEXT_KEY, TemporaryContextItem(
+                title="相关记忆", text=f"{MEMORY_PREAMBLE}\n\n{ctx}",
+            ))
+        else:
+            state.remove_temporary_context(MEMORY_CONTEXT_KEY)
 
     async def _prepare_activation_input_commit(self, state: AgentState, commit_context: dict) -> None:
         """在新激活输入加入前，记录上一批派生任务的历史范围并消费到期计数。

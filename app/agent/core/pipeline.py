@@ -33,7 +33,8 @@ from app.agent.state.messages import (
     HumanMessage,
     ToolCall,
 )
-from app.agent.state import AgentState
+from app.agent.state import AgentState, TemporaryContextItem
+from app.agent.state.time import format_local_time, utc_now
 from app.agent.tools.core.base import BaseTool, InterruptEvent, ToolContext, ToolResult, TaskLauncher
 from app.agent.tools.results.normalizer import ToolResultNormalizer
 from app.agent.tools.authorization.manager import ToolAuthorization, descriptor_for_tool
@@ -453,11 +454,15 @@ class ExecutionPipeline:
 
         Args:
             state (AgentState): 当前会话的内存 AgentState；保存由调用方负责。
-            runtime_context (RuntimeContext): 本轮时间、来源、检索背景和停止信号组成的临时上下文。
+            runtime_context (RuntimeContext): 本轮来源、真人输入编号和停止信号。
             session_state_manager (SessionStateManager | None): 执行管道借用的会话状态业务对象。
         """
         tools = self._tool_manager.get_tools()
         produced = False
+        # 1. 每次请求刷新当前时间，预算检查和超限压缩重试继续使用这份临时条目。
+        state.set_temporary_context("core.current_time", TemporaryContextItem(
+            title="当前日期时间", text=format_local_time(utc_now()),
+        ))
         prepared = await self._model_input.prepare(
             state=state,
             system_prompt=self._prompt_source.system_prompt,

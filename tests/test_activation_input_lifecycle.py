@@ -17,7 +17,7 @@ from app.agent.plugins.base import BasePlugin, HookContext, PluginHook
 from app.agent.plugins.memory import MemoryPlugin
 from app.agent.state.manager import SessionStateManager
 from app.agent.runtime.session_inbox import InboxEnvelope
-from app.agent.state import AgentState
+from app.agent.state import AgentState, TemporaryContextItem
 from app.agent.state.messages import BaseMessage, HumanMessage, TaskResultMessage, ToolCall
 from app.agent.tools.core.base import BaseTool, ToolContext, ToolResult
 from app.crud.task_record_dao import TaskRecordDao
@@ -74,6 +74,7 @@ class RecordingMemory:
         cutoffs (list[int]): 激活准备时读取的真实历史截止位置。
         extractions (list[tuple[list[BaseMessage], list[BaseMessage]]]): 实际进入提取的当前批次与前情。
         extracted (asyncio.Event): 提取已经收到材料时通知测试结束等待。
+        context (str): 当前用例要求记忆插件召回的文字。
     """
 
     def __init__(self, db_path: Path) -> None:
@@ -86,6 +87,7 @@ class RecordingMemory:
         self.cutoffs: list[int] = []
         self.extractions: list[tuple[list[BaseMessage], list[BaseMessage]]] = []
         self.extracted = asyncio.Event()
+        self.context = ""
 
     async def get_protocol_history_cutoff(self) -> int:
         """读取并记录输入提交前已有协议消息的最后编号。
@@ -104,9 +106,9 @@ class RecordingMemory:
             kwargs (dict): 插件传入的召回查询和类别开关。
 
         Returns:
-            str: 不追加额外召回材料的空文本。
+            str: 当前用例指定的召回文本，默认不追加额外材料。
         """
-        return ""
+        return self.context
 
     async def add(self, messages: list[BaseMessage], history: list[BaseMessage], **kwargs) -> None:
         """记录真实批次查询得到的提取材料，随后通知测试。
@@ -435,6 +437,74 @@ def test_mid_turn_notification_preserves_batch_until_next_activation(tmp_path: P
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("activation", ["human", "runtime"])
+def test_temporary_context_stays_at_request_tail_and_resets_next_turn(tmp_path: Path, monkeypatch, activation: str) -> None:
+    """真人或后台轮次的工具续答保留环境背景，新轮不改写旧历史。
+
+    Args:
+        tmp_path (Path): Pytest 创建的隔离目录。
+        monkeypatch (pytest.MonkeyPatch): 替换外部记忆入口。
+        activation (str): 真人输入或后台通知激活路径。
+    """
+    async def scenario() -> None:
+        """观察真实请求、工具进度 checkpoint 和下一轮输入，验证临时背景的完整生命周期。"""
+        db_path = tmp_path / "context.sqlite3"
+        memory = bind_memory(db_path, monkeypatch)
+        memory.context = "本轮召回的偏好"
+        model = QueuedModel()
+        agent = await make_agent(db_path, model, [])
+        manager = SessionStateManager(SESSION_ID, str(db_path))
+        running = None
+        try:
+            # 1. 模拟旧轮异常后留下的条目；新轮必须先清除它。
+            stale = AgentState.create_new(SESSION_ID)
+            stale.set_temporary_context("plugin.stale", TemporaryContextItem(title="旧背景", text="旧轮遗留"))
+            await manager.save_progress(stale)
+            stream = agent.run("本轮问题") if activation == "human" else agent.run_runtime_inputs((
+                TaskResultMessage(task_id="task", task_name="检查", status="completed", result="已完成"),
+            ), inbox_inputs=())
+            running = asyncio.create_task(drain(stream))
+            first = await asyncio.wait_for(model.requests.get(), WAIT_SECONDS)
+            persisted = await manager.load()
+            assert "plugin.stale" not in persisted.temporary_context
+            assert all("本轮召回的偏好" not in message.text for message in persisted.messages)
+
+            # 2. 工具续答仍追加同一份记忆，前面的历史消息保持完全相同。
+            model.replies.put_nowait((StreamChunk(tool_call=ToolCall("step", "activation_step", {})),))
+            second = await asyncio.wait_for(model.requests.get(), WAIT_SECONDS)
+            persisted = await manager.load()
+            assert persisted.temporary_context["memory.recalled"].text.endswith("本轮召回的偏好")
+            assert "core.current_time" in persisted.temporary_context
+            for request in (first, second):
+                assert request[-1]["role"] == "user"
+                assert request[-1]["name"] == "runtime_environment_perception"
+                assert "本轮召回的偏好" in request[-1]["content"]
+                assert "旧轮遗留" not in str(request)
+                assert not any(message["role"] == "system" for message in request)
+            assert second[:len(first) - 1] == first[:-1]
+            model.replies.put_nowait((StreamChunk(content="本轮完成"),))
+            events = await asyncio.wait_for(running, WAIT_SECONDS)
+            assert events[-1].type == EventType.DONE
+            assert (await manager.load()).temporary_context == {}
+
+            # 3. 下一轮召回为空时，不再发送旧记忆，原来的历史正文仍保持一致。
+            memory.context = ""
+            model.replies.put_nowait((StreamChunk(content="下一轮完成"),))
+            await drain(agent.run("下一轮问题"))
+            third = model.requests.get_nowait()
+            assert third[:len(second) - 1] == second[:-1]
+            assert "本轮召回的偏好" not in str(third)
+            assert third[-1]["name"] == "runtime_environment_perception"
+        finally:
+            if running is not None and not running.done():
+                running.cancel()
+                await asyncio.gather(running, return_exceptions=True)
+            await agent.close()
+            await manager.close()
+
+    asyncio.run(scenario())
+
+
 def test_frozen_history_range_excludes_later_completed_activations(tmp_path: Path, monkeypatch) -> None:
     """固定的旧历史范围不吸收后来已经完成的新激活轮次。
 
@@ -651,6 +721,7 @@ def test_resuming_original_turn_does_not_commit_another_activation(tmp_path: Pat
         model = QueuedModel()
         agent = await make_agent(db_path, model, hooks)
         agent.register_tool(PausingTool(kind))
+        memory.context = "审批恢复后仍应可见的记忆"
         manager = SessionStateManager(SESSION_ID, str(db_path))
         inbox = SessionStateManager(SESSION_ID, str(db_path))
         records = TaskRecordDao(str(db_path))
@@ -673,13 +744,19 @@ def test_resuming_original_turn_does_not_commit_another_activation(tmp_path: Pat
             model.replies.put_nowait((StreamChunk(content="reply-10"),))
             result = {"kind": "approve"} if kind == InterruptKind.AUTHORIZATION_REQUEST else {"executed": True}
             waiting = await manager.load()
+            assert "审批恢复后仍应可见的记忆" in waiting.temporary_context["memory.recalled"].text
             request_id = waiting.interrupt_data["request_id"]
             if kind == InterruptKind.AUTHORIZATION_REQUEST:
                 await manager.record_authorization_decision(request_id, result)
             resumed = await drain(agent.resume(request_id, resume_data=result, receive_task_notifications=True))
+            first_request = model.requests.get_nowait()
+            resumed_request = model.requests.get_nowait()
+            assert first_request[-1]["name"] == "runtime_environment_perception"
+            assert "审批恢复后仍应可见的记忆" in resumed_request[-1]["content"]
             saved = await manager.load()
             assert resumed[-1].type == EventType.DONE
             assert not saved.is_interrupted()
+            assert saved.temporary_context == {}
             assert any(isinstance(item, TaskResultMessage) and item.task_id == "during-interrupt" for item in saved.messages)
             assert await inbox.read_task_terminals() == ()
             assert saved.long_term_memory_turn_counter == 10

@@ -14,6 +14,7 @@ from app.agent.state.messages import (
     BaseMessage,
     ContentPart, ImageContent, ProviderData, text_content,
     ContextSummaryMessage,
+    EnvironmentPerceptionMessage,
     HumanMessage,
     RuntimeInputMessage,
     SystemMessage,
@@ -39,6 +40,20 @@ class TokenBaseline(BaseModel):
     actual_prompt_tokens: int = Field(gt=0)
 
 
+class TemporaryContextItem(BaseModel):
+    """保存本轮提供给模型的一项临时背景，随 checkpoint 恢复。
+
+    Attributes:
+        title (str): 模型可读的背景标题。
+        text (str): 框架或插件整理好的背景正文。
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    title: str
+    text: str
+
+
 class AgentState(BaseModel):
     """Agent 可恢复状态；消息集合只能通过语义命令修改。
 
@@ -53,6 +68,7 @@ class AgentState(BaseModel):
         interrupt_data (dict[str, Any] | None): 持久中断路由、单次授权及恢复决定。
         pending_actions (tuple[ToolCall, ...]): 当前中断之后仍未执行的同批工具调用。
         extra (dict[str, Any]): 插件与工具的领域附加状态。
+        temporary_context (dict[str, TemporaryContextItem]): 以来源和条目标识索引的本轮临时背景，随 checkpoint 保存。
         created_at (datetime): 原消息 UTC 创建时间。
         updated_at (datetime): 状态最近修改的 UTC 时间。
         _messages (list[BaseMessage]): 当前会话的内存消息序列，只能经追加、结果记录或压缩替换方法修改。
@@ -65,6 +81,7 @@ class AgentState(BaseModel):
     interrupt_data: dict[str, Any] | None = None
     pending_actions: tuple[ToolCall, ...] = ()
     extra: dict[str, Any] = Field(default_factory=dict)
+    temporary_context: dict[str, TemporaryContextItem] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -462,11 +479,32 @@ class AgentState(BaseModel):
         self.extra.update(data)
         self.updated_at = utc_now()
 
+    def set_temporary_context(self, key: str, item: TemporaryContextItem) -> None:
+        """新增或替换一项临时背景，同一来源重复写入时保持一个条目。
+
+        Args:
+            key (str): 来源标识与条目标识，例如 memory.recalled。
+            item (TemporaryContextItem): 本轮提供给模型的标题和正文。
+        """
+        self.temporary_context[key] = item
+
+    def remove_temporary_context(self, key: str) -> None:
+        """删除某项临时背景。
+
+        Args:
+            key (str): 框架或插件此前写入的条目标识。
+        """
+        self.temporary_context.pop(key, None)
+
+    def clear_temporary_context(self) -> None:
+        """新轮开始或原轮结束时清空临时背景，由调用方统一保存状态。"""
+        self.temporary_context.clear()
+
     def to_checkpoint(self) -> dict[str, Any]:
         """检查消息协议后导出完整恢复材料，导出本身不写数据库。
 
         Returns:
-            dict[str, Any]: 包含消息、工具等待、延迟图片、计数和附加状态的 checkpoint 字典。
+            dict[str, Any]: 包含消息、工具等待、计数、临时背景和附加状态的 checkpoint 字典。
 
         Raises:
             ValueError: 工具请求/结果顺序或恢复状态不合法。
@@ -485,6 +523,9 @@ class AgentState(BaseModel):
             "interrupt_data": to_json_value(self.interrupt_data),
             "pending_actions": [call.to_dict() for call in self.pending_actions],
             "extra": to_json_value(self.extra),
+            "temporary_context": {
+                key: item.model_dump() for key, item in self.temporary_context.items()
+            },
             "created_at": normalize_utc(self.created_at).isoformat(),
             "updated_at": normalize_utc(self.updated_at).isoformat(),
         }
@@ -524,6 +565,7 @@ class AgentState(BaseModel):
             interrupt_data=data.get("interrupt_data"),
             pending_actions=tuple(ToolCall.from_dict(item) for item in raw_actions),
             extra=dict(data.get("extra") or {}),
+            temporary_context=data.get("temporary_context") or {},
             created_at=normalize_utc(data.get("created_at") or utc_now()),
             updated_at=normalize_utc(data.get("updated_at") or utc_now()),
         )
@@ -577,8 +619,8 @@ class AgentState(BaseModel):
         known_calls: dict[str, ToolCall] = {}
         open_calls: dict[str, ToolCall] = {}
         for message in messages:
-            if isinstance(message, SystemMessage):
-                raise ValueError("SystemMessage 不得进入 AgentState/checkpoint")
+            if isinstance(message, (SystemMessage, EnvironmentPerceptionMessage)):
+                raise ValueError(f"{type(message).__name__} 不得进入 AgentState/checkpoint 消息列表")
             if open_calls and not isinstance(message, ToolMessage):
                 raise ValueError(
                     f"工具结果批次被非 ToolMessage 打断: {sorted(open_calls)}"

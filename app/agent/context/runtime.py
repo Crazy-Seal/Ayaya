@@ -17,14 +17,12 @@ class RuntimeContext:
     Attributes:
         captured_at (datetime): 本轮开始时捕获的 UTC 时间。
         latest_human_message_id (str): 当前真人输入标识，内部通知轮次为空。
-        recalled_memory (str): 本轮临时注入的检索记忆。
         origin_channel (str): 输入或本轮回复所属的渠道。
         turn_control (TurnControl | None): 当前 run 的停止与引导控制器。
     """
 
     captured_at: datetime
     latest_human_message_id: str = ""
-    recalled_memory: str = ""
     origin_channel: str = DESKTOP_CHANNEL
     turn_control: TurnControl | None = None
 

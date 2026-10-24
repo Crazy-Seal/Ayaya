@@ -25,7 +25,7 @@ from app.agent.context.coordinator import (
     ContextSummary,
     ModelInputCoordinator,
 )
-from app.agent.state import AgentState, TokenBaseline
+from app.agent.state import AgentState, TemporaryContextItem, TokenBaseline
 from app.agent.tools.control_screen import control_screen
 from app.agent.tools.control_screen_with_vlm import control_screen_with_vlm
 from app.agent.tools.screenshot import screenshot
@@ -414,25 +414,26 @@ def test_protocol_blocks_never_split_tool_call_from_results() -> None:
     assert any(block == [1, 2] for block in blocks)
 
 
-def test_transient_context_is_appended_to_copy_of_latest_human_message() -> None:
-    """验证临时背景只追加到最新真人消息副本。"""
+def test_transient_context_is_appended_as_environment_message() -> None:
+    """验证临时背景独立追加到请求末尾，原真人正文和状态消息保持不变。"""
     original = (HumanMessage(
         content=text_content("问题"),
         message_id="human-1",
         created_at=datetime(2026, 8, 29, tzinfo=timezone.utc),
     ),)
-    turn = RuntimeContext(
-        latest_human_message_id="human-1",
-        captured_at=datetime(2026, 8, 29, tzinfo=timezone.utc),
-        recalled_memory="用户喜欢简洁回答",
-    )
+    state = _state("session", original)
+    state.set_temporary_context("memory.recalled", TemporaryContextItem(
+        title="相关记忆", text="用户喜欢简洁回答",
+    ))
 
-    projected = append_transient_context(original, turn)
+    projected = capture_input(append_transient_context(state))
 
     assert original[0].text == "问题"
-    assert isinstance(projected[0], HumanMessage)
-    assert "[系统提示]" in projected[0].text
-    assert "用户喜欢简洁回答" in projected[0].text
+    assert state.messages == original
+    assert projected[0] == {"role": "user", "content": "问题"}
+    assert projected[-1]["role"] == "user"
+    assert projected[-1]["name"] == "runtime_environment_perception"
+    assert "用户喜欢简洁回答" in projected[-1]["content"]
 
 
 class _SummaryClient:
@@ -654,10 +655,12 @@ def test_model_input_coordinator_replaces_old_turns_with_state_only_summary() ->
                 characteristic="忠实记录共同经历。",
             ),
         )
+        state.set_temporary_context("memory.recalled", TemporaryContextItem(
+            title="相关记忆", text="仅存在于本轮输入的召回记忆",
+        ))
         turn = RuntimeContext(
             latest_human_message_id="human-11",
             captured_at=datetime(2026, 8, 29, tzinfo=timezone.utc),
-            recalled_memory="仅存在于本轮输入的召回记忆",
         )
 
         prepared = await coordinator.prepare(

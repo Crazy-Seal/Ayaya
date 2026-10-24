@@ -385,14 +385,16 @@ class Agent:
             messages (tuple[RuntimeInputMessage, ...]): 本次激活需要交付的内部通知。
             inputs (tuple[InboxEnvelope, ...]): 与通知一同持久交付的输入快照。
         """
-        # 1. 本次通知加入前准备上一批派生任务，前后钩子共用同一提交上下文。
+        # 1. 新轮先清空上一轮背景，再让插件准备本次激活的数据。
+        state.clear_temporary_context()
+        # 2. 本次通知加入前准备上一批派生任务，前后钩子共用同一提交上下文。
         commit_context: dict = {}
         await self.plugin_manager.run_hooks(
             PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, state, data=commit_context,
         )
-        # 2. 消息与输入交付标记原子保存；失败时直接退出，不启动后台派生任务。
+        # 3. 消息与输入交付标记原子保存；失败时直接退出，不启动后台派生任务。
         await self.session_state_manager.commit_runtime_inputs(state, messages, inputs)
-        # 3. 只有输入事务成功后才通知插件启动已经准备好的上一批任务。
+        # 4. 只有输入事务成功后才通知插件启动已经准备好的上一批任务。
         await self.plugin_manager.run_hooks(
             PluginHook.AFTER_ACTIVATION_INPUT_COMMIT, state, data=commit_context,
         )
@@ -474,7 +476,9 @@ class Agent:
         Yields:
             AgentEvent: 事务成功后的真人输入提交事实；继续读取后才运行激活后置钩子。
         """
-        # 1. 本次激活输入尚未追加，先准备上一批派生任务，不包含本次真人或通知。
+        # 1. 新轮先清空上一轮背景，再让插件准备本次激活的数据。
+        state.clear_temporary_context()
+        # 2. 本次激活输入尚未追加，先准备上一批派生任务，不包含本次真人或通知。
         commit_context: dict = {}
         await self.plugin_manager.run_hooks(
             PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT,
@@ -482,20 +486,20 @@ class Agent:
             data=commit_context,
         )
 
-        # 2. Manager 统一准备同批任务通知、真人图片与计数，保存成功才返回真人事实。
+        # 3. Manager 统一准备同批任务通知、真人图片与计数，保存成功才返回真人事实。
         inputs = inbox_inputs if inbox_inputs is not None else ((inbox_input,) if inbox_input is not None else ())
         human_message = await self.session_state_manager.commit_human_input(
             state, message, images, origin_channel=origin_channel, inputs=inputs,
         )
 
-        # 3. 输入已提交后立即通知观察方，不能等到模型首片才显示真人消息。
+        # 4. 输入已提交后立即通知观察方，不能等到模型首片才显示真人消息。
         human_input = next((item for item in inputs if item.kind == InboxKind.HUMAN), None)
         yield AgentEvent(EventType.HUMAN_INPUT_COMMITTED, {
             "message": human_message,
             "input_sequence": human_input.id if human_input is not None else None,
         })
 
-        # 4. 只有输入保存成功才启动上一批任务；保存失败时数据库保留原待消费计数。
+        # 5. 只有输入保存成功才启动上一批任务；保存失败时数据库保留原待消费计数。
         await self.plugin_manager.run_hooks(
             PluginHook.AFTER_ACTIVATION_INPUT_COMMIT,
             state,
@@ -576,6 +580,8 @@ class Agent:
             async with aclosing(event_stream) as managed_events:
                 async for event in managed_events:
                     if event.type == EventType.ERROR:
+                        # 1.1. 失败时清空内存背景；持久进度仍按原失败规则保留，新激活会重新重置。
+                        state.clear_temporary_context()
                         yield event
                         logger.warning("%s: %s", failure_message, self.config.session_id)
                         return

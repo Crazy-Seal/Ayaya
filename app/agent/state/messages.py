@@ -30,7 +30,7 @@ _STORAGE_MESSAGE_TYPES = cast(tuple[MessageType, ...], get_args(MessageType))
 PROTOCOL_MESSAGE_TYPES: tuple[MessageType, ...] = tuple(
     message_type
     for message_type in _STORAGE_MESSAGE_TYPES
-    if message_type not in {"system", "context_summary"}
+    if message_type not in {"system", "context_summary", "environment_perception"}
 )
 
 
@@ -717,17 +717,22 @@ class TaskResultMessage(RuntimeInputMessage):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class EnvironmentPerceptionMessage(RuntimeInputMessage):
-    """保存环境变化通知，使用专用消息类型与真人输入区分。"""
+class EnvironmentPerceptionMessage(BaseMessage):
+    """提供本次模型请求的环境背景，只在请求末尾临时组装。
+
+    Attributes:
+        perception_kind (str): 本次背景的类别。
+        description (str): 从 State 临时条目组装的背景正文。
+    """
     message_type: ClassVar[MessageType] = "environment_perception"
     perception_kind: str
     description: str
 
     def __post_init__(self) -> None:
-        """创建环境通知后校验变化类别和说明正文。
+        """创建请求背景后校验类别和说明正文。
 
         Raises:
-            ValueError: 环境变化类别为空。
+            ValueError: 环境背景类别为空。
             TypeError: 说明不是字符串。
         """
         BaseMessage.__post_init__(self)
@@ -738,12 +743,21 @@ class EnvironmentPerceptionMessage(RuntimeInputMessage):
 
     @property
     def text(self) -> str:
-        """供历史和记忆读取取得环境变化说明。
+        """供模型适配器读取环境背景正文。
 
         Returns:
             str: description 中的环境变化正文。
         """
         return self.description
+
+    @property
+    def enters_protocol_log(self) -> bool:
+        """使请求临时背景不作为原始对话归档。
+
+        Returns:
+            bool: 始终为 False。
+        """
+        return False
 
 
 

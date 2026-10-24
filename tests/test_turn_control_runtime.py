@@ -6,7 +6,7 @@ import pytest
 from app.agent.agent import Agent
 from app.agent.core.events import AgentEvent, EventType
 from app.agent.runtime.turn_control import TurnControl, TurnInterrupted
-from app.agent.state import AgentState
+from app.agent.state import AgentState, TemporaryContextItem
 from app.agent.state.manager import SessionStateManager
 from app.agent.state.messages import AssistantMessage, ToolCall, ToolMessage
 from app.crud.chat_history_dao import ChatHistoryDao
@@ -33,6 +33,7 @@ def test_stopping_pure_tool_turn_closes_call_without_fake_text(tmp_path) -> None
         agent = Agent.__new__(Agent)
         agent.session_state_manager = SessionStateManager("s", str(tmp_path / "state.sqlite3"))
         state = AgentState.create_new("s")
+        state.set_temporary_context("plugin.context", TemporaryContextItem(title="插件背景", text="本轮有效"))
         call = ToolCall(id="tool-1", name="example", args={})
         state.record_assistant_step("", (call,))
         control = TurnControl("run-1")
@@ -56,6 +57,7 @@ def test_stopping_pure_tool_turn_closes_call_without_fake_text(tmp_path) -> None
             assert [event.type for event in events] == [EventType.DONE]
             assert len([item for item in state.messages if isinstance(item, AssistantMessage)]) == 1
             assert any(isinstance(item, ToolMessage) for item in state.messages)
+            assert (await agent.session_state_manager.load()).temporary_context == {}
             assert all("被用户打断" not in item.text for item in state.messages if isinstance(item, AssistantMessage))
         finally:
             await agent.session_state_manager.close()

@@ -1,23 +1,22 @@
-"""为临时业务消息副本补充时间、渠道和本轮检索记忆。"""
+"""为历史消息补充时间和渠道，在请求末尾组装本轮环境背景。"""
 
 from dataclasses import replace
-from typing import Any, Sequence
+from typing import Sequence
 
 from app.schemas.runtime_types import (
     DESKTOP_CHANNEL,
 )
-from app.agent.context.runtime import RuntimeContext
 from app.agent.state.messages import (
     AssistantMessage,
     BaseMessage,
     HumanMessage,
     RuntimeInputMessage,
-    SystemMessage,
+    EnvironmentPerceptionMessage,
 )
 from app.agent.state.model import AgentState
 from app.agent.state.time import format_local_time, render_timed_text
 from app.agent.models.contracts import ProjectedMessage
-from app.agent.state.messages import TextContent, ImageContent, notification_text, with_text
+from app.agent.state.messages import TextContent, notification_text
 
 
 
@@ -48,43 +47,27 @@ def project_messages_with_time(messages: Sequence[BaseMessage]) -> tuple:
 
 
 def append_transient_context(
-    messages: Sequence[BaseMessage],
-    turn_context: RuntimeContext,
+    state: AgentState,
 ) -> tuple[BaseMessage, ...]:
-    """把本轮时间和检索记忆加入临时投影，后台通知不得借用历史真人消息。
+    """把 State 的本轮临时条目组装成请求末尾的独立环境消息。
 
     Args:
-        messages (Sequence[BaseMessage]): 需要转换或交付的领域消息集合。
-        turn_context (RuntimeContext): 本轮临时投影上下文。
+        state (AgentState): 保存历史和临时背景的当前状态或压缩候选状态。
 
     Returns:
-        tuple[BaseMessage, ...]: 包含本轮临时背景的领域消息投影，原消息保持不变。
+        tuple[BaseMessage, ...]: 原历史与一条临时环境消息；条目为空时返回原历史。
     """
-    result = list(messages)
-    target_index = next(
-        (
-            index for index in range(len(result) - 1, -1, -1)
-            if isinstance(result[index], HumanMessage)
-            and result[index].message_id == turn_context.latest_human_message_id
-        ),
-        None,
+    if not state.temporary_context:
+        return state.messages
+    # 1. 按来源和条目标识固定排列，插件重复更新不会改变历史消息正文。
+    description = "\n\n".join(
+        f"[{item.title}]\n{item.text}"
+        for _, item in sorted(state.temporary_context.items())
     )
-    suffix = f"[系统提示]\n当前日期时间：{format_local_time(turn_context.captured_at)}"
-    if turn_context.recalled_memory.strip():
-        suffix += (
-            "\n\n以下是自动检索到的可能相关记忆，仅供参考：\n"
-            + turn_context.recalled_memory.strip()
-        )
-    # 1. 后台通知轮次没有当前真人输入时，系统上下文单独插入，不能改写历史真人消息。
-    if target_index is None:
-        if result and isinstance(result[-1], RuntimeInputMessage):
-            result.insert(len(result) - 1, SystemMessage(text=suffix))
-        return tuple(result)
-    target = result[target_index]
-    assert isinstance(target, HumanMessage)
-    text = f"{target.text}\n\n{suffix}" if target.text else suffix
-    result[target_index] = with_text(target, text)
-    return tuple(result)
+    # 2. 环境消息只进入本次请求；checkpoint 保存的是条目，不保存这条派生消息。
+    return (*state.messages, EnvironmentPerceptionMessage(
+        perception_kind="model_context", description=description,
+    ))
 
 
 def build_model_window(

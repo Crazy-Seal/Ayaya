@@ -491,12 +491,12 @@ class ModelInputCoordinator:
             state (AgentState): 当前状态或供预算检查使用的候选状态。
             system_prompt (str): 本次主模型的系统提示词。
             tools (list[dict]): 当前向模型公开的工具定义。
-            turn_context (RuntimeContext): 当前轮次的时间、真人输入编号和检索记忆。
+            turn_context (RuntimeContext): 当前轮次的来源、真人输入编号和控制信号。
 
         Returns:
             tuple[Sequence[InputMessage], TokenAssessment]: 完整模型消息与同一份输入的预算结果。
         """
-        transient = append_transient_context(state.messages, turn_context)
+        transient = append_transient_context(state)
         history = build_model_window(transient)
         messages = (
             [SystemMessage(text=system_prompt)]
@@ -577,7 +577,7 @@ class ModelInputCoordinator:
         for ratio in (0.60, 0.75):
             candidate = await self.compaction.summarize_candidate(frozen, ratio)
             candidate_state = AgentState.from_checkpoint(state.to_checkpoint())
-            # 4.1. 在独立候选状态上估算，只有低于阈值的候选才更新当前内存状态。
+            # 4.1. 候选状态也恢复临时条目，完整估算环境背景后才更新当前历史。
             candidate_state.commit_compaction(candidate)
             candidate_messages, candidate_assessment = self._view(
                 candidate_state, system_prompt, tools, turn_context

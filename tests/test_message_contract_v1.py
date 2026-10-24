@@ -2,9 +2,10 @@ from dataclasses import replace
 from datetime import timedelta
 import pytest
 
-from app.agent.state import AgentState
+from app.agent.state import AgentState, TemporaryContextItem
 from app.agent.state.messages import (AssistantMessage, BaseMessage, ContextSummaryMessage, HumanMessage,
     RuntimeInputMessage, SystemMessage, TaskResultMessage, ToolCall, ToolMessage, ProviderData,
+    EnvironmentPerceptionMessage,
     TextContent, ImageContent, text_content, message_from_storage_format, MessageContractError, notification_text)
 from app.schemas.runtime_types import TaskResultStatus
 
@@ -17,6 +18,35 @@ def test_domain_message_roundtrip_is_independent_of_provider_roles() -> None:
     for message in messages:
         stored = message.to_storage_format()
         assert "role" not in stored and message_from_storage_format(stored) == message
+
+
+def test_temporary_context_restores_from_checkpoint_without_entering_history_messages() -> None:
+    """临时条目独立保存到 checkpoint，旧 checkpoint 缺少字段时恢复为空集合。"""
+    state = AgentState.create_new("temporary-context")
+    state.add_user_message("原始问题")
+    state.set_temporary_context("weather.current", TemporaryContextItem(title="天气", text="晴"))
+    state.set_temporary_context("weather.current", TemporaryContextItem(title="天气", text="雨"))
+    checkpoint = state.to_checkpoint()
+    restored = AgentState.from_checkpoint(checkpoint)
+    assert restored.temporary_context == {"weather.current": TemporaryContextItem(title="天气", text="雨")}
+    assert [message.text for message in restored.messages] == ["原始问题"]
+    restored.remove_temporary_context("weather.current")
+    assert restored.to_checkpoint()["temporary_context"] == {}
+    del checkpoint["temporary_context"]
+    assert AgentState.from_checkpoint(checkpoint).temporary_context == {}
+
+
+def test_environment_message_is_request_only_and_cannot_activate_agent() -> None:
+    """环境背景不属于运行时输入，也不能作为持久状态消息追加或恢复。"""
+    message = EnvironmentPerceptionMessage(perception_kind="model_context", description="本次请求背景")
+    state = AgentState.create_new("environment")
+    assert not message.enters_protocol_log
+    with pytest.raises(TypeError, match="Agent 输入"):
+        state.append_input(message)
+    checkpoint = state.to_checkpoint()
+    checkpoint["messages"] = [message.to_storage_format()]
+    with pytest.raises(ValueError, match="EnvironmentPerceptionMessage"):
+        AgentState.from_checkpoint(checkpoint)
 
 
 def test_unknown_and_mixed_task_results_keep_business_status() -> None:

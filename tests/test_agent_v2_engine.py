@@ -430,7 +430,8 @@ def test_tool_call_extra_content_roundtrips_into_followup_request():
     assert llm.messages[0][0] == llm.messages[1][0]
     assert llm.messages[0][0]["content"] == "sys"
     latest_user = next(message for message in llm.messages[0] if message.get("role") == "user")
-    assert "当前日期时间：" in latest_user["content"]
+    assert latest_user == next(message for message in llm.messages[1] if message.get("role") == "user")
+    assert all(request[-1].get("name") == "runtime_environment_perception" for request in llm.messages)
 
     assistant_call = next(
         message for message in llm.messages[1]

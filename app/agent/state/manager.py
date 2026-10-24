@@ -216,6 +216,8 @@ class SessionStateManager:
         Returns:
             int: 已保存的 checkpoint 编号。
         """
+        # 1. 完成状态与背景清空一起提交，下一轮只读取新的临时内容。
+        state.clear_temporary_context()
         return await self.save(state, checkpoint_type="completed", release_queued=release_queued)
 
     async def save_interrupt_origin(self, state: AgentState, origin_channel: str) -> None:
@@ -358,7 +360,8 @@ class SessionStateManager:
                 raise RuntimeError("已保存的流式文本缺少对应 assistant 消息")
             state.replace_message(replace(previous, content=text_content(previous.text + "……（被用户打断）")))
             rewritten_message_id = previous.message_id
-        # 2. 终止轮次也保存 completed，但不代表正常完成，不能放行队列。
+        # 2. 终止轮次清空背景并保存 completed，不放行队列。
+        state.clear_temporary_context()
         await self.save(state, checkpoint_type="completed", rewritten_message_id=rewritten_message_id)
 
     async def unfinished_sessions(self) -> list[str]:
@@ -570,6 +573,7 @@ class SessionStateManager:
             else:
                 # 2.1. 最终提交或工具前 checkpoint 被取消时，内存步骤尚未落盘，需补保存。
                 state.add_assistant_message(partial + suffix, origin_channel=origin_channel)
-        # 3. 终止是存储维护，不能运行正常完成钩子或放行旧排队输入。
+        # 3. 清空已结束轮次的背景，与终止状态一起保存，不运行响应钩子或放行队列。
+        state.clear_temporary_context()
         await self.save(state, checkpoint_type="completed", rewritten_message_id=rewritten_message_id)
         return True
