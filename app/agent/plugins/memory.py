@@ -40,7 +40,7 @@ MEMORY_PREAMBLE = (
 
 
 class MemoryPlugin(BasePlugin):
-    """在新激活提交时准备上一批记忆，在模型调用时检索本轮真人相关记忆。
+    """在新输入提交前准备上一批记忆，提交后启动整理并检索本轮相关记忆。
 
     真人或纯内部通知都能启动新激活；当前轮次中途交付通知不进入激活提交钩子。
 
@@ -64,14 +64,13 @@ class MemoryPlugin(BasePlugin):
 
     @property
     def hooks(self) -> list[PluginHook]:
-        """订阅新激活输入提交前后和本轮模型调用开始的事件。
+        """订阅新激活输入提交前和本轮执行开始的事件。
 
         Returns:
             list[PluginHook]: 准备、启动上一批派生任务及召回本轮记忆的钩子。
         """
         return [
             PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT,
-            PluginHook.AFTER_ACTIVATION_INPUT_COMMIT,
             PluginHook.ON_INVOKE,
         ]
 
@@ -110,9 +109,10 @@ class MemoryPlugin(BasePlugin):
         state = context.agent_state
         if context.hook == PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT:
             await self._prepare_activation_input_commit(state, context.data)
-        elif context.hook == PluginHook.AFTER_ACTIVATION_INPUT_COMMIT:
-            self._schedule_committed_memory(context.data)
         elif context.hook == PluginHook.ON_INVOKE:
+            # 1. 新输入已经保存，先启动提交前准备好的上一批记忆任务。
+            self._schedule_committed_memory(context.data)
+            # 2. 用本轮真人输入检索记忆，写入后续模型请求共用的临时背景。
             runtime_context = (context.data or {}).get("runtime_context") if isinstance(context.data, dict) else None
             if runtime_context is not None:
                 await self._inject_context(state, runtime_context)
@@ -155,11 +155,11 @@ class MemoryPlugin(BasePlugin):
         """在新激活输入加入前，记录上一批派生任务的历史范围并消费到期计数。
 
         由 Agent 的激活前置钩子调用，真人或纯内部通知激活都适用。
-        这里只准备任务；计数随本次输入 checkpoint 保存，后置钩子才启动任务。
+        这里只准备任务；计数随本次输入 checkpoint 保存，ON_INVOKE 再启动任务。
 
         Args:
             state (AgentState): 新激活加载的状态，保存尚未消费的真人输入计数。
-            commit_context (dict): 前后钩子共用的数据，接收本次准备的记忆任务。
+            commit_context (dict): 与 ON_INVOKE 共用的数据，接收本次准备的记忆任务。
         """
         # 1. 使用此前已提交的真人计数判断批次到期，当前激活输入尚未加入。
         pending_count = state.long_term_memory_turn_counter
@@ -203,7 +203,7 @@ class MemoryPlugin(BasePlugin):
         """新激活输入提交成功后，启动前置钩子准备的上一批派生记忆任务。
 
         Args:
-            commit_context (dict): 激活前后钩子共用的数据，含已固定范围的记忆任务。
+            commit_context (dict): 输入前置钩子与 ON_INVOKE 共用的数据，含已固定范围的记忆任务。
         """
         # 1. 没有准备成功的任务就结束，不在后台重新判断计数或读取最新高水位。
         memory_job = commit_context.get("memory")

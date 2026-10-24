@@ -127,6 +127,7 @@ class ExecutionPipeline:
         session_state_manager: SessionStateManager | None = None,
         runtime_context: RuntimeContext | None = None,
         *, receive_task_notifications: bool = False,
+        activation_data: dict | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """确定本轮真人输入标识，运行调用钩子后进入模型工具循环。
 
@@ -135,6 +136,7 @@ class ExecutionPipeline:
             session_state_manager (SessionStateManager | None): 借用的会话状态业务对象，不负责关闭。
             runtime_context (RuntimeContext | None): 本轮临时上下文，不写入持久消息。
             receive_task_notifications (bool): 是否在安全点查询待交付任务通知。
+            activation_data (dict | None): 输入提交前钩子准备的数据，输入保存成功后交给 ON_INVOKE。
 
         Yields:
             AgentEvent: 按执行顺序产生的 Agent 事件。
@@ -142,9 +144,12 @@ class ExecutionPipeline:
         runtime_context = runtime_context or RuntimeContext.capture()
         if state.messages and isinstance(state.messages[-1], HumanMessage):
             runtime_context.latest_human_message_id = state.messages[-1].message_id
-        # ON_INVOKE 钩子 - 每轮仅在此触发一次
+        # 1. 输入已经保存，补充本轮运行数据，再让插件启动准备好的工作并检索资料。
+        # 1.1. 共用输入前置钩子的字典；审批恢复直接进入原循环，沿用已保存进度。
+        hook_data = activation_data if activation_data is not None else {}
+        hook_data["runtime_context"] = runtime_context
         await self._plugin_manager.run_hooks(
-            PluginHook.ON_INVOKE, state, data={"runtime_context": runtime_context}
+            PluginHook.ON_INVOKE, state, data=hook_data,
         )
         # 显式等待下层迭代关闭，保证响应和借用资源在返回前完成清理。
         async with aclosing(self._run_loop(

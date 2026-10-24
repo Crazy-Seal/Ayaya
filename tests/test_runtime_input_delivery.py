@@ -57,12 +57,12 @@ class ProbeModel:
 
 
 class BlockingInputHooks(BasePlugin):
-    """在激活后置钩子暂停，让测试观察此前已经输出的提交事实。
+    """在 ON_INVOKE 钩子暂停，让测试观察此前已经输出的提交事实。
 
     Attributes:
         calls (list[PluginHook]): 按调用顺序记录的激活钩子。
-        entered (asyncio.Event): 后置钩子已开始等待的信号。
-        release (asyncio.Event): 测试允许后置钩子结束等待的信号。
+        entered (asyncio.Event): ON_INVOKE 钩子已开始等待的信号。
+        release (asyncio.Event): 测试允许 ON_INVOKE 钩子结束等待的信号。
     """
 
     name = "blocking_input_hooks"
@@ -75,21 +75,21 @@ class BlockingInputHooks(BasePlugin):
 
     @property
     def hooks(self):
-        """只订阅一轮输入激活的前后提交钩子。
+        """只订阅一轮输入激活的提交前和执行开始钩子。
 
         Returns:
-            list[PluginHook]: 两个输入激活钩子。
+            list[PluginHook]: 输入保存前与执行开始的两个钩子。
         """
-        return [PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, PluginHook.AFTER_ACTIVATION_INPUT_COMMIT]
+        return [PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, PluginHook.ON_INVOKE]
 
     async def execute(self, context):
-        """记录激活步骤，在后置钩子等待测试放行。
+        """记录激活步骤，在 ON_INVOKE 钩子等待测试放行。
 
         Args:
             context (HookContext): Agent 当前分发的激活步骤。
         """
         self.calls.append(context.hook)
-        if context.hook == PluginHook.AFTER_ACTIVATION_INPUT_COMMIT:
+        if context.hook == PluginHook.ON_INVOKE:
             self.entered.set()
             await self.release.wait()
 
@@ -109,14 +109,14 @@ def make_agent(tmp_path, model):
                  db_path=str(tmp_path / "state.sqlite3"), llm_client=model)
 
 
-def test_human_commit_event_precedes_after_hook_and_model(tmp_path) -> None:
-    """提交事件先于后置钩子和模型，真实消息身份与交付状态已经可查询。
+def test_human_commit_event_precedes_on_invoke_and_model(tmp_path) -> None:
+    """提交事件先于 ON_INVOKE 钩子和模型，真实消息身份与交付状态已经可查询。
 
     Args:
         tmp_path (Path): 隔离存储目录。
     """
     async def scenario():
-        """逐次读取真实生成器，控制后置钩子并验证事件和数据库顺序。"""
+        """逐次读取真实生成器，控制 ON_INVOKE 钩子并验证事件和数据库顺序。"""
         model = ProbeModel()
         agent = make_agent(tmp_path, model)
         hooks = BlockingInputHooks()
@@ -143,7 +143,7 @@ def test_human_commit_event_precedes_after_hook_and_model(tmp_path) -> None:
             remaining = [item async for item in stream]
             assert [item.type for item in remaining] == [EventType.DONE]
             assert model.calls == 1
-            assert hooks.calls == [PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, PluginHook.AFTER_ACTIVATION_INPUT_COMMIT]
+            assert hooks.calls == [PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, PluginHook.ON_INVOKE]
             assert (await agent.session_state_manager.load()).long_term_memory_turn_counter == 1
         finally:
             hooks.release.set()
@@ -157,16 +157,16 @@ def test_human_commit_event_precedes_after_hook_and_model(tmp_path) -> None:
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("cancel_after_hook", [False, True])
-def test_commit_stream_close_or_cancel_preserves_saved_fact(tmp_path, cancel_after_hook) -> None:
-    """提交后关闭或取消生成器不重复保存、不补跑后置钩子，也不开始模型请求。
+@pytest.mark.parametrize("cancel_during_on_invoke", [False, True])
+def test_commit_stream_close_or_cancel_preserves_saved_fact(tmp_path, cancel_during_on_invoke) -> None:
+    """提交后关闭或取消生成器不重复保存、不补跑 ON_INVOKE 钩子，也不开始模型请求。
 
     Args:
         tmp_path (Path): 隔离存储目录。
-        cancel_after_hook (bool): 是否继续到后置钩子等待处再取消。
+        cancel_during_on_invoke (bool): 是否继续到 ON_INVOKE 钩子等待处再取消。
     """
     async def scenario():
-        """在提交事实输出处关闭，或在后置钩子中取消真实 Agent 流。"""
+        """在提交事实输出处关闭，或在 ON_INVOKE 钩子中取消真实 Agent 流。"""
         model = ProbeModel()
         agent = make_agent(tmp_path, model)
         hooks = BlockingInputHooks()
@@ -178,7 +178,7 @@ def test_commit_stream_close_or_cancel_preserves_saved_fact(tmp_path, cancel_aft
         try:
             assert (await anext(stream)).type == EventType.RUN_STARTED
             assert (await anext(stream)).type == EventType.HUMAN_INPUT_COMMITTED
-            if cancel_after_hook:
+            if cancel_during_on_invoke:
                 pending = asyncio.create_task(anext(stream))
                 await asyncio.wait_for(hooks.entered.wait(), 1)
                 pending.cancel()
@@ -186,7 +186,7 @@ def test_commit_stream_close_or_cancel_preserves_saved_fact(tmp_path, cancel_aft
                     await pending
             await stream.aclose()
             assert model.calls == 0
-            assert len(hooks.calls) == (2 if cancel_after_hook else 1)
+            assert len(hooks.calls) == (2 if cancel_during_on_invoke else 1)
             with closing(sqlite3.connect(tmp_path / "state.sqlite3")) as db:
                 assert db.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] == 1
                 assert db.execute("SELECT COUNT(*) FROM conversation_messages").fetchone()[0] == 1
@@ -305,15 +305,15 @@ def test_first_model_boundary_reads_only_explicitly_provided_inbox(tmp_path, pro
 
 
 @pytest.mark.parametrize("with_image", [False, True])
-def test_hub_preserves_human_payload_before_blocked_after_hook(tmp_path, with_image) -> None:
-    """新提交事实映射为原界面事件，阻塞后置钩子时正文、附件和去重身份已经可见。
+def test_hub_preserves_human_payload_before_blocked_on_invoke(tmp_path, with_image) -> None:
+    """新提交事实映射为原界面事件，阻塞 ON_INVOKE 钩子时正文、附件和去重身份已经可见。
 
     Args:
         tmp_path (Path): 隔离会话和消息数据库目录。
         with_image (bool): 是否同时验证真人附件的原始图片地址。
     """
     async def scenario():
-        """用真实 Agent、Scheduler 和 Hub 接通提交事件，模型与后置钩子由测试控制。"""
+        """用真实 Agent、Scheduler 和 Hub 接通提交事件，模型与 ON_INVOKE 钩子由测试控制。"""
         path = str(tmp_path / "state.sqlite3")
         model = ProbeModel()
         agent = make_agent(tmp_path, model)

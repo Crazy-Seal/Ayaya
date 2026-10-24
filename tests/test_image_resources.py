@@ -285,6 +285,7 @@ def test_user_image_is_saved_before_first_protocol_commit(
                 state,
                 "看看这张图",
                 [image],
+                activation_data={},
             ):
                 pass
             db = await agent.session_state_manager._state_dao._get_db()
@@ -344,6 +345,7 @@ def test_text_input_does_not_save_images(monkeypatch, tmp_path: Path) -> None:
                 state,
                 "只有文字",
                 None,
+                activation_data={},
             ):
                 pass
             return state
@@ -400,6 +402,7 @@ def test_image_save_failure_does_not_block_user_commit(
                 state,
                 "继续聊天",
                 ["data:image/png;base64,AA=="],
+                activation_data={},
             ):
                 pass
             db = await agent.session_state_manager._state_dao._get_db()

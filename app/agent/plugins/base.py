@@ -15,12 +15,11 @@ class PluginHook(str, Enum):
     Attributes:
         BEFORE_ACTIVATION_INPUT_COMMIT (PluginHook): Agent 在新一轮真人或内部通知
             输入追加前触发，用于准备上一批派生任务；原轮次恢复和中途通知不触发。
-        AFTER_ACTIVATION_INPUT_COMMIT (PluginHook): 同一激活的输入、协议历史和
-            Inbox 交付保存成功后触发；提交失败时不触发。
+        ON_INVOKE (PluginHook): 新一轮输入、协议历史和 Inbox 交付保存成功后触发，
+            接收前置钩子准备的数据及 runtime_context；审批恢复沿用原轮次进度。
     """
 
     BEFORE_ACTIVATION_INPUT_COMMIT = "before_activation_input_commit"
-    AFTER_ACTIVATION_INPUT_COMMIT = "after_activation_input_commit"
     ON_INVOKE = "on_invoke"
     BEFORE_LLM = "before_llm"
     AFTER_LLM = "after_llm"

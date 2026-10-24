@@ -141,12 +141,12 @@ class RecordingHooks(BasePlugin):
 
     @property
     def hooks(self) -> list[PluginHook]:
-        """订阅激活输入的前后提交事件。
+        """订阅输入保存前与本轮执行开始的事件。
 
         Returns:
             list[PluginHook]: 新激活应各触发一次的两个事件。
         """
-        return [PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, PluginHook.AFTER_ACTIVATION_INPUT_COMMIT]
+        return [PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, PluginHook.ON_INVOKE]
 
     async def execute(self, context: HookContext) -> None:
         """记录真实插件分发事件，不修改 Agent 状态。
@@ -591,7 +591,7 @@ def test_runtime_only_activation_extracts_previous_batch_without_counting_notice
             assert not any(isinstance(item, TaskResultMessage) for item in selected)
             assert memory.cutoffs == [cutoff]
             assert len(memory.extractions) == 1
-            assert hooks == [PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, PluginHook.AFTER_ACTIVATION_INPUT_COMMIT]
+            assert hooks == [PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, PluginHook.ON_INVOKE]
         finally:
             await agent.close()
             await manager.close()
@@ -655,7 +655,7 @@ def test_mixed_activation_and_repeated_notices_use_one_activation_hook_pair(tmp_
             assert await inbox.read_task_terminals() == ()
             assert saved.long_term_memory_turn_counter == 10
             assert memory.cutoffs == [] and memory.extractions == []
-            assert hooks == [PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, PluginHook.AFTER_ACTIVATION_INPUT_COMMIT]
+            assert hooks == [PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, PluginHook.ON_INVOKE]
         finally:
             if running is not None and not running.done():
                 running.cancel()
@@ -761,7 +761,7 @@ def test_resuming_original_turn_does_not_commit_another_activation(tmp_path: Pat
             assert await inbox.read_task_terminals() == ()
             assert saved.long_term_memory_turn_counter == 10
             assert memory.cutoffs == [] and memory.extractions == []
-            assert hooks == [PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, PluginHook.AFTER_ACTIVATION_INPUT_COMMIT]
+            assert hooks == [PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, PluginHook.ON_INVOKE]
         finally:
             await agent.close()
             await manager.close()
@@ -853,7 +853,7 @@ def test_failed_activation_commit_preserves_batch_and_retry_extracts_frozen_hist
             assert hooks == [
                 PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT,
                 PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT,
-                PluginHook.AFTER_ACTIVATION_INPUT_COMMIT,
+                PluginHook.ON_INVOKE,
             ]
         finally:
             for agent in agents:

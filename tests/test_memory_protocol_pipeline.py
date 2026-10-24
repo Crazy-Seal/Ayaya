@@ -317,7 +317,7 @@ def test_long_term_memory_is_scheduled_after_next_activation_input_commit(monkey
     class MemoryManager:
         """提供激活前记忆准备所需的固定协议截止位置。"""
         async def get_protocol_history_cutoff(self):
-            """返回用于检验前后钩子传递的历史截止位置。
+            """返回用于检验提交前钩子向 ON_INVOKE 传递的历史截止位置。
 
             Returns:
                 int: 测试中固定的截止消息编号。
@@ -370,7 +370,7 @@ def test_long_term_memory_is_scheduled_after_next_activation_input_commit(monkey
             "long_term_memory_turns": 10,
         }
         await plugin.execute(HookContext.create(
-            PluginHook.AFTER_ACTIVATION_INPUT_COMMIT, state, data=input_context
+            PluginHook.ON_INVOKE, state, data=input_context
         ))
         return state, scheduled
     state, tasks = asyncio.run(scenario())
@@ -429,7 +429,7 @@ def test_diary_and_long_term_memory_are_scheduled_independently(monkeypatch) -> 
             PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, state, data=commit_context
         ))
         await plugin.execute(HookContext.create(
-            PluginHook.AFTER_ACTIVATION_INPUT_COMMIT, state, data=commit_context
+            PluginHook.ON_INVOKE, state, data=commit_context
         ))
         return state, commit_context
     state, commit_context = asyncio.run(scenario())

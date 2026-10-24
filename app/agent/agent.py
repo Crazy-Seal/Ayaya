@@ -341,11 +341,13 @@ class Agent:
         await self.session_state_manager.close_previous_tools(state)
 
         # 3. 原子提交本批内部通知与真人输入，再进入可停止的模型工具循环。
+        activation_data: dict = {}
         try:
-            # 3.1. 显式关闭嵌套生成器；取消或停止读取后不补跑激活后置钩子。
+            # 3.1. 显式关闭嵌套生成器；取消或停止读取后不补跑 ON_INVOKE。
             async with aclosing(self._commit_user_input(
                 state, message, images, origin_channel=origin_channel,
                 inbox_input=inbox_input, inbox_inputs=inbox_inputs,
+                activation_data=activation_data,
             )) as committed_events:
                 async for event in committed_events:
                     yield event
@@ -362,6 +364,7 @@ class Agent:
                 state,
                 session_state_manager=self.session_state_manager,
                 runtime_context=runtime_context, receive_task_notifications=receive_task_notifications,
+                activation_data=activation_data,
             ),
             failure_message="本轮执行出错，已保留最近工具进度，未写入最终 checkpoint",
             origin_channel=origin_channel,
@@ -374,6 +377,7 @@ class Agent:
     async def _commit_runtime_activation_inputs(
         self, state: AgentState, messages: tuple[RuntimeInputMessage, ...] | None,
         inputs: tuple[InboxEnvelope, ...],
+        *, activation_data: dict,
     ) -> None:
         """在新一轮纯内部通知激活时，协调输入提交和上一批记忆任务。
 
@@ -384,20 +388,16 @@ class Agent:
             state (AgentState): 本次新激活加载的会话状态。
             messages (tuple[RuntimeInputMessage, ...]): 本次激活需要交付的内部通知。
             inputs (tuple[InboxEnvelope, ...]): 与通知一同持久交付的输入快照。
+            activation_data (dict): 输入前置钩子准备的数据，保存成功后供 ON_INVOKE 使用。
         """
         # 1. 新轮先清空上一轮背景，再让插件准备本次激活的数据。
         state.clear_temporary_context()
-        # 2. 本次通知加入前准备上一批派生任务，前后钩子共用同一提交上下文。
-        commit_context: dict = {}
+        # 2. 本次通知加入前准备上一批派生任务，将准备数据交给后续 ON_INVOKE。
         await self.plugin_manager.run_hooks(
-            PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, state, data=commit_context,
+            PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, state, data=activation_data,
         )
         # 3. 消息与输入交付标记原子保存；失败时直接退出，不启动后台派生任务。
         await self.session_state_manager.commit_runtime_inputs(state, messages, inputs)
-        # 4. 只有输入事务成功后才通知插件启动已经准备好的上一批任务。
-        await self.plugin_manager.run_hooks(
-            PluginHook.AFTER_ACTIVATION_INPUT_COMMIT, state, data=commit_context,
-        )
 
     async def run_runtime_inputs(
         self, messages: tuple[RuntimeInputMessage, ...] | None = None, *,
@@ -425,10 +425,13 @@ class Agent:
         if state.is_interrupted():
             raise RuntimeError("待处理工具中断期间不能交付后台通知")
         yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": DESKTOP_CHANNEL, "resumed": False})
-        # 2. 新激活只执行一组输入提交钩子，再以 desktop 来源启动内部轮次。
+        # 2. 新激活先准备并保存输入，再以 desktop 来源进入 ON_INVOKE 和模型循环。
         # 2.1. 通知可以启动上一批已到期的记忆提取，但自身不增加真人计数。
+        activation_data: dict = {}
         try:
-            await self._commit_runtime_activation_inputs(state, messages, inbox_inputs)
+            await self._commit_runtime_activation_inputs(
+                state, messages, inbox_inputs, activation_data=activation_data,
+            )
         except InputNoLongerPending:
             # 2.2. 整批输入未交付时直接结束，不把回滚后的内存状态传给模型。
             yield AgentEvent(EventType.DONE, {"input_cancelled": True})
@@ -442,6 +445,7 @@ class Agent:
             self.pipeline.execute(
                 state, session_state_manager=self.session_state_manager,
                 runtime_context=runtime_context, receive_task_notifications=receive_task_notifications,
+                activation_data=activation_data,
             ),
             failure_message="后台通知执行出错",
             origin_channel=DESKTOP_CHANNEL,
@@ -456,34 +460,35 @@ class Agent:
         message: str,
         images: list[str] | None,
         *,
+        activation_data: dict,
         origin_channel: str = DESKTOP_CHANNEL,
         inbox_input: InboxEnvelope | None = None,
         inbox_inputs: tuple[InboxEnvelope, ...] | None = None,
     ) -> AsyncIterator[AgentEvent]:
-        """提交一次真人输入激活，同批通知与真人消息共用一组前后钩子。
+        """准备并提交一次真人输入激活，保存同批通知与真人消息。
 
         由 run 在模型循环开始前调用。前置钩子处理本次输入之前的记忆批次；
-        消息保存成功后先发布真人输入事实，再执行后置钩子启动派生任务。
+        消息保存成功后先发布真人输入事实，调用方随后进入 ON_INVOKE 启动派生任务。
 
         Args:
             state (AgentState): 当前 Agent 状态。
             message (str): 真人文本或类型声明对应的内部通知。
             images (list[str] | None): 真人附件的图片 data URL 列表。
+            activation_data (dict): 输入前置钩子准备的数据，保存成功后供 ON_INVOKE 使用。
             origin_channel (str): 输入或本轮回复所属的渠道。
             inbox_input (InboxEnvelope | None): 随本次 checkpoint 原子交付的单条输入快照。
             inbox_inputs (tuple[InboxEnvelope, ...] | None): 随本次 checkpoint 原子交付的输入快照集合。
 
         Yields:
-            AgentEvent: 事务成功后的真人输入提交事实；继续读取后才运行激活后置钩子。
+            AgentEvent: 事务成功后的真人输入提交事实。
         """
         # 1. 新轮先清空上一轮背景，再让插件准备本次激活的数据。
         state.clear_temporary_context()
         # 2. 本次激活输入尚未追加，先准备上一批派生任务，不包含本次真人或通知。
-        commit_context: dict = {}
         await self.plugin_manager.run_hooks(
             PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT,
             state,
-            data=commit_context,
+            data=activation_data,
         )
 
         # 3. Manager 统一准备同批任务通知、真人图片与计数，保存成功才返回真人事实。
@@ -498,13 +503,6 @@ class Agent:
             "message": human_message,
             "input_sequence": human_input.id if human_input is not None else None,
         })
-
-        # 5. 只有输入保存成功才启动上一批任务；保存失败时数据库保留原待消费计数。
-        await self.plugin_manager.run_hooks(
-            PluginHook.AFTER_ACTIVATION_INPUT_COMMIT,
-            state,
-            data=commit_context,
-        )
 
     async def resume(
         self, request_id: str, *, resume_data: dict | None = None,

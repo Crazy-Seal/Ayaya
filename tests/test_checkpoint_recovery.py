@@ -657,7 +657,7 @@ class CommitOrderPlugin(BasePlugin):
 
 
 class ActivationInputCommitOrderPlugin(BasePlugin):
-    """观察新激活输入保存前后的插件事件和共享提交数据。
+    """观察输入保存前和本轮执行开始的插件事件及共享准备数据。
 
     Attributes:
         order (list[str]): 钩子与 checkpoint 保存顺序的共同记录。
@@ -674,23 +674,23 @@ class ActivationInputCommitOrderPlugin(BasePlugin):
 
     @property
     def hooks(self) -> list[PluginHook]:
-        """订阅新激活的输入提交前后事件。
+        """订阅输入保存前与 ON_INVOKE 事件。
 
         Returns:
-            list[PluginHook]: 输入保存之前和成功之后的两个钩子。
+            list[PluginHook]: 输入保存之前与本轮执行开始的两个钩子。
         """
         return [
             PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT,
-            PluginHook.AFTER_ACTIVATION_INPUT_COMMIT,
+            PluginHook.ON_INVOKE,
         ]
 
     async def execute(self, context: HookContext) -> None:
-        """核对输入所在阶段，记录前后钩子并检查提交数据共用。
+        """核对输入所在阶段，检查 ON_INVOKE 收到提交前准备的数据。
 
         Args:
             context (HookContext): Agent 分发的激活提交上下文。
         """
-        # 1. 前置事件应看不到本次新输入，准备的数据交给后置事件继续检查。
+        # 1. 输入前置钩子读取旧历史，准备的数据交给 ON_INVOKE 继续检查。
         if context.hook == PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT:
             assert not any(
                 isinstance(message, HumanMessage) and message.text == "本轮新输入"
@@ -698,14 +698,15 @@ class ActivationInputCommitOrderPlugin(BasePlugin):
             )
             self.order.append("before_activation_input_commit")
             context.data["prepared_previous_turn"] = True
-        # 2. 后置事件应看到已保存的新输入，并接到同一个前置准备结果。
-        elif context.hook == PluginHook.AFTER_ACTIVATION_INPUT_COMMIT:
-            assert context.data == {"prepared_previous_turn": True}
+        # 2. ON_INVOKE 读取已保存的新输入、前置准备结果及本轮真人编号。
+        elif context.hook == PluginHook.ON_INVOKE:
+            assert context.data["prepared_previous_turn"] is True
+            assert context.data["runtime_context"].latest_human_message_id == context.agent_state.messages[-1].message_id
             assert any(
                 isinstance(message, HumanMessage) and message.text == "本轮新输入"
                 for message in context.agent_state.messages
             )
-            self.order.append("after_activation_input_commit")
+            self.order.append("on_invoke")
 
 
 def test_response_commit_hooks_wrap_completed_checkpoint(tmp_path: Path) -> None:
@@ -760,8 +761,8 @@ def test_response_commit_hooks_wrap_completed_checkpoint(tmp_path: Path) -> None
     ]
 
 
-def test_activation_input_commit_hooks_wrap_intermediate_checkpoint(tmp_path: Path) -> None:
-    """新激活前后钩子包围输入 checkpoint，不等待最终回复提交。
+def test_on_invoke_receives_prepared_data_after_input_checkpoint(tmp_path: Path) -> None:
+    """输入 checkpoint 保存后，ON_INVOKE 接收提交前准备的数据和本轮真人编号。
 
     Args:
         tmp_path (Path): Pytest 提供的临时存储目录。
@@ -805,12 +806,12 @@ def test_activation_input_commit_hooks_wrap_intermediate_checkpoint(tmp_path: Pa
     assert asyncio.run(scenario()) == [
         "before_activation_input_commit",
         "save_intermediate",
-        "after_activation_input_commit",
+        "on_invoke",
         "save_completed",
     ]
 
 
-def test_intermediate_checkpoint_failure_skips_after_activation_input_hook(
+def test_intermediate_checkpoint_failure_skips_on_invoke(
     tmp_path: Path,
 ) -> None:
     """激活输入保存失败时只执行前置钩子，不通知输入已提交。
@@ -819,7 +820,7 @@ def test_intermediate_checkpoint_failure_skips_after_activation_input_hook(
         tmp_path (Path): Pytest 提供的临时存储目录。
     """
     async def scenario() -> list[str]:
-        """拒绝中间 checkpoint，观察后置钩子是否保持未触发。
+        """拒绝中间 checkpoint，观察 ON_INVOKE 是否保持未触发。
 
         Returns:
             list[str]: 保存失败前实际发生的事件。
