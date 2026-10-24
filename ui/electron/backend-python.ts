@@ -1,3 +1,4 @@
+import { BackendStartupCancelledError } from "./backend-errors.js";
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { access } from "node:fs/promises";
 import path from "node:path";
@@ -81,13 +82,6 @@ const defaultDependencies: BackendPythonResolverDependencies = {
   timeoutMs: DEFAULT_DISCOVERY_TIMEOUT_MS,
 };
 
-/**
- * 构造 Python 环境解析被关闭流程取消时使用的错误。
- *
- * Returns:
- *     Error: 表示环境查询已取消的 Error。
- */
-const createCancelledError = (): Error => new Error("后端启动已取消");
 
 /**
  * 取消环境查询时停止辅助子进程，避免退出后仍继续查询。
@@ -137,7 +131,7 @@ export const createBackendPythonResolver = (
      */
     (resolve, reject) => {
       if (signal?.aborted) {
-        reject(createCancelledError());
+        reject(new BackendStartupCancelledError());
         return;
       }
 
@@ -177,7 +171,7 @@ export const createBackendPythonResolver = (
        */
       const onAbort = (): void => {
         terminateHelperProcess(child);
-        finish(createCancelledError());
+        finish(new BackendStartupCancelledError());
       };
       const timer = setTimeout(/**
        * 环境查询超时后终止辅助进程，并以可读错误结束 Python 解析等待。
@@ -254,7 +248,7 @@ export const createBackendPythonResolver = (
    *     Promise<ResolvedBackendPython>: 可执行文件路径及启动环境所需信息。
    */
   const resolve = async (signal?: AbortSignal): Promise<ResolvedBackendPython> => {
-    if (signal?.aborted) throw createCancelledError();
+    if (signal?.aborted) throw new BackendStartupCancelledError();
     if (cached) return cached;
 
     const explicit = dependencies.env.AYAYA_PYTHON_EXECUTABLE?.trim();
@@ -269,7 +263,7 @@ export const createBackendPythonResolver = (
     try {
       parsed = JSON.parse(await runCondaEnvironmentList(signal));
     } catch (error) {
-      if (error instanceof Error && error.message === "后端启动已取消") throw error;
+      if (error instanceof BackendStartupCancelledError) throw error;
       if (error instanceof SyntaxError) {
         throw new Error("Conda 返回了无法解析的环境列表", { cause: error });
       }
@@ -318,7 +312,7 @@ export const createBackendPythonResolver = (
         "ayaya Conda 环境中不存在 Python 解释器，请修复环境或设置 AYAYA_PYTHON_EXECUTABLE",
       );
     }
-    if (signal?.aborted) throw createCancelledError();
+    if (signal?.aborted) throw new BackendStartupCancelledError();
 
     cached = { executable, environmentRoot };
     return cached;

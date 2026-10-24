@@ -1,3 +1,4 @@
+import { AYAYA_IMAGE_SCHEME } from "../shared-types.js";
 import { protocol } from "electron";
 
 import { backendFetch } from "./backend-client.js";
@@ -10,7 +11,7 @@ import {
  *  初始化带认证代理的本地历史图片协议。
  */
 export const initAyayaImageProtocolHandler = (): void => {
-  protocol.handle("ayaya-image", /**
+  protocol.handle(AYAYA_IMAGE_SCHEME, /**
    * 由 Electron 图片协议调用，校验 local 主机和受限相对路径后读取历史图片，无效路径明确拒绝。
    *
    * Args:

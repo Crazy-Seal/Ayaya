@@ -1,3 +1,4 @@
+import { PageEventType } from "../types.js";
 import { DEFAULT_AI_NAME } from "../../../ai-identity.js";
 import { buildSystemPrompt } from "../utils/prompt-builder.js";
 
@@ -130,7 +131,7 @@ export class LlmPage implements ISettingsPage {
      * 用户点击确认后通知设置控制器校验并保存模型和角色设置。
      */
     () => {
-      this.eventCallback?.({ type: "submit", page: "llm" });
+      this.eventCallback?.({ type: PageEventType.SUBMIT, page: "llm" });
     });
   }
 

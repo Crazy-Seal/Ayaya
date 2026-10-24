@@ -1,6 +1,7 @@
 /**
  * Electron 窗口管理
  */
+import { IpcChannel } from "../ipc-channels.js";
 
 import { app, BrowserWindow, screen } from "electron";
 import path from "node:path";
@@ -205,7 +206,7 @@ export const beginWindowShutdown = (): void => {
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
     // 2.1. 单个页面崩溃或正在卸载时，通知失败不能中断其他窗口锁定或应用资源清理。
-    try { win.webContents.send("desktop-pet:application-shutdown"); }
+    try { win.webContents.send(IpcChannel.APPLICATION_SHUTDOWN); }
     catch (error) { appendFrontendLog("warn", "shutdown", "通知页面进入退出状态失败", error); }
   }
 };
@@ -246,7 +247,7 @@ export const updateChatAttention = (update: ChatAttentionUpdate): void => {
  */
 export const deliverModelError = (message: string): void => {
   modelError = message;
-  if (chatWindow && !chatWindow.isDestroyed()) chatWindow.webContents.send("desktop-pet:model-error", message);
+  if (chatWindow && !chatWindow.isDestroyed()) chatWindow.webContents.send(IpcChannel.MODEL_ERROR, message);
 };
 
 /**
@@ -360,7 +361,7 @@ export const openChatWindow = (): BrowserWindow => {
     updateDesktopWindowReferences({ pet: mainWindow, chat: chatWindow });
   });
   win.webContents.on("did-finish-load", /** 聊天监听安装完毕后补送模型加载错误。 */
-  () => { if (modelError) win.webContents.send("desktop-pet:model-error", modelError); });
+  () => { if (modelError) win.webContents.send(IpcChannel.MODEL_ERROR, modelError); });
   if (rendererPolicy.mode === "development") void win.loadURL(`${rendererPolicy.origin}/chat.html`);
   else void win.loadFile(productionChatPath);
   win.once("ready-to-show", /** 首次启动始终显示聊天窗口，不恢复上次最小化状态。 */
@@ -480,7 +481,7 @@ export const openSettingsWindow = (page?: "tasks"): void => {
        *  在页面监听就绪后导航，避免首次加载期间连续点击丢失目标页。
        */
       const navigate = (): void => {
-        if (!target.isDestroyed()) target.webContents.send("desktop-pet:open-settings-page", page);
+        if (!target.isDestroyed()) target.webContents.send(IpcChannel.OPEN_SETTINGS_PAGE, page);
       };
       if (target.webContents.isLoadingMainFrame()) target.webContents.once("did-finish-load", navigate);
       else navigate();
@@ -608,7 +609,7 @@ export const openLogWindow = (): BrowserWindow => {
  */
 export const sendLogBatch = (batch: LogBatch): void => {
   if (!logWindow || logWindow.isDestroyed()) return;
-  logWindow.webContents.send("desktop-pet:log-batch", batch);
+  logWindow.webContents.send(IpcChannel.LOG_BATCH, batch);
 };
 
 /**

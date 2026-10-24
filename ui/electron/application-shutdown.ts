@@ -1,5 +1,10 @@
-/** 应用关闭阶段。 */
-type ShutdownPhase = "idle" | "stopping" | "complete";
+/** 表示桌面应用关闭流程的执行阶段。 */
+const ShutdownPhase = {
+  IDLE: "idle",
+  STOPPING: "stopping",
+  COMPLETE: "complete",
+} as const;
+type ShutdownPhase = typeof ShutdownPhase[keyof typeof ShutdownPhase];
 
 /**
  * 约定关闭桌面应用时的恢复停止、光标停止、后端退出、日志刷新及最终退出操作。
@@ -45,7 +50,7 @@ export interface ApplicationShutdownCoordinator {
 export const createApplicationShutdownCoordinator = (
   dependencies: ApplicationShutdownDependencies,
 ): ApplicationShutdownCoordinator => {
-  let phase: ShutdownPhase = "idle";
+  let phase: ShutdownPhase = ShutdownPhase.IDLE;
   let shutdownPromise: Promise<void> | null = null;
 
   /**
@@ -56,7 +61,7 @@ export const createApplicationShutdownCoordinator = (
    */
   const requestShutdown = (): Promise<void> => {
     if (shutdownPromise) return shutdownPromise;
-    phase = "stopping";
+    phase = ShutdownPhase.STOPPING;
     dependencies.beginBackendRecoveryShutdown();
     dependencies.stopCursorTracking();
     shutdownPromise = (/**
@@ -73,7 +78,7 @@ export const createApplicationShutdownCoordinator = (
       } catch (error) {
         dependencies.logError("刷新日志文件失败", error);
       }
-      phase = "complete";
+      phase = ShutdownPhase.COMPLETE;
       dependencies.quit();
     })();
     return shutdownPromise;
@@ -87,13 +92,13 @@ export const createApplicationShutdownCoordinator = (
      * Returns:
      *     boolean: 关闭中或已清理完成时为 true。
      */
-    isShuttingDown: () => phase !== "idle",
+    isShuttingDown: () => phase !== ShutdownPhase.IDLE,
     /**
      * 检查受管资源是否已完成清理，供最终退出事件决定是否放行。
      *
      * Returns:
      *     boolean: 关闭阶段为 complete 时为 true。
      */
-    isComplete: () => phase === "complete",
+    isComplete: () => phase === ShutdownPhase.COMPLETE,
   };
 };

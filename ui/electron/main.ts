@@ -1,6 +1,7 @@
 /**
  * Electron 主进程入口
  */
+import { BackendRecoveryChoice } from "./backend-recovery.js";
 
 import { app, dialog, type MessageBoxOptions } from "electron";
 
@@ -28,7 +29,6 @@ import {
 } from "./backend-process.js";
 import {
   createBackendRecoveryCoordinator,
-  type BackendRecoveryChoice,
   type BackendRecoveryDialogModel,
 } from "./backend-recovery.js";
 import { createApplicationShutdownCoordinator } from "./application-shutdown.js";
@@ -66,7 +66,7 @@ const showBackendRecoveryDialog = async (
   const result = mainWindow && !mainWindow.isDestroyed()
     ? await dialog.showMessageBox(mainWindow, options)
     : await dialog.showMessageBox(options);
-  return result.response === model.defaultId ? "reconnect" : "exit";
+  return result.response === model.defaultId ? BackendRecoveryChoice.RECONNECT : BackendRecoveryChoice.EXIT;
 };
 
 const backendRecoveryCoordinator = createBackendRecoveryCoordinator({

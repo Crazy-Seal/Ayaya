@@ -1,5 +1,6 @@
 /** 应用确认退出后统一阻止新的界面操作，独立于 Electron 以便验证等待阶段。 */
-export const SHUTDOWN_STATE_CHANNEL = "desktop-pet:get-shutdown-state";
+import { IpcChannel } from "../ipc-channels.js";
+export const SHUTDOWN_STATE_CHANNEL = IpcChannel.GET_SHUTDOWN_STATE;
 
 /** 主进程退出标记与 IPC 操作门禁，退出状态一旦开始便不再恢复。 */
 export interface ApplicationOperations {

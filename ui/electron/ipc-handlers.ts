@@ -1,6 +1,7 @@
 /**
  * IPC 处理器注册
  */
+import { IpcChannel } from "../ipc-channels.js";
 
 import { BrowserWindow, dialog, screen, clipboard } from "electron";
 import fs from "node:fs";
@@ -89,7 +90,7 @@ const notifyModelChanged = (): void => {
 
   // 1. 角色、聊天和设置共用同一活动模型身份。
   for (const window of [getMainWindow(), getChatWindow(), getSettingsWindow()]) {
-    if (window && !window.isDestroyed()) window.webContents.send("desktop-pet:model-changed", payload);
+    if (window && !window.isDestroyed()) window.webContents.send(IpcChannel.MODEL_CHANGED, payload);
   }
 };
 
@@ -119,7 +120,7 @@ const notifyModelTransformChanged = (model: {
     followCursor: model.followCursor ?? true,
   };
 
-  mainWindow.webContents.send("desktop-pet:model-transform-changed", payload);
+  mainWindow.webContents.send(IpcChannel.MODEL_TRANSFORM_CHANGED, payload);
 };
 
 /**
@@ -132,7 +133,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
   trustedIpc.handle(SHUTDOWN_STATE_CHANNEL, /** 页面首次加载时补查退出状态，退出门禁只保留此查询。 */
   () => applicationOperations.isShuttingDown());
   // 鼠标穿透控制
-  trustedIpc.on("desktop-pet:set-mouse-passthrough", /**
+  trustedIpc.on(IpcChannel.SET_MOUSE_PASSTHROUGH, /**
    * 可信页面请求鼠标穿透时定位发送窗口，再更新窗口是否忽略鼠标事件。
    *
    * Args:
@@ -149,7 +150,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
   });
 
   // 指针交互控制
-  trustedIpc.on("desktop-pet:set-pointer-interactive", /**
+  trustedIpc.on(IpcChannel.SET_POINTER_INTERACTIVE, /**
    * 可信页面更新模型可交互状态时，反向设置窗口穿透，允许模型区域接收鼠标。
    *
    * Args:
@@ -161,7 +162,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
     if (event.sender === getMainWindow()?.webContents && typeof enabled === "boolean") setPetPointerInteractive(enabled);
   });
 
-  trustedIpc.on("desktop-pet:begin-window-gesture", /**
+  trustedIpc.on(IpcChannel.BEGIN_WINDOW_GESTURE, /**
    * 可信页面以合法方向开始拖动自己的窗口，主进程只接受已登记聊天或日志窗口。
    * Args:
    *     event (IpcMainEvent): 已通过来源检查的发送者。
@@ -171,7 +172,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
     const win = BrowserWindow.fromWebContents(event.sender);
     if (win && isWindowGesture(kind)) beginWindowGesture(win, kind);
   });
-  trustedIpc.on("desktop-pet:end-window-gesture", /**
+  trustedIpc.on(IpcChannel.END_WINDOW_GESTURE, /**
    * 页面松开或取消鼠标捕获后只结束自己的采样，其他可信窗口不能中断操作。
    * Args:
    *     event (IpcMainEvent): 已通过来源检查的发送者。
@@ -182,7 +183,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
   });
 
   // 获取当前激活的模型
-  trustedIpc.handle("desktop-pet:get-active-model", /**
+  trustedIpc.handle(IpcChannel.GET_ACTIVE_MODEL, /**
    * 页面查询活动模型时返回身份、会话、资源地址和默认显示参数。
    *
    * Returns:
@@ -205,7 +206,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
   });
 
   // 获取模型配置
-  trustedIpc.handle("desktop-pet:get-model-config", /**
+  trustedIpc.handle(IpcChannel.GET_MODEL_CONFIG, /**
    * 页面查询模型列表时读取本地配置，并转换为页面可见的模型目录。
    *
    * Returns:
@@ -241,7 +242,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
     };
   });
 
-  trustedIpc.handle("desktop-pet:get-ai-names", /**
+  trustedIpc.handle(IpcChannel.GET_AI_NAMES, /**
    * 只读取本地模型已有会话的名字；聊天按当前会话查询，模型列表按需查询全部。
    *
    * Args:
@@ -278,7 +279,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
   });
 
   // 获取聊天设置
-  trustedIpc.handle("desktop-pet:get-chat-settings", /**
+  trustedIpc.handle(IpcChannel.GET_CHAT_SETTINGS, /**
    * 页面查询模型设置时等待主进程加载缓存或后端设置。
    *
    * Returns:
@@ -290,7 +291,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
   });
 
   // 获取最新 AI 消息
-  trustedIpc.handle("desktop-pet:get-latest-ai-message", /**
+  trustedIpc.handle(IpcChannel.GET_LATEST_AI_MESSAGE, /**
    * 页面查询最近回复时使用指定会话，未指定则使用活动模型会话。
    *
    * Args:
@@ -310,7 +311,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
 
   // 获取聊天历史
   trustedIpc.handle(
-    "desktop-pet:get-chat-history",
+    IpcChannel.GET_CHAT_HISTORY,
     /**
      * 页面分页查询历史时按会话、起点和上限请求后端。
      *
@@ -330,7 +331,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
 
   // 获取最后 N 条聊天历史
   trustedIpc.handle(
-    "desktop-pet:get-chat-history-last-n",
+    IpcChannel.GET_CHAT_HISTORY_LAST_N,
     /**
      * 页面恢复聊天时请求指定会话最近若干条历史。
      *
@@ -348,7 +349,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
   );
 
   // 更新聊天设置
-  trustedIpc.handle("desktop-pet:update-chat-settings", /**
+  trustedIpc.handle(IpcChannel.UPDATE_CHAT_SETTINGS, /**
    * 页面保存模型设置时等待后端校验和持久保存，返回实际保存结果。
    *
    * Args:
@@ -364,13 +365,13 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
     const update = { sessionId: settings.session_id, name: rememberAiName(settings.session_id, settings.name) };
     // 2. 只广播显示所需的会话编号和名字，不把 API Key 等设置交给聊天页面。
     for (const window of [getChatWindow(), getSettingsWindow()]) {
-      if (window && !window.isDestroyed()) window.webContents.send("desktop-pet:ai-name-changed", update);
+      if (window && !window.isDestroyed()) window.webContents.send(IpcChannel.AI_NAME_CHANGED, update);
     }
     return settings;
   });
 
   // 获取可用工具
-  trustedIpc.handle("desktop-pet:get-available-tools", /**
+  trustedIpc.handle(IpcChannel.GET_AVAILABLE_TOOLS, /**
    * 页面请求工具目录时读取当前本地工具名称和说明。
    *
    * Returns:
@@ -380,7 +381,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
     const tools = await fetchAvailableTools();
     return { tools };
   });
-  trustedIpc.handle("desktop-pet:get-tool-permissions", /**
+  trustedIpc.handle(IpcChannel.GET_TOOL_PERMISSIONS, /**
    * 工具设置页读取当前会话最新的本地及 MCP 权限。
    *
    * Args:
@@ -393,7 +394,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
   async (_event, sessionId: string) =>
     await fetchToolPermissions(sessionId));
   trustedIpc.handle(
-    "desktop-pet:update-tool-permissions",
+    IpcChannel.UPDATE_TOOL_PERMISSIONS,
     /**
      * 工具设置页保存权限时等待后端校验和更新。
      *
@@ -410,7 +411,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
   );
 
   // 获取可用插件
-  trustedIpc.handle("desktop-pet:get-available-plugins", /**
+  trustedIpc.handle(IpcChannel.GET_AVAILABLE_PLUGINS, /**
    * 插件设置页读取后端插件默认值和配置结构。
    *
    * Returns:
@@ -421,14 +422,14 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
     return { plugins };
   });
 
-  trustedIpc.handle("desktop-pet:get-mcp-servers", /**
+  trustedIpc.handle(IpcChannel.GET_MCP_SERVERS, /**
    * MCP 设置页读取服务配置和运行状态。
    *
    * Returns:
    *     Promise<MCPServerView[]>: 后端服务目录。
    */
   async () => await fetchMcpServers());
-  trustedIpc.handle("desktop-pet:test-mcp-server", /**
+  trustedIpc.handle(IpcChannel.TEST_MCP_SERVER, /**
    * MCP 设置页测试尚未保存或修改中的服务配置。
    *
    * Args:
@@ -440,7 +441,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
    */
   async (_event, config: MCPServerConfig) =>
     await testMcpServer(config));
-  trustedIpc.handle("desktop-pet:create-mcp-server", /**
+  trustedIpc.handle(IpcChannel.CREATE_MCP_SERVER, /**
    * 页面新增 MCP 服务时等待保存成功，再由包装器清除受影响的模型设置缓存。
    *
    * Args:
@@ -459,7 +460,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
      */
     () => createMcpServer(config)));
   trustedIpc.handle(
-    "desktop-pet:update-mcp-server",
+    IpcChannel.UPDATE_MCP_SERVER,
     /**
      * 页面更新 MCP 服务时等待后端保存和身份处理，成功后清除设置缓存。
      *
@@ -480,7 +481,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
        */
       () => updateMcpServer(serverId, config))
   );
-  trustedIpc.handle("desktop-pet:delete-mcp-server", /**
+  trustedIpc.handle(IpcChannel.DELETE_MCP_SERVER, /**
    * 页面删除 MCP 服务时等待后端级联清理，成功后清除设置缓存。
    *
    * Args:
@@ -498,7 +499,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
      *     Promise<{ affected_sessions: string[]; }>: 后端删除结果。
      */
     () => deleteMcpServer(serverId)));
-  trustedIpc.handle("desktop-pet:reconnect-mcp-server", /**
+  trustedIpc.handle(IpcChannel.RECONNECT_MCP_SERVER, /**
    * 页面重连 MCP 服务时等待连接刷新，成功后清除设置缓存。
    *
    * Args:
@@ -516,7 +517,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
      *     Promise<MCPServerView>: 后端重连结果。
      */
     () => reconnectMcpServer(serverId)));
-  trustedIpc.handle("desktop-pet:get-mcp-server-tools", /**
+  trustedIpc.handle(IpcChannel.GET_MCP_SERVER_TOOLS, /**
    * 页面请求指定 MCP 服务当前可用的工具目录。
    *
    * Args:
@@ -531,7 +532,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
 
   // 更新模型变换
   trustedIpc.handle(
-    "desktop-pet:update-model-transform",
+    IpcChannel.UPDATE_MODEL_TRANSFORM,
     /**
      * 页面保存模型缩放和偏移时先确认模型存在，再更新本地配置并通知桌面刷新。
      *
@@ -585,7 +586,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
   );
 
   // 预览 Live2D 导入
-  trustedIpc.handle("desktop-pet:preview-live2d-import", /**
+  trustedIpc.handle(IpcChannel.PREVIEW_LIVE2D_IMPORT, /**
    * 页面开始导入时打开目录选择器，用户选中后检查模型入口并返回预览。
    *
    * Returns:
@@ -611,7 +612,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
 
   // 导入 Live2D 模型
   trustedIpc.handle(
-    "desktop-pet:import-live2d-model",
+    IpcChannel.IMPORT_LIVE2D_MODEL,
     /**
      * 页面确认导入后检查来源并复制模型资源，保存新模型记录后返回最新配置。
      *
@@ -668,7 +669,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
   );
 
   // 删除模型
-  trustedIpc.handle("desktop-pet:delete-model", /**
+  trustedIpc.handle(IpcChannel.DELETE_MODEL, /**
    * 页面删除模型时拒绝内置模型，删除自定义资源并在必要时切回内置模型。
    *
    * Args:
@@ -762,7 +763,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
   });
 
   // 设置激活模型
-  trustedIpc.handle("desktop-pet:set-active-model", /**
+  trustedIpc.handle(IpcChannel.SET_ACTIVE_MODEL, /**
    * 页面切换活动模型时先确认编号存在，保存活动编号并清理旧会话设置缓存。
    *
    * Args:
@@ -798,7 +799,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
   });
 
   // 打开设置窗口
-  trustedIpc.on("desktop-pet:open-settings-window", /**
+  trustedIpc.on(IpcChannel.OPEN_SETTINGS_WINDOW, /**
    * 页面请求打开设置时只允许指定的任务页入口，其他值使用默认设置页。
    *
    * Args:
@@ -810,7 +811,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
   });
 
   // 最小化当前窗口
-  trustedIpc.on("desktop-pet:minimize-current-window", /**
+  trustedIpc.on(IpcChannel.MINIMIZE_CURRENT_WINDOW, /**
    * 可信标题栏请求最小化时只操作发送请求的窗口。
    *
    * Args:
@@ -822,7 +823,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
   });
 
   // 关闭当前窗口
-  trustedIpc.on("desktop-pet:close-current-window", /**
+  trustedIpc.on(IpcChannel.CLOSE_CURRENT_WINDOW, /**
    * 可信标题栏请求关闭时只关闭发送请求的窗口。
    *
    * Args:
@@ -833,7 +834,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
     win?.close();
   });
 
-  trustedIpc.handle("desktop-pet:set-chat-pinned", /**
+  trustedIpc.handle(IpcChannel.SET_CHAT_PINNED, /**
    * 仅聊天窗口可以修改自己的置顶状态。
    * Args:
    *     event (IpcMainInvokeEvent): 可信发送窗口。
@@ -845,7 +846,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
     if (BrowserWindow.fromWebContents(event.sender) !== getChatWindow() || typeof pinned !== "boolean") throw new Error("无效的聊天置顶请求");
     return setChatPinned(pinned);
   });
-  trustedIpc.on("desktop-pet:chat-attention", /**
+  trustedIpc.on(IpcChannel.CHAT_ATTENTION, /**
    * 仅接收聊天窗口的提醒状态，拒绝其他页面操作聊天任务栏。
    * Args:
    *     event (IpcMainEvent): 可信发送窗口。
@@ -857,7 +858,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
     if (value.approvalId === null || (typeof value.approvalId === "string" && value.approvalId.length <= 256)) update.approvalId = value.approvalId;
     updateChatAttention(update);
   });
-  trustedIpc.handle("desktop-pet:exit-application", /**
+  trustedIpc.handle(IpcChannel.EXIT_APPLICATION, /**
    * 聊天或设置页面确认后进入统一应用退出流程，不把普通窗口关闭当作退出。
    * Args:
    *     event (IpcMainInvokeEvent): 来源验证已通过的页面请求，仍需核对它属于聊天或设置窗口。
@@ -869,7 +870,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
     // 2. 两个入口共用原有应用清理流程，由主进程关闭新业务并停止对话和任务。
     options.requestApplicationExit();
   });
-  trustedIpc.on("desktop-pet:play-expression", /**
+  trustedIpc.on(IpcChannel.PLAY_EXPRESSION, /**
    * 核对当前模型的表情标签后交给 Live2D 页面播放。
    * Args:
    *     event (IpcMainEvent): 可信聊天页面的请求。
@@ -886,9 +887,9 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
      *     boolean: 规则标签与请求一致时为 true。
      */
     (rule) => rule.setting === "expression" && rule.label === label)) return;
-    getMainWindow()?.webContents.send("desktop-pet:expression-request", label);
+    getMainWindow()?.webContents.send(IpcChannel.EXPRESSION_REQUEST, label);
   });
-  trustedIpc.on("desktop-pet:model-error", /**
+  trustedIpc.on(IpcChannel.MODEL_ERROR, /**
    * 只将角色页面的加载错误转发给聊天窗口。
    * Args:
    *     event (IpcMainEvent): 角色窗口发送请求。
@@ -899,7 +900,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
   });
 
   // 打开图片预览窗口
-  trustedIpc.on("desktop-pet:open-image-preview", /**
+  trustedIpc.on(IpcChannel.OPEN_IMAGE_PREVIEW, /**
    * 聊天页点击历史图片后打开受限图片预览窗口。
    *
    * Args:
@@ -911,7 +912,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
   });
 
   // 选择图片
-  trustedIpc.handle("desktop-pet:select-images", /**
+  trustedIpc.handle(IpcChannel.SELECT_IMAGES, /**
    * 聊天页请求附件时打开图片多选器，读取并准备用户选中的图片。
    *
    * Returns:
@@ -954,7 +955,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
   });
 
   // 聊天请求
-  trustedIpc.handle("desktop-pet:get-background-tasks", /**
+  trustedIpc.handle(IpcChannel.GET_BACKGROUND_TASKS, /**
    * 任务页按会话读取已保存后台任务记录，HTTP 失败时明确抛错。
    *
    * Args:
@@ -970,7 +971,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
     const data = await response.json() as { tasks: unknown[] };
     return data.tasks;
   });
-  trustedIpc.handle("desktop-pet:get-background-task-output", /**
+  trustedIpc.handle(IpcChannel.GET_BACKGROUND_TASK_OUTPUT, /**
    * 任务页按偏移读取指定任务输出，不把持续输出写进聊天正文。
    *
    * Args:
@@ -993,7 +994,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
   });
 
   // 聊天请求
-  trustedIpc.handle("desktop-pet:get-channel-subscriptions", /**
+  trustedIpc.handle(IpcChannel.GET_CHANNEL_SUBSCRIPTIONS, /**
    * 渠道设置页读取当前会话的渠道订阅状态。
    *
    * Args:
@@ -1009,7 +1010,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
     const data = await response.json() as { channels: unknown[] };
     return data.channels;
   });
-  trustedIpc.handle("desktop-pet:set-channel-subscription", /**
+  trustedIpc.handle(IpcChannel.SET_CHANNEL_SUBSCRIPTION, /**
    * 渠道设置页保存一个渠道的启用状态，等待后端更新后返回结果。
    *
    * Args:
@@ -1038,7 +1039,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
   });
 
   // 聊天请求
-  trustedIpc.handle("desktop-pet:interaction-command", /**
+  trustedIpc.handle(IpcChannel.INTERACTION_COMMAND, /**
    * 桌面页提交统一命令时先禁止冒用其他渠道，再交给后端处理。
    *
    * Args:
@@ -1052,7 +1053,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
     if (command.origin_channel !== DESKTOP_CHANNEL) throw new Error("桌面入口不能冒用其他渠道");
     return await submitInteractionCommand(command);
   });
-  trustedIpc.handle("desktop-pet:subscribe-desktop-session", /**
+  trustedIpc.handle(IpcChannel.SUBSCRIBE_DESKTOP_SESSION, /**
    * 桌面页订阅会话时建立或复用事件连接，新页面请求刷新则等待新快照。
    *
    * Args:
@@ -1065,7 +1066,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
   });
 
   // 获取前端设置
-  trustedIpc.handle("desktop-pet:get-frontend-settings", /**
+  trustedIpc.handle(IpcChannel.GET_FRONTEND_SETTINGS, /**
    * 页面读取前端配置时使用本地 JSON，文件缺失或读取失败则返回默认截图隐藏设置。
    *
    * Returns:
@@ -1076,14 +1077,14 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
   });
 
   /** 可信设置页读取已保存后端配置，退出门禁由统一 IPC 入口检查。 */
-  trustedIpc.handle("desktop-pet:get-desktop-settings", /** 返回后端 YAML 配置。 */
+  trustedIpc.handle(IpcChannel.GET_DESKTOP_SETTINGS, /** 返回后端 YAML 配置。 */
   () => getDesktopSettings());
   /** 可信设置页只提交后端定义的完整桌面设置。 */
-  trustedIpc.handle("desktop-pet:update-desktop-settings", /** 保存配置并返回后端确认值。 */
+  trustedIpc.handle(IpcChannel.UPDATE_DESKTOP_SETTINGS, /** 保存配置并返回后端确认值。 */
   (_event, settings: DesktopSettings) => updateDesktopSettings(settings));
 
   // 获取模型动作配置
-  trustedIpc.handle("desktop-pet:get-motion-config", /**
+  trustedIpc.handle(IpcChannel.GET_MOTION_CONFIG, /**
    * 动作设置页按模型编号读取保存的动作规则。
    *
    * Args:
@@ -1110,7 +1111,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
 
   // 更新模型动作配置
   trustedIpc.handle(
-    "desktop-pet:update-model-motion-config",
+    IpcChannel.UPDATE_MODEL_MOTION_CONFIG,
     /**
      * 动作设置页保存规则时先确认模型存在，再写入配置并通知桌面更新。
      *
@@ -1140,7 +1141,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
       // 通知主窗口动作配置已更新
       for (const mainWindow of [getMainWindow(), getChatWindow()]) {
         if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send("desktop-pet:motion-config-changed", {
+          mainWindow.webContents.send(IpcChannel.MOTION_CONFIG_CHANGED, {
             modelId: payload.modelId,
             motionConfig: payload.motionConfig,
           });
@@ -1150,7 +1151,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
   );
 
   // 播放动作（转发到主窗口）
-  trustedIpc.on("desktop-pet:play-motion", /**
+  trustedIpc.on(IpcChannel.PLAY_MOTION, /**
    * 设置页预览动作时，只向存活的桌面主窗口转发动作名称。
    *
    * Args:
@@ -1160,7 +1161,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
   (_event, motionName: string) => {
     const mainWindow = getMainWindow();
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send("desktop-pet:play-motion-request", motionName);
+      mainWindow.webContents.send(IpcChannel.PLAY_MOTION_REQUEST, motionName);
     }
   });
 };

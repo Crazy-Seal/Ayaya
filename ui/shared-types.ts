@@ -139,10 +139,13 @@ export const TaskStatus = {
 } as const;
 export type TaskStatus = typeof TaskStatus[keyof typeof TaskStatus];
 
-/**
- * 动作设置类型
- */
-export type MotionSettingType = 'idle' | 'expression' | 'none';
+/** 表示模型动作的播放规则。 */
+export const MotionSettingType = {
+  IDLE: "idle",
+  EXPRESSION: "expression",
+  NONE: "none",
+} as const;
+export type MotionSettingType = typeof MotionSettingType[keyof typeof MotionSettingType];
 
 /**
  * 动作配置
@@ -172,7 +175,7 @@ export type ModelConfigView = {
     id: string;
     name: string;
     sessionId: string;
-    source: "builtin" | "custom";
+    source: ModelSource;
     deletable: boolean;
     offsetX: number;
     offsetY: number;
@@ -213,7 +216,13 @@ export type ChatSettingsData = {
  */
 export type AiNameChangedPayload = { sessionId: string; name: string };
 
-export type ToolPolicy = "allow" | "ask" | "deny";
+/** 表示会话对工具的许可、审批或拒绝策略。 */
+export const ToolPolicy = {
+  ALLOW: "allow",
+  ASK: "ask",
+  DENY: "deny",
+} as const;
+export type ToolPolicy = typeof ToolPolicy[keyof typeof ToolPolicy];
 
 export type MCPModelSettings = {
   servers: Record<string, {
@@ -222,13 +231,21 @@ export type MCPModelSettings = {
   }>;
 };
 
-export type MCPServerStatus = "disabled" | "disconnected" | "connecting" | "available" | "error";
+/** 表示后端管理的 MCP 服务连接状态。 */
+export const MCPServerStatus = {
+  DISABLED: "disabled",
+  DISCONNECTED: "disconnected",
+  CONNECTING: "connecting",
+  AVAILABLE: "available",
+  ERROR: "error",
+} as const;
+export type MCPServerStatus = typeof MCPServerStatus[keyof typeof MCPServerStatus];
 
 export type MCPStdioServerConfig = {
   id: string;
   name: string;
   enabled: boolean;
-  transport: "stdio";
+  transport: typeof MCPTransport.STDIO;
   connect_timeout_seconds: number;
   call_timeout_seconds: number;
   command: string;
@@ -241,7 +258,7 @@ export type MCPHttpServerConfig = {
   id: string;
   name: string;
   enabled: boolean;
-  transport: "streamable_http";
+  transport: typeof MCPTransport.STREAMABLE_HTTP;
   connect_timeout_seconds: number;
   call_timeout_seconds: number;
   url: string;
@@ -269,7 +286,7 @@ export type MCPServerView = {
 };
 
 export type MCPTestResult = {
-  status: "available";
+  status: typeof MCPServerStatus.AVAILABLE;
   instructions: string | null;
   tools: MCPToolInfo[];
 };
@@ -300,7 +317,7 @@ export type ToolItem = {
 
 export type ToolPolicyView = {
   stable_key: string;
-  source: "local" | "mcp";
+  source: ToolSource;
   name: string;
   display_name: string;
   description: string;
@@ -313,7 +330,7 @@ export type ToolPolicyView = {
 
 export type ChatHistoryItem = {
   id?: string;
-  role: string;
+  role: HistoryRole;
   content: string;
   timestamp: string;
   images?: string[];
@@ -799,3 +816,48 @@ export type ChatAttentionUpdate = { newMessage?: boolean; approvalId?: string | 
 
 /** 当前应用窗口标题栏移动或八个边缘方向的缩放，不接受页面提供的窗口坐标。 */
 export type WindowGesture = "move" | "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
+
+/** 区分本地工具和 MCP 工具。 */
+export const ToolSource = {
+  LOCAL: "local",
+  MCP: "mcp",
+} as const;
+export type ToolSource = typeof ToolSource[keyof typeof ToolSource];
+
+/** 区分应用内置模型和用户导入模型。 */
+export const ModelSource = {
+  BUILTIN: "builtin",
+  CUSTOM: "custom",
+} as const;
+export type ModelSource = typeof ModelSource[keyof typeof ModelSource];
+
+/** 表示 MCP 配置采用的传输方式。 */
+export const MCPTransport = {
+  STDIO: "stdio",
+  STREAMABLE_HTTP: "streamable_http",
+} as const;
+export type MCPTransport = typeof MCPTransport[keyof typeof MCPTransport];
+
+/** 表示后端历史角色，同时保留旧记录使用的角色名称。 */
+export const HistoryRole = {
+  HUMAN: "Human",
+  AI: "AI",
+  AI_TOOL_CALLING: "AI_Tool_Calling",
+  USER: "user",
+  ASSISTANT: "assistant",
+} as const;
+export type HistoryRole = typeof HistoryRole[keyof typeof HistoryRole] | Lowercase<typeof HistoryRole[keyof typeof HistoryRole]>;
+
+/** 区分真人附件、工具图片和可压缩截图的来源。 */
+export const MediaKind = {
+  HUMAN: "human",
+  TOOL: "tool",
+  SCREENSHOT: "screenshot",
+  MCP: "mcp",
+} as const;
+export type MediaKind = typeof MediaKind[keyof typeof MediaKind];
+
+/** 历史图片在 Electron 中使用的受控协议名称。 */
+export const AYAYA_IMAGE_SCHEME = "ayaya-image";
+/** 聊天界面访问本地历史图片时使用的地址前缀。 */
+export const AYAYA_IMAGE_URI_PREFIX = `${AYAYA_IMAGE_SCHEME}://local/`;

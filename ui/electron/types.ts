@@ -30,7 +30,8 @@ export type ModelTransformChangedPayload = ModelTransformData;
 export type FrontendSettings = SharedFrontendSettings;
 export type ImportPreview = SharedImportPreview;
 
-export type ModelSource = "builtin" | "custom";
+export { ModelSource } from "../shared-types.js";
+import type { ModelSource } from "../shared-types.js";
 
 export type ModelRecord = {
   id: string;

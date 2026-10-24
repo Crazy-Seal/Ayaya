@@ -1,6 +1,7 @@
 /**
  * 光标位置追踪
  */
+import { IpcChannel } from "../ipc-channels.js";
 
 import { screen } from "electron";
 
@@ -53,7 +54,7 @@ export const startCursorTracking = (): void => {
       insideWindow,
     };
 
-    mainWindow.webContents.send("desktop-pet:cursor", payload);
+    mainWindow.webContents.send(IpcChannel.CURSOR, payload);
   }, 16);
 };
 

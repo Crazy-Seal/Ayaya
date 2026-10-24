@@ -1,3 +1,4 @@
+import { MCPTransport } from "../../shared-types.js";
 import type { MCPServerConfig } from "../../shared-types.js";
 
 type ServerPolicy = {
@@ -55,7 +56,7 @@ const stableValue = (value: unknown): unknown => {
  *     string: 可稳定比较的配置序列化字符串。
  */
 export const fingerprintMcpConfig = (config: MCPServerConfig): string =>
-  JSON.stringify(stableValue(config.transport === "stdio" ? {
+  JSON.stringify(stableValue(config.transport === MCPTransport.STDIO ? {
     id: config.id,
     transport: config.transport,
     command: config.command,

@@ -1,3 +1,4 @@
+import { PageEventType } from "../types.js";
 import type {
   ChatSettingsState,
   ISettingsPage,
@@ -95,7 +96,7 @@ export class PluginsPage implements ISettingsPage {
      * 用户点击保存后通知设置控制器收集并提交记忆插件配置。
      */
     () => {
-      this.eventCallback?.({ type: "submit", page: "memory" });
+      this.eventCallback?.({ type: PageEventType.SUBMIT, page: "memory" });
     });
   }
 

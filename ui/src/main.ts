@@ -1,6 +1,7 @@
 /**
  * 渲染进程主窗口入口
  */
+import { MotionSettingType } from "../shared-types.js";
 
 import * as PIXI from "pixi.js";
 import "./live2d/live2d.css";
@@ -269,7 +270,7 @@ class MainApp {
      * Returns:
      *     boolean: 当前规则的设置为 idle 时为 true。
      */
-    (c) => c.setting === "idle");
+    (c) => c.setting === MotionSettingType.IDLE);
     const idleMotionName = idleConfig?.motionName || "Idle";
 
     // 设置模型的空闲动作组
@@ -319,7 +320,7 @@ class MainApp {
      * Returns:
      *     boolean: 规则类型和标签都匹配时为 true。
      */
-    (c) => c.setting === "expression" && c.label === label);
+    (c) => c.setting === MotionSettingType.EXPRESSION && c.label === label);
     if (config) {
       this.queueMotion(config.motionName);
     }
@@ -386,7 +387,7 @@ class MainApp {
        * Returns:
        *     string | false | undefined: 规则为表情且标签非空时为 true。
        */
-      (c) => c.setting === "expression" && c.label)
+      (c) => c.setting === MotionSettingType.EXPRESSION && c.label)
       .map(/**
        * 提取已筛选表情动作的标签名称。
        *

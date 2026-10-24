@@ -1,6 +1,8 @@
 /**
  * 工具配置页面
  */
+import { PageEventType } from "../types.js";
+import { ToolSource, ToolPolicy } from "../../../shared-types.js";
 
 import type {
   ToolPolicyView,
@@ -58,7 +60,7 @@ export class ToolsPage implements ISettingsPage {
      * 用户点击权限确认后通知设置控制器保存当前工具策略。
      */
     () => {
-      this.eventCallback?.({ type: "submit", page: "tools" });
+      this.eventCallback?.({ type: PageEventType.SUBMIT, page: "tools" });
     });
   }
 
@@ -100,7 +102,7 @@ export class ToolsPage implements ISettingsPage {
     this.toolsEmpty.hidden = true;
     let currentGroup = "";
     for (const tool of tools) {
-      const group = tool.source === "local"
+      const group = tool.source === ToolSource.LOCAL
         ? "本地工具"
         : `MCP · ${tool.server_name || tool.server_id || "未知"}`;
       if (group !== currentGroup) {
@@ -119,16 +121,16 @@ export class ToolsPage implements ISettingsPage {
       const nameCell = document.createElement("td");
       nameCell.textContent = tool.display_name;
       const sourceCell = document.createElement("td");
-      sourceCell.textContent = tool.source === "local" ? "本地" : "MCP";
+      sourceCell.textContent = tool.source === ToolSource.LOCAL ? "本地" : "MCP";
       const policyCell = document.createElement("td");
       const select = document.createElement("select");
       select.className = "tool-policy-select ui-control ui-control--small ui-select";
       select.dataset.stableKey = tool.stable_key;
       select.setAttribute("aria-label", `${tool.display_name} 工具权限`);
       for (const [value, label] of [
-        ["ask", "ASK"],
-        ["allow", "ALLOW"],
-        ["deny", "DENY"],
+        [ToolPolicy.ASK, "ASK"],
+        [ToolPolicy.ALLOW, "ALLOW"],
+        [ToolPolicy.DENY, "DENY"],
       ] as const) {
         const option = document.createElement("option");
         option.value = value;
@@ -159,8 +161,8 @@ export class ToolsPage implements ISettingsPage {
   /**
    * 收集选中的工具
    */
-  private collectPolicies(): Record<string, "deny" | "ask" | "allow"> {
-    const policies: Record<string, "deny" | "ask" | "allow"> = {};
+  private collectPolicies(): Record<string, ToolPolicy> {
+    const policies: Record<string, ToolPolicy> = {};
     this.toolsTableBody.querySelectorAll<HTMLSelectElement>('select[data-stable-key]').forEach(/**
      * 按每个下拉框的稳定工具标识收集 deny、ask 或 allow，缺少标识的控件不写入配置。
      *
@@ -169,7 +171,7 @@ export class ToolsPage implements ISettingsPage {
      */
     (select) => {
       if (select.dataset.stableKey) {
-        policies[select.dataset.stableKey] = select.value as "deny" | "ask" | "allow";
+        policies[select.dataset.stableKey] = select.value as ToolPolicy;
       }
     });
     return policies;

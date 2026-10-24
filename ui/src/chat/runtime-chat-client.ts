@@ -1,4 +1,5 @@
 /** 桌面交互 Adapter 的 Renderer 视图；Agent 生命周期由后端管理。 */
+import { HistoryRole } from "../../shared-types.js";
 import { iconMarkup } from "../ui/icons.js";
 import { ToolApprovalDialog } from "./tool-approval-dialog.js";
 import { BackgroundTaskEntry } from "./background-task-entry.js";
@@ -372,7 +373,7 @@ export class RuntimeChatClient {
       let latestText = "";
       for (let index = history.length - 1; index >= 0; index -= 1) {
         const item = history[index];
-        if (item.role.toLowerCase() !== "ai" && item.role.toLowerCase() !== "assistant") continue;
+        if (item.role.toLowerCase() !== HistoryRole.AI.toLowerCase() && item.role.toLowerCase() !== HistoryRole.ASSISTANT) continue;
         latestText = item.content.replace(/<([^<>]+)>/g, "").replace(/<[^<>\s]*$/, "").trim();
         break;
       }
@@ -401,7 +402,7 @@ export class RuntimeChatClient {
     // 1. 只记录有正文或图片的模型回复，真人消息和空工具记录不触发回复提醒。
     for (const item of history) {
       const role = item.role.toLowerCase();
-      if ((role !== "ai" && role !== "assistant") || (!item.content.trim() && !item.images?.length)) continue;
+      if ((role !== HistoryRole.AI.toLowerCase() && role !== HistoryRole.ASSISTANT) || (!item.content.trim() && !item.images?.length)) continue;
       const key = item.id ?? `${item.timestamp}:${item.content}`;
       current.add(key);
       if (this.historyReplyIds && !this.historyReplyIds.has(key)) hasNewReply = true;
@@ -741,7 +742,7 @@ export class RuntimeChatClient {
       }
       this.options.chatHistory.addMessage({
         id: typeof event.payload.message_id === "string" ? event.payload.message_id : undefined,
-        role: "human", content: String(event.payload.message || ""),
+        role: HistoryRole.HUMAN.toLowerCase() as HistoryRole, content: String(event.payload.message || ""),
         images: event.payload.images as string[] | undefined,
         origin_channel: event.origin_channel || DESKTOP_CHANNEL,
         timestamp: new Date().toISOString(),
@@ -853,7 +854,7 @@ export class RuntimeChatClient {
         this.queuedInputs.delete(failed.input_sequence);
         this.renderQueuedInputs();
         this.options.chatHistory.showFailedInput?.({
-          role: "human", content: failed.message, images: failed.images,
+          role: HistoryRole.HUMAN.toLowerCase() as HistoryRole, content: failed.message, images: failed.images,
           origin_channel: event.origin_channel || DESKTOP_CHANNEL, timestamp: new Date().toISOString(),
         }, detail, /** 用户点击后重发当前展示的原始输入。 */
         () => this.retryFailedInput(failed));

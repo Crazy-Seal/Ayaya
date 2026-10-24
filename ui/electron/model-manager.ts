@@ -1,6 +1,7 @@
 /**
  * Live2D 模型配置管理
  */
+import { ModelSource } from "../shared-types.js";
 
 import fs from "node:fs";
 import path from "node:path";
@@ -186,7 +187,7 @@ export const createDefaultModelConfig = (): ModelConfig => {
         id: builtinId,
         name: "hiyori_pro_t11",
         sessionId: randomUUID(),
-        source: "builtin",
+        source: ModelSource.BUILTIN,
         entry: "/live2d/hiyori_pro_zh/runtime/hiyori_pro_t11.model3.json",
         offsetX: 0,
         offsetY: 0,
@@ -214,7 +215,7 @@ export const loadModelConfig = (): ModelConfig => {
     let changed = false;
 
     for (const model of parsed.models ?? []) {
-      if (model.source === "custom" && model.rootDir) {
+      if (model.source === ModelSource.CUSTOM && model.rootDir) {
         if (path.isAbsolute(model.rootDir)) {
           model.rootDir = toPosixRelative(model.rootDir);
           changed = true;
@@ -310,7 +311,7 @@ export const getActiveModelRecord = (): ModelRecord => {
  *     string: 开发服务器资源、本地打包文件或自定义模型协议地址。
  */
 export const resolveModelUrl = (model: ModelRecord): string => {
-  if (model.source === "builtin") {
+  if (model.source === ModelSource.BUILTIN) {
     // 1. 开发页面使用资源服务器，生产页面使用打包目录；根路径不能直接交给 file 页面。
     if (process.env.VITE_DEV_SERVER_URL) return new URL(model.entry, process.env.VITE_DEV_SERVER_URL).href;
     return pathToFileURL(path.resolve(UI_ROOT, "dist", model.entry.replace(/^\/+/, ""))).href;
@@ -351,7 +352,7 @@ export const createModelRecord = (
     id: modelId,
     name: path.basename(destDir),
     sessionId: randomUUID(),
-    source: "custom",
+    source: ModelSource.CUSTOM,
     entry: entryName,
     rootDir: toPosixRelativeFrom(USER_DATA_DIR, destDir),
     offsetX: 0,

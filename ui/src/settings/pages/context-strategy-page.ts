@@ -1,3 +1,4 @@
+import { PageEventType } from "../types.js";
 import type {
   ChatSettingsState,
   ISettingsPage,
@@ -47,7 +48,7 @@ export class ContextStrategyPage implements ISettingsPage {
      * 用户点击确认后通知设置控制器保存当前上下文策略，不在页面组件内直接写后端。
      */
     () => {
-      this.eventCallback?.({ type: "submit", page: "contextStrategy" });
+      this.eventCallback?.({ type: PageEventType.SUBMIT, page: "contextStrategy" });
     });
   }
 

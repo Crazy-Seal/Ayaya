@@ -1,6 +1,7 @@
 /**
  * Live2D 自定义协议处理
  */
+import { AYAYA_IMAGE_SCHEME } from "../shared-types.js";
 
 import { protocol, net } from "electron";
 import path from "node:path";
@@ -23,7 +24,7 @@ export const registerLive2DProtocol = (): void => {
       },
     },
     {
-      scheme: "ayaya-image",
+      scheme: AYAYA_IMAGE_SCHEME,
       privileges: {
         standard: true,
         secure: true,

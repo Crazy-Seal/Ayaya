@@ -1,3 +1,4 @@
+import { BackendStartupCancelledError } from "../electron/backend-errors.js";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
@@ -411,4 +412,22 @@ test("显式 Python 没有环境根目录时仍强制标准流使用 UTF-8", /**
   assert.equal(childEnvironment.PYTHONUTF8, "1");
   assert.equal(parentEnvironment.PYTHONIOENCODING, "gbk");
   assert.equal(parentEnvironment.PYTHONUTF8, "0");
+});
+
+
+test("启动取消按错误类型识别，修改说明后仍直接终止环境发现", /**
+ * 验证取消错误的说明文字改变后，解析器仍将原错误交给调用方。
+ */
+async () => {
+  const cancellation = new BackendStartupCancelledError("关闭时取消解释器查询");
+  let queries = 0;
+  const resolver = createBackendPythonResolver({
+    env: {},
+    platform: "win32",
+    /** 环境发现取消后终止本次查询，记录是否继续尝试其他命令。 */
+    spawnProcess: () => { queries += 1; throw cancellation; },
+  });
+  await assert.rejects(resolver.resolve(), /** 检查调用方收到原始取消错误。 */
+  (error: unknown) => error === cancellation);
+  assert.equal(queries, 1);
 });

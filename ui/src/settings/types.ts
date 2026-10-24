@@ -119,10 +119,12 @@ export interface PageEditingData {
   mcp?: EditingState["mcp"];
 }
 
-/**
- * 页面事件类型
- */
-export type PageEventType = "submit" | "settings-invalidated";
+/** 表示设置页请求保存或刷新已保存设置。 */
+export const PageEventType = {
+  SUBMIT: "submit",
+  SETTINGS_INVALIDATED: "settings-invalidated",
+} as const;
+export type PageEventType = typeof PageEventType[keyof typeof PageEventType];
 
 /**
  * 页面事件回调参数

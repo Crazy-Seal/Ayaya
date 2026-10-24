@@ -1,3 +1,5 @@
+import { PageEventType } from "../types.js";
+import { MCPServerStatus, MCPTransport } from "../../../shared-types.js";
 import type {
   MCPModelSettings,
   MCPServerConfig,
@@ -47,7 +49,7 @@ export class McpPage implements ISettingsPage {
      * 用户点击权限确认时通知主设置控制器保存本页服务启用策略。
      */
     () =>
-      this.callback?.({ type: "submit", page: "mcp" }));
+      this.callback?.({ type: PageEventType.SUBMIT, page: "mcp" }));
     this.q<HTMLSelectElement>("#mcp-transport").addEventListener("change", /**
      * 用户切换传输方式后显示该方式需要的地址、命令和凭据字段。
      */
@@ -288,7 +290,7 @@ export class McpPage implements ISettingsPage {
    */
   private openEditor(server?: MCPServerView): void {
     this.editingId = server?.config.id ?? null;
-    this.testedFingerprint = server?.runtime.status === "available"
+    this.testedFingerprint = server?.runtime.status === MCPServerStatus.AVAILABLE
       ? fingerprintMcpConfig(server.config)
       : null;
     this.authorizedInsecureFingerprint = null;
@@ -301,13 +303,13 @@ export class McpPage implements ISettingsPage {
     this.q<HTMLInputElement>("#mcp-enabled").checked = server?.config.enabled ?? false;
     this.q<HTMLInputElement>("#mcp-connect-timeout").value = String(server?.config.connect_timeout_seconds ?? 15);
     this.q<HTMLInputElement>("#mcp-call-timeout").value = String(server?.config.call_timeout_seconds ?? 60);
-    this.q<HTMLSelectElement>("#mcp-transport").value = server?.config.transport ?? "stdio";
-    this.q<HTMLInputElement>("#mcp-command").value = server?.config.transport === "stdio" ? server.config.command : "";
-    this.q<HTMLTextAreaElement>("#mcp-args").value = server?.config.transport === "stdio" ? server.config.args.join("\n") : "";
-    this.q<HTMLInputElement>("#mcp-cwd").value = server?.config.transport === "stdio" ? server.config.cwd ?? "" : "";
-    this.q<HTMLInputElement>("#mcp-url").value = server?.config.transport === "streamable_http" ? server.config.url : "";
-    this.replaceSecretRows("env", server?.config.transport === "stdio" ? server.config.env : {});
-    this.replaceSecretRows("header", server?.config.transport === "streamable_http" ? server.config.headers : {});
+    this.q<HTMLSelectElement>("#mcp-transport").value = server?.config.transport ?? MCPTransport.STDIO;
+    this.q<HTMLInputElement>("#mcp-command").value = server?.config.transport === MCPTransport.STDIO ? server.config.command : "";
+    this.q<HTMLTextAreaElement>("#mcp-args").value = server?.config.transport === MCPTransport.STDIO ? server.config.args.join("\n") : "";
+    this.q<HTMLInputElement>("#mcp-cwd").value = server?.config.transport === MCPTransport.STDIO ? server.config.cwd ?? "" : "";
+    this.q<HTMLInputElement>("#mcp-url").value = server?.config.transport === MCPTransport.STREAMABLE_HTTP ? server.config.url : "";
+    this.replaceSecretRows("env", server?.config.transport === MCPTransport.STDIO ? server.config.env : {});
+    this.replaceSecretRows("header", server?.config.transport === MCPTransport.STREAMABLE_HTTP ? server.config.headers : {});
     this.q<HTMLDivElement>("#mcp-test-result").hidden = true;
     this.updateTransportFields();
   }
@@ -327,7 +329,7 @@ export class McpPage implements ISettingsPage {
    * 根据传输类型切换 stdio 和 HTTP 配置字段。
    */
   private updateTransportFields(): void {
-    const isHttp = this.q<HTMLSelectElement>("#mcp-transport").value === "streamable_http";
+    const isHttp = this.q<HTMLSelectElement>("#mcp-transport").value === MCPTransport.STREAMABLE_HTTP;
     this.q<HTMLDivElement>("#mcp-stdio-fields").hidden = isHttp;
     this.q<HTMLDivElement>("#mcp-http-fields").hidden = !isHttp;
   }
@@ -451,16 +453,16 @@ export class McpPage implements ISettingsPage {
     };
     if (!common.id || !/^[A-Za-z0-9_-]{1,32}$/.test(common.id)) throw new Error("ID 只能包含字母、数字、下划线和连字符");
     if (!common.name) throw new Error("名称不能为空");
-    if (this.q<HTMLSelectElement>("#mcp-transport").value === "streamable_http") {
+    if (this.q<HTMLSelectElement>("#mcp-transport").value === MCPTransport.STREAMABLE_HTTP) {
       const url = this.q<HTMLInputElement>("#mcp-url").value.trim();
       if (classifyHttpEndpoint(url).kind === "invalid") throw new Error("Endpoint 必须是有效的 HTTP 或 HTTPS 地址");
-      return { ...common, transport: "streamable_http", url, headers: this.collectRows(this.headerRows) };
+      return { ...common, transport: MCPTransport.STREAMABLE_HTTP, url, headers: this.collectRows(this.headerRows) };
     }
     const command = this.q<HTMLInputElement>("#mcp-command").value.trim();
     if (!command) throw new Error("stdio 命令不能为空");
     return {
       ...common,
-      transport: "stdio",
+      transport: MCPTransport.STDIO,
       command,
       args: this.q<HTMLTextAreaElement>("#mcp-args").value.split(/\r?\n/).map(/**
        * 逐项清理命令参数开头和末尾空白。
@@ -487,7 +489,7 @@ export class McpPage implements ISettingsPage {
    *     Promise<boolean>: 用户是否允许继续使用该 Endpoint。
    */
   private async authorizeHttp(config: MCPServerConfig): Promise<boolean> {
-    if (config.transport !== "streamable_http") return true;
+    if (config.transport !== MCPTransport.STREAMABLE_HTTP) return true;
     const fingerprint = fingerprintMcpConfig(config);
     if (this.authorizedInsecureFingerprint === fingerprint) return true;
     const previous = this.servers.find(/**
@@ -501,7 +503,7 @@ export class McpPage implements ISettingsPage {
      */
     (server) => server.config.id === this.editingId)?.config;
     const approved = await authorizeBaseUrlChange({
-      previousUrl: previous?.transport === "streamable_http" ? previous.url : "",
+      previousUrl: previous?.transport === MCPTransport.STREAMABLE_HTTP ? previous.url : "",
       nextUrl: config.url,
       /**
        * 用户填写远程 HTTP 地址时显示风险确认提示，等待用户明确选择。
@@ -567,7 +569,7 @@ export class McpPage implements ISettingsPage {
       else await window.desktopPetApi.createMcpServer(config);
       this.toast.success("MCP 服务已保存");
       this.closeEditor();
-      await this.callback?.({ type: "settings-invalidated", page: "mcp" });
+      await this.callback?.({ type: PageEventType.SETTINGS_INVALIDATED, page: "mcp" });
     } catch (error) {
       this.toast.error(appendErrorMessage("保存 MCP 服务失败", error));
     }
@@ -597,7 +599,7 @@ export class McpPage implements ISettingsPage {
   private async reconnect(serverId: string): Promise<void> {
     try {
       await window.desktopPetApi.reconnectMcpServer(serverId);
-      await this.callback?.({ type: "settings-invalidated", page: "mcp" });
+      await this.callback?.({ type: PageEventType.SETTINGS_INVALIDATED, page: "mcp" });
       this.toast.success("MCP 服务已重连");
     } catch (error) {
       this.toast.error(appendErrorMessage("重连 MCP 服务失败", error));
@@ -634,7 +636,7 @@ export class McpPage implements ISettingsPage {
     try {
       const result = await window.desktopPetApi.deleteMcpServer(serverId);
       delete this.policies.servers[serverId];
-      await this.callback?.({ type: "settings-invalidated", page: "mcp" });
+      await this.callback?.({ type: PageEventType.SETTINGS_INVALIDATED, page: "mcp" });
       this.toast.success(`已删除，清理 ${result.affected_sessions.length} 个模型引用`);
     } catch (error) {
       this.toast.error(appendErrorMessage("删除 MCP 服务失败", error));

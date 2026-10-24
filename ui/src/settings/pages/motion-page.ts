@@ -1,3 +1,5 @@
+import { PageEventType } from "../types.js";
+import { MotionSettingType } from "../../../shared-types.js";
 import { buildSystemPrompt } from "../utils/prompt-builder.js";
 
 /**
@@ -6,7 +8,6 @@ import { buildSystemPrompt } from "../utils/prompt-builder.js";
 
 import type {
   MotionConfig,
-  MotionSettingType,
   ISettingsPage,
   PageRenderData,
   PageEditingData,
@@ -89,7 +90,7 @@ export class MotionPage implements ISettingsPage {
      * 用户点击动作确认后通知设置控制器保存本页规则。
      */
     () => {
-      this.eventCallback?.({ type: "submit", page: "motion" });
+      this.eventCallback?.({ type: PageEventType.SUBMIT, page: "motion" });
     });
 
     // 表格事件委托
@@ -202,7 +203,7 @@ export class MotionPage implements ISettingsPage {
      */
     (name) => ({
       motionName: name,
-      setting: name.toLowerCase() === "idle" ? ("idle" as const) : ("none" as const),
+      setting: name.toLowerCase() === MotionSettingType.IDLE ? MotionSettingType.IDLE : MotionSettingType.NONE,
     }));
   }
 
@@ -240,7 +241,7 @@ export class MotionPage implements ISettingsPage {
         configs.push({
           motionName,
           setting,
-          label: setting === "expression" ? label : undefined,
+          label: setting === MotionSettingType.EXPRESSION ? label : undefined,
         });
       }
     });
@@ -256,7 +257,7 @@ export class MotionPage implements ISettingsPage {
    */
   private handleSettingChange(motionName: string, setting: MotionSettingType): void {
     // 如果设置为 idle，清除其他 idle
-    if (setting === "idle") {
+    if (setting === MotionSettingType.IDLE) {
       this.motionTableBody.querySelectorAll<HTMLSelectElement>(".motion-setting-select").forEach(/**
        * 用户指定新的空闲动作时取消其他行的空闲标记，避免多项同时作为默认动作。
        *
@@ -264,8 +265,8 @@ export class MotionPage implements ISettingsPage {
        *     select (HTMLSelectElement): 当前动作配置的下拉选择框。
        */
       (select) => {
-        if (select.dataset.motionName !== motionName && select.value === "idle") {
-          select.value = "none";
+        if (select.dataset.motionName !== motionName && select.value === MotionSettingType.IDLE) {
+          select.value = MotionSettingType.NONE;
         }
       });
     }
@@ -275,9 +276,9 @@ export class MotionPage implements ISettingsPage {
       `.motion-label-input[data-motion-name="${motionName}"]`
     );
     if (labelInput) {
-      labelInput.disabled = setting !== "expression";
-      labelInput.placeholder = setting === "expression" ? "输入标签" : "-";
-      if (setting !== "expression") {
+      labelInput.disabled = setting !== MotionSettingType.EXPRESSION;
+      labelInput.placeholder = setting === MotionSettingType.EXPRESSION ? "输入标签" : "-";
+      if (setting !== MotionSettingType.EXPRESSION) {
         labelInput.value = "";
       }
     }
@@ -337,7 +338,7 @@ export class MotionPage implements ISettingsPage {
        */
       (c) => c.motionName === motionName) || {
         motionName,
-        setting: "none" as const,
+        setting: MotionSettingType.NONE,
       };
 
       const row = document.createElement("tr");
@@ -355,8 +356,8 @@ export class MotionPage implements ISettingsPage {
       labelInput.className = "motion-label-input ui-control ui-control--small";
       labelInput.dataset.motionName = motionName;
       labelInput.value = config.label || "";
-      labelInput.disabled = config.setting !== "expression";
-      labelInput.placeholder = config.setting === "expression" ? "输入标签" : "-";
+      labelInput.disabled = config.setting !== MotionSettingType.EXPRESSION;
+      labelInput.placeholder = config.setting === MotionSettingType.EXPRESSION ? "输入标签" : "-";
       labelCell.appendChild(labelInput);
 
       // 预览按钮
@@ -378,9 +379,9 @@ export class MotionPage implements ISettingsPage {
       select.ariaLabel = `${motionName} 的动作设置`;
 
       const options = [
-        { value: "none", text: "无" },
-        { value: "idle", text: "空闲" },
-        { value: "expression", text: "表情" },
+        { value: MotionSettingType.NONE, text: "无" },
+        { value: MotionSettingType.IDLE, text: "空闲" },
+        { value: MotionSettingType.EXPRESSION, text: "表情" },
       ];
 
       for (const opt of options) {
@@ -420,7 +421,7 @@ export class MotionPage implements ISettingsPage {
        * Returns:
        *     string | false | undefined: 表情设置与非空标签都满足时为 true。
        */
-      (c) => c.setting === "expression" && c.label)
+      (c) => c.setting === MotionSettingType.EXPRESSION && c.label)
       .map(/**
        * 提取已筛选动作的表情标签。
        *

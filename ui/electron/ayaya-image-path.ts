@@ -1,5 +1,6 @@
+import { MediaKind } from "../shared-types.js";
 const SAFE_FILENAME = /^[A-Za-z0-9][A-Za-z0-9._ -]*$/;
-const ALLOWED_DIRECTORIES = new Set(["tool", "screenshot", "mcp"]);
+const ALLOWED_DIRECTORIES = new Set<string>([MediaKind.TOOL, MediaKind.SCREENSHOT, MediaKind.MCP]);
 
 /**
  *  校验并规范化历史图片相对路径。

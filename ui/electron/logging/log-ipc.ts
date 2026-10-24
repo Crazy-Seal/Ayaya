@@ -1,3 +1,4 @@
+import { IpcChannel } from "../../ipc-channels.js";
 import { shell } from "electron";
 
 import type { LogBatch, LogSide } from "../../shared-types.js";
@@ -45,18 +46,18 @@ export const registerLogIpcHandlers = ({
   sendBatch,
 }: LogIpcOptions): (() => void) => {
   const trustedIpc = createTrustedIpcRegistrar(policy);
-  trustedIpc.on("desktop-pet:open-log-window", /**
+  trustedIpc.on(IpcChannel.OPEN_LOG_WINDOW, /**
    * 可信页面请求日志入口时打开或复用日志窗口。
    */
   () => openLogWindow());
-  trustedIpc.handle("desktop-pet:get-log-snapshot", /**
+  trustedIpc.handle(IpcChannel.GET_LOG_SNAPSHOT, /**
    * 新日志窗口请求初始化时取得当前内存日志快照。
    *
    * Returns:
    *     LogSnapshot: 前端和后端缓存记录。
    */
   () => getLogSnapshot());
-  trustedIpc.handle("desktop-pet:clear-log-buffer", /**
+  trustedIpc.handle(IpcChannel.CLEAR_LOG_BUFFER, /**
    * 页面清空日志前校验类别，合法时只清空该类内存记录。
    *
    * Args:
@@ -67,7 +68,7 @@ export const registerLogIpcHandlers = ({
     if (!isLogSide(side)) throw new Error("无效的日志分区");
     clearLogBuffer(side);
   });
-  trustedIpc.handle("desktop-pet:open-log-directory", /**
+  trustedIpc.handle(IpcChannel.OPEN_LOG_DIRECTORY, /**
    * 页面请求日志目录时确认目录已初始化，再交给系统文件管理器；打开失败明确报错。
    */
   async () => {

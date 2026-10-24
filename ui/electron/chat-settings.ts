@@ -1,6 +1,7 @@
 /**
  * 聊天设置 API 调用
  */
+import { HistoryRole } from "../shared-types.js";
 
 import {
   CHAT_HISTORY_PAGE_SIZE,
@@ -186,7 +187,7 @@ export const fetchChatHistoryPageBySessionId = async (
    *     { role: string; content: string; timestamp: string; images: string[] | undefined; }: 规范化的单条可见历史消息。
    */
   (item) => ({
-    role: String(item.role ?? ""),
+    role: String(item.role ?? "") as HistoryRole,
     content: String(item.content ?? ""),
     timestamp: String(item.timestamp ?? ""),
     images: Array.isArray(item.images) ? item.images : undefined,
@@ -230,7 +231,7 @@ export const fetchChatHistoryLastN = async (
    *     { role: string; content: string; timestamp: string; images: string[] | undefined; }: 规范化的单条最近历史消息。
    */
   (item) => ({
-    role: String(item.role ?? ""),
+    role: String(item.role ?? "") as HistoryRole,
     content: String(item.content ?? ""),
     timestamp: String(item.timestamp ?? ""),
     images: Array.isArray(item.images) ? item.images : undefined,
@@ -247,7 +248,7 @@ const getLatestAiMessageFromHistory = (history: ChatHistoryItem[]): string | nul
   for (let index = history.length - 1; index >= 0; index -= 1) {
     const item = history[index];
     const role = item.role.trim().toLowerCase();
-    const isAi = role === "ai" || role === "assistant";
+    const isAi = role === HistoryRole.AI.toLowerCase() || role === HistoryRole.ASSISTANT;
     const content = item.content.trim();
     if (isAi && content.length > 0) {
       return content;

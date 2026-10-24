@@ -1,3 +1,4 @@
+import { BackendStartupCancelledError } from "./backend-errors.js";
 import {
   spawn,
   type ChildProcess,
@@ -113,13 +114,6 @@ interface ManagedBackendGeneration {
 const isRunning = (child: ChildProcess): boolean =>
   child.exitCode === null && child.signalCode === null;
 
-/**
- * 构造后端启动被关闭流程取消时使用的错误。
- *
- * Returns:
- *     Error: 表示启动已经取消的 Error。
- */
-const createCancelledError = (): Error => new Error("后端启动已取消");
 
 /**
  * 等待重试间隔，取消信号到达时提前退出。
@@ -141,7 +135,7 @@ const delay = (milliseconds: number, signal: AbortSignal): Promise<void> =>
    */
   (resolve, reject) => {
     if (signal.aborted) {
-      reject(createCancelledError());
+      reject(new BackendStartupCancelledError());
       return;
     }
     const timer = setTimeout(/**
@@ -156,7 +150,7 @@ const delay = (milliseconds: number, signal: AbortSignal): Promise<void> =>
      */
     const onAbort = (): void => {
       clearTimeout(timer);
-      reject(createCancelledError());
+      reject(new BackendStartupCancelledError());
     };
     signal.addEventListener("abort", onAbort, { once: true });
   });
@@ -351,7 +345,7 @@ export const createBackendProcessController = (
       }
       await delay(dependencies.pollIntervalMs, signal);
     }
-    throw createCancelledError();
+    throw new BackendStartupCancelledError();
   };
 
   /**
@@ -389,7 +383,7 @@ export const createBackendProcessController = (
         const resolvedPython = await dependencies.resolvePythonExecutable(
           abortController.signal,
         );
-        if (abortController.signal.aborted) throw createCancelledError();
+        if (abortController.signal.aborted) throw new BackendStartupCancelledError();
         const childEnvironment = buildBackendPythonEnvironment(
           dependencies.env,
           resolvedPython,

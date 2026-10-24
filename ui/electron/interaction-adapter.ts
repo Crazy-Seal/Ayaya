@@ -1,4 +1,5 @@
 /** 桌面交互 Adapter：提交统一命令，将订阅控制器的事件转发给窗口。 */
+import { IpcChannel } from "../ipc-channels.js";
 import { backendFetch } from "./backend-client.js";
 import { getChatWindow, getSettingsWindow } from "./window-manager.js";
 import { appendFrontendLog } from "./logging/app-logger.js";
@@ -16,7 +17,7 @@ import type {
  */
 const deliverDesktopEvent = (event: InteractionEvent): void => {
   for (const window of [getChatWindow(), getSettingsWindow()]) {
-    if (window && !window.isDestroyed()) window.webContents.send("desktop-pet:interaction-event", event);
+    if (window && !window.isDestroyed()) window.webContents.send(IpcChannel.INTERACTION_EVENT, event);
   }
 };
 

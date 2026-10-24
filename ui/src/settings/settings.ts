@@ -1,6 +1,8 @@
 /**
  * 设置窗口入口
  */
+import { PageEventType } from "./types.js";
+import { MotionSettingType } from "../../shared-types.js";
 
 import "../settings.css";
 import { initializeIcons } from "../ui/icons.js";
@@ -538,7 +540,7 @@ class SettingsApp {
            * Returns:
            *     string | false | undefined: 规则类型为表情且标签非空时为 true。
            */
-          (c) => c.setting === "expression" && c.label)
+          (c) => c.setting === MotionSettingType.EXPRESSION && c.label)
           .map(/**
            * 提取已筛选表情规则的标签。
            *
@@ -561,9 +563,9 @@ class SettingsApp {
    *     event (PageEvent): 调用方或浏览器触发的当前事件。
    */
   private async handlePageEvent(event: PageEvent): Promise<void> {
-    if (event.type === "submit") {
+    if (event.type === PageEventType.SUBMIT) {
       await this.handleSubmit(event.page);
-    } else if (event.type === "settings-invalidated") {
+    } else if (event.type === PageEventType.SETTINGS_INVALIDATED) {
       const loaded = await this.initChatSettings(true);
       if (loaded) await this.renderPage(event.page);
     }

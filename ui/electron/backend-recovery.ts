@@ -1,7 +1,11 @@
 import type { BackendUnexpectedExit } from "./backend-process.js";
 
-/** 后端恢复对话框允许的用户选择。 */
-export type BackendRecoveryChoice = "reconnect" | "exit";
+/** 表示用户选择重连后端或退出应用。 */
+export const BackendRecoveryChoice = {
+  RECONNECT: "reconnect",
+  EXIT: "exit",
+} as const;
+export type BackendRecoveryChoice = typeof BackendRecoveryChoice[keyof typeof BackendRecoveryChoice];
 
 /**
  *  与 Electron API 解耦的后端恢复对话框模型。
@@ -44,7 +48,13 @@ export interface BackendRecoveryCoordinator {
   beginShutdown(): void;
 }
 
-type RecoveryPhase = "idle" | "recovering" | "quitting";
+/** 表示后端异常退出后的恢复阶段。 */
+const RecoveryPhase = {
+  IDLE: "idle",
+  RECOVERING: "recovering",
+  QUITTING: "quitting",
+} as const;
+type RecoveryPhase = typeof RecoveryPhase[keyof typeof RecoveryPhase];
 
 const commonDialogFields = {
   buttons: ["重连", "退出"] as [string, string],
@@ -98,7 +108,7 @@ const createReconnectFailureDialog = (error: unknown): BackendRecoveryDialogMode
 export const createBackendRecoveryCoordinator = (
   dependencies: BackendRecoveryDependencies,
 ): BackendRecoveryCoordinator => {
-  let phase: RecoveryPhase = "idle";
+  let phase: RecoveryPhase = RecoveryPhase.IDLE;
   let pendingExit: BackendUnexpectedExit | null = null;
   /**
    * 检查应用是否已停止接受恢复动作。
@@ -106,7 +116,7 @@ export const createBackendRecoveryCoordinator = (
    * Returns:
    *     boolean: 关闭标记已设置时为 true。
    */
-  const isQuitting = (): boolean => phase === "quitting";
+  const isQuitting = (): boolean => phase === RecoveryPhase.QUITTING;
 
   /**
    * 等待用户选择，重连成功后清除旧配置缓存，失败则继续提示或按选择退出。
@@ -119,11 +129,11 @@ export const createBackendRecoveryCoordinator = (
    */
   const runRecovery = async (initialEvent: BackendUnexpectedExit): Promise<void> => {
     let dialogModel = createUnexpectedExitDialog(initialEvent);
-    while (phase === "recovering") {
+    while (phase === RecoveryPhase.RECOVERING) {
       const choice = await dependencies.showDialog(dialogModel);
       if (isQuitting()) return;
-      if (choice === "exit") {
-        phase = "quitting";
+      if (choice === BackendRecoveryChoice.EXIT) {
+        phase = RecoveryPhase.QUITTING;
         dependencies.quit();
         return;
       }
@@ -145,7 +155,7 @@ export const createBackendRecoveryCoordinator = (
         dialogModel = createUnexpectedExitDialog(nextExit);
         continue;
       }
-      phase = "idle";
+      phase = RecoveryPhase.IDLE;
     }
   };
 
@@ -159,12 +169,12 @@ export const createBackendRecoveryCoordinator = (
    *     void: 当前恢复流程的完成结果。
    */
   const handleUnexpectedExit = (event: BackendUnexpectedExit): void => {
-    if (phase === "quitting") return;
-    if (phase === "recovering") {
+    if (phase === RecoveryPhase.QUITTING) return;
+    if (phase === RecoveryPhase.RECOVERING) {
       pendingExit = event;
       return;
     }
-    phase = "recovering";
+    phase = RecoveryPhase.RECOVERING;
     void runRecovery(event).catch(/**
      * 恢复流程意外失败后记录错误，并在尚未退出时将状态切为退出，避免继续弹出恢复提示。
      *
@@ -173,8 +183,8 @@ export const createBackendRecoveryCoordinator = (
      */
     (error) => {
       dependencies.logError("处理后端异常退出失败", error);
-      if (phase !== "quitting") {
-        phase = "quitting";
+      if (phase !== RecoveryPhase.QUITTING) {
+        phase = RecoveryPhase.QUITTING;
         dependencies.quit();
       }
     });
@@ -184,7 +194,7 @@ export const createBackendRecoveryCoordinator = (
    * 关闭应用时禁止启动新的恢复，并让已有恢复在检查关闭状态时结束。
    */
   const beginShutdown = (): void => {
-    phase = "quitting";
+    phase = RecoveryPhase.QUITTING;
     pendingExit = null;
   };
 

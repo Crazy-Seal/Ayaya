@@ -1,6 +1,7 @@
 /**
  * 聊天历史管理器
  */
+import { HistoryRole, AYAYA_IMAGE_URI_PREFIX } from "../../shared-types.js";
 
 import type { ChatHistoryItem } from "../types.js";
 import { DESKTOP_CHANNEL } from "../../shared-types.js";
@@ -262,7 +263,7 @@ export class ChatHistoryManager {
 
     for (let i = lastNHistory.length - 1; i >= 0; i--) {
       const role = lastNHistory[i].role.toLowerCase();
-      if (role === "human" || role === "user") {
+      if (role === HistoryRole.HUMAN.toLowerCase() || role === HistoryRole.USER) {
         humanCount++;
         if (humanCount === 10) {
           startIndex = i;
@@ -448,7 +449,7 @@ export class ChatHistoryManager {
     if (!this.isStreaming) {
       // 非流式模式，直接添加消息
       this.addMessage({
-        role: "ai",
+        role: HistoryRole.AI.toLowerCase() as HistoryRole,
         content,
         timestamp: new Date().toISOString(),
         origin_channel: this.streamingOrigin,
@@ -493,7 +494,7 @@ export class ChatHistoryManager {
     // 存入 messages 数组（用于历史记录和重新渲染）
     if (this.streamingContent) {
       this.messages.push({
-        role: "ai",
+        role: HistoryRole.AI.toLowerCase() as HistoryRole,
         content: this.streamingContent,
         timestamp: new Date().toISOString(),
         origin_channel: this.streamingOrigin,
@@ -635,8 +636,8 @@ export class ChatHistoryManager {
    */
   private renderMessage(msg: ChatHistoryItem): void {
     const role = msg.role.toLowerCase();
-    const isHuman = role === "human" || role === "user";
-    const isToolCalling = role === "ai_tool_calling";
+    const isHuman = role === HistoryRole.HUMAN.toLowerCase() || role === HistoryRole.USER;
+    const isToolCalling = role === HistoryRole.AI_TOOL_CALLING.toLowerCase();
 
     // 工具调用消息使用特殊样式
     if (isToolCalling) {
@@ -696,7 +697,7 @@ export class ChatHistoryManager {
         if (imageData.startsWith("data:image/")) {
           img.src = imageData;
         } else {
-          img.src = `ayaya-image://local/${encodeURIComponent(imageData)}`;
+          img.src = `${AYAYA_IMAGE_URI_PREFIX}${encodeURIComponent(imageData)}`;
         }
 
         img.alt = "图片";
@@ -717,7 +718,7 @@ export class ChatHistoryManager {
       // 如果有有效图片，创建独立的图片气泡
       if (imagesContainer.children.length > 0) {
         const item = document.createElement("div");
-        item.className = `message-item ${isHuman ? "human" : "ai"}`;
+        item.className = `message-item ${isHuman ? HistoryRole.HUMAN.toLowerCase() : HistoryRole.AI.toLowerCase()}`;
 
         const bubble = document.createElement("div");
         bubble.className = "message-bubble";

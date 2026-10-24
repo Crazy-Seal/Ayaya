@@ -1,4 +1,5 @@
 /** 独立聊天窗口入口，关闭与最小化不卸载草稿和消息订阅。 */
+import { MotionSettingType } from "../../shared-types.js";
 import "../style.css";
 import { getMainUiElements } from "../ui/dom.js";
 import { iconMarkup, initializeIcons } from "../ui/icons.js";
@@ -301,7 +302,7 @@ class ChatApp {
      * Returns:
      *     string[]: 当前规则的标签或空列表。
      */
-    (rule) => rule.setting === "expression" && rule.label ? [rule.label] : []);
+    (rule) => rule.setting === MotionSettingType.EXPRESSION && rule.label ? [rule.label] : []);
     // 6. 只有页面实际卸载才清理监听，窗口最小化保留所有草稿和会话状态。
     window.addEventListener("beforeunload", /** 页面实际卸载时释放监听，最小化不触发此清理。 */
     () => { for (const cleanup of this.cleanup) cleanup(); });
