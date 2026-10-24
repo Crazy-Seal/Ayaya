@@ -894,7 +894,8 @@ def test_task_only_wakeup_does_not_release_queue_left_by_stopped_turn(tmp_path) 
                 await asyncio.sleep(0.01)
             await records.insert_running("task-1", "s", "后台任务", 1, str(tmp_path / "out"))
             assert await supervisor.finish_once("task-1", "completed", 0)
-            await asyncio.wait_for(task_done.wait(), 1)
+            # 2. 用户停止后仅保存通知；新真人输入恢复执行，再按原规则放行旧排队消息。
+            assert not task_done.is_set()
             assert not queue_done.is_set()
             snapshot = (await scheduler.snapshot("s")).payload
             assert snapshot["queued_inputs"][0]["message"] == "排队消息"

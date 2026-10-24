@@ -65,7 +65,7 @@ class _SessionState:
         worker (asyncio.Task | None): 长期检查本会话工作的任务。
         wakeup (asyncio.Event): 新输入、审批决定或任务通知到达的提示。
         lock (asyncio.Lock): 协调命令、读取和轮次状态变化。
-        activated (bool): 本次启动已持久受理真人输入，旧通知不能自行获得此资格。
+        activated (bool): 是否允许自动执行；真人输入受理后恢复，用户停止受理后撤销。
         sequence (int): 本次后端运行中该会话已记录的事件编号。
         current (_CurrentTurn | None): 当前回答；为空表示空闲。
         resume_request_id (str | None): 待处理的审批编号，不复制已保存的决定。
@@ -347,6 +347,8 @@ class AgentRuntimeScheduler:
             return CommandReceipt(False, "没有匹配的活动轮次")
         if not control.request(TurnInterruptReason.STOP):
             return CommandReceipt(False, "当前轮次正在提交，已无法停止")
+        # 1. 用户停止成功后暂停后续自动执行，通知继续保存，待下次真人输入恢复。
+        session.activated = False
         return CommandReceipt(True, run_id=control.run_id)
 
     async def _submit_human_input(self, command: ChannelCommand) -> CommandReceipt:
@@ -583,6 +585,10 @@ class AgentRuntimeScheduler:
                 # 1. 必须在所有工作检查之前 clear；查询期间的新通知不能被事后擦除。
                 session.wakeup.clear()
                 async with session.lock:
+                    # 1.1. 旧轮已经收尾时也检查资格，暂停期间把未交付内容留在 Inbox。
+                    if not session.activated:
+                        session.worker = None
+                        return
                     request_id = session.resume_request_id
                     session.resume_request_id = None
                     batch = () if request_id is not None else await manager.read_activation_batch(
@@ -636,7 +642,7 @@ class AgentRuntimeScheduler:
             request_id (str | None): 从 checkpoint 恢复的审批请求。
 
         Returns:
-            bool: 是否继续检查工作；重试耗尽后结束自动处理。
+            bool: 是否继续检查工作；用户暂停或重试耗尽后结束自动处理。
         """
         session = self._session(session_id)
         human = next((item for item in batch if item.kind == InboxKind.HUMAN), None)
@@ -654,9 +660,18 @@ class AgentRuntimeScheduler:
                 agent = None
                 try:
                     # 2. 每次重试创建独立 Agent；首次创建成功才建立轮次，重试沿用身份和控制。
-                    agent = self._agent_factory(session_id, manager)
-                    if control is None:
-                        async with session.lock:
+                    async with session.lock:
+                        # 2.1. 输入交付重试也遵守用户停止；随后真人输入恢复的资格照常保留。
+                        if not session.activated:
+                            # 2.1.1. 当前轮次可能已通过事件或状态查询显示为执行中；结束后通知界面，输入留待真人恢复。
+                            if session.current is not None:
+                                self._emit(InteractionEvent(session_id, InteractionEventKind.RUN_COMPLETED,
+                                    {"value": {"interrupted": True}},
+                                    origin_channel=session.current.origin, run_id=session.current.run_id))
+                                session.current = None
+                            return False
+                        agent = self._agent_factory(session_id, manager)
+                        if control is None:
                             run_id = run_id or uuid4().hex
                             control = TurnControl(run_id)
                             session.current = _CurrentTurn(run_id, origin, control)
