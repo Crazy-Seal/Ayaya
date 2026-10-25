@@ -11,8 +11,8 @@ from app.agent.agent import Agent, AgentConfig
 from app.agent.context import ContextStrategyConfig
 from app.agent.core.events import AgentEvent, EventType
 from app.interaction.interaction_contract import ChannelCommand
-from app.orchestration.agent_runtime_scheduler import AgentRuntimeScheduler
-from app.orchestration.task_supervisor import TaskSupervisor
+from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
+from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
 from tests.runtime_support import finish_test_turn
 
 
@@ -122,8 +122,8 @@ def test_task_notice_failure_stops_until_human_reactivates(tmp_path) -> None:
                 if event.kind == kind:
                     return event
 
-        supervisor = TaskSupervisor(db_path=path, spool_dir=tmp_path / "tasks")
-        scheduler = AgentRuntimeScheduler(agent_factory=factory, task_supervisor=supervisor,
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=path)
+        scheduler = AgentRuntimeScheduler(runtime_queue=supervisor.runtime_queue, agent_factory=factory, task_supervisor=supervisor,
             session_state_manager_factory=partial(SessionStateManager, db_path=path),
         )
         records, inbox = supervisor.records, SessionStateManager("s", path)
@@ -133,13 +133,13 @@ def test_task_notice_failure_stops_until_human_reactivates(tmp_path) -> None:
             await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "启动"}))
             await until("run_completed")
             await records.insert_running("task", "s", "任务", 1, str(tmp_path / "output"))
-            await supervisor.finish_once("task", "completed", 0)
+            await supervisor.commit_terminal_state_once("task", "completed")
             error = await until("error")
             assert attempts == 4 and "failed_input" not in error.payload
             assert len(await inbox.read_task_terminals()) == 1
             # 2. 耗尽后后台通知不重新激活；新的真人输入则一并提交保留的任务事实。
             await records.insert_running("later", "s", "后续任务", 1, str(tmp_path / "later"))
-            await supervisor.finish_once("later", "completed", 0)
+            await supervisor.commit_terminal_state_once("later", "completed")
             await until("task_status")
             assert attempts == 4
             await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "继续"}))
@@ -290,8 +290,8 @@ def test_delivery_retries_then_succeeds_or_returns_failed_input(tmp_path, failur
             agents.append(agent)
             return agent
 
-        supervisor = TaskSupervisor(db_path=path, spool_dir=tmp_path / "tasks")
-        scheduler = AgentRuntimeScheduler(agent_factory=factory, task_supervisor=supervisor,
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=path)
+        scheduler = AgentRuntimeScheduler(runtime_queue=supervisor.runtime_queue, agent_factory=factory, task_supervisor=supervisor,
             session_state_manager_factory=partial(SessionStateManager, db_path=path),
         )
         inbox = SessionStateManager("s", path)
@@ -315,7 +315,7 @@ def test_delivery_retries_then_succeeds_or_returns_failed_input(tmp_path, failur
                 assert events[-1].payload["failed_input"]["message"] == "原始输入"
                 assert await inbox.read_next() is None
                 await supervisor.records.insert_running("later", "s", "后续任务", 1, str(tmp_path / "out"))
-                await supervisor.finish_once("later", "completed", 0)
+                await supervisor.commit_terminal_state_once("later", "completed")
                 event = await asyncio.wait_for(scheduler.next_event(), 1)
                 assert event.kind == "task_status"
                 assert attempts == 4

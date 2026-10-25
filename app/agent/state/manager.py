@@ -1,4 +1,4 @@
-"""协调会话输入、执行状态和遗留轮次的业务提交，不持有执行或调度对象。"""
+"""保存会话输入和执行进度，处理工具审批、回答中断及应用重启后的整理。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from app.agent.runtime.session_inbox import InboxEnvelope
 from app.agent.state.model import AgentState
 from app.agent.state.messages import (
     AssistantMessage, HumanMessage, ImageContent, RuntimeInputMessage, ToolMessage,
-    TaskResultMessage, text_content, with_text,
+    TaskResultMessage, PluginNotificationMessage, text_content, with_text,
 )
 from app.agent.utils.domain.images import save_multiple_images
 from app.crud.agent_state_dao import AgentStateDao
@@ -30,16 +30,21 @@ APPLICATION_EXIT_UNKNOWN_RESULT = "应用退出，本轮已终止；工具执行
 TASK_NOTICE_BATCH_MAX_CHARS = 8192
 
 
+#=====================将后台通知转换为对话消息======================
+
 def _task_result_message(inputs: tuple[InboxEnvelope, ...]) -> TaskResultMessage:
-    """把 Inbox 中的任务结束通知整理成 Agent 能读取的 TaskResultMessage。
+    """将一组后台任务结果整理为一条加入 Agent 对话的任务消息。
+
+    task_result_messages 已经按正文大小分好组；本函数保留组内任务的
+    结果、错误和日志引用，供 Agent 在下一次模型请求中读取。
 
     Args:
-        inputs (tuple[InboxEnvelope, ...]): 本次从 Inbox 读取的任务通知，包含任务编号、状态和日志引用。
+        inputs (tuple[InboxEnvelope, ...]): 同一组非空任务通知，包含编号、名称、结束状态及结果。
 
     Returns:
-        TaskResultMessage: 任务完成、失败、停止或未知的结果消息，不伪装成用户发送的消息。
+        TaskResultMessage: 单个任务的结果消息，或保留组内各任务详情的合并消息。
     """
-    # 1. 一条通知直接转成消息，stopped 表示取消，orphaned 表示结果未知，不能当作成功。
+    # 1. 单条通知保留原任务身份，将执行状态转换为对话消息使用的状态。
     if len(inputs) == 1:
         payload = inputs[0].payload
         status = payload.get("status")
@@ -50,7 +55,7 @@ def _task_result_message(inputs: tuple[InboxEnvelope, ...]) -> TaskResultMessage
                     TaskResultStatus.ORPHANED if status == TaskStatus.ORPHANED else TaskResultStatus.FAILED),
             result=_task_notice_text(payload),
         )
-    # 2. 多条通知合并成一条消息；状态相同则保留该状态，不同时用 mixed，按完整条目分批保留全部日志引用。
+    # 2. 多条通知合并展示；结束状态不同时使用 mixed，各任务的状态仍写在正文中。
     statuses = {item.payload.get("status") for item in inputs}
     mapped_statuses = {
         TaskResultStatus.CANCELLED if status == TaskStatus.STOPPED else
@@ -73,33 +78,39 @@ def _task_result_message(inputs: tuple[InboxEnvelope, ...]) -> TaskResultMessage
 
 
 def _task_notice_text(payload: dict) -> str:
-    """格式化新通知元信息，同时保留重启前旧摘要通知的读取兼容。
+    """生成 Agent 阅读的任务结果正文，终端任务提供完整输出的读取引用。
 
     Args:
-        payload (dict): 从持久 Inbox 读取的一条任务通知。
+        payload (dict): Inbox 中一条任务结束通知的内容。
 
     Returns:
-        str: 新通知只包含工具、退出码和日志引用，旧通知保留既有摘要。
+        str: 普通任务的返回正文，或终端工具名、退出码和日志引用；有错误时附上错误摘要。
     """
     if payload.get("output_ref"):
-        return (f"tool_name: {payload.get('tool_name') or '未知工具'}\n"
+        result = (f"tool_name: {payload.get('tool_name') or '未知工具'}\n"
                 f"exit_code: {payload.get('exit_code')}\n"
                 f"output_ref: {payload['output_ref']}")
-    return str(payload.get("result") or "")
+    else:
+        result = str(payload.get("result") or "")
+    error = payload.get("error")
+    return f"{result}\n错误：{error}".strip() if error else result
 
 
 def task_result_messages(inputs: tuple[InboxEnvelope, ...]) -> tuple[TaskResultMessage, ...]:
-    """按完整任务条目拆批，所有引用都进入消息，不截断后面的任务。
+    """将待处理任务通知分成多条对话消息，让 Agent 读取完整的任务结果。
+
+    每组按估算的字符数控制大小；单个任务的信息完整保留，超大的单项独占一组。
 
     Args:
-        inputs (tuple[InboxEnvelope, ...]): 本次已查询的全部终态通知。
+        inputs (tuple[InboxEnvelope, ...]): 按 Inbox 编号排列的任务结束通知。
 
     Returns:
-        tuple[TaskResultMessage, ...]: 按原顺序分组的全部结果消息。
+        tuple[TaskResultMessage, ...]: 按原通知顺序生成的消息，空输入返回空元组。
     """
     batches = []
     group = []
     size = 0
+    # 1. 逐项估算正文大小，当前组加入下一任务会超出预算时，先输出已收集的整组。
     for input_record in inputs:
         item_size = len(_task_notice_text(input_record.payload)) + len(str(input_record.payload["task_id"])) + 64
         if group and size + item_size > TASK_NOTICE_BATCH_MAX_CHARS:
@@ -107,374 +118,141 @@ def task_result_messages(inputs: tuple[InboxEnvelope, ...]) -> tuple[TaskResultM
             group, size = [], 0
         group.append(input_record)
         size += item_size
+    # 2. 将最后一组转换为消息，包含最后一个任务的完整结果和日志引用。
     if group:
         batches.append(_task_result_message(tuple(group)))
     return tuple(batches)
 
 
-class SessionStateManager:
-    """提供会话输入受理、状态提交与恢复业务，使用后由拥有方关闭。
+def runtime_input_messages(inputs: tuple[InboxEnvelope, ...]) -> tuple[RuntimeInputMessage, ...]:
+    """把同批输入中的任务结果和插件通知转换为加入 Agent 对话的消息。
 
-    worker 拥有其 Manager，Agent 和 Pipeline 只借用；独立 Agent 拥有默认创建的
-    Manager。命令处理另建短期对象。当前执行状态始终由调用方持有，不在本类缓存。
+    commit_human_input 和 commit_runtime_inputs 在保存输入时调用。
+    真人消息由对应输入方法另行创建；这里保持内部通知之间的先后顺序。
+
+    Args:
+        inputs (tuple[InboxEnvelope, ...]): 本次准备加入对话的 Inbox 记录，可以同时包含真人输入。
+
+    Returns:
+        tuple[RuntimeInputMessage, ...]: 由任务结果和插件通知生成的对话消息。
+    """
+    messages = []
+    tasks = []
+    # 1. 收集相邻任务结果；遇到插件通知时，先生成前面的任务消息，再追加插件消息。
+    for item in inputs:
+        if item.kind == InboxKind.TASK_TERMINAL:
+            tasks.append(item)
+        elif item.kind == InboxKind.PLUGIN_NOTIFICATION:
+            messages.extend(task_result_messages(tuple(tasks)))
+            tasks.clear()
+            messages.append(PluginNotificationMessage(**item.payload))
+    # 2. 追加尚未转换的最后一组任务结果。
+    messages.extend(task_result_messages(tuple(tasks)))
+    return tuple(messages)
+
+
+class SessionStateManager:
+    """为一个会话保存待处理输入、对话消息和执行进度，并处理暂停后的恢复。
+
+    Scheduler 用本类接收消息和保存审批决定；Agent 开始处理输入时加载
+    AgentState，执行期间由 Agent、Pipeline 传入这个状态保存进度和结束结果。
+    Inbox 的已交付标记表示输入已经随对话状态保存成功。
+
+    会话 worker 创建的对象由 worker 关闭；独立 Agent 关闭自己创建的对象；
+    Scheduler 处理单次命令时创建的短期对象，在该命令处理完成后关闭。
 
     Attributes:
-        session_id (str): 当前业务操作所属的会话编号。
-        db_path (str): 两个 DAO 使用的同一 SQLite 文件路径。
-        _state_dao (AgentStateDao): checkpoint 与协议历史的事务存储。
-        _inbox_dao (SessionInboxDao): 持久输入的查询及条件写入。
+        session_id (str): 当前输入、对话和执行状态所属的会话编号。
+        db_path (str): 会话快照、对话历史和 Inbox 共用的 SQLite 文件路径。
+        _state_dao (AgentStateDao): 保存和读取会话快照、对话历史，统一提交输入的已交付标记。
+        _inbox_dao (SessionInboxDao): 保存、查询和撤销 Inbox 中的待处理输入。
     """
 
     def __init__(self, session_id: str, db_path: str | None = None, *,
                  state_dao: AgentStateDao | None = None, inbox_dao: SessionInboxDao | None = None) -> None:
-        """绑定当前会话的两个具体存储对象，延迟打开数据库连接。
+        """为当前会话准备快照和输入存储，数据库连接在实际读写时打开。
 
         Args:
             session_id (str): 当前会话编号。
-            db_path (str | None): 数据库路径；省略时由环境选择。
-            state_dao (AgentStateDao | None): 可注入的状态存储，由本对象负责关闭。
-            inbox_dao (SessionInboxDao | None): 可注入的输入存储，由本对象负责关闭。
+            db_path (str | None): 当前环境的数据库路径，省略时使用应用数据目录。
+            state_dao (AgentStateDao | None): 已创建的会话快照存储，省略时创建；由本对象关闭。
+            inbox_dao (SessionInboxDao | None): 已创建的输入存储，省略时创建；由本对象关闭。
         """
         self.session_id = session_id
         self._state_dao = state_dao or AgentStateDao(session_id, db_path)
         self.db_path = self._state_dao.db_path
         self._inbox_dao = inbox_dao or SessionInboxDao(session_id, self.db_path)
 
-    @property
-    def last_loaded_checkpoint_type(self) -> CheckpointType | None:
-        """返回最近一次读取的快照类型，不缓存或另存执行状态。
-
-        Returns:
-            CheckpointType | None: 最近读到的类型，没有持久快照时为空。
-        """
-        return self._state_dao.last_loaded_checkpoint_type
-
-    async def load(self) -> AgentState:
-        """加载业务操作所需状态，没有 checkpoint 时创建空内存状态。
-
-        Returns:
-            AgentState: 本次执行使用的唯一状态对象。
-        """
-        state = await self._state_dao.load()
-        return state if state is not None else AgentState.create_new(self.session_id)
-
-    async def load_for_resume(self, request_id: str) -> AgentState | None:
-        """核对持久中断编号及审批决定，交给 Agent 恢复原工具调用。
-
-        Args:
-            request_id (str): 本次要求恢复的中断编号。
-
-        Returns:
-            AgentState | None: 编号匹配且具备恢复材料的状态；请求过期时为空。
-        """
-        state = await self.load()
-        interrupt = state.interrupt_data or {}
-        if interrupt.get("request_id") != request_id:
-            return None
-        if interrupt.get("type") == InterruptKind.AUTHORIZATION_REQUEST and not interrupt.get("runtime_decision"):
-            return None
-        return state
-
-    async def save(self, state: AgentState, *, checkpoint_type: CheckpointType,
-                   inbox_inputs: tuple[InboxEnvelope, ...] = (), rewritten_message_id: str | None = None,
-                   release_queued: bool = False) -> int:
-        """先准备媒体，再原子保存状态、历史和本次输入交付。
-
-        Args:
-            state (AgentState): 调用方正在使用的同一个会话状态。
-            checkpoint_type (CheckpointType): 保存中间执行进度或已结束轮次。
-            inbox_inputs (tuple[InboxEnvelope, ...]): 本次随消息一起交付的输入。
-            rewritten_message_id (str | None): 需要保留身份并重写的助手消息。
-            release_queued (bool): 调用方确认正常结束后要求的排队放行。
-
-        Returns:
-            int: 已原子提交的 checkpoint 编号。
-        """
-        # 1. 图片文件先准备；文件不属于 SQLite 回滚范围，失败规则保持原样。
-        await asyncio.to_thread(self._externalize_images, state)
-        # 2. 一个 DAO 事务完成跨表提交，Inbox 不另开独立提交。
-        return await self._state_dao.save(state, checkpoint_type=checkpoint_type,
-            inbox_inputs=inbox_inputs, rewritten_message_id=rewritten_message_id, release_queued=release_queued)
-
-    async def save_progress(self, state: AgentState) -> int:
-        """由 Pipeline 在模型或工具安全点保存中间执行进度。
-
-        Args:
-            state (AgentState): 当前执行状态。
-
-        Returns:
-            int: 已保存的 checkpoint 编号。
-        """
-        return await self.save(state, checkpoint_type=CheckpointType.INTERMEDIATE)
-
-    async def complete_turn(self, state: AgentState, *, release_queued: bool = False) -> int:
-        """按 Agent 的最终提交决定保存完成状态，不运行响应钩子。
-
-        Args:
-            state (AgentState): 当前轮次的完整状态。
-            release_queued (bool): 正常完成真人轮次时同时放行排队输入。
-
-        Returns:
-            int: 已保存的 checkpoint 编号。
-        """
-        # 1. 完成状态与背景清空一起提交，下一轮只读取新的临时内容。
-        state.clear_temporary_context()
-        return await self.save(state, checkpoint_type=CheckpointType.COMPLETED, release_queued=release_queued)
-
-    async def save_interrupt_origin(self, state: AgentState, origin_channel: str) -> None:
-        """发布中断前补充原回答来源，已经保存来源的请求不重复提交。
-
-        Args:
-            state (AgentState): Pipeline 刚刚保存的中断状态。
-            origin_channel (str): 当前回答的实际来源渠道。
-        """
-        if state.interrupt_data and "origin_channel" not in state.interrupt_data:
-            # 1. 保留恢复材料和剩余调用，只补充重连及恢复时需要的来源。
-            state.set_interrupt({**state.interrupt_data, "origin_channel": origin_channel}, state.pending_actions)
-            # 2. 保存成功后 Agent 才转出中断事件，保持审批的原有可见顺序。
-            await self.save_progress(state)
-
-    async def close_previous_tools(self, state: AgentState) -> None:
-        """新真人输入提交前结束旧工具协议，避免把两个轮次的调用混在一起。
-
-        Args:
-            state (AgentState): 新激活前加载的状态。
-        """
-        if state.close_unfinished_tools(USER_REJECTED_INTERRUPTED_TOOL_RESULT,
-                USER_CANCELLED_PENDING_TOOL_RESULT, INTERRUPTED_TOOL_RESULT):
-            await self.complete_turn(state)
-
-    async def commit_human_input(self, state: AgentState, message: str, images: list[str] | None, *,
-                                 origin_channel: str = DESKTOP_CHANNEL,
-                                 inputs: tuple[InboxEnvelope, ...] = ()) -> HumanMessage:
-        """提交同批任务通知和一条真人消息，成功后返回可报告的持久真人事实。
-
-        Args:
-            state (AgentState): 当前执行的同一状态对象。
-            message (str): 真人正文。
-            images (list[str] | None): 真人附件地址。
-            origin_channel (str): 本次真人输入来源。
-            inputs (tuple[InboxEnvelope, ...]): 与本次消息原子交付的 Inbox 记录。
-
-        Returns:
-            HumanMessage: 已经保存的真人消息；失败时不返回消息。
-        """
-        # 1. 同批任务通知先进入会话，不推进真人计数。
-        for notice in task_result_messages(tuple(item for item in inputs if item.kind == InboxKind.TASK_TERMINAL)):
-            state.append_input(notice)
-        filenames = []
-        if images:
-            try:
-                filenames = await asyncio.to_thread(save_multiple_images, images)
-            except Exception as exc:
-                logger.warning("[SessionStateManager] 用户图片保存失败: %s", exc)
-        human = state.add_user_message(message, image_urls=images or (), image_filenames=filenames,
-                                       origin_channel=origin_channel)
-        # 2. 计数与消息同事务保存；提交后的模型失败不撤销真人事实。
-        state.increment_long_term_memory_turn_counter()
-        await self.save(state, checkpoint_type=CheckpointType.INTERMEDIATE, inbox_inputs=inputs)
-        return human
-
-    async def commit_runtime_inputs(self, state: AgentState, messages: tuple[RuntimeInputMessage, ...] | None,
-                                    inputs: tuple[InboxEnvelope, ...]) -> None:
-        """提交显式内部消息，或转换当前 Inbox 任务通知，不触发激活钩子。
-
-        Args:
-            state (AgentState): 当前执行状态。
-            messages (tuple[RuntimeInputMessage, ...] | None): 显式消息；为空值时转换任务记录。
-            inputs (tuple[InboxEnvelope, ...]): 本次需要交付的输入记录。
-        """
-        # 1. 显式消息与任务转换互斥，防止同批通知重复追加。
-        for message in task_result_messages(inputs) if messages is None else messages:
-            state.append_input(message)
-        # 2. 内部消息不增加真人计数，原子交付成功后调用方才继续执行。
-        await self.save(state, checkpoint_type=CheckpointType.INTERMEDIATE, inbox_inputs=inputs)
-
-    async def deliver_pending(self, state: AgentState) -> None:
-        """由 Pipeline 在工具协议闭合、下一模型请求前交付已到达的任务通知。
-
-        Args:
-            state (AgentState): 即将继续模型调用的执行状态。
-        """
-        inputs = await self._inbox_dao.read_task_terminals()
-        if inputs:
-            await self.commit_runtime_inputs(state, None, inputs)
-
-    async def record_authorization_decision(self, request_id: str | None, decision: dict,
-                                            actor_channel: str = DESKTOP_CHANNEL) -> str | None:
-        """记录当前请求的首次审批决定，成功后返回原回答来源供 Scheduler 发布事件。
-
-        Args:
-            request_id (str | None): 用户处理的审批编号。
-            decision (dict): 批准、拒绝或引导决定。
-            actor_channel (str): 引导消息实际来源。
-
-        Returns:
-            str | None: 成功时的原回答来源；请求已过期或已处理时为空。
-        """
-        state = await self.load()
-        interrupt = state.get_pending_authorization(request_id)
-        if interrupt is None:
-            return None
-        # 1. 引导正文沿用现有独立受理事务，失败不能关闭审批。
-        if decision.get("kind") == ApprovalDecisionKind.STEER:
-            await self.submit_human(actor_channel, decision["message"])
-        if not state.record_authorization_decision(request_id, decision):
-            return None
-        # 2. 决定属于 checkpoint，不是 Inbox 新消息；保存成功才报告受理。
-        await self.save_progress(state)
-        return str(interrupt.get("origin_channel") or DESKTOP_CHANNEL)
-
-    async def cancel_pending_interrupt(self) -> tuple[str, str] | None:
-        """为已受理的新消息取消旧审批，返回原请求编号及来源。
-
-        Returns:
-            tuple[str, str] | None: 已保存的取消请求编号及来源；没有未决请求时为空。
-        """
-        state = await self.load()
-        interrupt = state.interrupt_data or {}
-        if not state.cancel_pending_interrupt():
-            return None
-        await self.save_progress(state)
-        return str(interrupt.get("request_id") or ""), str(interrupt.get("origin_channel") or DESKTOP_CHANNEL)
-
-    async def finish_interrupted_turn(self, state: AgentState, *, partial: str, partial_persisted: bool,
-                                      origin_channel: str) -> None:
-        """保存用户打断后的真实片段并闭合工具协议，不放行排队输入。
-
-        Args:
-            state (AgentState): 当前执行状态。
-            partial (str): 本模型步骤已显示的正文。
-            partial_persisted (bool): 该步骤是否已记录为助手消息。
-            origin_channel (str): 该正文所属渠道。
-        """
-        cancelled = "用户打断，本次工具调用已取消。"
-        state.close_unfinished_tools(cancelled, cancelled, cancelled)
-        rewritten_message_id = None
-        # 1. 已保存片段沿用原消息身份；未保存片段新增一次，不重复正文。
-        if partial.strip() and not partial_persisted:
-            state.add_assistant_message(partial + "……（被用户打断）", origin_channel=origin_channel)
-        elif partial_persisted and partial.strip():
-            previous = next((item for item in reversed(state.messages) if isinstance(item, AssistantMessage)
-                and item.text == partial and item.origin_channel == origin_channel), None)
-            if previous is None:
-                raise RuntimeError("已保存的流式文本缺少对应 assistant 消息")
-            state.replace_message(replace(previous, content=text_content(previous.text + "……（被用户打断）")))
-            rewritten_message_id = previous.message_id
-        # 2. 终止轮次清空背景并保存 completed，不放行队列。
-        state.clear_temporary_context()
-        await self.save(state, checkpoint_type=CheckpointType.COMPLETED, rewritten_message_id=rewritten_message_id)
-
-    async def unfinished_sessions(self) -> list[str]:
-        """查询需要无执行收尾的会话，查询本身不启动 Agent。
-
-        Returns:
-            list[str]: 最新 checkpoint 未完成或工具协议未闭合的会话。
-        """
-        return [session for session, state, kind in await self._state_dao.latest_checkpoints()
-                if kind == CheckpointType.INTERMEDIATE or state.get("interrupt_data") or state.get("pending_tool_calls")]
-
-    async def reset_after_restart(self) -> None:
-        """按现有启动关闭规则作废 pending 真人意图，保留任务通知和交付事实。"""
-        await self._inbox_dao.reset_after_restart(self.db_path)
-
-    async def clear_session(self) -> int:
-        """删除当前会话 checkpoint，保留完整消息历史。
-
-        Returns:
-            int: 删除的 checkpoint 数量。
-        """
-        return await self._state_dao.clear_session()
-
-    async def close(self) -> None:
-        """关闭两个自有 DAO，前一个关闭失败时仍尝试关闭另一个。"""
-        try:
-            await self._state_dao.close()
-        finally:
-            await self._inbox_dao.close()
+    #=====================接收消息和管理排队输入======================
 
     async def submit_human(self, origin_channel: str, message: str, *, images: list[str] | None = None, queued: bool = False) -> InboxEnvelope:
-        """持久受理真人输入，返回 pending 输入快照。
+        """用户发送消息时将正文和附件存入 Inbox，等待会话开始处理。
+
+        Scheduler 在保存成功后安排执行，或等待当前轮正常结束后处理排队消息。
+        输入加入对话和真人计数的更新由 commit_human_input 在执行开始时完成。
 
         Args:
-            origin_channel (str): 实际发送真人消息的渠道。
-            message (str): 用户发送的正文，允许与纯图片附件一起受理。
-            images (list[str] | None): 用户附带的图片地址。
-            queued (bool): 是否等待正常真人轮次完成后再允许交付。
+            origin_channel (str): 用户发送消息的界面或渠道。
+            message (str): 用户正文；仅发送图片时可以为空。
+            images (list[str] | None): 用户附件的图片地址。
+            queued (bool): 是否等待当前真人轮次正常结束后再允许处理。
 
         Returns:
-            InboxEnvelope: 本次操作的持久结果。
+            InboxEnvelope: 已存入数据库的待处理输入，包含编号、来源、内容和排队方式。
         """
         return await self._inbox_dao.submit_human(origin_channel, message, images=images, queued=queued)
 
-    async def read_activation_batch(self, *, kind: InboxKind | str | None = None, include_queued: bool = True) -> tuple[InboxEnvelope, ...]:
-        """为 worker 查询候选输入，不领取或交付。
+    async def submit_plugin_notification(self, plugin_name: str, name: str, text: str) -> None:
+        """Scheduler 处理插件通知请求时，将通知存入 Inbox 等待 Agent 读取。
+
+        保存成功后由 Scheduler 根据会话当前状态安排处理；消息在开始新轮次或
+        现有轮次的下一次模型请求前加入对话。
 
         Args:
-            kind (InboxKind | str | None): 审批等待期间可限定只查询真人输入。
-            include_queued (bool): 是否包括已经放行的排队输入。
-
-        Returns:
-            tuple[InboxEnvelope, ...]: 本次操作的持久结果。
+            plugin_name (str): 发出通知的插件名称。
+            name (str): 通知用途的稳定名称，例如 battle_started。
+            text (str): 需要 Agent 读取的通知正文。
         """
-        return await self._inbox_dao.read_activation_batch(kind=kind, include_queued=include_queued)
-
-    async def read_next(self, *, kind: InboxKind | str | None = None, include_queued: bool = True) -> InboxEnvelope | None:
-        """查询最早的可交付输入。
-
-        Args:
-            kind (InboxKind | str | None): 需要查询的输入类别；为空时查询全部类别。
-            include_queued (bool): 是否包括已经放行的排队输入。
-
-        Returns:
-            InboxEnvelope | None: 本次操作的持久结果。
-        """
-        return await self._inbox_dao.read_next(kind=kind, include_queued=include_queued)
-
-    async def read_task_terminals(self) -> tuple[InboxEnvelope, ...]:
-        """查询尚未交付的任务终态通知。
-
-        Returns:
-            tuple[InboxEnvelope, ...]: 本次操作的持久结果。
-        """
-        return await self._inbox_dao.read_task_terminals()
+        await self._inbox_dao.submit_plugin_notification(plugin_name, name, text)
 
     async def pending_humans(self, *, origin_channel: str | None = None) -> list[InboxEnvelope]:
-        """查询当前会话尚未交付的真人输入。
+        """查询用户已经发送、尚未加入 Agent 对话的消息，供会话快照显示。
 
         Args:
-            origin_channel (str | None): 按需限定发送来源；为空时查询所有来源。
+            origin_channel (str | None): 限定用户消息的发送来源，省略时查询所有来源。
 
         Returns:
-            list[InboxEnvelope]: 本次操作的持久结果。
+            list[InboxEnvelope]: 按输入编号排列的待处理真人消息，包含尚在排队的消息。
         """
         return await self._inbox_dao.pending_humans(origin_channel=origin_channel)
 
     async def cancel_queued(self, envelope_id: int, origin_channel: str) -> bool:
-        """按来源条件撤销尚未交付的排队输入。
+        """用户撤回排队消息时，尝试撤销同一来源尚未处理的那条输入。
 
         Args:
-            envelope_id (int): 要撤销的持久输入编号。
-            origin_channel (str): 发起撤销的来源，只允许撤销同来源输入。
+            envelope_id (int): 用户要撤回的 Inbox 输入编号。
+            origin_channel (str): 发起撤回的界面或渠道，用于检查消息来源。
 
         Returns:
-            bool: 本次操作的持久结果。
+            bool: 输入属于该来源且仍可撤销时返回 True；已处理、已删除或不符合条件时返回 False。
         """
         return await self._inbox_dao.cancel_queued(envelope_id, origin_channel)
 
     async def status(self, envelope_id: int) -> InboxStatus | None:
-        """查询输入交付事实，供 Scheduler 判断失败后是否可以重试。
+        """处理输入失败后查询其保存结果，供 Scheduler 决定重试还是报告完成。
 
         Args:
-            envelope_id (int): 需要核对 pending 或 delivered 的输入编号。
+            envelope_id (int): 本次执行尝试处理的 Inbox 输入编号。
 
         Returns:
-            InboxStatus | None: 本次操作的持久结果。
+            InboxStatus | None: pending 表示尚未随对话保存，delivered 表示已经保存；记录不存在时为空。
         """
         return await self._inbox_dao.status(envelope_id)
 
     async def discard_human_input(self, envelope_id: int) -> None:
-        """重试耗尽后移除当前未交付真人输入。
+        """用户输入处理重试耗尽时，删除仍未保存进对话的输入。
+
+        Scheduler 调用后向界面报告该条消息处理失败，让用户决定是否重新发送。
 
         Args:
             envelope_id (int): 本轮重试耗尽的真人输入编号。
@@ -482,17 +260,450 @@ class SessionStateManager:
         return await self._inbox_dao.discard_human_input(envelope_id)
 
     async def release_queued(self) -> None:
-        """按调用方决定独立放行排队输入。"""
+        """将当前会话的排队用户消息设为允许处理，后续由 worker 读取。
+
+        这是独立提交的放行入口。正常回答结束时使用 complete_turn 的
+        release_queued 参数，将放行与本轮结束状态一起保存。
+        """
         return await self._inbox_dao.release_queued()
+
+    #=====================开始一轮对话并保存输入======================
+
+    async def read_activation_batch(self, *, kind: InboxKind | str | None = None, include_queued: bool = True) -> tuple[InboxEnvelope, ...]:
+        """会话 worker 准备开始执行时，查询本次要处理的一批输入。
+
+        本批包括符合条件的内部通知和最早的一条真人消息；查询后仍是 pending，
+        Agent 将内容加入对话并保存成功时，才一起改为 delivered。
+
+        Args:
+            kind (InboxKind | str | None): 限定输入类别，等待审批期间可只查询真人消息。
+            include_queued (bool): 是否包括已经获准开始处理的排队消息。
+
+        Returns:
+            tuple[InboxEnvelope, ...]: 按 Inbox 编号排列的本批输入，没有符合条件的输入时为空元组。
+        """
+        return await self._inbox_dao.read_activation_batch(kind=kind, include_queued=include_queued)
+
+    async def read_next(self, *, kind: InboxKind | str | None = None, include_queued: bool = True) -> InboxEnvelope | None:
+        """查询最早的一条可处理输入，供需要逐条读取的调用方使用。
+
+        Args:
+            kind (InboxKind | str | None): 限定输入类别，省略时查询所有类别。
+            include_queued (bool): 是否包括已经获准开始处理的排队消息。
+
+        Returns:
+            InboxEnvelope | None: 最早的待处理输入，没有符合条件的记录时为空；读取保持 pending 状态。
+        """
+        return await self._inbox_dao.read_next(kind=kind, include_queued=include_queued)
+
+    @property
+    def last_loaded_checkpoint_type(self) -> CheckpointType | None:
+        """读取最近一次加载的会话快照类型，供调用方判断上轮是否已经结束。
+
+        Returns:
+            CheckpointType | None: intermediate 表示执行进度，completed 表示轮次已结束；没有快照时为空。
+        """
+        return self._state_dao.last_loaded_checkpoint_type
+
+    async def load(self) -> AgentState:
+        """Agent 开始一轮对话或 Scheduler 处理会话命令时，加载最新会话状态。
+
+        Returns:
+            AgentState: 从最新 checkpoint 恢复的状态；首次使用该会话时返回新的空状态。
+        """
+        state = await self._state_dao.load()
+        return state if state is not None else AgentState.create_new(self.session_id)
+
+    async def close_previous_tools(self, state: AgentState) -> None:
+        """Agent 开始处理新用户消息前，为上轮未结束的工具调用补上结束结果。
+
+        旧轮可能停在审批，也可能留下尚无结果的工具调用。根据其状态记录拒绝、
+        取消或结果未知的消息，再保存旧轮已结束状态，随后才能加入本轮输入。
+
+        Args:
+            state (AgentState): 新用户消息加入前加载的会话状态，可能包含上轮遗留的工具调用。
+        """
+        # 1. 根据旧轮工具的执行情况补齐结果；确有修改时保存旧轮结束状态。
+        if state.close_unfinished_tools(USER_REJECTED_INTERRUPTED_TOOL_RESULT,
+                USER_CANCELLED_PENDING_TOOL_RESULT, INTERRUPTED_TOOL_RESULT):
+            await self.complete_turn(state)
+
+    async def commit_human_input(self, state: AgentState, message: str, images: list[str] | None, *,
+                                 origin_channel: str = DESKTOP_CHANNEL,
+                                 inputs: tuple[InboxEnvelope, ...] = ()) -> HumanMessage:
+        """Agent 开始处理用户消息时，将同批通知和真人输入加入对话并保存。
+
+        Agent 已完成输入保存前的插件钩子。本方法先追加内部通知，再追加真人消息、
+        图片和真人计数；对话历史、执行快照及 Inbox 已交付标记在同一事务保存。
+        返回后，Agent 才报告真人消息保存成功并进入后续插件钩子和模型执行。
+
+        Args:
+            state (AgentState): 已加载并整理完上轮工具调用的当前会话状态。
+            message (str): 本轮用户正文。
+            images (list[str] | None): 本轮用户附件的图片地址。
+            origin_channel (str): 用户消息的实际来源渠道。
+            inputs (tuple[InboxEnvelope, ...]): 随本次对话保存一起标记为已交付的 Inbox 记录。
+
+        Returns:
+            HumanMessage: 已保存的真人消息，供 Agent 使用其编号和正文通知界面显示。
+
+        Raises:
+            Exception: 输入已失效或数据库保存失败；本次数据库事务回滚，错误交给执行调用方处理。
+        """
+        # 1. 先把同批任务结果和插件通知加入对话，这些内部消息不增加真人计数。
+        for notice in runtime_input_messages(inputs):
+            state.append_input(notice)
+        filenames = []
+        # 2. 保存用户附件；文件保存失败时记录日志，后续仍保留用户传入的图片地址。
+        if images:
+            try:
+                filenames = await asyncio.to_thread(save_multiple_images, images)
+            except Exception as exc:
+                logger.warning("[SessionStateManager] 用户图片保存失败: %s", exc)
+        # 3. 创建真人消息并增加计数，将本轮输入和执行进度一起提交。
+        human = state.add_user_message(message, image_urls=images or (), image_filenames=filenames,
+                                       origin_channel=origin_channel)
+        state.increment_long_term_memory_turn_counter()
+        await self.save(state, checkpoint_type=CheckpointType.INTERMEDIATE, inbox_inputs=inputs)
+        return human
+
+    async def commit_runtime_inputs(self, state: AgentState, messages: tuple[RuntimeInputMessage, ...] | None,
+                                    inputs: tuple[InboxEnvelope, ...]) -> None:
+        """将任务结果或插件通知加入当前对话，并保存通知已经交给 Agent 的记录。
+
+        Agent 由内部通知启动新轮次时，以及 Pipeline 在下一次模型请求前追加
+        通知时，都会使用此方法。内部消息保存执行进度，但不增加真人消息计数。
+
+        Args:
+            state (AgentState): 需要加入内部消息的当前会话状态。
+            messages (tuple[RuntimeInputMessage, ...] | None): 调用方已构造的消息；为 None 时从 inputs 转换。
+            inputs (tuple[InboxEnvelope, ...]): 需要随本次对话保存标记为已交付的 Inbox 记录。
+        """
+        # 1. 使用调用方传入的消息，或将 Inbox 通知转换成消息，再按顺序加入对话。
+        for message in runtime_input_messages(inputs) if messages is None else messages:
+            state.append_input(message)
+        # 2. 同时保存新增消息、执行快照和通知的已交付标记，成功后再继续模型调用。
+        await self.save(state, checkpoint_type=CheckpointType.INTERMEDIATE, inbox_inputs=inputs)
+
+    #=====================执行期间保存进度和追加通知======================
+
+    async def save_progress(self, state: AgentState) -> int:
+        """执行期间保存当前对话、工具进度和等待信息，供后续继续处理。
+
+        Pipeline 在工具调用前后或进入等待时保存；审批命令也用它保存用户决定。
+
+        Args:
+            state (AgentState): 调用方刚更新的会话状态。
+
+        Returns:
+            int: 类型为 intermediate 的已保存执行快照编号。
+        """
+        return await self.save(state, checkpoint_type=CheckpointType.INTERMEDIATE)
+
+    async def deliver_pending(self, state: AgentState) -> None:
+        """Pipeline 准备下一次模型请求时，把新到达的任务结果和插件通知加入对话。
+
+        调用位置已经处理完上一批工具调用及结果。有新通知时统一保存消息和
+        已交付标记，随后这次模型请求就能读取通知正文。
+
+        Args:
+            state (AgentState): 即将用于下一次模型请求的会话状态。
+        """
+        # 1. 查询当前待处理的内部通知，有内容时加入对话并保存。
+        inputs = await self._inbox_dao.read_runtime_inputs()
+        if inputs:
+            await self.commit_runtime_inputs(state, None, inputs)
+
+    async def read_task_terminals(self) -> tuple[InboxEnvelope, ...]:
+        """单独查询当前会话尚未加入 Agent 对话的后台任务结束通知。
+
+        该查询只返回任务结果；执行期间同时接收任务结果和插件通知使用 deliver_pending。
+
+        Returns:
+            tuple[InboxEnvelope, ...]: 按 Inbox 编号排列的待处理任务通知，查询后仍保持 pending 状态。
+        """
+        return await self._inbox_dao.read_task_terminals()
+
+    #=====================等待工具审批和恢复执行======================
+
+    async def save_interrupt_origin(self, state: AgentState, origin_channel: str) -> None:
+        """Agent 准备报告工具暂停时，补齐恢复来源并保存当前会话进度。
+
+        Pipeline 已保存等待审批或桌面执行回报所需的请求和工具信息；Agent 在
+        向界面转发等待事件前调用这里。来源尚未记录时，将来源与当前完整状态
+        一起保存，让后续审批、重连和恢复能继续处理原调用并使用正确的回答渠道。
+
+        Args:
+            state (AgentState): Pipeline 刚写入等待请求、工具参数和本批后续调用的会话状态。
+            origin_channel (str): 本轮回答所属的界面或渠道，写入等待信息供恢复时使用。
+
+        Raises:
+            Exception: 保存进度失败，Agent 随后不会继续转发这次等待事件。
+        """
+        # 1. 等待信息缺少来源时，保留原请求和待执行工具，补上本轮回答渠道。
+        if state.interrupt_data and "origin_channel" not in state.interrupt_data:
+            state.set_interrupt({**state.interrupt_data, "origin_channel": origin_channel}, state.pending_actions)
+            # 2. 保存整个会话进度，调用成功后 Agent 才向界面转发等待事件。
+            await self.save_progress(state)
+
+    async def record_authorization_decision(self, request_id: str | None, decision: dict,
+                                            actor_channel: str = DESKTOP_CHANNEL) -> str | None:
+        """保存用户的工具审批决定，供 Scheduler 恢复原调用或开始引导消息的新轮次。
+
+        Scheduler 已检查命令内容并串行处理当前会话的决定。这里加载等待状态，
+        核对请求编号；引导决定先将新正文存入 Inbox，再把决定写入执行快照。
+        返回来源后，Scheduler 通知界面：批准、拒绝由 Agent 恢复原调用并处理决定，
+        引导则结束旧轮次，再安排新消息开始执行。
+
+        Args:
+            request_id (str | None): 用户这次处理的审批请求编号，与当前等待请求比较。
+            decision (dict): 已校验的批准、拒绝或引导决定，引导决定包含新正文。
+            actor_channel (str): 用户作出决定的渠道，作为引导正文的消息来源。
+
+        Returns:
+            str | None: 决定保存成功后的原回答渠道；请求不匹配或已经记录决定时为空。
+        """
+        # 1. 读取当前等待的审批，只处理编号匹配且尚未作出决定的请求。
+        state = await self.load()
+        interrupt = state.get_pending_authorization(request_id)
+        if interrupt is None:
+            return None
+        # 2. 引导决定先保存新消息；写入失败时让错误返回，当前审批仍保持等待。
+        if decision.get("kind") == ApprovalDecisionKind.STEER:
+            await self.submit_human(actor_channel, decision["message"])
+        # 3. 保存审批决定，返回原回答渠道供 Scheduler 通知界面并安排恢复或新轮次。
+        if not state.record_authorization_decision(request_id, decision):
+            return None
+        await self.save_progress(state)
+        return str(interrupt.get("origin_channel") or DESKTOP_CHANNEL)
+
+    async def load_for_resume(self, request_id: str) -> AgentState | None:
+        """Agent 恢复暂停的工具调用前，加载状态并检查这次恢复请求是否仍有效。
+
+        请求编号必须与当前等待信息一致；等待人工审批的调用还必须已有用户决定。
+        返回状态后，由 Agent、Pipeline 使用其中保存的工具参数和后续调用继续执行。
+
+        Args:
+            request_id (str): Scheduler 要求恢复的等待请求编号。
+
+        Returns:
+            AgentState | None: 编号匹配且审批条件满足的状态；编号过期或审批尚无决定时为空。
+        """
+        # 1. 加载最新快照，旧请求编号不能恢复已经被替换的等待调用。
+        state = await self.load()
+        interrupt = state.interrupt_data or {}
+        if interrupt.get("request_id") != request_id:
+            return None
+        # 2. 人工审批须已保存决定；其他等待类型在这里完成编号检查后交给 Agent 处理。
+        if interrupt.get("type") == InterruptKind.AUTHORIZATION_REQUEST and not interrupt.get("runtime_decision"):
+            return None
+        return state
+
+    async def cancel_pending_interrupt(self) -> tuple[str, str] | None:
+        """新用户消息已经保存时，取消当前仍在等待处理的旧工具请求。
+
+        Scheduler 在安排新消息之前调用。这里保存取消决定；返回旧请求编号和
+        原回答渠道后，Scheduler 通知界面结束等待，并安排旧轮的结束处理。
+
+        Returns:
+            tuple[str, str] | None: 已取消的请求编号和原回答渠道；没有等待请求或已有决定时为空。
+        """
+        # 1. 读取旧等待信息，尝试记录取消决定；已有决定时保持原处理结果。
+        state = await self.load()
+        interrupt = state.interrupt_data or {}
+        if not state.cancel_pending_interrupt():
+            return None
+        # 2. 保存取消后的执行进度，再返回编号和渠道供 Scheduler 更新界面。
+        await self.save_progress(state)
+        return str(interrupt.get("request_id") or ""), str(interrupt.get("origin_channel") or DESKTOP_CHANNEL)
+
+    #=====================正常结束和主动打断======================
+
+    async def complete_turn(self, state: AgentState, *, release_queued: bool = False) -> int:
+        """Agent 正常回答结束时，清除本轮临时背景并保存轮次已结束状态。
+
+        Agent 在响应提交前后两个钩子之间调用；新消息开始前整理旧工具调用时，
+        close_previous_tools 也使用此方法保存旧轮已经结束。
+
+        Args:
+            state (AgentState): 已记录本轮回答和工具结果的会话状态。
+            release_queued (bool): 是否将排队消息的放行与本次结束状态一起保存。
+
+        Returns:
+            int: 类型为 completed 的已保存会话快照编号。
+        """
+        # 1. 本轮临时背景随结束状态一起清除，下轮重新准备自己的背景。
+        state.clear_temporary_context()
+        return await self.save(state, checkpoint_type=CheckpointType.COMPLETED, release_queued=release_queued)
+
+    async def finish_interrupted_turn(self, state: AgentState, *, partial: str, partial_persisted: bool,
+                                      origin_channel: str) -> None:
+        """当前轮次被停止或引导时，保存工具取消结果及已显示的回答片段。
+
+        Agent 捕获 TurnInterrupted 后调用。为未结束的工具调用补上取消结果，
+        在本步骤的回答后添加打断说明，清除临时背景并保存本轮结束；排队消息
+        继续等待后续明确的处理安排。
+
+        Args:
+            state (AgentState): 被打断的 Agent 正在使用的会话状态。
+            partial (str): 当前模型步骤已向界面显示的正文。
+            partial_persisted (bool): 当前步骤是否已经加入内存中的助手消息，需要沿用其消息编号。
+            origin_channel (str): 被打断回答所属的界面或渠道。
+
+        Raises:
+            RuntimeError: 调用方声明片段已经加入助手消息，但当前状态中找不到对应消息。
+        """
+        # 1. 为当前尚未结束的工具调用追加取消结果，保留前面已经完成的工具结果。
+        cancelled = "用户打断，本次工具调用已取消。"
+        state.close_unfinished_tools(cancelled, cancelled, cancelled)
+        rewritten_message_id = None
+        # 2. 片段尚未加入会话时新增消息；已经加入时替换原消息并保留其编号。
+        if partial.strip() and not partial_persisted:
+            state.add_assistant_message(partial + "……（被用户打断）", origin_channel=origin_channel)
+        elif partial_persisted and partial.strip():
+            # 2.1. 按当前步骤正文和来源找到原助手消息，缺失时报告状态不一致。
+            previous = next((item for item in reversed(state.messages) if isinstance(item, AssistantMessage)
+                and item.text == partial and item.origin_channel == origin_channel), None)
+            if previous is None:
+                raise RuntimeError("已保存的流式文本缺少对应 assistant 消息")
+            state.replace_message(replace(previous, content=text_content(previous.text + "……（被用户打断）")))
+            rewritten_message_id = previous.message_id
+        # 3. 清除本轮背景，保存工具取消结果和回答片段；已有助手消息同步重写历史记录。
+        state.clear_temporary_context()
+        await self.save(state, checkpoint_type=CheckpointType.COMPLETED, rewritten_message_id=rewritten_message_id)
+
+    #=====================应用启动退出时整理遗留执行======================
+
+    async def unfinished_sessions(self) -> list[str]:
+        """应用启动或退出整理时，找出数据库中仍有未结束执行记录的会话。
+
+        Scheduler 查询后逐个调用 finalize_abandoned_turn，给旧轮保存结束结果。
+
+        Returns:
+            list[str]: 最新快照为 intermediate，或仍有等待信息、未完成工具调用的会话编号。
+        """
+        return [session for session, state, kind in await self._state_dao.latest_checkpoints()
+                if kind == CheckpointType.INTERMEDIATE or state.get("interrupt_data") or state.get("pending_tool_calls")]
+
+    async def finalize_abandoned_turn(
+        self, *, partial: str = "", partial_persisted: bool = False,
+        origin_channel: str = DESKTOP_CHANNEL, partial_message_id: str | None = None,
+    ) -> bool:
+        """应用启动或退出整理时，为已经失去执行者的旧轮次保存结束结果。
+
+        Scheduler 在执行停止后调用。重新读取数据库中的进度，为遗留工具调用
+        记录已保存的桌面回报、取消或结果未知；将退出前捕获的回答片段保存到
+        对话中，再将旧轮标记为结束。整个处理过程使用已有数据完成。
+
+        Args:
+            partial (str): 退出前捕获的当前模型步骤已显示正文，启动时没有片段可传入。
+            partial_persisted (bool): 片段在退出前是否已加入助手消息；本方法仍检查数据库中的消息。
+            origin_channel (str): 捕获的回答片段所属渠道。
+            partial_message_id (str | None): 当前助手消息编号，优先按编号查找需要补充结束说明的消息。
+
+        Returns:
+            bool: 已保存旧轮结束结果时为 True；会话已有结束快照且没有遗留调用时为 False。
+
+        Raises:
+            Exception: 保存失败时由调用方报告错误，数据库中的旧快照和对话历史保持原样。
+        """
+        # 1. 读取最新快照；已有完整结束记录且没有遗留工具或等待信息时，整理完成。
+        state = await self.load()
+        if self._state_dao.last_loaded_checkpoint_type != CheckpointType.INTERMEDIATE and not (
+            state.interrupt_data or state.pending_tool_calls
+        ):
+            return False
+        # 2. 为遗留工具准备结果：已有桌面回报时保存回报内容，否则说明取消或结果未知。
+        interrupt = state.interrupt_data or {}
+        receipt = interrupt.get("desktop_result")
+        content = APPLICATION_EXIT_RESULT
+        images: tuple[str, ...] = ()
+        if receipt is not None:
+            # 2.1. 截图作为图片保存，其他回报字段写入工具结果正文。
+            screenshot = receipt.get("screenshot_data")
+            images = (screenshot,) if isinstance(screenshot, str) and screenshot else ()
+            facts = {key: value for key, value in receipt.items() if key != "screenshot_data"}
+            content = "应用退出，本轮已终止；已保存桌面执行回报：" + json.dumps(facts, ensure_ascii=False)
+        elif (interrupt.get("resume_state") or {}).get("continuation_claimed"):
+            # 2.2. 桌面动作已开始但未保存回报时，保留结果未知的说明。
+            content = APPLICATION_EXIT_UNKNOWN_RESULT
+        state.close_unfinished_tools(content, APPLICATION_EXIT_RESULT, APPLICATION_EXIT_UNKNOWN_RESULT,
+                                     interrupted_images=images)
+        # 3. 保存退出前已显示的回答；数据库中已有同一步骤时修改原消息，否则新增消息。
+        rewritten_message_id = None
+        if partial.strip():
+            suffix = "……（应用退出，本轮已终止）"
+            previous = None
+            if partial_message_id is not None:
+                # 3.1. 有消息编号时按编号查找，准确定位退出前正在生成的回答。
+                previous = next((item for item in state.messages
+                                 if isinstance(item, AssistantMessage)
+                                 and item.message_id == partial_message_id), None)
+            elif partial_persisted:
+                # 3.2. 没有编号但调用方记录过该片段时，按正文和回答来源查找。
+                previous = next((item for item in reversed(state.messages)
+                                 if isinstance(item, AssistantMessage) and item.text == partial
+                                 and item.origin_channel == origin_channel), None)
+            if previous is not None:
+                state.replace_message(with_text(previous, previous.text + suffix))
+                rewritten_message_id = previous.message_id
+            else:
+                # 3.3. 数据库中尚无这一步骤时，新增捕获的正文及退出说明。
+                state.add_assistant_message(partial + suffix, origin_channel=origin_channel)
+        # 4. 清除本轮临时背景，统一保存工具结果、回答片段和已结束快照。
+        state.clear_temporary_context()
+        await self.save(state, checkpoint_type=CheckpointType.COMPLETED, rewritten_message_id=rewritten_message_id)
+        return True
+
+    async def reset_after_restart(self) -> None:
+        """应用启动或关闭整理时，删除数据库中所有尚未处理的真人输入。
+
+        Scheduler 调用此方法作废上次运行遗留的用户请求。已加入对话的输入记录、
+        待处理任务结果和插件通知继续保留；之后的新用户消息由正常入口接收。
+        """
+        await self._inbox_dao.reset_after_restart(self.db_path)
+
+    #=====================统一保存状态和图片======================
+
+    async def save(self, state: AgentState, *, checkpoint_type: CheckpointType,
+                   inbox_inputs: tuple[InboxEnvelope, ...] = (), rewritten_message_id: str | None = None,
+                   release_queued: bool = False) -> int:
+        """将会话状态保存为可恢复的快照，并同步保存对话历史和输入处理结果。
+
+        输入保存、执行中保存、审批决定和轮次结束都通过这里写入。先准备工具结果
+        中的图片文件，再由 DAO 在同一数据库事务内保存快照、对话历史、Inbox
+        已交付标记和按需执行的排队放行。数据库任一步失败时整笔事务回滚。
+
+        Args:
+            state (AgentState): 调用方正在使用、准备保存的会话状态。
+            checkpoint_type (CheckpointType): intermediate 表示还会继续执行，completed 表示轮次已结束。
+            inbox_inputs (tuple[InboxEnvelope, ...]): 已加入本次对话、需同时标记为已交付的 Inbox 记录。
+            rewritten_message_id (str | None): 本次修改的已有助手消息编号，用于同步重写其历史记录。
+            release_queued (bool): 是否在本次事务中将排队真人输入设为允许处理。
+
+        Returns:
+            int: 数据库提交成功后的 checkpoint 编号。
+
+        Raises:
+            Exception: 输入已失效或数据库提交失败，错误返回给调用方；已写出的图片文件不随数据库回滚。
+        """
+        # 1. 在线程中保存工具图片并补上文件引用，随后数据库可以记录这些图片的位置。
+        await asyncio.to_thread(self._externalize_images, state)
+        # 2. 由同一个数据库事务保存会话进度、消息历史和输入状态，成功后返回快照编号。
+        return await self._state_dao.save(state, checkpoint_type=checkpoint_type,
+            inbox_inputs=inbox_inputs, rewritten_message_id=rewritten_message_id, release_queued=release_queued)
 
     @classmethod
     def _externalize_images(cls, state: AgentState) -> None:
-        """按图片块保存本地文件；失败保留原地址，不丢失完整工具结果。
+        """保存会话快照前，将工具结果中仍需保存的图片写入本地文件。
+
+        按消息和图片类别分组保存，成功后为对应图片补充 storage_ref 文件引用。
+        某组写入失败时记录日志并保留原图片地址，其他消息继续处理。
 
         Args:
-            state (AgentState): 需要保存、恢复或投影的会话业务状态。
+            state (AgentState): 待保存的会话状态，工具消息中的图片会补上本地文件引用。
         """
-        # 1. 已压缩图片不能重载；真人附件已经由输入入口保存，不重复落盘。
+        # 1. 逐条检查工具结果，按图片类别收集尚无文件引用且当前仍可用的图片。
         for message in state.messages:
             if not isinstance(message, ToolMessage):
                 continue
@@ -502,79 +713,40 @@ class SessionStateManager:
                     groups.setdefault(part.media_kind, []).append((index, part))
             parts = list(message.content)
             changed = False
+            # 2. 每组图片写入文件；该组写入失败时保留原地址，继续尝试后面的图片组。
             for kind, group in groups.items():
                 try:
-                    # 1.1. 同类别图片保持原有成组落盘与失败清理规则，不写入一半引用。
                     filenames = save_multiple_images([part.url for _, part in group], category=kind)
                 except Exception as exc:
                     logger.warning("[SessionStateManager] 图片外置失败，保留原地址: %s", exc)
                     filenames = []
+                # 2.1. 该组全部保存成功后，为每个图片块补上对应文件引用。
                 if len(filenames) == len(group):
                     for (index, part), filename in zip(group, filenames, strict=True):
                         parts[index] = replace(part, storage_ref=filename)
                     changed = True
-            # 2. 保存只补文件引用，内存及 checkpoint 的可用图片地址保持原样。
+            # 3. 用补充过文件引用的内容替换原消息，保留原图片地址及消息身份。
             if changed:
                 state.replace_message(replace(message, content=tuple(parts)))
 
+    #=====================清除执行快照和释放资源======================
 
-    async def finalize_abandoned_turn(
-        self, *, partial: str = "", partial_persisted: bool = False,
-        origin_channel: str = DESKTOP_CHANNEL, partial_message_id: str | None = None,
-    ) -> bool:
-        """只加载和持久结束旧轮次，不创建执行对象或运行模型、工具与插件。
+    async def clear_session(self) -> int:
+        """删除当前会话的执行快照，让后续 load 从新的空状态开始。
 
-        Args:
-            partial (str): 正常关闭前捕获的当前模型步骤可见片段。
-            partial_persisted (bool): 片段是否已记录到内存 Assistant 步骤，仍需核对落盘状态。
-            origin_channel (str): 片段所属渠道。
-            partial_message_id (str | None): 当前步骤的消息身份，避免匹配到以前相同正文。
+        完整对话历史和 Inbox 记录保留在数据库中；本方法的删除范围是 checkpoints 表。
 
         Returns:
-            bool: 是否提交了本次终止；已完成状态重复调用不再写入。
-
-        Raises:
-            Exception: 持久保存失败，原 checkpoint 和协议记录保持不变。
+            int: 本次删除的 checkpoint 数量。
         """
-        state = await self.load()
-        if self._state_dao.last_loaded_checkpoint_type != CheckpointType.INTERMEDIATE and not (
-            state.interrupt_data or state.pending_tool_calls
-        ):
-            return False
-        # 1. 使用持久回报形成事实记录，恢复不经过工具执行或 VLM。
-        interrupt = state.interrupt_data or {}
-        receipt = interrupt.get("desktop_result")
-        content = APPLICATION_EXIT_RESULT
-        images: tuple[str, ...] = ()
-        if receipt is not None:
-            screenshot = receipt.get("screenshot_data")
-            images = (screenshot,) if isinstance(screenshot, str) and screenshot else ()
-            facts = {key: value for key, value in receipt.items() if key != "screenshot_data"}
-            content = "应用退出，本轮已终止；已保存桌面执行回报：" + json.dumps(facts, ensure_ascii=False)
-        elif (interrupt.get("resume_state") or {}).get("continuation_claimed"):
-            content = APPLICATION_EXIT_UNKNOWN_RESULT
-        state.close_unfinished_tools(content, APPLICATION_EXIT_RESULT, APPLICATION_EXIT_UNKNOWN_RESULT,
-                                     interrupted_images=images)
-        # 2. 只保留捕获到的真实片段；已持久文本沿用原消息身份，不复制。
-        rewritten_message_id = None
-        if partial.strip():
-            suffix = "……（应用退出，本轮已终止）"
-            previous = None
-            if partial_message_id is not None:
-                previous = next((item for item in state.messages
-                                 if isinstance(item, AssistantMessage)
-                                 and item.message_id == partial_message_id), None)
-            elif partial_persisted:
-                previous = next((item for item in reversed(state.messages)
-                                 if isinstance(item, AssistantMessage) and item.text == partial
-                                 and item.origin_channel == origin_channel), None)
-            if previous is not None:
-                state.replace_message(with_text(previous, previous.text + suffix))
-                rewritten_message_id = previous.message_id
-            else:
-                # 2.1. 最终提交或工具前 checkpoint 被取消时，内存步骤尚未落盘，需补保存。
-                state.add_assistant_message(partial + suffix, origin_channel=origin_channel)
-        # 3. 清空已结束轮次的背景，与终止状态一起保存，不运行响应钩子或放行队列。
-        state.clear_temporary_context()
-        await self.save(state, checkpoint_type=CheckpointType.COMPLETED, rewritten_message_id=rewritten_message_id)
-        return True
+        return await self._state_dao.clear_session()
+
+    async def close(self) -> None:
+        """会话 worker、独立 Agent 或单次命令使用完本对象后，关闭两个数据库连接。
+
+        先关闭会话快照存储，再关闭 Inbox 存储；前一个关闭报错时仍会尝试关闭后一个。
+        """
+        try:
+            await self._state_dao.close()
+        finally:
+            await self._inbox_dao.close()

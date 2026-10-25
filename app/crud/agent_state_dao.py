@@ -23,7 +23,7 @@ from app.crud.session_inbox_dao import (
     mark_delivered_in_transaction,
     release_queued_in_transaction,
 )
-from app.runtime import get_checkpoint_db
+from app.environment import get_checkpoint_db
 
 
 logger = logging.getLogger(__name__)

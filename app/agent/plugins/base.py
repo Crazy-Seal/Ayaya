@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from app.agent.plugins.runtime import PluginRuntime
+
 
 class PluginHook(str, Enum):
     """定义插件可订阅的执行阶段，激活输入钩子只属于新一轮输入提交。
@@ -39,6 +41,7 @@ class HookContext:
     agent_state: Any
     data: Any
     metadata: dict = field(default_factory=dict)
+    runtime: PluginRuntime | None = None
 
     @classmethod
     def create(
@@ -47,6 +50,7 @@ class HookContext:
         state: Any,
         data: Any = None,
         metadata: dict | None = None,
+        runtime: PluginRuntime | None = None,
     ) -> "HookContext":
         """创建钩子上下文。
 
@@ -55,12 +59,14 @@ class HookContext:
             state (Any): 当前会话的内存 AgentState；保存由调用方负责。
             data (Any): 需要解析或保存的结构化数据。
             metadata (dict | None): 本次插件执行的附加调用信息。
+            runtime (PluginRuntime | None): 框架绑定插件、会话、来源轮次及任务编号的调用对象。
         """
         return cls(
             hook=hook,
             agent_state=state,
             data=data,
-            metadata=metadata or {},
+            metadata=metadata if metadata is not None else {},
+            runtime=runtime,
         )
 
 

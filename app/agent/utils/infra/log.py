@@ -7,7 +7,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
-from app.runtime import get_data_dir, is_test_environment
+from app.environment import get_data_dir, is_test_environment
 
 
 def shorten_for_log(text: str, max_len: int = 200) -> str:

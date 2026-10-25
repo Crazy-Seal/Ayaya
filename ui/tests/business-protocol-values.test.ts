@@ -16,5 +16,5 @@ test("前后端共享业务取值继续使用固定协议字符串", /**
     assert.deepEqual(Object.values(values), expected[name]);
     assert.deepEqual(JSON.parse(JSON.stringify(values)), values);
   }
-  assert.deepEqual([HistoryRole.HUMAN, HistoryRole.AI, HistoryRole.AI_TOOL_CALLING], expected.HistoryRole);
+  assert.deepEqual([HistoryRole.HUMAN, HistoryRole.AI, HistoryRole.AI_TOOL_CALLING, HistoryRole.PLUGIN], expected.HistoryRole);
 });

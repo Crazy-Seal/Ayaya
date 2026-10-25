@@ -7,12 +7,12 @@ from datetime import datetime, timezone
 from app.schemas.message_types import HistoryRole, LEGACY_TOOL_NOTICE_KIND
 from app.agent.state.messages import (
     AssistantMessage,
-    HumanMessage,
+    HumanMessage, PluginNotificationMessage, notification_text,
     MessageContractError,
     ToolMessage, ImageContent,
     message_from_history,
 )
-from app.runtime import get_chat_history_db
+from app.environment import get_chat_history_db
 
 logger = logging.getLogger(__name__)
 class ChatHistoryDao:
@@ -94,6 +94,8 @@ class ChatHistoryDao:
             raise MessageContractError(f"协议消息 id={row_id} 不符合业务契约: {exc}") from exc
         images = [part.storage_ref or part.url for part in getattr(message, "content", ())
                   if isinstance(part, ImageContent) and (part.storage_ref or part.url)]
+        if isinstance(message, PluginNotificationMessage):
+            return [{**base, "role": HistoryRole.PLUGIN, "content": notification_text(message)}]
         if isinstance(message, HumanMessage):
             return [{**base, "role": HistoryRole.HUMAN, "content": message.text,
                      "images": images or None, "origin_channel": message.origin_channel}]

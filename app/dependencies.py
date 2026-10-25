@@ -1,4 +1,7 @@
-from fastapi import Depends
+from fastapi import Depends, Request
+import asyncio
+
+from app.agent.plugins.runtime import PluginRuntime
 from functools import lru_cache
 import os
 
@@ -10,12 +13,13 @@ from app.services.desktop_settings_service import DesktopSettingsService
 from app.schemas.runtime_types import RuntimePhase
 from app.desktop.desktop_controller import DesktopController
 from app.desktop.driver import DesktopDriver
-from app.runtime import get_data_dir
-from app.orchestration.agent_runtime_scheduler import AgentRuntimeScheduler
+from app.environment import get_data_dir
+from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.interaction.interaction_event_hub import InteractionEventHub
 from app.services.channel_subscription_service import ChannelSubscriptionService
-from app.orchestration.task_supervisor import TaskSupervisor
-from app.orchestration.agent_factory import build_agent
+from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
+from app.agent.tools.core.runtime import ToolRuntime
+from app.agent.runtime.agent_factory import build_agent
 from app.agent.state.manager import SessionStateManager
 from app.mcp.mcp_connection_manager import MCPConnectionManager
 from app.services.mcp_service import MCPService
@@ -33,7 +37,7 @@ from app.agent.tools.authorization.catalog import (
 
 @lru_cache(maxsize=1)
 def get_desktop_settings_dao() -> DesktopSettingsDao:
-    """提供进程内共享桌面配置 DAO，测试路径由 runtime 校验。
+    """提供进程内共享桌面配置 DAO，测试路径由 environment 模块校验。
 
     Returns:
         DesktopSettingsDao: 当前进程唯一的 YAML 原子存储对象。
@@ -68,17 +72,16 @@ def get_desktop_controller() -> DesktopController:
     return DesktopController(get_desktop_settings_dao().load, driver_factory=create_driver)
 
 
-@lru_cache(maxsize=1)
-def get_desktop_settings_service() -> DesktopSettingsService:
-    """装配桌面设置接口，使用现有 Scheduler 的关闭状态作为门禁。
+def get_desktop_settings_service(request: Request) -> DesktopSettingsService:
+    """路由复用应用装配的桌面设置对象，其关闭检查指向同一个 Scheduler。
+
+    Args:
+        request (Request): 本次 HTTP 请求或绑定来源的插件请求。
 
     Returns:
-        DesktopSettingsService: 使用共享 DAO 和退出状态的全局配置服务。
+        DesktopSettingsService: 应用持有的桌面设置对象。
     """
-    return DesktopSettingsService(
-        get_desktop_settings_dao(),
-        lambda: get_runtime_scheduler().phase not in {RuntimePhase.STOPPING, RuntimePhase.STOPPED},
-    )
+    return request.app.state.desktop_settings_service
 
 
 @lru_cache(maxsize=1)
@@ -142,14 +145,40 @@ def get_tool_authorization() -> ToolAuthorization:
     return ToolAuthorization(get_chat_settings_dao().get_chat_settings)
 
 
-@lru_cache(maxsize=1)
-def get_task_supervisor() -> TaskSupervisor:
-    """取得进程级任务管理器，所有 Agent 工具共享同一进程所有者。
+def get_task_supervisor(request: Request) -> TaskSupervisor:
+    """从应用状态取得已创建的任务管理器，路由不负责创建或关闭它。
+
+    Args:
+        request (Request): 本次 HTTP 请求或绑定来源的插件请求。
 
     Returns:
-        TaskSupervisor: 进程内缓存的共享后台进程管理器。
+        TaskSupervisor: 应用持有的同一个任务管理器。
     """
-    return TaskSupervisor()
+    return request.app.state.task_supervisor
+
+
+def get_runtime_scheduler(request: Request) -> AgentRuntimeScheduler:
+    """从应用状态取得本次运行的 Scheduler。
+
+    Args:
+        request (Request): 本次 HTTP 请求或绑定来源的插件请求。
+
+    Returns:
+        AgentRuntimeScheduler: 应用持有的同一个 Scheduler。
+    """
+    return request.app.state.runtime_scheduler
+
+
+def get_interaction_event_hub(request: Request) -> InteractionEventHub:
+    """从应用状态取得唯一事件分发对象。
+
+    Args:
+        request (Request): 本次 HTTP 请求或绑定来源的插件请求。
+
+    Returns:
+        InteractionEventHub: 应用持有的同一个事件分发对象。
+    """
+    return request.app.state.interaction_event_hub
 
 
 @lru_cache(maxsize=1)
@@ -162,17 +191,19 @@ def get_channel_subscription_service() -> ChannelSubscriptionService:
     return ChannelSubscriptionService()
 
 
-@lru_cache(maxsize=1)
-def get_runtime_scheduler() -> AgentRuntimeScheduler:
+def create_runtime_scheduler(supervisor: TaskSupervisor, runtime_queue: asyncio.Queue) -> AgentRuntimeScheduler:
     """装配执行模块，任务状态写入其临时输出，不创建 Hub。
 
     Returns:
         AgentRuntimeScheduler: 共享执行模块。
+
+    Args:
+        supervisor (TaskSupervisor): 应用共享的任务提交、查询和有限等待对象。
+        runtime_queue (asyncio.Queue): 应用创建、Scheduler 独占消费的共享请求队列。
     """
     settings_dao = get_chat_settings_dao()
     mcp_manager = get_mcp_connection_manager()
     authorization = get_tool_authorization()
-    supervisor = get_task_supervisor()
     desktop = get_desktop_controller()
     def create_agent(session_id: str, session_state_manager: SessionStateManager):
         """真正执行时读取会话设置，创建本次 Agent。
@@ -188,27 +219,21 @@ def get_runtime_scheduler() -> AgentRuntimeScheduler:
             settings_dao.get_chat_settings(session_id),
             mcp_manager,
             authorization,
-            supervisor,
+            lambda tool_name, run_id, tool_call_id: ToolRuntime(
+                session_id, run_id, tool_name, tool_call_id, _supervisor=supervisor, _runtime_queue=runtime_queue),
             desktop,
             session_state_manager=session_state_manager,
+            plugin_runtime_factory=lambda plugin_name, run_id: PluginRuntime(
+                plugin_name, session_id, run_id, _supervisor=supervisor, _runtime_queue=runtime_queue),
         )
 
     scheduler = AgentRuntimeScheduler(
+        runtime_queue=runtime_queue,
         agent_factory=create_agent,
         subscriptions=get_channel_subscription_service(),
         task_supervisor=supervisor,
     )
     return scheduler
-
-
-@lru_cache(maxsize=1)
-def get_interaction_event_hub() -> InteractionEventHub:
-    """装配唯一 Hub，依赖方向仅从 Hub 指向 Scheduler。
-
-    Returns:
-        InteractionEventHub: 由应用生命周期启动的共享分发对象。
-    """
-    return InteractionEventHub(get_runtime_scheduler(), subscriptions=get_channel_subscription_service())
 
 
 @lru_cache(maxsize=1)

@@ -219,6 +219,7 @@ const desktopPetApi: DesktopPetApi = {
    */
   requestApplicationExit: () => ipcRenderer.invoke(IpcChannel.EXIT_APPLICATION),
   /** 查询主进程退出状态，此查询在退出等待期间仍允许执行。 */
+  getActiveTaskSummary: () => ipcRenderer.invoke(IpcChannel.GET_ACTIVE_TASK_SUMMARY),
   getApplicationShutdownState: () => ipcRenderer.invoke(IpcChannel.GET_SHUTDOWN_STATE),
   /**
    * 主进程关闭业务门禁后通知页面停止交互，不暴露 Electron 事件对象。

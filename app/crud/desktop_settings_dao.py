@@ -7,7 +7,7 @@ from pathlib import Path
 
 import yaml
 
-from app.runtime import get_desktop_settings_file, get_legacy_frontend_settings_file
+from app.environment import get_desktop_settings_file, get_legacy_frontend_settings_file
 from app.schemas.desktop import DesktopSettings
 
 logger = logging.getLogger(__name__)

@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from app.runtime import get_mem0_qdrant_dir, get_memory_base_dir
+from app.environment import get_mem0_qdrant_dir, get_memory_base_dir
 
 
 def get_system_timezone() -> ZoneInfo:

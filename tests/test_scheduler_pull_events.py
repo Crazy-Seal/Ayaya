@@ -11,7 +11,7 @@ from app.agent.state.model import AgentState
 from app.agent.state.messages import ToolCall
 from app.interaction.interaction_contract import ChannelCommand
 from app.interaction.interaction_event_hub import InteractionEventHub
-from app.orchestration.agent_runtime_scheduler import AgentRuntimeScheduler
+from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.services.channel_subscription_service import ChannelSubscriptionService
 
 
@@ -60,7 +60,7 @@ def test_receipt_does_not_reserve_run_and_hub_fans_out(tmp_path) -> None:
             return Agent()
 
         subscriptions = ChannelSubscriptionService(path)
-        scheduler = AgentRuntimeScheduler(
+        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
             agent_factory=factory, subscriptions=subscriptions,
             session_state_manager_factory=partial(SessionStateManager, db_path=path),
         )
@@ -159,7 +159,7 @@ def test_failed_turn_returns_idle_without_duplicate_errors(tmp_path, failure, ex
                 raise RuntimeError("工厂失败")
             return Agent()
 
-        scheduler = AgentRuntimeScheduler(
+        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
             agent_factory=factory, session_state_manager_factory=partial(SessionStateManager, db_path=path),
         )
         await scheduler.start()
@@ -300,7 +300,7 @@ def test_pending_approval_steer_or_decision_wakes_worker_immediately(tmp_path, a
             """
             return ApprovalAgent()
 
-        scheduler = AgentRuntimeScheduler(
+        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
             agent_factory=factory, session_state_manager_factory=partial(Inbox, db_path=path),
         )
         await scheduler.start()

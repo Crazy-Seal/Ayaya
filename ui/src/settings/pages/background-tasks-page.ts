@@ -153,11 +153,11 @@ export class BackgroundTasksPage {
       };
       const seconds = Math.max(0, Math.floor((Date.parse(record.ended_at || new Date().toISOString())
         - Date.parse(record.created_at)) / 1000));
-      title.textContent = `[${record.tool_name || "未知工具"}] ${record.command} · ${labels[record.status]} · ${Math.floor(seconds / 60)}分${seconds % 60}秒`;
+      title.textContent = `[${record.plugin_name || record.tool_name}] ${record.title} · ${labels[record.status]} · ${Math.floor(seconds / 60)}分${seconds % 60}秒`;
       const details = document.createElement("button");
       details.type = "button";
       details.className = "ui-button ui-button--secondary ui-button--small";
-      details.textContent = "输出";
+      details.textContent = record.output_ref ? "输出" : "结果";
       details.addEventListener("click", /**
        * 用户选择任务详情时切换任务编号并清空旧输出，从零开始读取该任务输出。
        */
@@ -166,12 +166,17 @@ export class BackgroundTasksPage {
         this.outputOffset = 0;
         this.output.textContent = "";
         this.output.hidden = false;
-        void this.loadOutput();
+        if (record.output_ref) {
+          void this.loadOutput();
+        } else {
+          this.output.textContent = [record.result, record.error].filter(Boolean).join("\n") || "任务没有结果正文";
+          this.more.hidden = true;
+        }
       });
       row.append(title, details);
       const recent = document.createElement("div");
       recent.className = "background-task-recent";
-      recent.textContent = `最近输出：${record.recent_output?.trim() || "暂无输出"}`;
+      recent.textContent = record.output_ref ? `最近输出：${record.recent_output?.trim() || "暂无输出"}` : record.error || record.result || "暂无结果正文";
       row.append(recent);
       if (record.status === TaskStatus.RUNNING) {
         const stop = document.createElement("button");

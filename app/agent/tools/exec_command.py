@@ -10,6 +10,12 @@ from app.agent.tools.core.schema import tool_parameters_schema
 from app.agent.tools.terminal.validation import failure, validate_input
 from app.agent.utils.infra.safe_path import WORKDIR, safe_path
 from app.agent.tools.terminal.shell import detect_shell
+from app.agent.tools.terminal.service import TerminalService
+from app.agent.tools.terminal.task import TerminalTask
+from app.agent.utils.infra.owned_work import complete_owned_work
+from app.environment import get_data_dir
+from app.schemas.runtime_types import TaskLifetime
+from app.schemas.task_types import TERMINAL_TASK_NAME
 
 
 class ExecCommandArguments(BaseModel):
@@ -32,6 +38,10 @@ class ExecCommandTool(BaseTool):
         "任务运行结束时，会将完成状态和完整输出日志位置主动通知你。禁止运行可能损害计算机系统的命令。"
     )
     parameters_schema = tool_parameters_schema(ExecCommandArguments)
+
+    def __init__(self) -> None:
+        """准备系统终端创建能力，每次 execute 单独创建具体任务。"""
+        self._terminal = TerminalService()
 
     def definition(self) -> ToolDefinition:
         """在模型请求定义中追加实际 Shell 信息，不改变权限目录静态描述。
@@ -61,19 +71,37 @@ class ExecCommandTool(BaseTool):
             directory = safe_path(options.workdir) if options.workdir is not None else WORKDIR
             if not directory.is_dir():
                 raise ValueError("工作目录不存在或不是目录")
-            if context.task_launcher is None:
+            if context.runtime is None:
                 raise ValueError("后台任务运行器未就绪")
             shell = await asyncio.to_thread(detect_shell)
         except (ValueError, RuntimeError, OSError) as exc:
             return failure(str(exc))
+        runtime = context.runtime
+        task = TerminalTask(options.cmd, shell.command(options.cmd), str(directory),
+            options.tty, get_data_dir() / "tasks", runtime.records, self._terminal)
+        task_id = None
+
+        async def submit() -> str:
+            """完整完成提交，并让取消后的调用方保留实际任务编号。
+
+            Returns:
+                str: 已由 Supervisor 持有的编号。
+            """
+            nonlocal task_id
+            task_id = await runtime.submit_task(task, name=TERMINAL_TASK_NAME, title=options.cmd,
+                lifetime=TaskLifetime.INDEPENDENT, notify_agent=True, background=options.yield_time_ms == 0)
+            return task_id
+
         try:
-            result = await context.task_launcher.launch(
-                context.session_id, options.cmd, shell.command(options.cmd),
-                cwd=str(directory), tty=options.tty, yield_time_ms=options.yield_time_ms,
-                tool_name=context.origin_tool_name or self.name,
-                origin_run_id=context.origin_run_id or None,
-                origin_tool_call_id=context.origin_tool_call_id or None,
-            )
+            # 1. 任务登记完成后再观察输出，调用者取消仍保留同一后台任务。
+            await complete_owned_work(submit())
+            result = await task.interact(runtime, yield_time_ms=options.yield_time_ms, initial=True)
+            if result.background:
+                await runtime.mark_background(task_id)
+        except asyncio.CancelledError:
+            if task_id is not None:
+                await complete_owned_work(runtime.mark_background(task_id))
+            raise
         except (OSError, RuntimeError) as exc:
             return failure(f"启动或登记任务失败；命令可能已有操作，请勿自动重试：{exc}")
         return ToolResult.success(result.render())

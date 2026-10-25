@@ -5,6 +5,7 @@ import { HistoryRole, AYAYA_IMAGE_URI_PREFIX } from "../../shared-types.js";
 
 import type { ChatHistoryItem } from "../types.js";
 import { DESKTOP_CHANNEL } from "../../shared-types.js";
+import { TASK_NOTICE_DURATION_MS } from "../../runtime-constants.js";
 import { iconMarkup } from "../ui/icons.js";
 
 // 后端静态文件服务地址
@@ -212,6 +213,23 @@ export class ChatHistoryManager {
       indicator.textContent = `调用工具: ${toolName}`;
       indicator.setAttribute("data-tool-call", "true");
     });
+  }
+
+  /**
+   * 在聊天区域短暂显示插件提示，独立于 Agent 回复和持久聊天记录。
+   * Args:
+   *     pluginName (string): 发出提示的插件名称。
+   *     text (string): 框架事件携带的提示正文。
+   */
+  showPluginNotice(pluginName: string, text: string): void {
+    const notice = document.createElement("div");
+    notice.className = "plugin-notice";
+    notice.setAttribute("role", "status");
+    notice.textContent = `[插件 ${pluginName}] ${text}`;
+    this.container.appendChild(notice);
+    this.scrollToBottom();
+    setTimeout(/** 提示到期后移除显示，不修改已保存的消息。 */
+    () => notice.remove(), TASK_NOTICE_DURATION_MS);
   }
 
   /**
@@ -637,6 +655,13 @@ export class ChatHistoryManager {
   private renderMessage(msg: ChatHistoryItem): void {
     const role = msg.role.toLowerCase();
     const isHuman = role === HistoryRole.HUMAN.toLowerCase() || role === HistoryRole.USER;
+    if (role === HistoryRole.PLUGIN.toLowerCase()) {
+      const notice = document.createElement("div");
+      notice.className = "plugin-notice";
+      notice.textContent = msg.content;
+      this.container.appendChild(notice);
+      return;
+    }
     const isToolCalling = role === HistoryRole.AI_TOOL_CALLING.toLowerCase();
 
     // 工具调用消息使用特殊样式

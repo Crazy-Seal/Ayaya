@@ -6,7 +6,9 @@
 
 import logging
 from collections import defaultdict
-from typing import Any
+from typing import Any, Callable
+
+from app.agent.plugins.runtime import PluginRuntime
 
 from app.agent.plugins.base import BasePlugin, HookContext, PluginHook
 
@@ -16,12 +18,18 @@ logger = logging.getLogger(__name__)
 class PluginManager:
     """插件管理器 - 管理插件生命周期和钩子分发"""
 
-    def __init__(self):
+    def __init__(self, runtime_factory: Callable[[str, str], PluginRuntime] | None = None):
         # 按钩子点组织的插件列表
-        """建立插件名称和执行时机的内存索引，注册插件时再填充。"""
+        """建立插件名称和执行时机的内存索引，注册插件时再填充。
+
+        Args:
+            runtime_factory (Callable[[str, str], PluginRuntime] | None): 按插件名称和来源轮次创建调用对象的注入工厂。
+        """
         self._hooks: dict[PluginHook, list[BasePlugin]] = defaultdict(list)
         # 所有已注册的插件
         self._plugins: dict[str, BasePlugin] = {}
+        self._runtime_factory = runtime_factory
+        self.run_id = ""
 
     async def register(self, plugin: BasePlugin) -> None:
         """注册插件
@@ -87,7 +95,7 @@ class PluginManager:
         data: Any = None,
         metadata: dict | None = None
     ) -> None:
-        """在同一上下文上运行插件，只允许原地修改状态和钩子数据。
+        """为各插件创建独立上下文，共享本次状态、准备数据和附加信息。
 
         Args:
             hook (PluginHook): 钩子类型
@@ -101,10 +109,12 @@ class PluginManager:
         if not plugins:
             return
 
-        context = HookContext.create(hook, state, data, metadata)
-
+        shared_metadata = metadata if metadata is not None else {}
         for plugin in plugins:
             try:
+                # 1. 来源绑定到当前插件；同次调用的准备数据和附加信息沿用原对象。
+                runtime = self._runtime_factory(plugin.name, self.run_id) if self._runtime_factory else None
+                context = HookContext.create(hook, state, data, shared_metadata, runtime)
                 await plugin.execute(context)
             except Exception as e:
                 logger.exception(f"插件 '{plugin.name}' 在钩子 '{hook}' 执行失败: {e}")

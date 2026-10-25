@@ -705,6 +705,32 @@ class TaskResultMessage(RuntimeInputMessage):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class PluginNotificationMessage(RuntimeInputMessage):
+    """保留插件来源、稳定通知名称与正文，不计作真人消息。
+
+    Attributes:
+        plugin_name (str): 发出持久内容的插件名称。
+        name (str): 插件定义的稳定通知名称，用于说明内容用途。
+        text (str): 需要交付给 Agent 并保留在会话中的业务正文。
+    """
+
+    message_type: ClassVar[MessageType] = MessageType.PLUGIN_NOTIFICATION
+    plugin_name: str
+    name: str
+    text: str
+
+    def __post_init__(self) -> None:
+        """校验持久通知的来源与正文，存储和模型读取沿用同一契约。
+
+        Raises:
+            ValueError: 插件名称、通知名称或正文为空，或正文不是字符串。
+        """
+        BaseMessage.__post_init__(self)
+        if not self.plugin_name or not self.name or not isinstance(self.text, str) or not self.text.strip():
+            raise ValueError("插件通知需要插件名称、通知名称和正文")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class EnvironmentPerceptionMessage(BaseMessage):
     """提供本次模型请求的环境背景，只在请求末尾临时组装。
 
@@ -791,7 +817,7 @@ def message_from_storage_format(data: Mapping[str, Any]) -> BaseMessage:
     """
     constructors = {MessageType.HUMAN: HumanMessage, MessageType.ASSISTANT: AssistantMessage, MessageType.TOOL: ToolMessage,
         MessageType.SYSTEM: SystemMessage, MessageType.CONTEXT_SUMMARY: ContextSummaryMessage,
-        MessageType.TASK_RESULT: TaskResultMessage, MessageType.ENVIRONMENT_PERCEPTION: EnvironmentPerceptionMessage,
+        MessageType.PLUGIN_NOTIFICATION: PluginNotificationMessage, MessageType.TASK_RESULT: TaskResultMessage, MessageType.ENVIRONMENT_PERCEPTION: EnvironmentPerceptionMessage,
         MessageType.SUBAGENT: SubagentMessage}
     kind = data.get("message_type")
     if kind not in constructors:
@@ -829,6 +855,8 @@ def notification_text(message: BaseMessage) -> str:
                   TaskResultStatus.ORPHANED: "状态未知",
                   TaskResultStatus.MIXED: "状态汇总"}
         return f"[后台任务{labels[message.status.value]}：{message.task_name}]\n{message.result}"
+    if isinstance(message, PluginNotificationMessage):
+        return f"[插件通知：{message.plugin_name}/{message.name}]\n{message.text}"
     if isinstance(message, EnvironmentPerceptionMessage):
         return f"[环境感知：{message.perception_kind}]\n{message.description}"
     if isinstance(message, SubagentMessage):

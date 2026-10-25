@@ -21,7 +21,7 @@ from app.agent.state.messages import TaskResultMessage
 from app.crud.task_record_dao import TaskRecordDao
 from app.interaction.interaction_contract import ChannelCommand
 from app.interaction.interaction_event_hub import InteractionEventHub
-from app.orchestration.agent_runtime_scheduler import AgentRuntimeScheduler
+from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.services.channel_subscription_service import ChannelSubscriptionService
 
 
@@ -339,7 +339,7 @@ def test_hub_preserves_human_payload_before_blocked_on_invoke(tmp_path, with_ima
             return agent
 
         subscriptions = ChannelSubscriptionService(path)
-        scheduler = AgentRuntimeScheduler(
+        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
             agent_factory=factory, subscriptions=subscriptions,
             session_state_manager_factory=partial(SessionStateManager, db_path=path),
         )

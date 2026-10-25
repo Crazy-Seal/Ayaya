@@ -1,5 +1,7 @@
 """语义记忆 - 基于 Mem0 的实现"""
 
+from app.agent.utils.infra.owned_work import complete_owned_work
+
 import asyncio
 import logging
 import os
@@ -214,9 +216,9 @@ class Mem0SemanticMemory:
         combined_messages = mem0_history + mem0_messages
 
         try:
-            result = await asyncio.to_thread(
+            result = await complete_owned_work(asyncio.to_thread(
                 self._memory.add, combined_messages, agent_id=self.session_id
-            )
+            ))
 
             # 4. 沿用 Mem0 返回的结果编号，供协调者汇总本项提取数量。
             memory_ids = []
@@ -247,12 +249,12 @@ class Mem0SemanticMemory:
             return []
 
         try:
-            results = await asyncio.to_thread(
+            results = await complete_owned_work(asyncio.to_thread(
                 self._memory.search,
                 query,
                 agent_id=self.session_id,
                 limit=top_k
-            )
+            ))
 
             if not results or not results.get("results"):
                 return []
@@ -290,9 +292,9 @@ class Mem0SemanticMemory:
     async def get_all(self) -> list[dict]:
         """读取当前会话已有语义记忆，不修改其他会话记录。"""
         try:
-            results = await asyncio.to_thread(
+            results = await complete_owned_work(asyncio.to_thread(
                 self._memory.get_all, agent_id=self.session_id
-            )
+            ))
 
             if not results or not results.get("results"):
                 return []
@@ -306,7 +308,7 @@ class Mem0SemanticMemory:
     async def clear(self) -> None:
         """删除当前会话语义记忆，其他会话的记录不在删除范围内。"""
         try:
-            await asyncio.to_thread(self._memory.delete_all, agent_id=self.session_id)
+            await complete_owned_work(asyncio.to_thread(self._memory.delete_all, agent_id=self.session_id))
             logger.info("[Mem0SemanticMemory] 清除所有记忆, session_id=%s", self.session_id)
         except Exception as e:
             logger.warning("[Mem0SemanticMemory] 清除记忆失败: %s", e)

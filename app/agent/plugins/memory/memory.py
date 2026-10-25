@@ -11,11 +11,11 @@ from app.agent.memory.manager import get_memory_manager
 from app.agent.state.messages import (
     HumanMessage,
 )
-from app.agent.utils.infra.background_tasks import create_background_task
+from app.agent.plugins.memory.tasks.memory_tasks import DiaryTask, LongTermMemoryTask
+from app.schemas.runtime_types import TaskLifetime
 
 logger = logging.getLogger(__name__)
 
-MEMORY_HISTORY_HUMAN_MESSAGES = 5
 MEMORY_CONTEXT_KEY = "memory.recalled"
 
 
@@ -111,7 +111,18 @@ class MemoryPlugin(BasePlugin):
             await self._prepare_activation_input_commit(state, context.data)
         elif context.hook == PluginHook.ON_INVOKE:
             # 1. 新输入已经保存，先启动提交前准备好的上一批记忆任务。
-            self._schedule_committed_memory(context.data)
+            memory_job = context.data.get("memory")
+            if memory_job:
+                manager = memory_job["manager"]
+                cutoff = memory_job["protocol_history_cutoff"]
+                if memory_job["check_diary"]:
+                    await context.runtime.submit_task(DiaryTask(manager, cutoff), name="memory.check_diary",
+                        title="整理历史日记", lifetime=TaskLifetime.INDEPENDENT, notify_agent=False)
+                if memory_job["extract_long_term_memory"]:
+                    await context.runtime.submit_task(LongTermMemoryTask(manager, memory_job["session_id"], cutoff,
+                        memory_job["long_term_memory_turns"], self.config.enable_episodic, self.config.enable_semantic),
+                        name="memory.persist_long_term", title="提取长期记忆",
+                        lifetime=TaskLifetime.INDEPENDENT, notify_agent=False)
             # 2. 用本轮真人输入检索记忆，写入后续模型请求共用的临时背景。
             runtime_context = (context.data or {}).get("runtime_context") if isinstance(context.data, dict) else None
             if runtime_context is not None:
@@ -198,75 +209,3 @@ class MemoryPlugin(BasePlugin):
         # 3. 清零只发生在内存；Agent 随输入事务保存，失败时持久旧计数仍在。
         if should_extract:
             state.reset_long_term_memory_turn_counter()
-
-    def _schedule_committed_memory(self, commit_context: dict) -> None:
-        """新激活输入提交成功后，启动前置钩子准备的上一批派生记忆任务。
-
-        Args:
-            commit_context (dict): 输入前置钩子与 ON_INVOKE 共用的数据，含已固定范围的记忆任务。
-        """
-        # 1. 没有准备成功的任务就结束，不在后台重新判断计数或读取最新高水位。
-        memory_job = commit_context.get("memory")
-        if not memory_job:
-            return
-
-        memory_manager = memory_job["manager"]
-        # 2. 日记使用准备时记录的历史范围；只在本次输入持久提交后启动。
-        if memory_job["check_diary"]:
-            create_background_task(
-                memory_manager.check_diary(
-                    max_history_id=memory_job["protocol_history_cutoff"],
-                ),
-                logger=logger,
-                task_name="memory.check_diary",
-            )
-        # 3. 长期记忆使用上一批真人计数和固定高水位，不包含本次激活的新输入。
-        if memory_job["extract_long_term_memory"]:
-            create_background_task(
-                self._persist_from_protocol(
-                    memory_job["session_id"],
-                    max_history_id=memory_job["protocol_history_cutoff"],
-                    batch_turns=memory_job["long_term_memory_turns"],
-                ),
-                logger=logger,
-                task_name="memory.persist_long_term",
-            )
-
-    async def _persist_from_protocol(
-        self,
-        session_id: str,
-        *,
-        max_history_id: int,
-        batch_turns: int,
-    ) -> None:
-        """从新激活准备时固定的协议范围读取上一批完整轮次并提取记忆。
-
-        Args:
-            session_id (str): 本批派生任务所属的会话。
-            max_history_id (int): 新激活输入加入前的协议日志截止编号。
-            batch_turns (int): 准备阶段记录的待提取真人轮次数。
-        """
-        # 1. 查询只使用已固定的截止位置；后台执行时不能读取后来新增的激活输入。
-        mm = get_memory_manager(session_id)
-        store = mm.chat_history_store
-        if store is None:
-            logger.warning("[MemoryPlugin] 协议日志查询器未启用，跳过长期记忆")
-            return
-        history, recent = await store.get_recent_completed_turns(
-            session_id,
-            current_turns=batch_turns,
-            history_turns=MEMORY_HISTORY_HUMAN_MESSAGES,
-            max_history_id=max_history_id,
-        )
-        # 2. 材料不足时沿用现有跳过行为；新激活入口负责选择正确的准备时机。
-        recent_humans = sum(1 for message in recent if isinstance(message, HumanMessage))
-        if recent_humans < batch_turns:
-            logger.warning("[MemoryPlugin] 完整协议轮次不足，跳过本次长期记忆提取")
-            return
-        # 3. 提取当前批次，前情仅作为参考，不改变日记或运行上下文。
-        await mm.add(
-            recent,
-            history,
-            enable_episodic=self.config.enable_episodic,
-            enable_semantic=self.config.enable_semantic,
-        )

@@ -10,7 +10,7 @@ from typing import Any
 import aiosqlite
 
 from app.agent.runtime.session_inbox import InboxEnvelope, InputNoLongerPending
-from app.runtime import get_checkpoint_db
+from app.environment import get_checkpoint_db
 from app.schemas.runtime_types import InboxDeliveryMode, InboxKind, InboxStatus, SYSTEM_INPUT_ORIGIN
 
 
@@ -18,7 +18,7 @@ INBOX_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS session_inbox (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL,
-    kind TEXT NOT NULL CHECK (kind IN ('human', 'task_terminal')),
+    kind TEXT NOT NULL CHECK (kind IN ('human', 'task_terminal', 'plugin_notification')),
     origin_channel TEXT NOT NULL,
     payload_json TEXT NOT NULL,
     delivery_mode TEXT NOT NULL DEFAULT 'immediate'
@@ -101,7 +101,7 @@ async def release_queued_in_transaction(db: aiosqlite.Connection, session_id: st
 async def append_task_terminal_in_transaction(
     db: aiosqlite.Connection, *, session_id: str, task_id: str, task_name: str,
     status: str, result: str, tool_name: str | None = None,
-    exit_code: int | None = None, output_ref: str | None = None,
+    exit_code: int | None = None, output_ref: str | None = None, error: str | None = None,
 ) -> None:
     """在任务结束事务中，将任务事实编码为一条待交付的 Inbox 通知。
 
@@ -119,6 +119,7 @@ async def append_task_terminal_in_transaction(
         tool_name (str | None): 创建任务的实际工具名。
         exit_code (int | None): 真实退出码或未知。
         output_ref (str | None): 完整任务日志引用。
+        error (str | None): 执行或清理失败的错误摘要。
     """
     # 1. 沿用现有通知载荷和默认 pending、immediate、未排队状态，等待 worker 读取。
     await db.execute(
@@ -127,6 +128,7 @@ async def append_task_terminal_in_transaction(
         "VALUES (?, ?, ?, ?, ?)",
         (session_id, InboxKind.TASK_TERMINAL.value, SYSTEM_INPUT_ORIGIN, json.dumps({
             "task_id": task_id, "task_name": task_name, "status": status, "result": result,
+            **({"error": error} if error else {}),
             **({"tool_name": tool_name, "exit_code": exit_code, "output_ref": output_ref}
                if output_ref is not None else {}),
         }, ensure_ascii=False), datetime.now(timezone.utc).isoformat()),
@@ -230,6 +232,32 @@ class SessionInboxDao:
             delivery_mode=InboxDeliveryMode(row[6]),
         )
 
+    async def submit_plugin_notification(self, plugin_name: str, name: str, text: str) -> None:
+        """持久保存插件内容；受理完成后仍需由 Agent 原子交付。
+
+        Args:
+            plugin_name (str): 发出内容或创建任务的插件稳定名称。
+            name (str): 供查询或识别本次内容用途的稳定名称。
+            text (str): 需要保存或显示的正文。
+        """
+        from app.agent.state.messages import PluginNotificationMessage
+        PluginNotificationMessage(plugin_name=plugin_name, name=name, text=text)
+        db = await self._get_db()
+        try:
+            await db.execute(
+                "INSERT INTO session_inbox (session_id, kind, origin_channel, payload_json, created_at) VALUES (?, ?, ?, ?, ?)",
+                (self.session_id, InboxKind.PLUGIN_NOTIFICATION.value, SYSTEM_INPUT_ORIGIN,
+                 json.dumps({"plugin_name": plugin_name, "name": name, "text": text}, ensure_ascii=False),
+                 datetime.now(timezone.utc).isoformat()))
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
+
+    async def read_runtime_inputs(self) -> tuple[InboxEnvelope, ...]:
+        """按输入编号读取任务和插件通知，留待统一的消息交付事务保存。"""
+        return tuple(item for item in await self._pending(None, False) if item.kind != InboxKind.HUMAN)
+
     async def submit_human(
         self, origin_channel: str, message: str, *, images: list[str] | None = None,
         queued: bool = False,
@@ -320,7 +348,7 @@ class SessionInboxDao:
         """
         rows = await self._pending(kind, include_queued)
         human = next((item for item in rows if item.kind == InboxKind.HUMAN), None)
-        return tuple(item for item in rows if item.kind == InboxKind.TASK_TERMINAL or item is human)
+        return tuple(item for item in rows if item.kind != InboxKind.HUMAN or item is human)
 
     async def release_queued(self) -> None:
         """幂等放行尚未交付的排队输入，停止或异常结束不得调用此入口。

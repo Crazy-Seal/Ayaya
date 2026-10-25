@@ -10,7 +10,7 @@ from urllib.parse import quote, unquote
 from uuid import uuid4
 
 from app.schemas.tool_types import TOOL_RESULT_URI_PREFIX
-from app.runtime import get_tool_results_dir
+from app.environment import get_tool_results_dir
 
 
 _ARTIFACT_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")

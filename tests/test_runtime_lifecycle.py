@@ -15,8 +15,8 @@ from app.agent.state import AgentState
 from app.agent.state.messages import HumanMessage, TaskResultMessage, ToolCall, ToolMessage
 from app.agent.state.messages import AssistantMessage, ImageContent, ToolMessage
 from app.crud.task_record_dao import TaskRecordDao
-from app.orchestration.task_supervisor import TaskSupervisor
-from app.orchestration.agent_runtime_scheduler import AgentRuntimeScheduler
+from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
+from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.interaction.interaction_contract import ChannelCommand
 from app.interaction.interaction_event_hub import InteractionEventHub
 
@@ -228,7 +228,7 @@ def test_start_finalizes_abandoned_checkpoint_without_execution(tmp_path, case) 
             """
             raise AssertionError("启动和快照不能构造可执行 Agent")
 
-        scheduler = AgentRuntimeScheduler(
+        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
            agent_factory=unexpected_agent,
             session_state_manager_factory=lambda session: SessionStateManager(session, path),
         )
@@ -267,10 +267,10 @@ def test_terminal_waits_for_new_human_and_shutdown_cannot_reactivate(tmp_path) -
     async def scenario() -> None:
         """使用真实 Inbox 交付和隔离执行替身验证生命周期规则。"""
         path = str(tmp_path / "state.sqlite3")
-        supervisor = TaskSupervisor(db_path=path, spool_dir=tmp_path / "tasks")
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=path)
         records = supervisor.records
         await records.insert_running("old", "s", "旧任务", 1, str(tmp_path / "out"))
-        await supervisor.finish_once("old", "completed", 0)
+        await supervisor.commit_terminal_state_once("old", "completed")
         calls = []
         executed = asyncio.Event()
 
@@ -328,7 +328,7 @@ def test_terminal_waits_for_new_human_and_shutdown_cannot_reactivate(tmp_path) -
             async def close(self):
                 """替身不拥有外部资源。"""
 
-        scheduler = AgentRuntimeScheduler(
+        scheduler = AgentRuntimeScheduler(runtime_queue=supervisor.runtime_queue,
             task_supervisor=supervisor,
             agent_factory=lambda _, _manager: RecordingAgent(),
             session_state_manager_factory=lambda session: SessionStateManager(session, path),
@@ -350,11 +350,11 @@ def test_terminal_waits_for_new_human_and_shutdown_cannot_reactivate(tmp_path) -
                 await manager.close()
             executed.clear()
             await records.insert_running("new", "s", "新任务", 1, str(tmp_path / "out"))
-            await supervisor.finish_once("new", "completed", 0)
+            await supervisor.commit_terminal_state_once("new", "completed")
             await asyncio.wait_for(executed.wait(), 2)
             await scheduler.begin_shutdown()
             await records.insert_running("closing", "s", "关闭任务", 1, str(tmp_path / "out"))
-            await supervisor.finish_once("closing", "stopped", None)
+            await supervisor.commit_terminal_state_once("closing", "stopped")
             assert not (await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "关闭后"}))).accepted
             await scheduler.close()
             await scheduler.close()
@@ -407,8 +407,8 @@ def test_start_failure_keeps_execution_closed_and_retry_finishes_cleanup(tmp_pat
             """
             raise AssertionError("启动不能执行")
 
-        supervisor = TaskSupervisor(db_path=path, spool_dir=tmp_path / "tasks")
-        scheduler = AgentRuntimeScheduler(
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=path)
+        scheduler = AgentRuntimeScheduler(runtime_queue=supervisor.runtime_queue,
             task_supervisor=supervisor,
             agent_factory=unexpected_agent,
             session_state_manager_factory=lambda session: SessionStateManager(session, path),
@@ -504,7 +504,7 @@ def test_shutdown_captures_real_agent_partial_and_closes_subscription(tmp_path, 
             return agent
 
         subscriptions = ChannelSubscriptionService()
-        scheduler = AgentRuntimeScheduler(
+        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
             subscriptions=subscriptions, agent_factory=make_agent,
             session_state_manager_factory=lambda session: SessionStateManager(session, path),
         )

@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime
 
 from app.schemas.message_types import MediaKind
-from app.runtime import get_images_dir
+from app.environment import get_images_dir
 
 logger = logging.getLogger(__name__)
 

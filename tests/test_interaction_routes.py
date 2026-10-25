@@ -24,7 +24,7 @@ from app.agent.state.messages import ToolCall
 from app.agent.tools.core.base import InterruptEvent
 from app.routes.agent import subscribe_events
 from app.routes import agent as agent_routes
-from app.orchestration.agent_runtime_scheduler import AgentRuntimeScheduler
+from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
 
 
 @pytest.mark.parametrize("delivery_failure", [False, True])
@@ -88,7 +88,7 @@ def test_http_command_reaches_real_scheduler_and_sse_subscriber(tmp_path, delive
         return Agent()
 
     subscriptions = ChannelSubscriptionService(path)
-    scheduler = AgentRuntimeScheduler(
+    scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
         agent_factory=create_agent, subscriptions=subscriptions,
         session_state_manager_factory=partial(SessionStateManager, db_path=path),
     )
@@ -229,7 +229,7 @@ def test_unknown_command_keeps_http_200_business_rejection() -> None:
         """
         raise AssertionError("未知命令不能启动 Agent")
 
-    scheduler = AgentRuntimeScheduler( agent_factory=unexpected_agent)
+    scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),  agent_factory=unexpected_agent)
     asyncio.run(scheduler.start())
     app = FastAPI()
     app.include_router(agent_router)

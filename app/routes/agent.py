@@ -14,8 +14,9 @@ from app.schemas.interaction import (
     ChannelCommandRequest, ChannelSubscriptionRequest,
 )
 from app.crud.chat_settings_dao import ChatSettingsDao
-from app.orchestration.agent_runtime_scheduler import AgentRuntimeScheduler
-from app.orchestration.task_supervisor import TASK_OUTPUT_PAGE_DEFAULT_BYTES, TaskSupervisor
+from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
+from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
+from app.agent.tools.terminal.task import TASK_OUTPUT_PAGE_DEFAULT_BYTES, read_terminal_tail, read_terminal_output
 from app.interaction.interaction_contract import ChannelCommand
 from app.schemas.runtime_types import DESKTOP_CHANNEL
 from app.utils.sse_stream import SSE_HEARTBEAT_SECONDS, stream_sse_json
@@ -137,14 +138,14 @@ async def list_background_tasks(
 
     Args:
         session_id (str): 共享 Ayaya 会话标识。
-        supervisor (TaskSupervisor): 进程级后台任务管理器。
+        supervisor (TaskSupervisor): 应用共享的通用任务管理器。
 
     Returns:
         dict: 以 tasks 键包装的任务列表，每项附有限最近输出。
     """
-    records = await supervisor.list(session_id)
+    records = await supervisor.list_tasks(session_id)
     return {"tasks": [
-        {**asdict(item), "recent_output": await supervisor.read_tail(item.task_id)}
+        {**asdict(item), "recent_output": await read_terminal_tail(item) if item.output_path else ""}
         for item in records
     ]}
 
@@ -161,7 +162,7 @@ async def background_task_output(
         task_id (str): 受管进程任务标识。
         offset (int): 完整输出文件的起始字节游标。
         limit (int): 读取的最大字节预算。
-        supervisor (TaskSupervisor): 进程级后台任务管理器。
+        supervisor (TaskSupervisor): 应用共享的通用任务管理器。
 
     Returns:
         dict: 任务输出页的 text、next_offset 和 has_more。
@@ -169,11 +170,11 @@ async def background_task_output(
     Raises:
         HTTPException: 任务不属于该会话时返回 HTTP 404，分页参数无效时返回 HTTP 400。
     """
-    record = await supervisor.get(task_id)
+    record = await supervisor.get_task_record(task_id)
     if record is None or record.session_id != session_id:
         raise HTTPException(status_code=404, detail="任务不存在")
     try:
-        return await supervisor.read_output(task_id, offset, limit)
+        return await read_terminal_output(record, offset, limit)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

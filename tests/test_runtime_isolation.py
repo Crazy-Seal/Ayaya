@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from app.runtime import (
+from app.environment import (
     PRODUCTION_DATA_DIR,
     get_chat_history_db,
     get_chat_settings_file,
@@ -57,4 +57,3 @@ def test_memory_override_must_stay_in_test_data_dir(
 
     with pytest.raises(RuntimeError, match="必须位于 AYAYA_DATA_DIR 内"):
         get_memory_base_dir()
-

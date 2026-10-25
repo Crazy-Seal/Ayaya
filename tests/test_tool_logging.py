@@ -2,7 +2,7 @@ import logging
 from pathlib import Path
 
 from app.agent.utils.infra.log import _ensure_tool_file_handler
-from app.runtime import get_data_dir
+from app.environment import get_data_dir
 
 
 def test_tool_file_handler_uses_disposable_test_data_dir() -> None:

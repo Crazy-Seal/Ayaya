@@ -2,7 +2,7 @@ from pathlib import Path
 
 import yaml
 
-from app.runtime import get_mcp_settings_file
+from app.environment import get_mcp_settings_file
 from app.schemas.mcp import MCPServersConfig
 
 

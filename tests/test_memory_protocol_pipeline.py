@@ -18,9 +18,9 @@ from app.agent.state.messages import (
     ImageContent,
     ToolMessage,
 )
-from app.agent.plugins.memory import MemoryPlugin
+from app.agent.plugins.memory.memory import MemoryPlugin
 from app.agent.state import AgentState
-import app.agent.plugins.memory as memory_plugin_module
+import app.agent.plugins.memory.memory as memory_plugin_module
 
 
 TOOL_MEMORY_CONSTRAINT = (
@@ -307,141 +307,57 @@ def test_diary_prompt_preserves_current_messages_without_reference_context() -> 
     assert "今天第一次聊天" in prompt
     assert "None" not in prompt
 
-def test_long_term_memory_is_scheduled_after_next_activation_input_commit(monkeypatch) -> None:
-    """到期长期记忆只在下一激活输入提交成功后启动，响应提交不启动。
+def test_memory_jobs_start_only_after_input_commit_with_frozen_history(tmp_path, monkeypatch) -> None:
+    """真实任务入口保留提交时序、固定历史范围和两类静默任务。"""
+    from app.agent.plugins.runtime import PluginRuntime
+    from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
+    calls = []
 
-    Args:
-        monkeypatch (pytest.MonkeyPatch): 替换后台调度和记忆准备依赖的工具。
-    """
-    scheduled: list[str] = []
     class MemoryManager:
-        """提供激活前记忆准备所需的固定协议截止位置。"""
+        """只替代外部记忆工作，不替代 Supervisor 或任务持久化。"""
+        chat_history_store = None
+
         async def get_protocol_history_cutoff(self):
-            """返回用于检验提交前钩子向 ON_INVOKE 传递的历史截止位置。
-
-            Returns:
-                int: 测试中固定的截止消息编号。
-            """
-            return 42
-    def capture(coro, *, logger, task_name):
-        """记录后台任务准备成功，但不执行外部提取。
-
-        Args:
-            coro (Coroutine): 插件准备的真实后台协程。
-            logger (logging.Logger): 插件日志对象。
-            task_name (str): 派生任务名称。
-        """
-        scheduled.append(task_name)
-        coro.close()
-
-    monkeypatch.setattr(memory_plugin_module, "create_background_task", capture)
-
-    async def scenario():
-        """依次触发响应和激活提交事件，比较到期计数的消费时点。
-
-        Returns:
-            tuple[AgentState, list[str]]: 最终状态和已启动任务的名称。
-        """
-        plugin = MemoryPlugin(enable_diary=False)
-        monkeypatch.setattr(plugin, "_mm", lambda state: MemoryManager())
-        state = AgentState.create_new("session")
-        state.long_term_memory_turn_counter = 10
-        response_context = {}
-        await plugin.execute(HookContext.create(
-            PluginHook.BEFORE_RESPONSE_COMMIT, state, data=response_context
-        ))
-        await plugin.execute(HookContext.create(
-            PluginHook.AFTER_RESPONSE_COMMIT, state, data=response_context
-        ))
-        assert state.long_term_memory_turn_counter == 10
-        assert scheduled == []
-        input_context = {}
-        await plugin.execute(HookContext.create(
-            PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, state, data=input_context
-        ))
-        assert state.long_term_memory_turn_counter == 0
-        assert scheduled == []
-        assert input_context["memory"] == {
-            "manager": input_context["memory"]["manager"],
-            "session_id": "session",
-            "protocol_history_cutoff": 42,
-            "check_diary": False,
-            "extract_long_term_memory": True,
-            "long_term_memory_turns": 10,
-        }
-        await plugin.execute(HookContext.create(
-            PluginHook.ON_INVOKE, state, data=input_context
-        ))
-        return state, scheduled
-    state, tasks = asyncio.run(scenario())
-    assert state.long_term_memory_turn_counter == 0
-    assert tasks == ["memory.persist_long_term"]
-
-def test_diary_and_long_term_memory_are_scheduled_independently(monkeypatch) -> None:
-    """一次新激活可同时准备日记和长期记忆，两类后台任务独立启动。
-
-    Args:
-        monkeypatch (pytest.MonkeyPatch): 替换后台调度和记忆准备依赖的工具。
-    """
-    scheduled: list[str] = []
-    class MemoryManager:
-        """提供固定历史范围和不实际运行的日记入口。"""
-        async def get_protocol_history_cutoff(self):
-            """返回两类派生任务共用的截止编号。
-
-            Returns:
-                int: 测试中固定的截止消息编号。
-            """
+            """返回准备阶段固定的历史范围。"""
             return 84
-        async def check_diary(self, *, max_history_id):
-            """提供后台日记协程，本测试只检查它是否被安排。
 
-            Args:
-                max_history_id (int): 激活前固定的历史截止编号。
+        async def generate_diary(self, *, max_history_id):
+            """记录实际任务使用的截止编号。"""
+            calls.append(max_history_id)
 
-            Raises:
-                AssertionError: 调度记录测试意外执行了后台协程。
-            """
-            raise AssertionError("background coroutine should not run in this test")
-    def capture(coro, *, logger, task_name):
-        """记录两类任务各自的调度，不执行派生处理。
+    monkeypatch.setattr(memory_plugin_module, "get_memory_manager", lambda session: MemoryManager())
 
-        Args:
-            coro (Coroutine): 插件准备的真实后台协程。
-            logger (logging.Logger): 插件日志对象。
-            task_name (str): 日记或长期记忆任务名称。
-        """
-        scheduled.append(task_name)
-        coro.close()
-    monkeypatch.setattr(memory_plugin_module, "create_background_task", capture)
     async def scenario():
-        """用同一激活上下文执行准备和提交成功事件。
-
-        Returns:
-            tuple[AgentState, dict]: 消费批次后的状态和任务准备数据。
-        """
+        """通过钩子提交任务，再通过正式记录和等待接口验证。"""
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "state.sqlite3"))
+        runtime = PluginRuntime("memory", "session", "r", _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue)
         plugin = MemoryPlugin()
-        monkeypatch.setattr(plugin, "_mm", lambda state: MemoryManager())
         state = AgentState.create_new("session")
         state.long_term_memory_turn_counter = 12
-        commit_context = {}
-        await plugin.execute(HookContext.create(
-            PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, state, data=commit_context
-        ))
-        await plugin.execute(HookContext.create(
-            PluginHook.ON_INVOKE, state, data=commit_context
-        ))
-        return state, commit_context
-    state, commit_context = asyncio.run(scenario())
-    assert state.long_term_memory_turn_counter == 0
-    assert commit_context["memory"]["long_term_memory_turns"] == 12
-    assert scheduled == ["memory.check_diary", "memory.persist_long_term"]
+        data = {}
+        try:
+            await plugin.execute(HookContext.create(PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, state, data, runtime=runtime))
+            assert await supervisor.list_tasks("session") == []
+            assert state.long_term_memory_turn_counter == 0
+            assert data["memory"]["protocol_history_cutoff"] == 84
+            await plugin.execute(HookContext.create(PluginHook.ON_INVOKE, state, data, runtime=runtime))
+            records = await supervisor.list_tasks("session")
+            assert {record.name for record in records} == {"memory.check_diary", "memory.persist_long_term"}
+            for record in records:
+                done = await runtime.wait_task(record.task_id, timeout_ms=1000)
+                assert done.status == "completed"
+                assert not done.notify_agent and done.lifetime == "independent"
+            assert calls == [84]
+        finally:
+            await supervisor.close()
+    asyncio.run(scenario())
 
-def test_long_term_memory_uses_frozen_protocol_cutoff(monkeypatch) -> None:
+
+def test_long_term_memory_uses_frozen_protocol_cutoff(tmp_path) -> None:
     """验证长期记忆提取使用捕获的协议日志边界。
 
     Args:
-        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
+        tmp_path (Path): 当前用例的隔离数据目录。
     """
     calls: list[dict] = []
     class Store:
@@ -496,19 +412,20 @@ def test_long_term_memory_uses_frozen_protocol_cutoff(monkeypatch) -> None:
                 "history_count": len(history),
                 **kwargs,
             })
-    monkeypatch.setattr(
-        memory_plugin_module,
-        "get_memory_manager",
-        lambda session_id: MemoryManager(),
-    )
     async def scenario():
         """由外层测试调用，完成“长期记忆提取使用捕获的协议日志边界”的异步步骤。"""
-        plugin = MemoryPlugin()
-        await plugin._persist_from_protocol(
-            "session",
-            max_history_id=42,
-            batch_turns=12,
-        )
+        from app.agent.plugins.memory.tasks.memory_tasks import LongTermMemoryTask
+        from app.agent.plugins.runtime import PluginRuntime
+        from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
+        from app.schemas.runtime_types import TaskLifetime, TaskStatus
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "state.sqlite3"))
+        runtime = PluginRuntime("memory", "session", "r", _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue)
+        try:
+            task_id = await runtime.submit_task(LongTermMemoryTask(MemoryManager(), "session", 42, 12, True, True),
+                name="memory.persist_long_term", title="提取长期记忆", lifetime=TaskLifetime.INDEPENDENT, notify_agent=False)
+            assert (await runtime.wait_task(task_id, timeout_ms=1000)).status == TaskStatus.COMPLETED
+        finally:
+            await supervisor.close()
     asyncio.run(scenario())
     assert calls[0] == {
         "session_id": "session",

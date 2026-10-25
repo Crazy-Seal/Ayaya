@@ -7,7 +7,7 @@ import logging
 from typing import AsyncIterator
 
 from app.interaction.interaction_contract import InteractionEvent
-from app.orchestration.agent_runtime_scheduler import AgentRuntimeScheduler
+from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.schemas.runtime_types import DESKTOP_CHANNEL, SessionPhase
 from app.services.channel_subscription_service import ChannelSubscriptionService
 
@@ -105,12 +105,20 @@ class InteractionEventHub:
                 for queue in tuple(queues):
                     self._end_subscription(key, queue)
 
-    async def close(self) -> None:
-        """结束所有连接，取消并等待领取任务，允许重复清理。"""
+    def begin_shutdown(self) -> None:
+        """拒绝新连接并结束现有订阅，让服务器先完成 SSE 请求。
+
+        应用在请求关闭时调用。内部领取任务继续读取 Scheduler 输出，
+        等生产者收尾后由 close 统一释放。
+        """
         self._closed = True
         for key, queues in tuple(self._subscribers.items()):
             for queue in tuple(queues):
                 self._end_subscription(key, queue)
+
+    async def close(self) -> None:
+        """结束所有连接，取消并等待领取任务，允许重复清理。"""
+        self.begin_shutdown()
         if self._reader is not None:
             if not self._reader.done():
                 self._reader.cancel()

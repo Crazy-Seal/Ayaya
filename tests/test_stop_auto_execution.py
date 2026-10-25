@@ -9,8 +9,8 @@ from app.agent.core.events import AgentEvent, EventType
 from app.agent.runtime.turn_control import TurnInterrupted
 from app.agent.state.manager import SessionStateManager
 from app.interaction.interaction_contract import ChannelCommand
-from app.orchestration.agent_runtime_scheduler import AgentRuntimeScheduler
-from app.orchestration.task_supervisor import TaskSupervisor
+from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
+from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
 from app.schemas.runtime_types import InteractionEventKind, SessionPhase
 from tests.runtime_support import finish_test_turn
 
@@ -98,8 +98,8 @@ def test_stop_preserves_notifications_until_human_input(tmp_path: Path, arrival:
                     cleaning.set()
                     await release_cleanup.wait()
 
-        supervisor = TaskSupervisor(db_path=path, spool_dir=tmp_path / "tasks")
-        scheduler = AgentRuntimeScheduler(
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=path)
+        scheduler = AgentRuntimeScheduler(runtime_queue=supervisor.runtime_queue,
             agent_factory=lambda _session, _manager: RecordingAgent(),
             session_state_manager_factory=lambda session: SessionStateManager(session, path),
             task_supervisor=supervisor,
@@ -129,8 +129,8 @@ def test_stop_preserves_notifications_until_human_input(tmp_path: Path, arrival:
 
             # 3. 终态及通知真实入库，并经 Scheduler 处理记录提醒。
             await supervisor.records.insert_running("task", "s", "后台工作", 1, str(tmp_path / "out"))
-            assert await supervisor.finish_once("task", "completed", 0)
-            await scheduler._handle_task_record(await supervisor.get("task"))
+            assert await supervisor.commit_terminal_state_once("task", "completed")
+            await scheduler._handle_task_record(await supervisor.get_task_record("task"))
             assert len(await manager.read_task_terminals()) == 1
             assert not runtime_started.is_set()
 
@@ -220,7 +220,7 @@ def test_stop_during_delivery_retry_completes_current_turn(tmp_path: Path, repor
                     cleaning.set()
                     await release_cleanup.wait()
 
-        scheduler = AgentRuntimeScheduler(
+        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
             agent_factory=lambda _session, _manager: FailingOnceAgent(),
             session_state_manager_factory=lambda session: SessionStateManager(session, path),
         )

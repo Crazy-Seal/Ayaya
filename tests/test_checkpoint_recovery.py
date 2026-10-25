@@ -15,13 +15,13 @@ from app.agent.context import ContextStrategyConfig, ModelInputCoordinator
 from app.agent.core.events import EventType
 from app.agent.core.pipeline import ExecutionPipeline
 from app.agent.plugins.base import BasePlugin, HookContext, PluginHook
-from app.agent.plugins.memory import MemoryPlugin
+from app.agent.plugins.memory.memory import MemoryPlugin
 from app.agent.state.manager import CheckpointType, SessionStateManager
 from app.agent.state.messages import (AssistantMessage, HumanMessage, ImageContent, ToolMessage, ToolCall, ToolMessage)
 from app.agent.models.llm_client import StreamChunk
 from app.agent.state import AgentState
 from app.agent.tools.core.base import BaseTool, ToolContext, ToolResult
-import app.agent.plugins.memory as memory_plugin_module
+import app.agent.plugins.memory.memory as memory_plugin_module
 
 
 class ScriptedLLM:
@@ -416,6 +416,7 @@ async def make_agent(
     scripts: list[list[StreamChunk] | BaseException],
     tool: BaseTool,
     session_id: str = "checkpoint-test",
+    plugin_runtime_factory=None,
 ) -> Agent:
     """将脚本模型、工具和临时存储组装成当前用例的 Agent。
 
@@ -437,7 +438,7 @@ async def make_agent(
             context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100),
         ),
         db_path=str(db_path),
-        llm_client=llm_client,
+        llm_client=llm_client, plugin_runtime_factory=plugin_runtime_factory,
     )
     agent.tool_manager.register(tool)
     return agent
@@ -895,21 +896,6 @@ def test_failed_user_input_commit_keeps_pending_long_term_memory_batch(
             """
             return ""
 
-    def capture(coro, *, logger, task_name):
-        """记录测试创建的后台任务，供用例等待它结束。
-
-        该定义仅用于外层用例：验证真人输入提交失败时保留待提取长期记忆批次。
-
-        Args:
-            coro (Any): 需要启动并观察的异步过程。
-            logger (Any): 记录当前工具调用的日志对象。
-            task_name (Any): 用于辨认测试后台任务的名称。
-        """
-        scheduled.append(task_name)
-        coro.close()
-
-    monkeypatch.setattr(memory_plugin_module, "create_background_task", capture)
-
     async def register_memory(agent: Agent) -> None:
         """给测试 Agent 注册用例指定的记忆插件。
 
@@ -922,13 +908,19 @@ def test_failed_user_input_commit_keeps_pending_long_term_memory_batch(
         monkeypatch.setattr(plugin, "_mm", lambda state: MemoryManager())
         await agent.plugin_manager.register(plugin)
 
+    supervisor = None
+
     async def scenario() -> tuple[int, int, list[str]]:
         """由外层测试调用，完成“真人输入提交失败时保留待提取长期记忆批次”的异步步骤。
 
         Returns:
             tuple[int, int, list[str]]: 供外层用例断言使用的预设结果。
         """
+        from app.agent.plugins.runtime import PluginRuntime
+        nonlocal supervisor
+        from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
         db_path = tmp_path / "checkpoints.sqlite3"
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=str(db_path))
         seed = SessionStateManager("checkpoint-test", db_path=str(db_path))
         try:
             state = AgentState.create_new("checkpoint-test")
@@ -943,6 +935,8 @@ def test_failed_user_input_commit_keeps_pending_long_term_memory_batch(
             db_path,
             [[StreamChunk(content="不应执行")]],
             StepTool(),
+            plugin_runtime_factory=lambda name, run_id: PluginRuntime(name, "checkpoint-test", run_id,
+                _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue),
         )
         await register_memory(failed_agent)
 
@@ -977,6 +971,8 @@ def test_failed_user_input_commit_keeps_pending_long_term_memory_batch(
             db_path,
             [[StreamChunk(content="完成")]],
             StepTool(),
+            plugin_runtime_factory=lambda name, run_id: PluginRuntime(name, "checkpoint-test", run_id,
+                _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue),
         )
         await register_memory(retry_agent)
         try:
@@ -988,7 +984,9 @@ def test_failed_user_input_commit_keeps_pending_long_term_memory_batch(
         finally:
             await retry_agent.close()
 
-        return counter_after_failure, counter_after_retry, scheduled
+        records = await supervisor.list_tasks("checkpoint-test")
+        await supervisor.close()
+        return counter_after_failure, counter_after_retry, [record.name for record in records]
 
     assert asyncio.run(scenario()) == (10, 1, ["memory.persist_long_term"])
 

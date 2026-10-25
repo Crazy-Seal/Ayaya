@@ -1,5 +1,7 @@
 """Chroma 向量存储"""
 
+from app.agent.utils.infra.owned_work import complete_owned_work
+
 import asyncio
 import logging
 from typing import Any
@@ -79,13 +81,13 @@ class EpisodicChromaStore:
         """
         embedding = await self._embedding_client.embed_documents([content])
 
-        await asyncio.to_thread(
+        await complete_owned_work(asyncio.to_thread(
             self._collection.upsert,
             ids=[record_id],
             embeddings=[embedding[0]],
             documents=[content],
             metadatas=[metadata or {}],
-        )
+        ))
 
         logger.debug("[ChromaStore] upsert: record_id=%s", record_id)
 
@@ -107,23 +109,23 @@ class EpisodicChromaStore:
         """
         if query:
             query_embedding = await self._embedding_client.embed_documents([query])
-            results = await asyncio.to_thread(
+            results = await complete_owned_work(asyncio.to_thread(
                 self._collection.query,
                 query_embeddings=[query_embedding[0]],
                 n_results=top_k,
                 where=where,
-            )
+            ))
             # query 返回嵌套列表
             ids = results["ids"][0] if results.get("ids") else []
             documents = results["documents"][0] if results.get("documents") else []
             metadatas = results["metadatas"][0] if results.get("metadatas") else []
             distances = results["distances"][0] if results.get("distances") else []
         else:
-            results = await asyncio.to_thread(
+            results = await complete_owned_work(asyncio.to_thread(
                 self._collection.get,
                 where=where,
                 limit=top_k,
-            )
+            ))
             # get 返回平铺列表
             ids = results.get("ids", [])
             documents = results.get("documents", [])
@@ -148,7 +150,7 @@ class EpisodicChromaStore:
         Args:
             record_id (str): 记录ID
         """
-        await asyncio.to_thread(self._collection.delete, ids=[record_id])
+        await complete_owned_work(asyncio.to_thread(self._collection.delete, ids=[record_id]))
 
     async def delete_by_metadata(self, where: dict[str, Any]) -> int:
         """按元数据删除
@@ -159,7 +161,7 @@ class EpisodicChromaStore:
         Returns:
             int: 删除的数量
         """
-        result = await asyncio.to_thread(self._collection.delete, where=where)
+        result = await complete_owned_work(asyncio.to_thread(self._collection.delete, where=where))
         return len(result.get("ids", []))
 
     async def count(self) -> int:
@@ -168,7 +170,7 @@ class EpisodicChromaStore:
         Returns:
             int: 记录数量
         """
-        return await asyncio.to_thread(self._collection.count)
+        return await complete_owned_work(asyncio.to_thread(self._collection.count))
 
     async def get(self, record_id: str) -> dict[str, Any] | None:
         """根据 ID 获取单条记录
@@ -179,7 +181,7 @@ class EpisodicChromaStore:
         Returns:
             dict[str, Any] | None: 记录数据，不存在则返回 None
         """
-        result = await asyncio.to_thread(self._collection.get, ids=[record_id])
+        result = await complete_owned_work(asyncio.to_thread(self._collection.get, ids=[record_id]))
 
         if result and result.get("ids"):
             return {

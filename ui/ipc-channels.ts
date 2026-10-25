@@ -1,5 +1,6 @@
 /** Electron 主进程与各页面共同使用的通信通道，发送、订阅和处理使用同一名称。 */
 export const IpcChannel = {
+  GET_ACTIVE_TASK_SUMMARY: "get-active-task-summary",
   AI_NAME_CHANGED: "desktop-pet:ai-name-changed",
   APPLICATION_SHUTDOWN: "desktop-pet:application-shutdown",
   BEGIN_WINDOW_GESTURE: "desktop-pet:begin-window-gesture",

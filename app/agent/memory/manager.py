@@ -160,8 +160,8 @@ class MemoryManager:
             return 0
         return await self.chat_history_store.get_latest_message_id(self.session_id)
 
-    async def check_diary(self, *, max_history_id: int | None = None) -> None:
-        """由记忆插件在真人输入提交前检查上一有效聊天日，日记禁用时不生成。
+    async def generate_diary(self, *, max_history_id: int | None = None) -> None:
+        """在真人输入提交前，启动为上一有效聊天日生成日记的后台任务
 
         Args:
             max_history_id (int | None): 本次提取开始前捕获的协议日志最大编号；排除之后到达的消息。

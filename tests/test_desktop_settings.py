@@ -91,7 +91,7 @@ def test_test_paths_reject_production_overrides(tmp_path, monkeypatch) -> None:
         monkeypatch (pytest.MonkeyPatch): 替换操作系统或环境依赖，用例结束后自动恢复。
     """
     import pytest
-    from app.runtime import get_desktop_settings_file, get_legacy_frontend_settings_file
+    from app.environment import get_desktop_settings_file, get_legacy_frontend_settings_file
     monkeypatch.setenv("AYAYA_DATA_DIR", str(tmp_path / "isolated"))
     monkeypatch.setenv("AYAYA_DESKTOP_SETTINGS_FILE", str(tmp_path / "outside.yaml"))
     with pytest.raises(RuntimeError):

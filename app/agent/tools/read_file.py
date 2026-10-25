@@ -91,9 +91,14 @@ async def read_file(
 
         # 1. 任务日志先校验聊天归属，再在线程中流式读取；该 URI 的 start/end 始终是字符位置。
         if path.startswith(TASK_OUTPUT_URI_PREFIX):
-            if context.task_launcher is None:
+            if context.runtime is None:
                 raise ValueError("任务日志读取器未就绪")
-            resolved = await context.task_launcher.resolve_output(context.session_id, path)
+            record = await context.runtime.get_task_record(path[len(TASK_OUTPUT_URI_PREFIX):])
+            if record is None:
+                raise ValueError("任务不存在或不属于当前聊天")
+            if record.output_path is None:
+                raise ValueError("此任务没有终端输出")
+            resolved = Path(record.output_path)
             return await asyncio.to_thread(_read_task_page, resolved, normalized_start, end)
 
         # utf-8-sig 同时兼容普通 UTF-8 与带 BOM 的文本。

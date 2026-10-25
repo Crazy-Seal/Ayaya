@@ -67,6 +67,7 @@ export const InteractionEventKind = {
   QUEUED_MESSAGE: "queued_message",
   QUEUED_CANCELLED: "queued_cancelled",
   TASK_STATUS: "task_status",
+  NOTICE: "notice",
   RUN_STARTED: "run_started",
   TEXT_CHUNK: "text_chunk",
   TOOL_CALL: "tool_call",
@@ -408,7 +409,15 @@ export type BackgroundTaskRecord = {
   task_id: string;
   tool_name: string | null;
   session_id: string;
-  command: string;
+  command: string | null;
+  name: string;
+  title: string;
+  result: string | null;
+  error: string | null;
+  plugin_name: string | null;
+  output_ref: string | null;
+  lifetime: "turn" | "independent";
+  notify_agent: boolean;
   status: TaskStatus;
   pid: number | null;
   exit_code: number | null;
@@ -691,6 +700,8 @@ export interface DesktopPetApi {
   requestApplicationExit: () => Promise<void>;
   /** 页面首次加载时查询是否正在退出，补齐早于页面加载完成的通知。 */
   getApplicationShutdownState: () => Promise<boolean>;
+  /** 退出确认前查询全应用执行或清理中的任务数量。 */
+  getActiveTaskSummary: () => Promise<{ active_count: number }>;
   /** 监听应用开始退出，调用方立即锁定本页面的功能操作。 */
   onApplicationShutdown: (callback: () => void) => () => void;
   /**
@@ -843,6 +854,7 @@ export const HistoryRole = {
   HUMAN: "Human",
   AI: "AI",
   AI_TOOL_CALLING: "AI_Tool_Calling",
+  PLUGIN: "Plugin",
   USER: "user",
   ASSISTANT: "assistant",
 } as const;

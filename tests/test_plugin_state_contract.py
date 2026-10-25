@@ -70,6 +70,7 @@ class _MutatingPlugin(BasePlugin):
         """
         self.name = name
         self.seen_states: list[AgentState] = []
+        self.seen_contexts: list[HookContext] = []
 
     @property
     def hooks(self) -> list[PluginHook]:
@@ -87,9 +88,49 @@ class _MutatingPlugin(BasePlugin):
             context (HookContext): 执行管道提供的工具运行上下文。
         """
         self.seen_states.append(context.agent_state)
+        self.seen_contexts.append(context)
         context.agent_state.extra[self.name] = True
         if isinstance(context.data, dict):
             context.data[self.name] = True
+
+
+@pytest.mark.parametrize("provide_metadata", [False, True])
+def test_plugins_receive_separate_contexts_with_shared_hook_data(provide_metadata: bool) -> None:
+    """每个插件取得独立上下文，同时保留同次钩子的状态和准备数据共享。
+
+    Args:
+        provide_metadata (bool): 是否由调用方传入需要共享的空 metadata 字典。
+    """
+    async def scenario() -> None:
+        """通过真实插件分发验证上下文身份及公开字段的共享关系。"""
+        manager = PluginManager()
+        state = AgentState.create_new("separate-plugin-contexts")
+        data = {}
+        metadata = {} if provide_metadata else None
+        first = _MutatingPlugin("first")
+        last = _MutatingPlugin("last")
+        for plugin in (first, last):
+            await manager.register(plugin)
+        try:
+            # 1. 分发同次钩子，两个插件仍按顺序原地补充同一份准备数据。
+            await manager.run_hooks(PluginHook.BEFORE_LLM, state, data, metadata)
+            first_context = first.seen_contexts[0]
+            last_context = last.seen_contexts[0]
+            assert first_context is not last_context
+            assert first_context.agent_state is last_context.agent_state is state
+            assert first_context.data is last_context.data is data
+            assert data == {"first": True, "last": True}
+            # 2. 各插件继续共享本次附加信息，调用方提供空字典时也保留其原对象。
+            assert first_context.metadata is last_context.metadata
+            first_context.metadata["prepared"] = True
+            assert last_context.metadata == {"prepared": True}
+            if provide_metadata:
+                assert first_context.metadata is metadata
+                assert metadata == {"prepared": True}
+        finally:
+            await manager.close()
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("hook", list(PluginHook))

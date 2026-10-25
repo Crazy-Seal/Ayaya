@@ -1,4 +1,5 @@
 """验证任务记录的单向传递、持久事实和消费者生命周期。"""
+from tests.terminal_harness import TerminalHarness
 
 import asyncio
 from contextlib import closing
@@ -10,8 +11,8 @@ import pytest
 
 from app.agent.state.manager import SessionStateManager
 from app.interaction.interaction_event_hub import InteractionEventHub
-from app.orchestration.agent_runtime_scheduler import AgentRuntimeScheduler
-from app.orchestration.task_supervisor import TaskSupervisor
+from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
+from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
 from app.services.channel_subscription_service import ChannelSubscriptionService
 
 
@@ -39,7 +40,7 @@ def create_scheduler(tmp_path, supervisor):
         AgentRuntimeScheduler: 尚未启动的会话调度器。
     """
     path = str(tmp_path / "state.sqlite3")
-    return AgentRuntimeScheduler(
+    return AgentRuntimeScheduler(runtime_queue=supervisor.runtime_queue,
         agent_factory=unexpected_agent,
         task_supervisor=supervisor,
         subscriptions=ChannelSubscriptionService(path),
@@ -48,7 +49,7 @@ def create_scheduler(tmp_path, supervisor):
 
 
 async def insert_task(supervisor, task_id="task", *, background=True):
-    """登记没有真实进程的任务，供测试通过正式终态事务结束。
+    """登记通用任务，供测试通过正式终态事务结束。
 
     Args:
         supervisor (TaskSupervisor): 持有隔离任务数据库的对象。
@@ -56,8 +57,7 @@ async def insert_task(supervisor, task_id="task", *, background=True):
         background (bool): 是否应在后台任务入口显示。
     """
     await supervisor.records.insert_running(
-        task_id, "s", "测试任务", 1, str(supervisor.spool_dir / task_id),
-        background=background, tool_name="exec_command",
+        task_id, "s", name="test", title="测试任务", background=background,
     )
 
 
@@ -70,7 +70,8 @@ def test_supervisor_finishes_without_consumer_and_preserves_buffer(tmp_path) -> 
     async def scenario():
         """启动后台命令，先验证持久终态和资源收尾，再读取记录来源。"""
         path = str(tmp_path / "state.sqlite3")
-        supervisor = TaskSupervisor(db_path=path, spool_dir=tmp_path / "tasks")
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=path)
+        terminal_for_supervisor = TerminalHarness(supervisor, spool_dir=tmp_path / "tasks")
 
         async def wait_terminal(task_id):
             """只通过查询等待操作系统进程的终态保存。
@@ -82,27 +83,27 @@ def test_supervisor_finishes_without_consumer_and_preserves_buffer(tmp_path) -> 
                 TaskRecord: 已保存的进程终态。
             """
             while True:
-                record = await supervisor.get(task_id)
+                record = await supervisor.get_task_record(task_id)
                 if record.status != "running":
                     return record
                 await asyncio.sleep(0.01)
 
         try:
-            result = await supervisor.launch(
+            result = await terminal_for_supervisor.launch_terminal(
                 "s", "输出测试", [sys.executable, "-c", "print('done')"],
                 cwd=str(tmp_path), yield_time_ms=0,
             )
             record = await asyncio.wait_for(wait_terminal(result.task_id), 3)
             assert record.status == "completed"
-            assert "done" in (await supervisor.read_output(result.task_id, 0, 1024))["text"]
+            assert "done" in (await terminal_for_supervisor.read_output(result.task_id, 0, 1024))["text"]
             await asyncio.wait_for(supervisor.close(), 3)
             await supervisor.close()
             buffered = []
-            while (item := await asyncio.wait_for(supervisor.next_event(), 1)) is not None:
-                buffered.append(item)
+            while not supervisor.runtime_queue.empty():
+                buffered.append(supervisor.runtime_queue.get_nowait())
             assert buffered and all(item.task_id == result.task_id for item in buffered)
             assert buffered[-1].status == "completed"
-            assert await asyncio.wait_for(supervisor.next_event(), 1) is None
+            assert supervisor.runtime_queue.empty()
             inbox = SessionStateManager("s", path)
             try:
                 assert len(await inbox.read_task_terminals()) == 1
@@ -122,7 +123,7 @@ def test_terminal_event_follows_atomic_commit_and_is_not_repeated(tmp_path) -> N
     async def scenario():
         """用真实 SQLite 触发器拒绝通知插入，并核对事件和持久事实。"""
         path = str(tmp_path / "state.sqlite3")
-        supervisor = TaskSupervisor(db_path=path, spool_dir=tmp_path / "tasks")
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=path)
         inbox = SessionStateManager("s", path)
         try:
             await insert_task(supervisor)
@@ -130,20 +131,20 @@ def test_terminal_event_follows_atomic_commit_and_is_not_repeated(tmp_path) -> N
                 db.execute("CREATE TRIGGER reject_notice BEFORE INSERT ON session_inbox "
                            "BEGIN SELECT RAISE(ABORT, 'reject_notice'); END")
             with pytest.raises(sqlite3.IntegrityError, match="reject_notice"):
-                await supervisor.finish_once("task", "completed", 0)
-            assert (await supervisor.get("task")).status == "running"
+                await supervisor.commit_terminal_state_once("task", "completed")
+            assert (await supervisor.get_task_record("task")).status == "running"
             assert await inbox.read_task_terminals() == ()
             with pytest.raises(asyncio.TimeoutError):
-                await asyncio.wait_for(supervisor.next_event(), 0.03)
+                await asyncio.wait_for(supervisor.runtime_queue.get(), 0.03)
             with closing(sqlite3.connect(path)) as db:
                 db.execute("DROP TRIGGER reject_notice")
-            assert await supervisor.finish_once("task", "completed", 0)
-            record = await asyncio.wait_for(supervisor.next_event(), 1)
-            assert record.status == "completed" and record.exit_code == 0
+            assert await supervisor.commit_terminal_state_once("task", "completed")
+            record = await asyncio.wait_for(supervisor.runtime_queue.get(), 1)
+            assert record.status == "completed" and record.exit_code is None
             assert len(await inbox.read_task_terminals()) == 1
-            assert not await supervisor.finish_once("task", "completed", 0)
+            assert not await supervisor.commit_terminal_state_once("task", "completed")
             await supervisor.close()
-            assert await supervisor.next_event() is None
+            assert supervisor.runtime_queue.empty()
         finally:
             await inbox.close()
             await supervisor.close()
@@ -158,7 +159,7 @@ def test_hub_receives_background_status_but_not_foreground_status(tmp_path) -> N
     """
     async def scenario():
         """先订阅会话，再分别完成前台和后台记录。"""
-        supervisor = TaskSupervisor(db_path=str(tmp_path / "state.sqlite3"), spool_dir=tmp_path / "tasks")
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "state.sqlite3"))
         scheduler = create_scheduler(tmp_path, supervisor)
         hub = InteractionEventHub(scheduler, subscriptions=scheduler.subscriptions)
         await scheduler.start()
@@ -167,14 +168,14 @@ def test_hub_receives_background_status_but_not_foreground_status(tmp_path) -> N
         try:
             assert (await anext(stream)).kind == "session_snapshot"
             await insert_task(supervisor, "foreground", background=False)
-            await supervisor.finish_once("foreground", "completed", 0)
+            await supervisor.commit_terminal_state_once("foreground", "completed")
             await insert_task(supervisor, "background")
-            await supervisor.finish_once("background", "failed", 2)
+            await supervisor.commit_terminal_state_once("background", "failed")
             event = await asyncio.wait_for(anext(stream), 1)
             assert event.kind == "task_status" and event.task_id == "background"
             assert event.payload == {
-                "task_id": "background", "status": "failed", "exit_code": 2,
-                "tool_name": "exec_command",
+                "task_id": "background", "status": "failed", "exit_code": None,
+                "tool_name": None,
             }
             with pytest.raises(asyncio.TimeoutError):
                 await asyncio.wait_for(anext(stream), 0.03)
@@ -197,13 +198,14 @@ def test_session_lock_does_not_block_process_cleanup_or_scheduler_close(tmp_path
     """
     async def scenario():
         """用会话锁制造原回调的阻塞位置，验证公开启动与关闭均可结束。"""
-        supervisor = TaskSupervisor(db_path=str(tmp_path / "state.sqlite3"), spool_dir=tmp_path / "tasks")
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "state.sqlite3"))
+        terminal_for_supervisor = TerminalHarness(supervisor, spool_dir=tmp_path / "tasks")
         scheduler = create_scheduler(tmp_path, supervisor)
         await scheduler.start()
         reader = scheduler._task_reader
         try:
             async with scheduler._session("s").lock:
-                result = await asyncio.wait_for(supervisor.launch(
+                result = await asyncio.wait_for(terminal_for_supervisor.launch_terminal(
                     "s", "输出测试", [sys.executable, "-c", "print('done')"],
                     cwd=str(tmp_path), yield_time_ms=0,
                 ), 3)
@@ -215,6 +217,7 @@ def test_session_lock_does_not_block_process_cleanup_or_scheduler_close(tmp_path
                     await asyncio.wait_for(scheduler.close(), 1)
                     assert reader.done()
             if release_during_shutdown:
+                supervisor.runtime_queue.put_nowait(None)
                 # 1. 等锁期间已关闭执行入口，取得锁后也不能产生显示事件。
                 await asyncio.wait_for(asyncio.shield(reader), 1)
                 with pytest.raises(asyncio.TimeoutError):
@@ -241,7 +244,7 @@ def test_repeated_start_has_one_reader_and_source_close_ends_it(tmp_path) -> Non
     """
     async def scenario():
         """保留消费任务身份，观察真实队列结束而非取消测试替身。"""
-        supervisor = TaskSupervisor(db_path=str(tmp_path / "state.sqlite3"), spool_dir=tmp_path / "tasks")
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "state.sqlite3"))
         scheduler = create_scheduler(tmp_path, supervisor)
         try:
             await scheduler.start()
@@ -249,6 +252,7 @@ def test_repeated_start_has_one_reader_and_source_close_ends_it(tmp_path) -> Non
             await scheduler.start()
             assert scheduler._task_reader is reader and reader is not None
             await supervisor.close()
+            supervisor.runtime_queue.put_nowait(None)
             await asyncio.wait_for(asyncio.shield(reader), 1)
             assert not reader.cancelled()
             await scheduler.close()
@@ -256,51 +260,6 @@ def test_repeated_start_has_one_reader_and_source_close_ends_it(tmp_path) -> Non
             assert reader.done()
         finally:
             await scheduler.close()
-            await supervisor.close()
-    asyncio.run(scenario())
-
-
-@pytest.mark.parametrize("buffered", [False, True])
-def test_storage_close_failure_still_ends_record_source(tmp_path, monkeypatch, buffered) -> None:
-    """数据库关闭报告失败时保留积压记录，并结束正在等待的消费者。
-
-    Args:
-        tmp_path (Path): 隔离存储目录。
-        monkeypatch (pytest.MonkeyPatch): 只替换数据库关闭的报告结果。
-        buffered (bool): 关闭前是否有终态积压，分别覆盖等待中的读取和积压读取。
-    """
-    async def scenario():
-        """先产生终态记录，再注入关闭失败并按公开接口读取到结束。"""
-        supervisor = TaskSupervisor(db_path=str(tmp_path / "state.sqlite3"), spool_dir=tmp_path / "tasks")
-        original_close = supervisor.records.close
-
-        async def failing_close():
-            """实际释放测试数据库后报告错误，避免故障测试遗留句柄。
-
-            Raises:
-                RuntimeError: 模拟存储关闭报告失败。
-            """
-            await original_close()
-            raise RuntimeError("存储关闭失败")
-
-        try:
-            if buffered:
-                await insert_task(supervisor)
-                await supervisor.finish_once("task", "completed", 0)
-            waiting = asyncio.create_task(supervisor.next_event())
-            await asyncio.sleep(0)
-            monkeypatch.setattr(supervisor.records, "close", failing_close)
-            with pytest.raises(RuntimeError, match="存储关闭失败"):
-                await supervisor.close()
-            record = await asyncio.wait_for(waiting, 1)
-            if buffered:
-                assert record.status == "completed"
-            else:
-                assert record is None
-            assert await asyncio.wait_for(supervisor.next_event(), 1) is None
-            assert await asyncio.wait_for(supervisor.next_event(), 1) is None
-        finally:
-            monkeypatch.setattr(supervisor.records, "close", original_close)
             await supervisor.close()
     asyncio.run(scenario())
 
@@ -313,7 +272,7 @@ def test_scheduler_close_does_not_wait_for_open_source(tmp_path) -> None:
     """
     async def scenario():
         """先关闭消费者，再向仍开放的真实来源保存一条终态记录。"""
-        supervisor = TaskSupervisor(db_path=str(tmp_path / "state.sqlite3"), spool_dir=tmp_path / "tasks")
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "state.sqlite3"))
         scheduler = create_scheduler(tmp_path, supervisor)
         try:
             await scheduler.start()
@@ -323,50 +282,9 @@ def test_scheduler_close_does_not_wait_for_open_source(tmp_path) -> None:
             await asyncio.wait_for(scheduler.close(), 1)
             assert reader.done()
             await insert_task(supervisor)
-            assert await supervisor.finish_once("task", "completed", 0)
+            assert await supervisor.commit_terminal_state_once("task", "completed")
             assert await scheduler.next_event() is None
-            assert (await supervisor.next_event()).task_id == "task"
-        finally:
-            await scheduler.close()
-            await supervisor.close()
-    asyncio.run(scenario())
-
-
-def test_reader_failure_is_reported_and_cleanup_does_not_restart_it(tmp_path, monkeypatch, caplog) -> None:
-    """记录读取意外失败时明确报告，最终关闭检查失败且不自动重启。
-
-    Args:
-        tmp_path (Path): 隔离存储目录。
-        monkeypatch (pytest.MonkeyPatch): 在记录读取边界注入异常。
-        caplog (pytest.LogCaptureFixture): 检查运行和关闭阶段的错误报告。
-    """
-    async def scenario():
-        """让唯一消费者失败，再通过正式关闭接口回收它。"""
-        supervisor = TaskSupervisor(db_path=str(tmp_path / "state.sqlite3"), spool_dir=tmp_path / "tasks")
-        scheduler = create_scheduler(tmp_path, supervisor)
-        entered = asyncio.Event()
-        calls = 0
-
-        async def failing_read():
-            """标记读取发生后抛出异常。
-
-            Raises:
-                RuntimeError: 模拟记录来源异常。
-            """
-            nonlocal calls
-            calls += 1
-            entered.set()
-            raise RuntimeError("记录读取失败")
-
-        monkeypatch.setattr(supervisor, "next_event", failing_read)
-        try:
-            await scheduler.start()
-            reader = scheduler._task_reader
-            await asyncio.wait_for(entered.wait(), 1)
-            await scheduler.close()
-            assert reader.done() and calls == 1
-            assert "读取任务记录失败" in caplog.text
-            assert "任务记录消费者异常退出" in caplog.text
+            assert (await supervisor.runtime_queue.get()).task_id == "task"
         finally:
             await scheduler.close()
             await supervisor.close()

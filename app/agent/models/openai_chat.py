@@ -8,7 +8,7 @@ from openai import AsyncOpenAI, OpenAI
 from app.agent.models.contracts import ModelFinishReason, InputMessage, LLMConfig, LLMResponse, StreamChunk, TokenUsage, ToolDefinition, ModelContextOverflowError, ProjectedMessage
 from app.schemas.message_types import COMPRESSED_SCREENSHOT_PLACEHOLDER, MediaKind, ImageContextState
 from app.agent.state.messages import (BaseMessage, HumanMessage, AssistantMessage, ToolMessage, SystemMessage,
-    ContextSummaryMessage, TaskResultMessage, EnvironmentPerceptionMessage, SubagentMessage,
+    ContextSummaryMessage, PluginNotificationMessage, TaskResultMessage, EnvironmentPerceptionMessage, SubagentMessage,
     ImageContent, TextContent, ToolCall, ProviderData, text_content, notification_text, to_json_value)
 from app.agent.models.openai_message_names import (SCREENSHOT_MESSAGE_NAME, TOOL_IMAGE_MESSAGE_NAME, MCP_TOOL_IMAGE_MESSAGE_NAME,
     SCREENSHOT_COMPRESSED_NAME, CONTEXT_SUMMARY_MESSAGE_NAME)
@@ -565,8 +565,8 @@ class OpenAIChatCompletionsAdapter:
                 result.append({"role": "system", "content": message.text})
             elif isinstance(message, ContextSummaryMessage):
                 result.append({"role": "user", "name": CONTEXT_SUMMARY_MESSAGE_NAME, "content": message.text})
-            elif isinstance(message, (TaskResultMessage, EnvironmentPerceptionMessage, SubagentMessage)):
-                names = {"task_result": "runtime_task_result", "environment_perception": "runtime_environment_perception", "subagent": "runtime_subagent"}
+            elif isinstance(message, (TaskResultMessage, PluginNotificationMessage, EnvironmentPerceptionMessage, SubagentMessage)):
+                names = {"plugin_notification": "runtime_plugin_notification", "task_result": "runtime_task_result", "environment_perception": "runtime_environment_perception", "subagent": "runtime_subagent"}
                 result.append({"role": "user", "name": names[message.message_type], "content": notification_text(message)})
             else:
                 raise ValueError("适配器不支持的业务消息")

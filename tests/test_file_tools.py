@@ -9,7 +9,7 @@ from app.agent.tools.read_image import read_image
 from app.agent.tools.apply_patch import apply_patch
 from app.agent.tools.results.artifacts import ToolResultArtifactStore
 from app.agent.tools.results.normalizer import ToolResultNormalizer
-from app.runtime import get_tool_results_dir
+from app.environment import get_tool_results_dir
 from app.agent.tools.core.registry import ToolRegistry
 
 
@@ -191,35 +191,26 @@ def test_exec_command_preserves_output_for_unified_normalization(tmp_path: Path,
 
     monkeypatch.setattr(terminal_module, "WORKDIR", tmp_path)
 
-    class _Launcher:
-        """提供隔离测试替身，用于验证：任务运行器输出仍交给统一工具结果规范化。"""
-        async def launch(self, session_id, command, argv, *, cwd, tty, yield_time_ms, tool_name,
-                         origin_run_id=None, origin_tool_call_id=None):
-            """执行该回归场景中的局部测试步骤。
+    import sys
+    from app.agent.tools.core.runtime import ToolRuntime
+    from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
+    from app.agent.tools.terminal.shell import detect_shell
 
-            Args:
-                session_id (对象): 共享 Ayaya 会话标识。
-                command (ChannelCommand): 统一渠道命令或需要执行的命令正文，类型决定其含义。
-                argv (对象): 已经构造好的进程参数列表。
-                cwd (对象): 命令执行工作目录。
-                tty (bool): 是否使用 PTY。
-                yield_time_ms (int): 等待预算。
-                tool_name (str): 创建任务的工具名。
-                origin_run_id (对象): 发起进程任务的运行轮次标识。
-                origin_tool_call_id (对象): 发起任务的工具调用标识。
-            """
-            return TaskLaunchResult("task", False, "x" * 60_000)
-
-    context = ToolContext(
-        session_id="s", state=None,
-        task_launcher=_Launcher(),
-    )
-
-    result = asyncio.run(terminal_module.ExecCommandTool().execute({"cmd": "echo x"}, context)).text
-
-    # 2. 核对公开结果和持久状态，确保场景中的输入、通知或副作用未重复。
-    assert result.endswith("x" * 60_000)
-    assert "task_id=task" in result
+    async def scenario():
+        """真实执行长输出命令，验证工具没有自行截断结果。"""
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "state.db"))
+        runtime = ToolRuntime("s", "run", "exec_command", "call",
+            _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue)
+        context = ToolContext(session_id="s", state=None, runtime=runtime)
+        prefix = "& " if detect_shell().kind in {"pwsh", "powershell"} else ""
+        command = prefix + '"' + sys.executable + '" -c "print(\'x\'*60000,end=\'\')"'
+        try:
+            result = (await terminal_module.ExecCommandTool().execute({"cmd": command}, context)).text
+            assert result.endswith("x" * 60_000)
+            assert "task_id=" in result
+        finally:
+            await supervisor.close()
+    asyncio.run(scenario())
 
 
 def test_apply_patch_adds_updates_and_deletes_files(tmp_path: Path, monkeypatch) -> None:

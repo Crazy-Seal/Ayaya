@@ -12,7 +12,7 @@ from app.agent.core.events import AgentEvent, EventType
 from app.agent.state.manager import SessionStateManager
 from app.agent.state import AgentState
 from app.agent.state.messages import ToolCall
-from app.orchestration.agent_runtime_scheduler import AgentRuntimeScheduler
+from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.interaction.interaction_contract import ChannelCommand
 
 
@@ -187,7 +187,7 @@ def make_scheduler(path: str) -> AgentRuntimeScheduler:
         """
         return WaitingAgent(path)
 
-    return AgentRuntimeScheduler(
+    return AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
         agent_factory=agent_factory,
     session_state_manager_factory=state_factory, )
 

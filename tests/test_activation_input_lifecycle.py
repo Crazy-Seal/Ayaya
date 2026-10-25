@@ -14,7 +14,7 @@ from app.agent.core.events import AgentEvent, EventType
 from app.agent.memory.store.chat_history_store import ChatHistoryStore
 from app.agent.models.llm_client import StreamChunk
 from app.agent.plugins.base import BasePlugin, HookContext, PluginHook
-from app.agent.plugins.memory import MemoryPlugin
+from app.agent.plugins.memory.memory import MemoryPlugin
 from app.agent.state.manager import SessionStateManager
 from app.agent.runtime.session_inbox import InboxEnvelope
 from app.agent.state import AgentState, TemporaryContextItem
@@ -22,11 +22,11 @@ from app.agent.state.messages import BaseMessage, HumanMessage, TaskResultMessag
 from app.agent.tools.core.base import BaseTool, ToolContext, ToolResult
 from app.crud.task_record_dao import TaskRecordDao
 from app.schemas.runtime_types import InteractionEventKind, InterruptKind, TaskStatus
-from app.orchestration.agent_runtime_scheduler import AgentRuntimeScheduler
+from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.services.channel_subscription_service import ChannelSubscriptionService
 from app.interaction.interaction_contract import ChannelCommand, InteractionEvent
 from app.interaction.interaction_event_hub import InteractionEventHub
-import app.agent.plugins.memory as memory_plugin_module
+import app.agent.plugins.memory.memory as memory_plugin_module
 
 
 SESSION_ID = "activation-input-lifecycle"
@@ -177,6 +177,23 @@ class StepTool(BaseTool):
         return ToolResult.success("步骤已完成")
 
 
+class RuntimeTestAgent(Agent):
+    """测试装配同时拥有应用任务资源，测试结束时关闭独立的临时存储。"""
+
+    def __init__(self, *args, supervisor, **kwargs):
+        """注入本次测试应用的任务来源和资源所有者。"""
+        self.test_supervisor = supervisor
+        from app.agent.plugins.runtime import PluginRuntime
+        session_id = args[0].session_id
+        super().__init__(*args, plugin_runtime_factory=lambda name, run_id: PluginRuntime(
+            name, session_id, run_id, _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue), **kwargs)
+
+    async def close(self):
+        """测试应用结束时先关闭 Agent，再关闭应用持有的任务资源。"""
+        await super().close()
+        await self.test_supervisor.close()
+
+
 async def make_agent(db_path: Path, model: QueuedModel, hooks: list[PluginHook]) -> Agent:
     """通过公开注册入口装配真实 Agent 与内置记忆插件。
 
@@ -188,12 +205,14 @@ async def make_agent(db_path: Path, model: QueuedModel, hooks: list[PluginHook])
     Returns:
         Agent: 保留真实状态、插件和执行管道的 Agent。
     """
-    agent = Agent(
+    from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
+    supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=str(db_path))
+    agent = RuntimeTestAgent(
         AgentConfig(
             session_id=SESSION_ID, model_name="test", api_key="test",
             context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100),
         ),
-        db_path=str(db_path), llm_client=model,
+        db_path=str(db_path), llm_client=model, supervisor=supervisor,
     )
     agent.register_tool(StepTool())
     await agent.register_plugin(MemoryPlugin(enable_diary=False, enable_semantic=False))
@@ -369,7 +388,7 @@ def test_mid_turn_notification_preserves_batch_until_next_activation(tmp_path: P
         inbox = create_inbox(SESSION_ID)
         records = TaskRecordDao(str(db_path))
         subscriptions = ChannelSubscriptionService()
-        scheduler = AgentRuntimeScheduler(
+        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
             subscriptions=subscriptions, agent_factory=create_agent, session_state_manager_factory=create_inbox,
         )
         hub = InteractionEventHub(scheduler, subscriptions=subscriptions)

@@ -106,6 +106,7 @@ class InteractionEventKind(str, Enum):
         QUEUED_MESSAGE (InteractionEventKind): 输入已排队，协议值为 queued_message。
         QUEUED_CANCELLED (InteractionEventKind): 排队输入已撤销，协议值为 queued_cancelled。
         TASK_STATUS (InteractionEventKind): 后台任务状态，协议值为 task_status。
+        NOTICE (InteractionEventKind): 插件短暂前端提示，协议值为 notice。
         RUN_STARTED (InteractionEventKind): 轮次开始或恢复，协议值为 run_started。
         TEXT_CHUNK (InteractionEventKind): 模型正文分片，协议值为 text_chunk。
         TOOL_CALL (InteractionEventKind): 工具调用提示，协议值为 tool_call。
@@ -119,6 +120,7 @@ class InteractionEventKind(str, Enum):
     QUEUED_MESSAGE = "queued_message"
     QUEUED_CANCELLED = "queued_cancelled"
     TASK_STATUS = "task_status"
+    NOTICE = "notice"
     RUN_STARTED = "run_started"
     TEXT_CHUNK = "text_chunk"
     TOOL_CALL = "tool_call"
@@ -166,14 +168,16 @@ class AuthorizationResolutionKind(str, Enum):
 
 
 class InboxKind(str, Enum):
-    """表示持久输入类别，真人输入与任务终态通知分别交付。
+    """区分真人输入、任务终态和插件主动通知。
 
     Attributes:
         HUMAN (InboxKind): 真人输入，协议值为 human。
         TASK_TERMINAL (InboxKind): 任务终态通知，协议值为 task_terminal。
+        PLUGIN_NOTIFICATION (InboxKind): 插件主动通知，协议值为 plugin_notification。
     """
     HUMAN = "human"
     TASK_TERMINAL = "task_terminal"
+    PLUGIN_NOTIFICATION = "plugin_notification"
 
 
 class InboxStatus(str, Enum):
@@ -198,15 +202,27 @@ class InboxDeliveryMode(str, Enum):
     QUEUED = "queued"
 
 
-class TaskStatus(str, Enum):
-    """表示受管进程状态，不与模型输入的汇总终态混用。
+class TaskLifetime(str, Enum):
+    """指定任务随来源轮次结束，或独立运行至完成、停止和应用退出。
 
     Attributes:
-        RUNNING (TaskStatus): 进程运行中，协议值为 running。
+        TURN (TaskLifetime): 来源轮次结束时停止，审批暂停时保留。
+        INDEPENDENT (TaskLifetime): 来源轮次结束后继续运行。
+    """
+
+    TURN = "turn"
+    INDEPENDENT = "independent"
+
+
+class TaskStatus(str, Enum):
+    """表示任务的持久状态，不与模型输入的汇总终态混用。
+
+    Attributes:
+        RUNNING (TaskStatus): 执行、清理或终态保存尚未完成，协议值为 running。
         COMPLETED (TaskStatus): 成功结束，协议值为 completed。
-        FAILED (TaskStatus): 执行失败，协议值为 failed。
-        STOPPED (TaskStatus): 用户停止，协议值为 stopped。
-        ORPHANED (TaskStatus): 重启后失去进程所有权，协议值为 orphaned。
+        FAILED (TaskStatus): 执行或清理失败，协议值为 failed。
+        STOPPED (TaskStatus): 请求停止后完成收尾，协议值为 stopped。
+        ORPHANED (TaskStatus): 重启后失去执行所有权，协议值为 orphaned。
     """
     RUNNING = "running"
     COMPLETED = "completed"

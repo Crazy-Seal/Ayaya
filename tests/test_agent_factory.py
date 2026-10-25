@@ -1,6 +1,6 @@
 from app.agent.context import ContextStrategyConfig
 from app.schemas.chat_settings import AgentPluginSettings, ChatSettings
-from app.orchestration import agent_factory
+from app.agent.runtime import agent_factory
 
 
 def _settings(agent_plugins=None, context_strategy=None):

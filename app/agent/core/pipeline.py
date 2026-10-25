@@ -35,7 +35,8 @@ from app.agent.state.messages import (
 )
 from app.agent.state import AgentState, TemporaryContextItem
 from app.agent.state.time import format_local_time, utc_now
-from app.agent.tools.core.base import BaseTool, InterruptEvent, ToolContext, ToolResult, TaskLauncher
+from app.agent.tools.core.runtime import ToolRuntimeFactory
+from app.agent.tools.core.base import BaseTool, InterruptEvent, ToolContext, ToolResult
 from app.agent.tools.results.normalizer import ToolResultNormalizer
 from app.agent.tools.authorization.manager import ToolAuthorization, descriptor_for_tool
 from app.agent.tools.authorization.models import AuthorizationRequired, ToolInvocation
@@ -80,7 +81,7 @@ class ExecutionPipeline:
         _tool_result_normalizer (ToolResultNormalizer): 工具输出与媒体的统一规范化器。
         _model_input (ModelInputCoordinator): 模型消息投影、上下文压缩和溢出恢复协调器。
         _tool_authorization (ToolAuthorization | None): 工具单次授权验证器。
-        _task_launcher (TaskLauncher | None): 工具使用的共享进程启动端口。
+        _tool_runtime_factory (ToolRuntimeFactory | None): 按工具、轮次及调用编号创建运行时。
     """
 
     def __init__(
@@ -92,7 +93,7 @@ class ExecutionPipeline:
         plugin_manager: PluginManager,
         model_input: ModelInputCoordinator,
         tool_authorization: ToolAuthorization | None = None,
-        task_launcher: TaskLauncher | None = None,
+        tool_runtime_factory: ToolRuntimeFactory | None = None,
         desktop: DesktopOperations | None = None,
     ) -> None:
         """装配模型输入、授权和任务启动端口，管道不持有渠道连接。
@@ -104,7 +105,7 @@ class ExecutionPipeline:
             plugin_manager (PluginManager): 插件生命周期与执行钩子的分发器。
             model_input (ModelInputCoordinator): 模型消息投影、上下文压缩和溢出恢复协调器。
             tool_authorization (ToolAuthorization | None): 工具单次授权验证器。
-            task_launcher (TaskLauncher | None): 工具使用的共享进程启动端口。
+            tool_runtime_factory (ToolRuntimeFactory | None): 按工具、轮次及调用编号创建运行时。
             desktop (DesktopOperations | None): 应用共享桌面接口，管道只注入、不负责关闭。
         """
         self._prompt_source = prompt_source
@@ -114,7 +115,7 @@ class ExecutionPipeline:
         self._tool_result_normalizer = ToolResultNormalizer()
         self._model_input = model_input
         self._tool_authorization = tool_authorization
-        self._task_launcher = task_launcher
+        self._tool_runtime_factory = tool_runtime_factory
         self._desktop = desktop
 
     # ==================== 主入口 ====================
@@ -609,14 +610,15 @@ class ExecutionPipeline:
             )
             hooks_started = True
 
-        # 4. 注入状态与任务端口，终端工具的进程由共享 Supervisor 持有，并记录来源 run 和工具调用。
+        # 4. 注入状态与任务端口，工具运行时按本次来源创建，任务由共享 Supervisor 持有，并记录来源 run 和工具调用。
         context = ToolContext(
             session_id=state.session_id,
             state=state,
             resume_data=effective_resume_data,
             resume_state=tool_resume_state,
             authorization_grant=grant,
-            task_launcher=self._task_launcher,
+            runtime=self._tool_runtime_factory(tool_call.name, origin_run_id, tool_call.id)
+            if self._tool_runtime_factory is not None else None,
             desktop=self._desktop,
             stop_requested=stop_requested,
             origin_run_id=origin_run_id,
@@ -740,7 +742,8 @@ class ExecutionPipeline:
             resume_data={"kind": AUTHORIZATION_GRANTED_KIND},
             resume_state=resume_state,
             authorization_grant=grant,
-            task_launcher=self._task_launcher,
+            runtime=self._tool_runtime_factory(tool_call.name, origin_run_id, tool_call.id)
+            if self._tool_runtime_factory is not None else None,
             origin_run_id=origin_run_id,
             origin_tool_call_id=tool_call.id,
             origin_tool_name=tool_call.name,

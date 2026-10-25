@@ -17,7 +17,7 @@ from app.agent.state.messages import (
     HumanMessage,
     message_from_history,
 )
-from app.runtime import get_chat_history_db
+from app.environment import get_chat_history_db
 
 
 class ChatHistoryStore:

@@ -13,6 +13,7 @@ class MessageType(StrEnum):
         TOOL (MessageType): 工具执行结果。
         CONTEXT_SUMMARY (MessageType): 压缩后的前情摘要。
         TASK_RESULT (MessageType): 后台任务结束通知。
+        PLUGIN_NOTIFICATION (MessageType): 带插件来源和通知名称的持久内容。
         ENVIRONMENT_PERCEPTION (MessageType): 环境变化说明。
         SUBAGENT (MessageType): 子 Agent 消息。
     """
@@ -23,6 +24,7 @@ class MessageType(StrEnum):
     TOOL = "tool"
     CONTEXT_SUMMARY = "context_summary"
     TASK_RESULT = "task_result"
+    PLUGIN_NOTIFICATION = "plugin_notification"
     ENVIRONMENT_PERCEPTION = "environment_perception"
     SUBAGENT = "subagent"
 
@@ -62,11 +64,13 @@ class HistoryRole(StrEnum):
         HUMAN (HistoryRole): 真人消息。
         AI (HistoryRole): Agent 回复或工具图片。
         AI_TOOL_CALLING (HistoryRole): 工具调用提示。
+        PLUGIN (HistoryRole): 已持久化的插件通知。
     """
 
     HUMAN = "Human"
     AI = "AI"
     AI_TOOL_CALLING = "AI_Tool_Calling"
+    PLUGIN = "Plugin"
 
 
 LEGACY_TOOL_NOTICE_KIND = "legacy_tool_notice"

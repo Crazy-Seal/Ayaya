@@ -1,8 +1,8 @@
 {
-  "MessageType": ["human", "system", "assistant", "tool", "context_summary", "task_result", "environment_perception", "subagent"],
+  "MessageType": ["human", "system", "assistant", "tool", "context_summary", "task_result", "plugin_notification", "environment_perception", "subagent"],
   "MediaKind": ["human", "tool", "screenshot", "mcp"],
   "ImageContextState": ["available", "compacted"],
-  "HistoryRole": ["Human", "AI", "AI_Tool_Calling"],
+  "HistoryRole": ["Human", "AI", "AI_Tool_Calling", "Plugin"],
   "ToolSource": ["local", "mcp"],
   "AuthorizationTiming": ["before_execute", "after_prepare"],
   "PlanItemStatus": ["pending", "in_progress", "completed"],

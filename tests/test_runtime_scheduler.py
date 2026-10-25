@@ -13,10 +13,10 @@ from app.agent.state.manager import SessionStateManager
 from app.agent.state.messages import ToolCall
 from app.agent.state.messages import ToolMessage
 from app.agent.tools.core.base import BaseTool, ToolContext, ToolResult
-from app.orchestration.task_supervisor import TaskSupervisor
+from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
 from app.interaction.interaction_contract import ChannelCommand
 from app.interaction.interaction_event_hub import InteractionEventHub
-from app.orchestration.agent_runtime_scheduler import AgentRuntimeScheduler
+from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
 
 
 def test_message_arriving_before_wait_signal_is_cleared_is_processed_immediately(tmp_path: Path) -> None:
@@ -82,7 +82,7 @@ def test_message_arriving_before_wait_signal_is_cleared_is_processed_immediately
             async def close(self) -> None:
                 """测试 Agent 不持有外部资源。"""
 
-        scheduler = AgentRuntimeScheduler(
+        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
            agent_factory=lambda _session, _manager: RecordingAgent(),
             session_state_manager_factory=lambda session: InterleavingInbox(session, path),
         )
@@ -154,7 +154,7 @@ def test_committed_human_is_visible_before_first_model_chunk(tmp_path: Path) -> 
             session_state_manager=_manager, )
 
         subscriptions = ChannelSubscriptionService()
-        scheduler = AgentRuntimeScheduler(
+        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
             subscriptions=subscriptions, agent_factory=make_agent,
             session_state_manager_factory=lambda session: SessionStateManager(session, db_path),
         )
@@ -246,7 +246,7 @@ def test_subscriber_disconnect_does_not_cancel_run_and_origin_is_scoped(tmp_path
         subscriptions.set_default_enabled("qq", True)
         subscriptions.register_channel("telegram")
         subscriptions.set_default_enabled("telegram", True)
-        scheduler = AgentRuntimeScheduler(
+        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
             subscriptions=subscriptions,
            agent_factory=lambda _session, _manager: FakeAgent(),
             session_state_manager_factory=lambda session: SessionStateManager(session, str(tmp_path / "runtime.sqlite3")),
@@ -327,7 +327,7 @@ def test_snapshot_excludes_reply_text_before_and_after_tool_call(tmp_path) -> No
                 """完成替身清理而不访问真实服务。"""
                 pass
 
-        scheduler = AgentRuntimeScheduler(
+        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
            agent_factory=lambda _session, _manager: FakeAgent(),
             session_state_manager_factory=lambda session: SessionStateManager(session, str(tmp_path / "state.sqlite3")),
         )
@@ -425,7 +425,7 @@ def test_stop_while_publishing_chunk_still_saves_interrupted_response(tmp_path) 
                 db_path=db_path, llm_client=WaitingLLM(),
             )
 
-        scheduler = AgentRuntimeScheduler(
+        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
            agent_factory=make_agent,
             session_state_manager_factory=lambda session: SessionStateManager(session, db_path),
         )
@@ -551,7 +551,7 @@ def test_stop_after_tool_notice_prevents_unstarted_tool_side_effect(tmp_path) ->
             agent.tool_manager.register(RecordingTool())
             return agent
 
-        scheduler = AgentRuntimeScheduler(
+        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
            agent_factory=make_agent,
             session_state_manager_factory=lambda session: SessionStateManager(session, db_path),
         )
@@ -631,7 +631,7 @@ def test_new_message_from_other_channel_steers_active_run(tmp_path) -> None:
         subscriptions = ChannelSubscriptionService()
         subscriptions.register_channel("qq")
         subscriptions.set_default_enabled("qq", True)
-        scheduler = AgentRuntimeScheduler(
+        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
             subscriptions=subscriptions, agent_factory=lambda _session, _manager: FakeAgent(),
             session_state_manager_factory=lambda session: SessionStateManager(session, str(tmp_path / "state.sqlite3")),
         )
@@ -698,7 +698,7 @@ def test_queued_turn_receives_new_run_id(tmp_path) -> None:
                 pass
 
         subscriptions = ChannelSubscriptionService()
-        scheduler = AgentRuntimeScheduler(
+        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
             subscriptions=subscriptions, agent_factory=lambda _session, _manager: FakeAgent(),
             session_state_manager_factory=lambda session: SessionStateManager(session, str(tmp_path / "state.sqlite3")),
         )
@@ -779,7 +779,7 @@ def test_interrupted_turn_applies_steer_before_older_queued_message(tmp_path) ->
                 """完成替身清理而不访问真实服务。"""
                 pass
 
-        scheduler = AgentRuntimeScheduler(
+        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
            agent_factory=lambda _session, _manager: FakeAgent(),
             session_state_manager_factory=lambda session: SessionStateManager(session, str(tmp_path / "state.sqlite3")),
         )
@@ -869,8 +869,8 @@ def test_task_only_wakeup_does_not_release_queue_left_by_stopped_turn(tmp_path) 
                 """完成替身清理而不访问真实服务。"""
                 pass
 
-        supervisor = TaskSupervisor(db_path=db_path, spool_dir=tmp_path / "tasks")
-        scheduler = AgentRuntimeScheduler(
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=db_path)
+        scheduler = AgentRuntimeScheduler(runtime_queue=supervisor.runtime_queue,
             task_supervisor=supervisor,
             agent_factory=lambda _session, _manager: FakeAgent(),
             session_state_manager_factory=lambda session: SessionStateManager(session, db_path),
@@ -893,7 +893,7 @@ def test_task_only_wakeup_does_not_release_queue_left_by_stopped_turn(tmp_path) 
                     break
                 await asyncio.sleep(0.01)
             await records.insert_running("task-1", "s", "后台任务", 1, str(tmp_path / "out"))
-            assert await supervisor.finish_once("task-1", "completed", 0)
+            assert await supervisor.commit_terminal_state_once("task-1", "completed")
             # 2. 用户停止后仅保存通知；新真人输入恢复执行，再按原规则放行旧排队消息。
             assert not task_done.is_set()
             assert not queue_done.is_set()
@@ -960,7 +960,7 @@ def test_after_restart_abandoned_queue_is_discarded(tmp_path) -> None:
                 """完成替身清理而不访问真实服务。"""
                 pass
 
-        scheduler = AgentRuntimeScheduler(
+        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
            agent_factory=lambda _session, _manager: FakeAgent(),
             session_state_manager_factory=lambda session: SessionStateManager(session, db_path),
         )
@@ -1034,7 +1034,7 @@ def test_stale_steer_cannot_cancel_current_run(tmp_path) -> None:
                 """完成替身清理而不访问真实服务。"""
                 pass
 
-        scheduler = AgentRuntimeScheduler(
+        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
            agent_factory=lambda _session, _manager: FakeAgent(),
             session_state_manager_factory=lambda session: SessionStateManager(session, str(tmp_path / "state.sqlite3")),
         )
@@ -1124,7 +1124,7 @@ def test_run_completion_waits_for_steer_inbox_commit(tmp_path) -> None:
                 """完成替身清理而不访问真实服务。"""
                 pass
 
-        scheduler = AgentRuntimeScheduler(
+        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
            agent_factory=lambda _session, _manager: FakeAgent(),
             session_state_manager_factory=lambda session: SlowInbox(session, str(tmp_path / "state.sqlite3")),
         )
@@ -1192,7 +1192,7 @@ def test_failed_input_commit_never_publishes_human_message(tmp_path) -> None:
                 pass
 
         subscriptions = ChannelSubscriptionService()
-        scheduler = AgentRuntimeScheduler(
+        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
             subscriptions=subscriptions, agent_factory=lambda _session, _manager: FakeAgent(),
             session_state_manager_factory=lambda session: SessionStateManager(session, str(tmp_path / "state.sqlite3")),
         )
@@ -1265,7 +1265,7 @@ def test_queued_message_waits_during_approval_and_can_be_cancelled(tmp_path, mon
         subscriptions = ChannelSubscriptionService()
         subscriptions.register_channel("qq")
         subscriptions.set_default_enabled("qq", True)
-        scheduler = AgentRuntimeScheduler(
+        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
             subscriptions=subscriptions, agent_factory=lambda _session, _manager: ApprovalAgent(),
             session_state_manager_factory=lambda session: SessionStateManager(session, db_path),
         )
@@ -1387,7 +1387,7 @@ def test_authorization_is_first_wins_across_channels(tmp_path) -> None:
         subscriptions = ChannelSubscriptionService()
         subscriptions.register_channel("qq")
         subscriptions.set_default_enabled("qq", True)
-        scheduler = AgentRuntimeScheduler(
+        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
             subscriptions=subscriptions, agent_factory=lambda _session, _manager: FakeAgent(),
             session_state_manager_factory=lambda session: SessionStateManager(session, db_path),
         )

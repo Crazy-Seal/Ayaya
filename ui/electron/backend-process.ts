@@ -79,7 +79,7 @@ export interface BackendProcessController {
   startBackend(): Promise<void>;
 
   /**
-   *  请求后端优雅退出，并在超时后终止受管子进程。
+   * 请求后端优雅退出，关闭请求和等待进程结束共用超时预算，到期后终止受管子进程。
    */
   stopBackend(): Promise<void>;
 
@@ -578,7 +578,7 @@ export const createBackendProcessController = (
   };
 
   /**
-   * 先取消未完成启动，再请求后端正常退出，宽限结束仍存活时终止受管进程。
+   * 先取消未完成启动，再用同一宽限期请求关闭和等待退出，到期后终止受管进程。
    *
    * Returns:
    *     Promise<void>: 本次停止过程结束后完成。
@@ -599,13 +599,25 @@ export const createBackendProcessController = (
     generation.expectedExit = true;
     activeGeneration = null;
     const current = generation.child;
+    const shutdownAbort = new AbortController();
+    // 2. 发起关闭请求前开始观察进程退出，接口等待和实际收尾共用同一个宽限期。
+    const exiting = waitForExit(current, dependencies.shutdownTimeoutMs);
+    /** 请求后端开始关闭，接口报错或迟迟不返回时，进程退出观察仍独立继续。 */
+    const requestBackendShutdown = async (): Promise<void> => {
+      try {
+        await dependencies.fetchBackend("/internal/shutdown", { method: "POST", signal: shutdownAbort.signal });
+      } catch {
+        // 后端已退出或关闭请求被中止时，由进程状态决定是否需要强制终止。
+      }
+    };
     try {
-      await dependencies.fetchBackend("/internal/shutdown", { method: "POST" });
-    } catch {
-      // 后端可能已经退出，继续等待进程状态即可。
+      void requestBackendShutdown();
+      await exiting;
+    } finally {
+      // 3. 进程提前退出或总宽限期耗尽后，中止尚未完成的关闭请求。
+      shutdownAbort.abort();
     }
-    // 2. 已请求后端关闭；宽限期结束仍存活才强制终止进程。
-    await waitForExit(current, dependencies.shutdownTimeoutMs);
+    // 4. 总宽限期结束仍存活才强制终止，接口响应耗时不会再延长等待。
     if (isRunning(current)) {
       await dependencies.terminateProcess(current);
     }

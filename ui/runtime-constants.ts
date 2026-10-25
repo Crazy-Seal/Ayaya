@@ -6,3 +6,5 @@ export const SUBSCRIPTION_RECONNECT_DELAY_MS = 1000;
 export const TASK_NOTICE_DURATION_MS = 4000;
 /** 可见任务页刷新耗时与最近输出的间隔，单位为毫秒。 */
 export const TASK_REFRESH_INTERVAL_MS = 2000;
+/** 退出确认前查询后台任务状态的最长等待时间，单位为毫秒。 */
+export const EXIT_TASK_QUERY_TIMEOUT_MS = 2000;

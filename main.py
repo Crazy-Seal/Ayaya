@@ -5,7 +5,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 
 from dotenv import load_dotenv
 
-from app.runtime import get_images_dir, is_test_environment
+from app.environment import get_images_dir, is_test_environment
 
 # 测试环境不得从生产 .env 文件继承凭据。
 if not is_test_environment():
@@ -21,9 +21,13 @@ from app.routes.tools import router as tools_router
 from app.routes.plugins import router as plugins_router
 from app.routes.mcp import router as mcp_router
 from app.routes.desktop import router as desktop_router
-from app.dependencies import get_mcp_connection_manager, get_runtime_scheduler, get_task_supervisor
+from app.dependencies import get_mcp_connection_manager, create_runtime_scheduler
+from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
+from app.services.desktop_settings_service import DesktopSettingsService
+from app.schemas.runtime_types import RuntimePhase
+from app.interaction.interaction_event_hub import InteractionEventHub
 from app.dependencies import get_desktop_controller, get_desktop_settings_service, get_desktop_settings_dao
-from app.dependencies import get_interaction_event_hub, get_channel_subscription_service
+from app.dependencies import get_channel_subscription_service
 from app.security.local_api import install_local_api_security, load_api_token
 from app.agent.tools.terminal.shell import detect_shell
 
@@ -33,77 +37,80 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 
-async def begin_runtime_shutdown() -> None:
-    """封住执行和桌面入口，再结束 SSE；内部关闭请求与最终清理共用此顺序。"""
-    try:
-        if get_runtime_scheduler.cache_info().currsize:
-            await get_runtime_scheduler().begin_shutdown()
-    finally:
-        try:
-            if get_desktop_controller.cache_info().currsize:
-                get_desktop_controller().begin_shutdown()
-        finally:
-            if get_interaction_event_hub.cache_info().currsize:
-                await get_interaction_event_hub().close()
+async def begin_runtime_shutdown(application: FastAPI) -> None:
+    """封住应用的执行和桌面入口，重复调用沿用已创建的对象。
+
+    Args:
+        application (FastAPI): 本次启动的 FastAPI 应用及其共享对象。
+    """
+    await application.state.runtime_scheduler.begin_shutdown()
+    # 1. 先结束网络订阅，服务器才能进入 lifespan 清理；内部消费者仍继续读取。
+    application.state.interaction_event_hub.begin_shutdown()
+    await application.state.task_supervisor.begin_shutdown()
+    application.state.desktop_controller.begin_shutdown()
 
 
 def clear_runtime_dependencies() -> None:
-    """资源关闭后释放缓存，下一次应用生命周期重新装配共享对象。"""
-    get_interaction_event_hub.cache_clear()
-    get_runtime_scheduler.cache_clear()
+    """共享对象关闭后释放其余配置缓存，运行时实例由 app.state 保存。"""
     get_channel_subscription_service.cache_clear()
-    get_task_supervisor.cache_clear()
     get_desktop_controller.cache_clear()
-    get_desktop_settings_service.cache_clear()
     get_desktop_settings_dao.cache_clear()
 
 
 @asynccontextmanager
-async def lifespan(_app: FastAPI):
-    """先结束旧轮次再开放请求，应用退出时封住执行并保留任务事实。
+async def lifespan(application: FastAPI):
+    """装配唯一队列及运行时对象，生产者收尾完成后再结束消费。
 
     Args:
-        _app (FastAPI): 正在启动或关闭的 FastAPI 应用。
-
-    Yields:
-        None: 启动完成后交还应用控制，退出时执行持久收尾。
+        application (FastAPI): 本次启动的 FastAPI 应用及其共享对象。
     """
+    runtime_queue = asyncio.Queue()
     mcp_manager = get_mcp_connection_manager()
-    preconnect_task: asyncio.Task | None = None
-    try:
-        # 1. Scheduler 拥有存储初始化和旧意图收尾，完成前不开放执行。
-        # 1.1. 先在线程探测默认 Shell，后续工具描述和执行复用缓存，不在模型请求中重复启动探测进程。
+    consumer_started = False
+    async with AsyncExitStack() as cleanup:
+        cleanup.push_async_callback(mcp_manager.close)
+        cleanup.callback(clear_runtime_dependencies)
+        supervisor = TaskSupervisor(runtime_queue=runtime_queue)
+        application.state.task_supervisor = supervisor
+        scheduler = create_runtime_scheduler(supervisor, runtime_queue)
+        application.state.runtime_scheduler = scheduler
+        application.state.desktop_settings_service = DesktopSettingsService(get_desktop_settings_dao(),
+            lambda: scheduler.phase not in {RuntimePhase.STOPPING, RuntimePhase.STOPPED})
+        desktop = get_desktop_controller()
+        application.state.desktop_controller = desktop
+        hub = InteractionEventHub(scheduler, subscriptions=get_channel_subscription_service())
+        application.state.interaction_event_hub = hub
+
+        async def finish_runtime_requests() -> None:
+            """所有生产者结束后，由应用发出唯一结束标记并等待积压请求处理。"""
+            if consumer_started:
+                await runtime_queue.put(None)
+                await runtime_queue.join()
+
+        # 1. 逆序执行：封入口、等 worker、停任务、读完请求、关 Scheduler 和输出。
+        cleanup.push_async_callback(hub.close)
+        cleanup.push_async_callback(scheduler.close)
+        cleanup.push_async_callback(finish_runtime_requests)
+        cleanup.push_async_callback(supervisor.close)
+        cleanup.push_async_callback(desktop.close)
+        cleanup.push_async_callback(scheduler.wait_for_workers)
+        cleanup.push_async_callback(begin_runtime_shutdown, application)
         try:
             await asyncio.to_thread(detect_shell)
         except RuntimeError:
             logging.getLogger(__name__).warning("默认 Shell 不可用，终端工具将返回环境错误")
-        await get_runtime_scheduler().start()
-        await get_task_supervisor().recover_orphaned()
-        get_desktop_controller().start()
-        await get_interaction_event_hub().start()
+        await scheduler.start()
+        consumer_started = True
+        await supervisor.recover_orphaned()
+        desktop.start()
+        await hub.start()
         preconnect_task = asyncio.create_task(mcp_manager.preconnect_enabled())
-        yield
-    finally:
-        # 2. 停止预连接，随后即使某项关闭失败也继续尝试释放其他资源。
-        if preconnect_task is not None:
-            if not preconnect_task.done():
-                preconnect_task.cancel()
+        try:
+            yield
+        finally:
+            # 2. 预连接不再生产新连接，随后执行已登记的逆序资源清理。
+            preconnect_task.cancel()
             await asyncio.gather(preconnect_task, return_exceptions=True)
-        # 3. 退出栈逆序执行：封入口/关 SSE → 等 worker → 桌面 → 进程 → 持久收尾 → 缓存 → MCP。
-        # 3.1. 先注册最后执行的操作；启动中途失败时只关闭已创建的对象。
-        async with AsyncExitStack() as cleanup:
-            cleanup.push_async_callback(mcp_manager.close)
-            cleanup.callback(clear_runtime_dependencies)
-            if get_runtime_scheduler.cache_info().currsize:
-                cleanup.push_async_callback(get_runtime_scheduler().close)
-            if get_task_supervisor.cache_info().currsize:
-                cleanup.push_async_callback(get_task_supervisor().close)
-            if get_desktop_controller.cache_info().currsize:
-                cleanup.push_async_callback(get_desktop_controller().close)
-            if get_runtime_scheduler.cache_info().currsize:
-                cleanup.push_async_callback(get_runtime_scheduler().wait_for_workers)
-            cleanup.push_async_callback(begin_runtime_shutdown)
-
 
 
 # FastAPI 应用入口：仅负责启动和挂载路由
@@ -141,6 +148,16 @@ async def internal_ready():
     return {"ready": True}
 
 
+@app.get("/internal/tasks/active-summary")
+async def active_task_summary(request: Request):
+    """退出确认前查询全应用活动任务，包含静默任务和清理中的任务。
+
+    Args:
+        request (Request): 本次 HTTP 请求或绑定来源的插件请求。
+    """
+    return {"active_count": request.app.state.task_supervisor.active_count()}
+
+
 @app.post("/internal/shutdown")
 async def internal_shutdown(request: Request):
     """请求当前 Uvicorn 实例执行优雅关闭。
@@ -152,7 +169,7 @@ async def internal_shutdown(request: Request):
     if server is None:
         raise HTTPException(status_code=503, detail="后端不由受控启动器管理")
     # 1. 长连接与任务回调先失去执行资格，服务器等待请求退出期间也不能启动新轮次。
-    await begin_runtime_shutdown()
+    await begin_runtime_shutdown(request.app)
     server.should_exit = True
     return {"shutting_down": True}
 

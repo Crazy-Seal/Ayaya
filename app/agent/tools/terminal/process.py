@@ -17,8 +17,8 @@ from app.agent.tools.terminal.windows_job import WindowsJob
 logger = logging.getLogger(__name__)
 
 
-class TerminalProcess(Protocol):
-    """提供任务管理器需要的最小进程交互 Interface。
+class TerminalOperations(Protocol):
+    """统一普通管道与各平台 PTY 的系统终端操作。
 
     Attributes:
         pid (int): 受管根进程编号。
@@ -148,7 +148,7 @@ class PipeProcess:
         return await self.process.wait()
 
     async def interrupt(self) -> None:
-        """停止请求先通知进程组，随后由 Supervisor 安排强停。"""
+        """先通知进程组中断，由 TerminalTask 等待宽限期后安排强停。"""
         try:
             if os.name == "nt":
                 self.process.send_signal(signal.CTRL_BREAK_EVENT)
@@ -320,7 +320,7 @@ class UnixPtyProcess(PipeProcess):
             self.master = -1
 
 
-async def spawn_terminal(argv: list[str], cwd: str, tty: bool) -> TerminalProcess:
+async def spawn_terminal(argv: list[str], cwd: str, tty: bool) -> TerminalOperations:
     """按平台和 tty 选择内部 Adapter，调用方不接触系统句柄。
 
     Args:
@@ -329,7 +329,7 @@ async def spawn_terminal(argv: list[str], cwd: str, tty: bool) -> TerminalProces
         tty (bool): 是否需要真实终端语义。
 
     Returns:
-        TerminalProcess: 已纳入进程树管理的可交互进程。
+        TerminalOperations: 已纳入进程树管理的可交互进程。
     """
     if not tty:
         return await PipeProcess.spawn(argv, cwd)
@@ -347,11 +347,11 @@ async def spawn_terminal(argv: list[str], cwd: str, tty: bool) -> TerminalProces
     return await UnixPtyProcess.spawn(argv, cwd)
 
 
-async def dispose_terminal(process: TerminalProcess) -> None:
-    """任务登记失败时并行排空输出和结束终端，避免 ConPTY 关闭等待无人读取的输出。
+async def dispose_terminal(process: TerminalOperations) -> None:
+    """并行排空输出和结束终端，避免 ConPTY 关闭等待无人读取的输出。
 
     Args:
-        process (TerminalProcess): 已启动但尚未移交 watcher 的进程。
+        process (TerminalOperations): 具体任务或创建失败流程需要释放的实际进程。
     """
     async def drain() -> None:
         """保持终端输出畅通，进程关闭后读到 EOF 即结束。"""

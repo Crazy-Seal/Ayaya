@@ -153,7 +153,8 @@ async () => {
          * Args:
          *     message (string): 界面要显示的错误正文。
          */
-        showErrorMessage: (message: string) => { errors.push(message); }, /**
+        showPluginNotice: () => {},
+      showErrorMessage: (message: string) => { errors.push(message); }, /**
          * 按脚本返回历史同步结果，并记录历史读取时机。
          *
          * Returns:
@@ -356,7 +357,8 @@ async () => {
         /**
          * 提供测试占位回调，不产生额外副作用。
          */
-        showErrorMessage: () => {}, /**
+        showPluginNotice: () => {},
+      showErrorMessage: () => {}, /**
          * 按脚本返回历史同步结果，并记录历史读取时机。
          *
          * 此定义用于：验证重连快照已无审批时关闭过期审批框。
@@ -537,7 +539,8 @@ async () => {
         /**
          * 提供测试占位回调，不产生额外副作用。
          */
-        showErrorMessage: () => {},
+        showPluginNotice: () => {},
+      showErrorMessage: () => {},
         /**
          * 模拟历史加载及场景所需的完成屏障。
          *
@@ -760,7 +763,8 @@ async () => {
         /**
          * 提供测试占位回调，不产生额外副作用。
          */
-        showErrorMessage: () => {}, /**
+        showPluginNotice: () => {},
+      showErrorMessage: () => {}, /**
          * 按脚本返回历史同步结果，并记录历史读取时机。
          *
          * 此定义用于：验证纯图片草稿可引导并显示排队入口，IME 组合期间不改发送按钮。
@@ -946,7 +950,8 @@ async () => {
         /**
          * 提供测试占位回调，不产生额外副作用。
          */
-        showErrorMessage: () => {}, /**
+        showPluginNotice: () => {},
+      showErrorMessage: () => {}, /**
          * 按脚本返回历史同步结果，并记录历史读取时机。
          *
          * 此定义用于：验证引导的 SSE 增量先于命令回执到达时清除等待提示。

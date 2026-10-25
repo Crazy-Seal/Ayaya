@@ -52,3 +52,15 @@
 .screenshot-confirm-message { white-space: pre-wrap; overflow-wrap: anywhere; margin: var(--spacing-md) 0 var(--spacing-lg); color: var(--color-text-secondary); }
 .tool-steer-input { width: 100%; margin-bottom: var(--spacing-md); }
 @keyframes message-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+
+/* 插件提示采用独立状态样式，不占用 Agent 回复气泡。 */
+.plugin-notice {
+  margin: 8px 12px;
+  padding: 8px 12px;
+  border-inline-start: 3px solid var(--color-text-accent);
+  border-radius: 6px;
+  background: var(--color-surface-secondary, rgba(127, 127, 127, 0.08));
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  white-space: pre-wrap;
+}

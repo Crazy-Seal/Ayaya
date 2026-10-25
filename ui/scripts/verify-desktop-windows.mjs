@@ -50,6 +50,8 @@ let exited = false;
 let currentSession = "";
 let developmentServer = null;
 let demoTaskStatus = "running";
+let taskSummaryMode = "success";
+let taskSummaryAborted = false;
 
 const history = [
   { id: "human-1", role: "human", content: "把聊天记录和输入框放在一起，看起来像聊天软件。", timestamp: "2026-10-11T04:00:00Z" },
@@ -126,14 +128,39 @@ async (input, init = {}) => {
     const command = JSON.parse(init.body); commands.push(command);
     return json({ accepted: true, input_sequence: commands.length });
   }
+  if (route === "/internal/tasks/active-summary") {
+    if (taskSummaryMode === "error") return new Response("查询失败", { status: 503 });
+    if (taskSummaryMode === "timeout") {
+      return new Promise(/**
+       * 模拟后端一直等待，验证实际主进程请求会在预算耗尽时中止。
+       * Args:
+       *     _resolve ((value: Response) => void): 本场景保持响应等待。
+       *     reject ((reason: unknown) => void): 请求被中止后报告失败。
+       */
+      (_resolve, reject) => {
+        init.signal.addEventListener("abort", /** 记录主进程实际取消 HTTP 请求，结束模拟等待。 */
+        () => { taskSummaryAborted = true; reject(init.signal.reason); }, { once: true });
+      });
+    }
+    return json({ active_count: 2 });
+  }
   if (route.startsWith("/tasks/") && route.endsWith("/output")) {
     return json({ text: "完整终端输出：资料已读取。", next_offset: 42, has_more: false });
   }
-  if (route.startsWith("/tasks/")) return json({ tasks: [
-    { task_id: "task-demo", tool_name: "exec_command", command: "整理项目资料", status: demoTaskStatus, created_at: new Date().toISOString(), recent_output: "正在读取资料…" },
-    { task_id: "task-other", tool_name: "other_tool", command: "后台分析资料", status: "completed", created_at: new Date().toISOString(), recent_output: "处理完成" },
-    { task_id: "task-legacy", tool_name: null, command: "历史任务", status: "completed", created_at: new Date().toISOString(), recent_output: "旧输出" },
-  ] });
+  if (route.startsWith("/tasks/")) {
+    const base = { session_id: currentSession, command: null, pid: null, exit_code: null, output_path: null,
+      created_at: new Date().toISOString(), ended_at: null, origin_run_id: null, origin_tool_call_id: null,
+      output_ref: null, background: true, tool_name: null, name: "terminal", title: "", result: null,
+      error: null, plugin_name: null, lifetime: "independent", notify_agent: true };
+    return json({ tasks: [
+      { ...base, task_id: "task-demo", tool_name: "exec_command", command: "整理项目资料", title: "整理项目资料", pid: 123,
+        output_path: "demo.log", output_ref: "task-output://task-demo", status: demoTaskStatus, recent_output: "正在读取资料…" },
+      { ...base, task_id: "task-other", tool_name: "other_tool", command: "后台分析资料", title: "后台分析资料", pid: 124,
+        output_path: "other.log", output_ref: "task-output://task-other", status: "completed", exit_code: 0, recent_output: "处理完成" },
+      { ...base, task_id: "task-memory", plugin_name: "memory", name: "memory.check_diary", title: "整理历史日记",
+        notify_agent: false, result: "日记整理完成", status: "completed" },
+    ] });
+  }
   if (route.startsWith("/agent/channels/")) return json({ channels: [
     { channel: "desktop", display_name: "桌面", ready: true, enabled: true },
     { channel: "test-channel", display_name: "测试渠道", ready: false, enabled: false },
@@ -259,6 +286,55 @@ try {
   const chat = windows.openChatWindow();
   await desktopWindowRegistry.connect();
   await waitFor(chat, "document.querySelectorAll('.message-item').length >= 2 && !document.getElementById('send-btn').disabled");
+  if (process.argv.includes("--plugin-runtime")) {
+    emit(event("notice", { plugin_name: "game_helper", text: "发现两名敌人，正在观察战斗状态。" }));
+    await waitFor(chat, "document.querySelector('.plugin-notice')?.textContent.includes('发现两名敌人')");
+    await capture(chat, "plugin-runtime-notice");
+    windows.openSettingsWindow();
+    const settingsWindow = windows.getSettingsWindow();
+    await waitFor(settingsWindow, "document.getElementById('exit-application-btn')?.querySelector('svg')");
+    await settingsWindow.webContents.executeJavaScript("document.querySelector('[data-page=tasks]').click()");
+    await waitFor(settingsWindow, "document.getElementById('background-tasks-list')?.textContent.includes('整理历史日记')");
+    const taskText = await settingsWindow.webContents.executeJavaScript("document.getElementById('background-tasks-list').textContent");
+    assert.match(taskText, /整理项目资料/);
+    assert.match(taskText, /日记整理完成/);
+    assert.doesNotMatch(taskText, /undefined/);
+    await capture(settingsWindow, "plugin-runtime-tasks");
+    await settingsWindow.webContents.executeJavaScript("document.getElementById('exit-application-btn').click()");
+    await waitFor(settingsWindow, "!document.getElementById('delete-confirm-dialog').hidden");
+    assert.equal(await settingsWindow.webContents.executeJavaScript("document.activeElement.id"), "delete-confirm-cancel");
+    assert.ok(await settingsWindow.webContents.executeJavaScript("document.querySelector('#delete-confirm-dialog svg')"));
+    assert.match(await settingsWindow.webContents.executeJavaScript("document.getElementById('delete-confirm-message').textContent"), /当前有正在进行的后台任务/);
+    assert.equal(await settingsWindow.webContents.executeJavaScript("document.getElementById('delete-confirm-ok').textContent"), "退出");
+    await capture(settingsWindow, "plugin-runtime-exit-warning");
+    await settingsWindow.webContents.executeJavaScript("document.getElementById('delete-confirm-cancel').click()");
+    assert.equal(exited, false);
+    // 1. 查询失败和超时都进入同一个退出确认，取消保留应用，默认焦点仍为取消。
+    for (const mode of ["error", "timeout"]) {
+      taskSummaryMode = mode;
+      await settingsWindow.webContents.executeJavaScript("document.getElementById('exit-application-btn').click()");
+      await waitFor(settingsWindow, "!document.getElementById('delete-confirm-dialog').hidden");
+      assert.match(await settingsWindow.webContents.executeJavaScript("document.getElementById('delete-confirm-dialog').textContent"), /退出 Ayaya/);
+      assert.equal(await settingsWindow.webContents.executeJavaScript("document.getElementById('delete-confirm-message').textContent"),
+        "当前后台任务状态查询出错，退出前请人工确认后台任务情况。");
+      assert.equal(await settingsWindow.webContents.executeJavaScript("document.getElementById('delete-confirm-ok').textContent"), "退出");
+      assert.equal(await settingsWindow.webContents.executeJavaScript("document.activeElement.id"), "delete-confirm-cancel");
+      await capture(settingsWindow, `plugin-runtime-exit-${mode}`);
+      if (mode === "timeout") assert.equal(taskSummaryAborted, true);
+      await settingsWindow.webContents.executeJavaScript("document.getElementById('delete-confirm-cancel').click()");
+      assert.equal(exited, false);
+    }
+    // 2. 查询报错后用户确认，仍将真实退出请求送达主进程。
+    taskSummaryMode = "error";
+    await settingsWindow.webContents.executeJavaScript("document.getElementById('exit-application-btn').click()");
+    await waitFor(settingsWindow, "!document.getElementById('delete-confirm-dialog').hidden");
+    await settingsWindow.webContents.executeJavaScript("document.getElementById('delete-confirm-ok').click()");
+    await pause(100);
+    assert.equal(exited, true);
+    fs.writeFileSync(path.join(output, "plugin-runtime-results.json"), JSON.stringify({ passed: true, isolated, errors, requests }, null, 2));
+    console.log("插件运行时 Electron 专项验证通过");
+    return;
+  }
   if (process.argv.includes("--composer-check")) {
     const layout = await chat.webContents.executeJavaScript(`({
       hint: Boolean(document.querySelector('.composer-hint')),
@@ -335,6 +411,9 @@ try {
   await pause(800);
   assert.equal(chat.isMinimized(), true); assert.match(chat.getTitle(), /有新消息/);
   assert.equal(await pet.webContents.executeJavaScript("window.receivedExpression"), "开心");
+  emit(event("notice", { plugin_name: "game_helper", text: "发现两名敌人，正在观察战斗状态。" }));
+  await waitFor(chat, "document.querySelector('.plugin-notice')?.textContent.includes('发现两名敌人')");
+  await capture(chat, "plugin-runtime-notice");
   history.push({ id: "ai-2", role: "ai", content: "这条回复是在最小化期间收到的。", timestamp: "2026-10-11T04:00:02Z" });
 
   // 2. 审批不自动恢复，重复事件只闪烁一次，真正解决后才清除待审批。
@@ -407,7 +486,7 @@ try {
       await waitFor(settingsWindow, "document.getElementById('background-tasks-list').textContent.includes('[exec_command]')");
       const taskText = await settingsWindow.webContents.executeJavaScript("document.getElementById('background-tasks-list').textContent");
       assert.match(taskText, /\[other_tool\]/);
-      assert.match(taskText, /\[未知工具\]/);
+      assert.match(taskText, /\[memory\]/);
       await capture(settingsWindow, "settings-tasks-running");
       // 2. 使用真实 preload 读取输出，再刷新完成状态，工具名和输出详情都必须保留。
       await settingsWindow.webContents.executeJavaScript("document.querySelector('.background-task-row button').click()");
@@ -420,6 +499,7 @@ try {
   }
   await settingsWindow.webContents.executeJavaScript("document.getElementById('exit-application-btn').click()");
   await waitFor(settingsWindow, "!document.getElementById('delete-confirm-dialog').hidden");
+  assert.match(await settingsWindow.webContents.executeJavaScript("document.getElementById('delete-confirm-dialog').textContent"), /当前有正在进行的后台任务/);
   await capture(settingsWindow, "exit-confirmation");
   await settingsWindow.webContents.executeJavaScript("document.getElementById('delete-confirm-cancel').click()");
   assert.equal(exited, false);

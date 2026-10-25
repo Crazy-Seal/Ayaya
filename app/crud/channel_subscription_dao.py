@@ -6,7 +6,7 @@ import os
 
 import aiosqlite
 
-from app.runtime import get_checkpoint_db
+from app.environment import get_checkpoint_db
 
 
 CHANNEL_SUBSCRIPTION_SCHEMA_SQL = """

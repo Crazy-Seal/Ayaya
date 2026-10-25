@@ -7,6 +7,7 @@ from app.agent.plugins.registry import PluginRegistry
 def test_plugin_registry_auto_discovers_plugins() -> None:
     """验证插件注册表自动发现内置插件。"""
     assert PluginRegistry.has("memory")
+    assert not PluginRegistry.has("runtime")
 
 
 def test_plugins_endpoint_exposes_metadata_from_config_model() -> None:

@@ -5,6 +5,7 @@ Agent 核心类
 """
 
 import asyncio
+from uuid import uuid4
 import logging
 from contextlib import aclosing
 from dataclasses import dataclass, field
@@ -23,6 +24,7 @@ from app.agent.context import (
 )
 from app.agent.core.tool_manager import ToolManager
 from app.agent.core.plugin_manager import PluginManager
+from app.agent.plugins.runtime import PluginRuntimeFactory
 from app.agent.core.events import EventType, AgentEvent
 from app.agent.core.pipeline import ExecutionPipeline
 from app.agent.models.llm_client import LLMClient, LLMConfig
@@ -33,7 +35,8 @@ from app.agent.runtime.session_inbox import InboxEnvelope, InputNoLongerPending
 from app.agent.runtime.turn_control import TurnControl, TurnInterrupted
 from app.schemas.desktop import DesktopOperations
 from app.agent.state.messages import RuntimeInputMessage
-from app.agent.tools.core.base import BaseTool, TaskLauncher
+from app.agent.tools.core.runtime import ToolRuntimeFactory
+from app.agent.tools.core.base import BaseTool
 from app.agent.tools.authorization.manager import ToolAuthorization
 from app.schemas.mcp import MCPModelSettings
 
@@ -87,9 +90,10 @@ class Agent:
         diary_coverage: DiaryCoverage | None = None,
         chat_settings: "ChatSettings | None" = None,
         tool_authorization: ToolAuthorization | None = None,
-        task_launcher: TaskLauncher | None = None,
+        tool_runtime_factory: ToolRuntimeFactory | None = None,
         desktop: DesktopOperations | None = None,
         session_state_manager: SessionStateManager | None = None,
+        plugin_runtime_factory: PluginRuntimeFactory | None = None,
     ):
         """装配 Agent 执行依赖，将后台任务启动端口注入工具管道。
 
@@ -101,9 +105,10 @@ class Agent:
             diary_coverage (DiaryCoverage | None): 查询已生成日记覆盖范围的端口。
             chat_settings (ChatSettings | None): 会话模型和插件配置。
             tool_authorization (ToolAuthorization | None): 工具单次授权验证器。
-            task_launcher (TaskLauncher | None): 工具使用的共享进程启动端口。
+            tool_runtime_factory (ToolRuntimeFactory | None): 按工具、轮次及调用编号创建运行时。
             desktop (DesktopOperations | None): 应用所有的共享桌面接口，Agent 仅传给 Pipeline。
             session_state_manager (SessionStateManager | None): worker 借给本次执行的对象；省略时由 Agent 创建并关闭。
+            plugin_runtime_factory (PluginRuntimeFactory | None): 按插件名称和来源轮次创建 PluginRuntime 的注入工厂。
         """
         self.config = config
         self.mcp_connection_manager = mcp_connection_manager
@@ -116,7 +121,7 @@ class Agent:
             session_id=config.session_id,
             authorization=self.tool_authorization,
         )
-        self.plugin_manager = PluginManager()
+        self.plugin_manager = PluginManager(plugin_runtime_factory)
         self._owns_state_manager = session_state_manager is None
         self.session_state_manager = session_state_manager or SessionStateManager(config.session_id, db_path)
         # LLM 客户端
@@ -149,7 +154,7 @@ class Agent:
             plugin_manager=self.plugin_manager,
             model_input=model_input,
             tool_authorization=self.tool_authorization,
-            task_launcher=task_launcher,
+            tool_runtime_factory=tool_runtime_factory,
             desktop=desktop,
         )
 
@@ -331,6 +336,7 @@ class Agent:
 
         """
         await self.initialize()
+        self.plugin_manager.run_id = turn_control.run_id if turn_control else uuid4().hex
         runtime_context = RuntimeContext.capture()
         runtime_context.origin_channel = origin_channel
         runtime_context.turn_control = turn_control
@@ -421,6 +427,7 @@ class Agent:
             RuntimeError: 待处理工具中断期间不能交付后台通知。
         """
         await self.initialize()
+        self.plugin_manager.run_id = turn_control.run_id if turn_control else uuid4().hex
         state = await self.session_state_manager.load()
         # 1. 工具协议尚在等待时不能直接追加通知，先由恢复链闭合工具。
         if state.is_interrupted():
@@ -522,6 +529,7 @@ class Agent:
             AgentEvent: 核验成功后的开始事件及恢复过程；过期请求不产生事件。
         """
         await self.initialize()
+        self.plugin_manager.run_id = turn_control.run_id if turn_control else uuid4().hex
         state = await self.session_state_manager.load_for_resume(request_id)
         if state is None:
             return

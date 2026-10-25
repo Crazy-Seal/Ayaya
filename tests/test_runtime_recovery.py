@@ -3,8 +3,8 @@
 import asyncio
 
 from app.agent.state.manager import SessionStateManager
-from app.orchestration.agent_runtime_scheduler import AgentRuntimeScheduler
-from app.orchestration.task_supervisor import TaskSupervisor
+from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
+from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
 
 
 def test_restart_preserves_orphan_notice_without_activating_agent(tmp_path) -> None:
@@ -16,7 +16,7 @@ def test_restart_preserves_orphan_notice_without_activating_agent(tmp_path) -> N
     async def scenario() -> None:
         """保存遗留进程记录并通过正式启动检查通知内容。"""
         path = str(tmp_path / "checkpoint.sqlite3")
-        supervisor = TaskSupervisor(db_path=path, spool_dir=tmp_path / "spool")
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=path)
         await supervisor.records.insert_running("old-task", "s", "旧进程", 1, str(tmp_path / "out"))
 
         def unexpected_agent(_session, _manager):
@@ -28,7 +28,7 @@ def test_restart_preserves_orphan_notice_without_activating_agent(tmp_path) -> N
             """
             raise AssertionError("旧任务通知不能自动激活 Agent")
 
-        scheduler = AgentRuntimeScheduler(
+        scheduler = AgentRuntimeScheduler(runtime_queue=supervisor.runtime_queue,
            agent_factory=unexpected_agent,
             session_state_manager_factory=lambda session: SessionStateManager(session, path),
             task_supervisor=supervisor,
@@ -38,7 +38,7 @@ def test_restart_preserves_orphan_notice_without_activating_agent(tmp_path) -> N
             await supervisor.recover_orphaned()
             event = await asyncio.wait_for(scheduler.next_event(), 1)
             assert event.kind == "task_status" and event.payload["status"] == "orphaned"
-            assert (await supervisor.get("old-task")).status == "orphaned"
+            assert (await supervisor.get_task_record("old-task")).status == "orphaned"
             assert ((await scheduler.snapshot("s")).payload)["phase"] == "idle"
             inbox = SessionStateManager("s", path)
             try:

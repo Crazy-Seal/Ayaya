@@ -15,7 +15,7 @@ from app.agent.memory.store.chat_history_store import ChatHistoryStore
 from app.crud.chat_history_dao import ChatHistoryDao
 from app.agent.state import AgentState, TokenBaseline
 from app.agent.state.messages import (HumanMessage, PROTOCOL_MESSAGE_TYPES, ToolCall, ImageContent, ToolMessage)
-from app.runtime import get_agent_state_db, get_chat_history_db, get_checkpoint_db
+from app.environment import get_agent_state_db, get_chat_history_db, get_checkpoint_db
 
 
 async def checkpoint_rows(manager: SessionStateManager) -> list[tuple[int, str, str]]:

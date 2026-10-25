@@ -133,7 +133,7 @@ class PluginRegistry:
         cls._lazy_plugins.clear()
 
 
-_NON_PLUGIN_MODULES = {"registry", "base", "__init__"}
+_NON_PLUGIN_MODULES = {"registry", "base", "runtime", "__init__"}
 
 
 def _discover_plugins() -> None:

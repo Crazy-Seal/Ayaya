@@ -522,7 +522,8 @@ async (t) => {
     reads += 1;
     return [{ task_id: "t", session_id: "s", tool_name: "exec_command", command: "echo test", status, background: true,
       pid: 1, exit_code: null, created_at: "2026-10-09T00:00:00Z", ended_at: null,
-      recent_output: "最新输出",
+      recent_output: "最新输出", name: "terminal", title: "echo test", result: null, error: null,
+      plugin_name: null, output_ref: "task-output://t", lifetime: "independent", notify_agent: true,
     }];
   };
   try {

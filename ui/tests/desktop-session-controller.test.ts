@@ -260,6 +260,7 @@ const makePage = (bridge: RuntimeChatClientOptions["bridge"], history = Promise.
        * Args:
        *     text (string | undefined): 错误说明。
        */
+      showPluginNotice: () => {},
       showErrorMessage: (text) => { errors.push(text ?? ""); },
       /**
        * 等待当前页面历史读取屏障并返回隔离历史。

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 from datetime import datetime, timezone
 import os
 
@@ -11,64 +10,36 @@ import aiosqlite
 
 from app.schemas.tool_types import TASK_OUTPUT_URI_PREFIX
 from app.crud.session_inbox_dao import append_task_terminal_in_transaction, ensure_inbox_schema
-from app.runtime import get_checkpoint_db
-from app.schemas.runtime_types import TaskStatus
+from app.environment import get_checkpoint_db
+from app.schemas.runtime_types import TaskStatus, TaskLifetime
+from app.schemas.task_types import TaskRecord, TERMINAL_TASK_NAME
 
 
 TASK_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS task_records (
     task_id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
-    command TEXT NOT NULL,
+    command TEXT,
     status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed', 'stopped', 'orphaned')),
     pid INTEGER,
     exit_code INTEGER,
-    output_path TEXT NOT NULL,
+    output_path TEXT,
     created_at TEXT NOT NULL,
     ended_at TEXT,
     origin_run_id TEXT,
     origin_tool_call_id TEXT,
     output_ref TEXT,
     background INTEGER NOT NULL DEFAULT 1,
-    tool_name TEXT
+    tool_name TEXT,
+    name TEXT NOT NULL,
+    title TEXT NOT NULL,
+    result TEXT,
+    error TEXT,
+    plugin_name TEXT,
+    lifetime TEXT NOT NULL,
+    notify_agent INTEGER NOT NULL
 )
 """
-
-
-@dataclass(frozen=True)
-class TaskRecord:
-    """保存进程任务的持久状态、输出引用及发起工具调用的关联信息。
-
-    Attributes:
-        task_id (str): 受管进程任务标识。
-        session_id (str): 共享 Ayaya 会话标识。
-        command (str): 原始 Shell 命令或任务说明，供任务详情展示。
-        status (TaskStatus): 任务终态或查询状态。
-        pid (int | None): 需要加入 Job 或恢复线程的进程标识。
-        exit_code (int | None): 进程退出码，状态未知时为空。
-        output_path (str): 追加式完整输出文件路径。
-        created_at (str): 原消息 UTC 创建时间。
-        ended_at (str | None): 任务终态提交时间，运行中为空。
-        origin_run_id (str | None): 发起进程任务的运行轮次标识。
-        origin_tool_call_id (str | None): 发起任务的工具调用标识。
-        output_ref (str | None): 稳定输出引用，当前使用 task_id。
-        background (bool): 是否已显式或超时转入后台，前台记录不进入任务入口。
-        tool_name (str | None): 创建任务的实际工具名；旧记录为空。
-    """
-    task_id: str
-    session_id: str
-    command: str
-    status: TaskStatus
-    pid: int | None
-    exit_code: int | None
-    output_path: str
-    created_at: str
-    ended_at: str | None
-    origin_run_id: str | None = None
-    origin_tool_call_id: str | None = None
-    output_ref: str | None = None
-    background: bool = True
-    tool_name: str | None = None
 
 
 class TaskRecordDao:
@@ -105,7 +76,7 @@ class TaskRecordDao:
         return datetime.now(timezone.utc).isoformat()
 
     async def _get_db(self) -> aiosqlite.Connection:
-        """在初始化锁内创建任务及 Inbox 表，幂等补齐工具名、来源及输出字段。
+        """在初始化锁内创建当前任务及 Inbox 表，已有数据库由离线迁移升级。
 
         Returns:
             aiosqlite.Connection: 已初始化任务及 Inbox 的共享实例连接。
@@ -116,19 +87,6 @@ class TaskRecordDao:
                 os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
                 db = await aiosqlite.connect(self.db_path)
                 await db.execute(TASK_SCHEMA_SQL)
-                columns = {
-                    str(row[1]) for row in await db.execute_fetchall("PRAGMA table_info(task_records)")
-                }
-                # 2. 幂等补齐来源列及稳定输出引用，不删除已有任务记录。
-                for column in ("origin_run_id", "origin_tool_call_id", "output_ref", "tool_name"):
-                    if column not in columns:
-                        await db.execute(f"ALTER TABLE task_records ADD COLUMN {column} TEXT")
-                # 2.1. 旧记录无法判定前后台，保留为可见任务；新启动记录写入真实运行模式。
-                if "background" not in columns:
-                    await db.execute("ALTER TABLE task_records ADD COLUMN background INTEGER NOT NULL DEFAULT 1")
-                await db.execute(
-                    "UPDATE task_records SET output_ref = task_id WHERE output_ref IS NULL"
-                )
                 # 3. 任务表与 Inbox 共用连接和数据库，为终态通知原子事务做准备。
                 await ensure_inbox_schema(db)
                 await db.execute(
@@ -152,25 +110,34 @@ class TaskRecordDao:
         return [str(row[0]) for row in rows]
 
     async def insert_running(
-        self, task_id: str, session_id: str, command: str,
-        pid: int, output_path: str, *,
+        self, task_id: str, session_id: str, command: str | None = None,
+        pid: int | None = None, output_path: str | None = None, *,
         origin_run_id: str | None = None,
         origin_tool_call_id: str | None = None,
         background: bool = True,
         tool_name: str | None = None,
+        name: str = TERMINAL_TASK_NAME, title: str | None = None,
+        plugin_name: str | None = None,
+        lifetime: TaskLifetime = TaskLifetime.INDEPENDENT,
+        notify_agent: bool = True,
     ) -> None:
-        """保存已经创建的进程任务和输出路径，记录发起 run 与工具调用。
+        """保存任务初始记录及来源，具体资源由任务开始执行后创建。
 
         Args:
-            task_id (str): 受管进程任务标识。
+            task_id (str): 统一管理的任务编号。
             session_id (str): 共享 Ayaya 会话标识。
-            command (str): 需要执行或展示的 Shell 命令或任务说明。
-            pid (int): 需要加入 Job 或恢复线程的进程标识。
-            output_path (str): 追加式完整输出文件路径。
-            origin_run_id (str | None): 发起进程任务的运行轮次标识。
+            command (str | None): 终端命令，尚未创建终端或通用任务为空。
+            pid (int | None): 已创建的进程编号，尚未创建终端或通用任务为空。
+            output_path (str | None): 终端完整输出路径，通用任务为空。
+            origin_run_id (str | None): 发起任务的来源轮次编号。
             origin_tool_call_id (str | None): 发起任务的工具调用标识。
             background (bool): 是否显式后台启动，前台等待时不展示后台入口。
-            tool_name (str | None): 创建工具名；兼容旧数据调用时可为空。
+            tool_name (str | None): 创建工具名；插件任务为空。
+            name (str): 供查询或识别本次内容用途的稳定名称。
+            title (str | None): 供用户阅读的任务说明。
+            plugin_name (str | None): 发出内容或创建任务的插件稳定名称。
+            lifetime (TaskLifetime): 任务随来源轮次结束或独立运行的配置。
+            notify_agent (bool): 终态保存时是否生成给 Agent 的结果通知。
         """
         db = await self._get_db()
         # 1. 同一 DAO 写锁覆盖插入与提交，避免和终态通知事务交错。
@@ -179,10 +146,12 @@ class TaskRecordDao:
                 await db.execute(
                     "INSERT INTO task_records "
                     "(task_id, session_id, command, status, pid, output_path, created_at, "
-                    "origin_run_id, origin_tool_call_id, output_ref, background, tool_name) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "origin_run_id, origin_tool_call_id, output_ref, background, tool_name, "
+                    "name, title, plugin_name, lifetime, notify_agent) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (task_id, session_id, command, TaskStatus.RUNNING.value, pid, output_path, self._now(),
-                     origin_run_id, origin_tool_call_id, task_id, int(background), tool_name),
+                     origin_run_id, origin_tool_call_id, task_id if output_path else None, int(background), tool_name,
+                     name, title if title is not None else command, plugin_name, lifetime, int(notify_agent)),
                 )
                 await db.commit()
             except BaseException:
@@ -207,8 +176,57 @@ class TaskRecordDao:
                 await db.rollback()
                 raise
 
+    async def attach_terminal(self, task_id: str, *, command: str, pid: int,
+                              output_path: str) -> TaskRecord:
+        """终端模块向已登记任务补充实际进程信息，不登记任务或改变终态。
+
+        Args:
+            task_id (str): Supervisor 已登记的任务编号。
+            command (str): 实际终端命令。
+            pid (int): 已启动的系统进程编号。
+            output_path (str): 完整输出文件路径。
+
+        Returns:
+            TaskRecord: 进程信息提交后的任务记录。
+
+        Raises:
+            KeyError: 任务不存在或已结束，不能附加运行中的终端。
+        """
+        db = await self._get_db()
+        async with self._write_lock:
+            try:
+                cursor = await db.execute(
+                    "UPDATE task_records SET command=?,pid=?,output_path=?,output_ref=? "
+                    "WHERE task_id=? AND status=?",
+                    (command, pid, output_path, task_id, task_id, TaskStatus.RUNNING.value))
+                if cursor.rowcount != 1:
+                    raise KeyError("终端任务不存在或已结束")
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+        return await self.get(task_id)
+
+    async def save_terminal_exit_code(self, task_id: str, exit_code: int | None) -> None:
+        """由终端模块保存实际退出码，随后 Supervisor 独立提交通用终态。
+
+        Args:
+            task_id (str): 已登记的终端任务编号。
+            exit_code (int | None): 实际进程退出码，无法确定时为空。
+        """
+        db = await self._get_db()
+        async with self._write_lock:
+            try:
+                await db.execute("UPDATE task_records SET exit_code=? WHERE task_id=? AND status=?",
+                    (exit_code, task_id, TaskStatus.RUNNING.value))
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+
     async def finish_once(
-        self, task_id: str, status: TaskStatus, exit_code: int | None,
+        self, task_id: str, status: TaskStatus, exit_code: int | None = None, *,
+        result: str | None = None, error: str | None = None,
     ) -> bool:
         """条件更新首次任务终态，并在同一事务插入唯一终态通知。
 
@@ -219,6 +237,8 @@ class TaskRecordDao:
             task_id (str): 受管进程任务标识。
             status (TaskStatus): 调用方确认的任务终态，不允许使用 running。
             exit_code (int | None): 进程退出码，状态未知时为空。
+            result (str | None): 任务正常返回的结果正文，无正文时为空。
+            error (str | None): 执行或清理失败的错误摘要。
 
         Returns:
             bool: 首次终态与通知均已提交时为真，重复或不存在的记录为假。
@@ -235,25 +255,27 @@ class TaskRecordDao:
                 await db.execute("BEGIN IMMEDIATE")
                 # 2. 仅 running 记录可迁移，重复终态回调不产生第二条通知。
                 cursor = await db.execute(
-                    "UPDATE task_records SET status = ?, exit_code = ?, ended_at = ? "
+                    "UPDATE task_records SET status = ?, exit_code = COALESCE(?, exit_code), ended_at = ?, result = ?, error = ? "
                     "WHERE task_id = ? AND status = ?",
                     (status.value if isinstance(status, TaskStatus) else status,
-                     exit_code, self._now(), task_id, TaskStatus.RUNNING.value),
+                     exit_code, self._now(), result, error, task_id, TaskStatus.RUNNING.value),
                 )
                 if cursor.rowcount != 1:
                     await db.commit()
                     return False
-                row = await db.execute_fetchall(
-                    "SELECT session_id, command, tool_name FROM task_records WHERE task_id = ?",
+                row = (await db.execute_fetchall(
+                    "SELECT session_id, title, tool_name, output_ref, notify_agent, exit_code FROM task_records WHERE task_id = ?",
                     (task_id,),
-                )
-                session_id, command, tool_name = row[0]
-                # 3. 将任务事实交给 Inbox 编码，复用当前连接，通知与任务终态一起提交。
-                await append_task_terminal_in_transaction(
-                    db, session_id=session_id, task_id=task_id, task_name=command,
-                    status=status.value if isinstance(status, TaskStatus) else status, result="",
-                    tool_name=tool_name, exit_code=exit_code, output_ref=f"{TASK_OUTPUT_URI_PREFIX}{task_id}",
-                )
+                ))[0]
+                session_id, title, tool_name, output_ref, notify_agent, saved_exit_code = row
+                # 3. 静默任务只保存终态；需要通知时使用同一事务写入唯一结果。
+                if notify_agent:
+                    await append_task_terminal_in_transaction(
+                        db, session_id=session_id, task_id=task_id, task_name=title,
+                        status=status.value if isinstance(status, TaskStatus) else status, result=result or "", error=error,
+                        tool_name=tool_name, exit_code=saved_exit_code,
+                        output_ref=f"{TASK_OUTPUT_URI_PREFIX}{output_ref}" if output_ref else None,
+                    )
                 await db.commit()
                 return True
             # 4. 任一数据库操作失败或任务取消都回滚整笔交付。
@@ -276,7 +298,7 @@ class TaskRecordDao:
             async with db.execute(
                 "SELECT task_id, session_id, command, status, pid, exit_code, "
                 "output_path, created_at, ended_at, origin_run_id, origin_tool_call_id, "
-                "output_ref, background, tool_name FROM task_records WHERE task_id = ?",
+                "output_ref, background, tool_name, name, title, result, error, plugin_name, lifetime, notify_agent FROM task_records WHERE task_id = ?",
                 (task_id,),
             ) as cursor:
                 row = await cursor.fetchone()
@@ -297,7 +319,7 @@ class TaskRecordDao:
             rows = await db.execute_fetchall(
                 "SELECT task_id, session_id, command, status, pid, exit_code, "
                 "output_path, created_at, ended_at, origin_run_id, origin_tool_call_id, "
-                "output_ref, background, tool_name FROM task_records "
+                "output_ref, background, tool_name, name, title, result, error, plugin_name, lifetime, notify_agent FROM task_records "
                 "WHERE session_id = ? ORDER BY created_at DESC",
                 (session_id,),
             )
@@ -313,9 +335,12 @@ class TaskRecordDao:
         Returns:
             TaskRecord: 状态为 TaskStatus 的不可变记录。
         """
-        values = list(row[:-2])
+        values = list(row)
         values[3] = TaskStatus(values[3])
-        return TaskRecord(*values, background=bool(row[-2]), tool_name=row[-1])
+        values[12] = bool(values[12])
+        values[19] = TaskLifetime(values[19])
+        values[20] = bool(values[20])
+        return TaskRecord(*values)
 
     async def close(self) -> None:
         """关闭 DAO 持有的 SQLite 连接。"""

@@ -29,7 +29,7 @@ type RuntimeBridge = Pick<DesktopPetApi,
  *     chatHistory (Pick<ChatHistoryManager,
  * "addMessage" | "showTypingIndicator" | "hideTypingIndicator" | "startStreaming" |
  * "updateLastAiMessage" | "finalizeStreamingMessage" | "abortStreaming" |
- * "showToolCallMessage" | "finalizeToolCallIndicator" | "showErrorMessage" | "loadHistory"
+ * "showPluginNotice" | "showToolCallMessage" | "finalizeToolCallIndicator" | "showErrorMessage" | "loadHistory"
  * > & Partial<Pick<ChatHistoryManager,
  * "setSessionId" | "showPendingSteer" | "clearPendingSteer" |
  * "showFailedInput" | "clearFailedInput" | "setFailedInputRetrying"
@@ -47,7 +47,7 @@ export interface RuntimeChatClientOptions {
   chatHistory: Pick<ChatHistoryManager,
     "addMessage" | "showTypingIndicator" | "hideTypingIndicator" | "startStreaming" |
     "updateLastAiMessage" | "finalizeStreamingMessage" | "abortStreaming" |
-    "showToolCallMessage" | "finalizeToolCallIndicator" | "showErrorMessage" | "loadHistory"
+    "showPluginNotice" | "showToolCallMessage" | "finalizeToolCallIndicator" | "showErrorMessage" | "loadHistory"
   > & Partial<Pick<ChatHistoryManager,
     "setSessionId" | "showPendingSteer" | "clearPendingSteer" |
     "showFailedInput" | "clearFailedInput" | "setFailedInputRetrying"
@@ -765,6 +765,8 @@ export class RuntimeChatClient {
         this.queuedInputs.delete(sequence);
         this.renderQueuedInputs();
       }
+    } else if (event.kind === InteractionEventKind.NOTICE) {
+      this.options.chatHistory.showPluginNotice(String(event.payload.plugin_name), String(event.payload.text));
     } else if (event.kind === InteractionEventKind.TASK_STATUS) {
       this.taskEntry?.onStatus(String(event.payload.task_id || ""), String(event.payload.status || ""),
           typeof event.payload.tool_name === "string" ? event.payload.tool_name : undefined);

@@ -14,6 +14,7 @@ from app.agent.state.messages import (
     SubagentMessage,
     SystemMessage,
     TaskResultMessage,
+    PluginNotificationMessage,
     ToolCall,
     ToolMessage,
 )
@@ -36,6 +37,7 @@ __all__ = [
     "SubagentMessage",
     "SystemMessage",
     "TaskResultMessage",
+    "PluginNotificationMessage",
     "TemporaryContextItem",
     "TokenBaseline",
     "ToolCall",

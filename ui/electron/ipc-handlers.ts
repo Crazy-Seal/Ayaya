@@ -2,6 +2,7 @@
  * IPC 处理器注册
  */
 import { IpcChannel } from "../ipc-channels.js";
+import { EXIT_TASK_QUERY_TIMEOUT_MS } from "../runtime-constants.js";
 
 import { BrowserWindow, dialog, screen, clipboard } from "electron";
 import fs from "node:fs";
@@ -857,6 +858,17 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
     const update: ChatAttentionUpdate = { newMessage: value.newMessage === true, reset: value.reset === true };
     if (value.approvalId === null || (typeof value.approvalId === "string" && value.approvalId.length <= 256)) update.approvalId = value.approvalId;
     updateChatAttention(update);
+  });
+  trustedIpc.handle(IpcChannel.GET_ACTIVE_TASK_SUMMARY, /**
+   * 退出确认前查询整个后端的活动任务数量，查询本身不启动关闭。
+   */
+  async () => {
+    // 1. 查询超过退出确认预算时中止 HTTP 请求，页面按查询出错提示用户人工确认。
+    const response = await backendFetch("/internal/tasks/active-summary", {
+      signal: AbortSignal.timeout(EXIT_TASK_QUERY_TIMEOUT_MS),
+    });
+    if (!response.ok) throw new Error("读取后台任务状态失败");
+    return response.json();
   });
   trustedIpc.handle(IpcChannel.EXIT_APPLICATION, /**
    * 聊天或设置页面确认后进入统一应用退出流程，不把普通窗口关闭当作退出。
