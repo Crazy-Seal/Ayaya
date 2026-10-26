@@ -8,44 +8,25 @@ import { DESKTOP_CHANNEL } from "../../shared-types.js";
 import { TASK_NOTICE_DURATION_MS } from "../../runtime-constants.js";
 import { iconMarkup } from "../ui/icons.js";
 
-// 后端静态文件服务地址
-
 /**
- * 去掉句尾的句号
+ * 按连续两个或更多换行提取可显示的段落，末段等待后续正文或回复结束。
  *
  * Args:
- *     sentence (string): 等待显示的一句回复。
- */
-const removeTrailingPeriod = (sentence: string): string => {
-  if (sentence.endsWith("。")) {
-    return sentence.slice(0, -1);
-  }
-  return sentence;
-};
-
-/**
- * 提取完整的句子（以句号、问号、叹号、省略号结尾）
- * 返回 { complete: 完整句子数组, remaining: 剩余不完整的文本 }
+ *     text (string): 当前已收到的完整正文，包含尚待确认的末尾换行。
  *
- * Args:
- *     text (string): 本次需要展示或输入的文本。
+ * Returns:
+ *     { complete: string[]; remaining: string }: 已由双换行结束的非空段落，以及尚未结束的末段。
  */
-const extractCompleteSentences = (text: string): { complete: string[]; remaining: string } => {
-  if (!text || text.trim().length === 0) {
-    return { complete: [], remaining: "" };
-  }
-
+const extractCompleteParagraphs = (text: string): { complete: string[]; remaining: string } => {
+  // 1. Windows 换行按一个换行处理，连续两个换行才结束当前气泡。
+  const paragraphs = text.replace(/\r\n/g, "\n").split(/\n{2,}/);
+  const remaining = paragraphs.pop() ?? "";
   const complete: string[] = [];
-  const regex = /[^。！？…]+[。！？…]+/g;
-  let match: RegExpExecArray | null;
-  let lastIndex = 0;
-
-  while ((match = regex.exec(text)) !== null) {
-    complete.push(match[0].trim());
-    lastIndex = match.index + match[0].length;
+  // 2. 多余空行不生成空气泡，段落内部的单换行和标点保留。
+  for (const paragraph of paragraphs) {
+    const content = paragraph.trim();
+    if (content) complete.push(content);
   }
-
-  const remaining = text.slice(lastIndex).trim();
   return { complete, remaining };
 };
 
@@ -68,7 +49,7 @@ export class ChatHistoryManager {
   private streamingOrigin = DESKTOP_CHANNEL;
   private streamLabelShown = false;
   private streamingDraftItems: HTMLElement[] = [];
-  private outputSentenceCount = 0;
+  private queuedParagraphCount = 0;
   private typingIndicator: HTMLDivElement | null = null;
   private toolCallIndicator: HTMLDivElement | null = null;
   private pendingSteerIndicator: HTMLDivElement | null = null;
@@ -84,8 +65,8 @@ export class ChatHistoryManager {
   /** 当前失败展示的按钮，发送期间禁用。 */
   private retryInputButton: HTMLButtonElement | null = null;
 
-  // 句子队列和定时器（用于延迟输出）
-  private sentenceQueue: string[] = [];
+  // 段落队列和定时器（用于延迟输出）
+  private paragraphQueue: string[] = [];
   private outputTimer: ReturnType<typeof setInterval> | null = null;
   private static readonly OUTPUT_INTERVAL_MS = 500;
 
@@ -264,7 +245,7 @@ export class ChatHistoryManager {
     // 1. 捕获请求代次和视图版本，新增量或会话切换使旧历史加载失效。
     const request = ++this.historyRequest;
     const revision = this.historyRevision;
-    // 1.1. 调用方已结束流式草稿；先显示剩余句子并停止动画，查询失败也保留已有正文。
+    // 1.1. 调用方已结束流式草稿；先显示剩余段落并停止动画，查询失败也保留已有正文。
     if (!this.isStreaming) {
       this.flushFinalizedQueue();
       this.stopOutputTimer();
@@ -295,7 +276,7 @@ export class ChatHistoryManager {
       startIndex = 0;
     }
 
-    // 成功取得历史后，已完成的流式尾句由历史重绘接管，避免计时器重复追加。
+    // 成功取得历史后，已完成的流式末段由历史重绘接管，避免计时器重复追加。
     if (!this.isStreaming) this.abortStreaming();
     this.messages = lastNHistory.slice(startIndex);
     this.historyRevision += 1;
@@ -419,7 +400,7 @@ export class ChatHistoryManager {
    */
   startStreaming(originChannel = DESKTOP_CHANNEL): void {
     this.historyRevision += 1;
-    if (!this.isStreaming && this.sentenceQueue.length > 0) {
+    if (!this.isStreaming && this.paragraphQueue.length > 0) {
       this.flushFinalizedQueue();
     }
     this.abortStreaming();
@@ -427,8 +408,8 @@ export class ChatHistoryManager {
     this.streamingOrigin = originChannel;
     this.streamLabelShown = false;
     this.isStreaming = true;
-    this.outputSentenceCount = 0;
-    this.sentenceQueue = [];
+    this.queuedParagraphCount = 0;
+    this.paragraphQueue = [];
     this.startOutputTimer();
   }
 
@@ -445,8 +426,8 @@ export class ChatHistoryManager {
   abortStreaming(): void {
     this.isStreaming = false;
     this.stopOutputTimer();
-    this.sentenceQueue = [];
-    this.outputSentenceCount = 0;
+    this.paragraphQueue = [];
+    this.queuedParagraphCount = 0;
     this.streamingContent = "";
     for (const item of this.streamingDraftItems) {
       item.remove();
@@ -475,19 +456,19 @@ export class ChatHistoryManager {
       return;
     }
 
-    // 提取完整句子放入队列
-    const { complete } = extractCompleteSentences(content);
-    for (let i = this.outputSentenceCount; i < complete.length; i++) {
-      const sentence = complete[i];
-      if (sentence) {
-        this.sentenceQueue.push(sentence);
+    // 提取完整段落放入队列
+    const { complete } = extractCompleteParagraphs(content);
+    for (let i = this.queuedParagraphCount; i < complete.length; i++) {
+      const paragraph = complete[i];
+      if (paragraph) {
+        this.paragraphQueue.push(paragraph);
       }
     }
-    this.outputSentenceCount = complete.length;
+    this.queuedParagraphCount = complete.length;
   }
 
   /**
-   * 收尾句子队列并保存本地回复项，保留跨端来源标识。
+   * 收尾段落队列并保存本地回复项，保留跨端来源标识。
    */
   finalizeStreamingMessage(): void {
     if (!this.isStreaming) {
@@ -498,15 +479,15 @@ export class ChatHistoryManager {
     this.historyRevision += 1;
 
     // 处理剩余内容
-    const { complete, remaining } = extractCompleteSentences(this.streamingContent);
-    for (let i = this.outputSentenceCount; i < complete.length; i++) {
-      const sentence = complete[i];
-      if (sentence) {
-        this.sentenceQueue.push(sentence);
+    const { complete, remaining } = extractCompleteParagraphs(this.streamingContent);
+    for (let i = this.queuedParagraphCount; i < complete.length; i++) {
+      const paragraph = complete[i];
+      if (paragraph) {
+        this.paragraphQueue.push(paragraph);
       }
     }
     if (remaining.trim().length > 0) {
-      this.sentenceQueue.push(remaining.trim());
+      this.paragraphQueue.push(remaining.trim());
     }
 
     // 存入 messages 数组（用于历史记录和重新渲染）
@@ -520,7 +501,7 @@ export class ChatHistoryManager {
     }
 
     this.streamingContent = "";
-    this.outputSentenceCount = 0;
+    this.queuedParagraphCount = 0;
     this.streamingDraftItems = [];
   }
 
@@ -535,9 +516,9 @@ export class ChatHistoryManager {
     this.messages = [];
     this.container.innerHTML = "";
     this.isStreaming = false;
-    this.outputSentenceCount = 0;
+    this.queuedParagraphCount = 0;
     this.stopOutputTimer();
-    this.sentenceQueue = [];
+    this.paragraphQueue = [];
   }
 
   /**
@@ -549,10 +530,10 @@ export class ChatHistoryManager {
     }
 
     this.outputTimer = setInterval(/**
-     * 句子输出定时器到期时追加下一句，让最终回复继续按间隔显示。
+     * 段落输出定时器到期时追加下一段，让最终回复继续按间隔显示。
      */
     () => {
-      this.outputNextSentence();
+      this.outputNextParagraph();
     }, ChatHistoryManager.OUTPUT_INTERVAL_MS);
   }
 
@@ -567,47 +548,47 @@ export class ChatHistoryManager {
   }
 
   /**
-   * 输出下一个句子
+   * 输出下一个段落
    */
-  private outputNextSentence(): void {
-    const sentence = this.sentenceQueue.shift();
-    if (sentence) {
-      this.appendSentenceBubble(sentence);
+  private outputNextParagraph(): void {
+    const paragraph = this.paragraphQueue.shift();
+    if (paragraph) {
+      this.appendParagraphBubble(paragraph);
       this.scrollToBottom();
     }
 
     // 如果队列已空且流式已结束，停止定时器
-    if (this.sentenceQueue.length === 0 && !this.isStreaming) {
+    if (this.paragraphQueue.length === 0 && !this.isStreaming) {
       this.stopOutputTimer();
     }
   }
 
   /**
-   * 新一轮开始前完整显示上一轮已经结束但尚未输出的句子。
+   * 新一轮开始前完整显示上一轮已经结束但尚未输出的段落。
    */
   private flushFinalizedQueue(): void {
-    while (this.sentenceQueue.length > 0) {
-      const sentence = this.sentenceQueue.shift();
-      if (sentence) {
-        this.appendSentenceBubble(sentence);
+    while (this.paragraphQueue.length > 0) {
+      const paragraph = this.paragraphQueue.shift();
+      if (paragraph) {
+        this.appendParagraphBubble(paragraph);
         this.scrollToBottom();
       }
     }
   }
 
   /**
-   * 追加流式句子气泡，仅首个可见气泡展示外部渠道来源。
+   * 追加流式段落气泡，仅首个可见气泡展示外部渠道来源。
    *
    * Args:
-   *     sentence (string): 已经切分好的可见句子。
+   *     paragraph (string): 已经切分好的可见段落。
    */
-  private appendSentenceBubble(sentence: string): void {
+  private appendParagraphBubble(paragraph: string): void {
     const item = document.createElement("div");
     item.className = "message-item ai";
 
     const bubble = document.createElement("div");
     bubble.className = "message-bubble";
-    // 1. 外部渠道来源只在本轮首个句子气泡显示，后续句子沿用同一来源。
+    // 1. 外部渠道来源只在本轮首个段落气泡显示，后续段落沿用同一来源。
     if (!this.streamLabelShown && this.streamingOrigin !== DESKTOP_CHANNEL) {
       const label = document.createElement("span");
       label.className = "message-origin-label";
@@ -616,7 +597,7 @@ export class ChatHistoryManager {
       this.streamLabelShown = true;
     }
     const text = document.createElement("span");
-    text.textContent = removeTrailingPeriod(sentence);
+    text.textContent = paragraph;
     bubble.appendChild(text);
 
     item.appendChild(bubble);
@@ -676,13 +657,13 @@ export class ChatHistoryManager {
       return;
     }
 
-    // 清理表情标签后再分割成句子
+    // 清理表情标签后再分割成段落
     const cleanContent = this.cleanExpressionTags(msg.content);
-    const sentences = this.splitIntoSentences(cleanContent);
+    const paragraphs = this.splitIntoParagraphs(cleanContent);
 
     // 1. 先渲染文本气泡（如果有文本）
-    for (const [index, sentence] of sentences.entries()) {
-      if (!sentence) continue;
+    for (const [index, paragraph] of paragraphs.entries()) {
+      if (!paragraph) continue;
 
       const item = document.createElement("div");
       item.className = `message-item ${isHuman ? "human" : "ai"}`;
@@ -700,7 +681,7 @@ export class ChatHistoryManager {
       }
 
       // 渲染文本
-      const textNode = document.createTextNode(removeTrailingPeriod(sentence));
+      const textNode = document.createTextNode(paragraph);
       bubble.appendChild(textNode);
 
       item.appendChild(bubble);
@@ -756,32 +737,18 @@ export class ChatHistoryManager {
   }
 
   /**
-   * 将文本分割成句子
+   * 使用流式回复的双换行规则切分历史正文，并包含最后一段。
    *
    * Args:
-   *     text (string): 本次需要展示或输入的文本。
+   *     text (string): 已清理表情标签的完整历史正文。
+   *
+   * Returns:
+   *     string[]: 按双换行切分后的非空气泡正文。
    */
-  private splitIntoSentences(text: string): string[] {
-    if (!text || text.trim().length === 0) {
-      return [];
-    }
-
-    const sentences: string[] = [];
-    const regex = /[^。！？…]+[。！？…]+/g;
-    let match: RegExpExecArray | null;
-    let lastIndex = 0;
-
-    while ((match = regex.exec(text)) !== null) {
-      sentences.push(match[0].trim());
-      lastIndex = match.index + match[0].length;
-    }
-
-    const remaining = text.slice(lastIndex).trim();
-    if (remaining.length > 0) {
-      sentences.push(remaining);
-    }
-
-    return sentences.length > 0 ? sentences : [text.trim()];
+  private splitIntoParagraphs(text: string): string[] {
+    const { complete, remaining } = extractCompleteParagraphs(text);
+    if (remaining.trim()) complete.push(remaining.trim());
+    return complete;
   }
 
   /**

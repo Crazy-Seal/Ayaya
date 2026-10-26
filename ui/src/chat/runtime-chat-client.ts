@@ -298,10 +298,11 @@ export class RuntimeChatClient {
 
     // 2. 暂存末尾尚未闭合的标签，防止分片中的 <惊 或单独 < 短暂进入 DOM。
     // 2.1. 带空白的比较正文（例如 2 < 3）不属于标签前缀，应正常展示。
-    const text = this.partial.replace(tagPattern, "").replace(/<[^<>\s]*$/, "").trim();
-    if (text) this.options.chatHistory.updateLastAiMessage(text);
-    // 3. 聊天列表和桌面气泡共用同一份正文，不能分别处理原始标签。
-    this.options.bubble.setText(text);
+    const text = this.partial.replace(tagPattern, "").replace(/<[^<>\s]*$/, "");
+    // 3. 聊天列表保留末尾换行，两个换行跨片段到达时也能立即确认段落结束。
+    if (text.trim()) this.options.chatHistory.updateLastAiMessage(text);
+    // 4. 桌面气泡沿用同一份已清理标签的正文，显示时去掉首尾空白。
+    this.options.bubble.setText(text.trim());
   }
 
   /**
@@ -355,7 +356,7 @@ export class RuntimeChatClient {
   private async refreshHistory(): Promise<boolean> {
     const revision = this.sessionRevision;
     const sessionId = this.sessionId;
-    // 1. 结束本地草稿，历史管理器在查询前显示剩余句子并停止输出动画。
+    // 1. 结束本地草稿，历史管理器在查询前显示剩余段落并停止输出动画。
     this.finishStreaming();
     this.options.chatHistory.hideTypingIndicator();
     this.options.chatHistory.finalizeToolCallIndicator();

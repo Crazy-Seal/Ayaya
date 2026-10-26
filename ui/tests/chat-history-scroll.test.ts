@@ -36,7 +36,7 @@ class FakeElement {
 }
 
 /**
- * 模拟聊天历史容器及滚动记录，供验证历史重绘与逐句输出。
+ * 模拟聊天历史容器及滚动记录，供验证历史重绘与逐段输出。
  */
 class FakeContainer extends FakeElement {
   scrollHeight = 100;
@@ -83,7 +83,7 @@ class FakeContainer extends FakeElement {
 }
 
 for (const succeeds of [true, false]) {
-  test(`恢复后的历史同步${succeeds ? "成功不重复输出尾句" : "失败保留已完成尾句"}`, /**
+  test(`恢复后的历史同步${succeeds ? "成功不重复输出末段" : "失败保留已完成末段"}`, /**
    * 验证历史同步成功和失败时的回复显示与去重行为。
    *
    * Args:
@@ -191,7 +191,7 @@ test("流结束后仍以 500ms 间隔逐条追加并滚动到底部", /**
   try {
     const manager = new ChatHistoryManager(container as unknown as HTMLDivElement);
     manager.startStreaming();
-    manager.updateLastAiMessage("第一句。第二句。第三句。");
+    manager.updateLastAiMessage("第一段。\n\n第二段。\n\n第三段。");
     manager.finalizeStreamingMessage();
 
     assert.equal(container.children.length, 0);
@@ -226,8 +226,8 @@ test("流结束后仍以 500ms 间隔逐条追加并滚动到底部", /**
   }
 });
 
-test("上一轮尾句尚未显示完时启动新一轮会先完整输出旧回复", /**
- * 验证上一轮尾句尚未显示完时启动新一轮会先完整输出旧回复。
+test("上一轮末段尚未显示完时启动新一轮会先完整输出旧回复", /**
+ * 验证上一轮末段尚未显示完时启动新一轮会先完整输出旧回复。
  */
 () => {
   const originalDocument = globalThis.document;
@@ -239,14 +239,14 @@ test("上一轮尾句尚未显示完时启动新一轮会先完整输出旧回�
     /**
      * 创建用例所需的页面元素替身。
      *
-     * 此定义用于：验证上一轮尾句尚未显示完时启动新一轮会先完整输出旧回复。
+     * 此定义用于：验证上一轮末段尚未显示完时启动新一轮会先完整输出旧回复。
      */
     createElement: () => new FakeElement(),
   } as unknown as Document;
   globalThis.setInterval = (/**
    * 由外层操作在对应处理阶段调用，取得本用例指定的条目或响应，供外层断言处理结果。
    *
-   * 此定义用于：验证上一轮尾句尚未显示完时启动新一轮会先完整输出旧回复。
+   * 此定义用于：验证上一轮末段尚未显示完时启动新一轮会先完整输出旧回复。
    *
    * Args:
    *     callback (() => void): 触发后交给调用方继续处理的回调。
@@ -258,14 +258,14 @@ test("上一轮尾句尚未显示完时启动新一轮会先完整输出旧回�
   globalThis.clearInterval = (/**
    * 由外层操作在对应处理阶段调用；当前用例无需使用此通知内容。
    *
-   * 此定义用于：验证上一轮尾句尚未显示完时启动新一轮会先完整输出旧回复。
+   * 此定义用于：验证上一轮末段尚未显示完时启动新一轮会先完整输出旧回复。
    */
   () => {}) as typeof clearInterval;
 
   try {
     const manager = new ChatHistoryManager(container as unknown as HTMLDivElement);
     manager.startStreaming();
-    manager.updateLastAiMessage("第一句。第二句。第三句。");
+    manager.updateLastAiMessage("第一段。\n\n第二段。\n\n第三段。");
     manager.finalizeStreamingMessage();
 
     intervalCallback?.();
@@ -278,7 +278,7 @@ test("上一轮尾句尚未显示完时启动新一轮会先完整输出旧回�
     assert.equal(container.children.some(/**
      * 由集合的 some 遍历每项数据时调用，读取 child.removed 供当前步骤继续处理。
      *
-     * 此定义用于：验证上一轮尾句尚未显示完时启动新一轮会先完整输出旧回复。
+     * 此定义用于：验证上一轮末段尚未显示完时启动新一轮会先完整输出旧回复。
      *
      * Args:
      *     child (FakeElement): 本次管理的子进程。

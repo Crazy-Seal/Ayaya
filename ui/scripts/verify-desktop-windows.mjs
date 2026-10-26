@@ -14,7 +14,8 @@ import { spawn } from "node:child_process";
 const uiRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const output = path.join(uiRoot, ".test-dist", "desktop-smoke");
 const restoreCheck = process.argv.includes("--restore-check");
-const focusedCheck = process.argv.includes("--native-drag") || process.argv.includes("--composer-check");
+const focusedCheck = process.argv.includes("--native-drag") || process.argv.includes("--composer-check")
+  || process.argv.includes("--message-paragraphs");
 const previousRun = restoreCheck ? JSON.parse(fs.readFileSync(path.join(output, "results.json"), "utf8")) : null;
 const isolated = fs.mkdtempSync(path.join(os.tmpdir(), "ayaya-ui-windows-"));
 let originalSavedBounds = null;
@@ -286,6 +287,37 @@ try {
   const chat = windows.openChatWindow();
   await desktopWindowRegistry.connect();
   await waitFor(chat, "document.querySelectorAll('.message-item').length >= 2 && !document.getElementById('send-btn').disabled");
+  if (process.argv.includes("--message-paragraphs")) {
+    const initialCount = await chat.webContents.executeJavaScript("document.querySelectorAll('.message-item.ai').length");
+    // 1. 按真实流式事件逐次发送换行，只有第二个换行到达才出现新的段落气泡。
+    emit(event("run_started", {}, { run_id: "paragraph-demo" }));
+    emit(event("text_chunk", { value: "你好！\n" }, { run_id: "paragraph-demo" }));
+    await pause(600);
+    assert.equal(await chat.webContents.executeJavaScript("document.querySelectorAll('.message-item.ai').length"), initialCount);
+    emit(event("text_chunk", { value: "\n" }, { run_id: "paragraph-demo" }));
+    await waitFor(chat, `document.querySelectorAll('.message-item.ai').length === ${initialCount + 1}`);
+    emit(event("text_chunk", { value: "再见！\n明天见。\n\n" }, { run_id: "paragraph-demo" }));
+    await waitFor(chat, `document.querySelectorAll('.message-item.ai').length === ${initialCount + 2}`);
+    const texts = await chat.webContents.executeJavaScript(`
+      Array.from(document.querySelectorAll('.message-item.ai .message-bubble'), /**
+       * 读取浏览器实际渲染的气泡正文，核对单换行仍在同一气泡内部。
+       * Args:
+       *     bubble (HTMLElement): 当前 Agent 气泡。
+       * Returns:
+       *     string: 当前气泡正文。
+       */
+      (bubble) => bubble.textContent).slice(-2)
+    `);
+    assert.deepEqual(texts, ["你好！", "再见！\n明天见。"]);
+    // 2. 完成后重新读取历史，气泡数量与流式显示保持一致。
+    history.push({ id: "paragraph-ai", role: "ai", content: "你好！\n\n再见！\n明天见。", timestamp: "2026-10-26T00:00:00Z" });
+    emit(event("run_completed", { value: null }, { run_id: "paragraph-demo" }));
+    await waitFor(chat, "!document.getElementById('chat-history-list').textContent.includes('对方正在输入')");
+    await capture(chat, "chat-message-paragraphs");
+    assert.equal(await chat.webContents.executeJavaScript("document.querySelectorAll('.message-item.ai').length"), initialCount + 2);
+    console.log("消息双换行分隔 Electron 验证通过");
+    return;
+  }
   if (process.argv.includes("--plugin-runtime")) {
     emit(event("notice", { plugin_name: "game_helper", text: "发现两名敌人，正在观察战斗状态。" }));
     await waitFor(chat, "document.querySelector('.plugin-notice')?.textContent.includes('发现两名敌人')");

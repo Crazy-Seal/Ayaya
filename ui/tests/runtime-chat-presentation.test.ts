@@ -377,7 +377,7 @@ function createPresentation(withTaskEntry = false) {
   });
   return {
     root, bubble, motions, persisted, taskHeader, taskButton, taskNotice, tasks, openedPages,
-    client, historyReads, approvals, attention, input, submissions,
+    client, history, historyReads, approvals, attention, input, submissions,
     /**
      * 从公共 bridge 注入事件并等待 Renderer 处理完成。
      *
@@ -554,6 +554,99 @@ async (t) => {
   }
 });
 
+/**
+ * 读取实际聊天列表中的文字气泡，忽略输入提示和其他临时节点。
+ *
+ * Args:
+ *     container (PresentationElement): 当前用例的聊天列表。
+ *
+ * Returns:
+ *     string[]: 按显示顺序排列的每个气泡正文。
+ */
+function messageBubbleTexts(container: PresentationElement): string[] {
+  return container.children.filter(/**
+   * 根据消息节点样式选出已显示的聊天气泡。
+   *
+   * Args:
+   *     item (PresentationElement): 聊天列表中的节点。
+   *
+   * Returns:
+   *     boolean: 当前节点为消息时返回 true。
+   */
+  (item) => item.className.startsWith("message-item ")).map(/**
+   * 读取每个消息节点的气泡正文。
+   *
+   * Args:
+   *     item (PresentationElement): 已显示的消息节点。
+   *
+   * Returns:
+   *     string: 当前气泡的完整正文。
+   */
+  (item) => item.children[0].textContent);
+}
+
+for (const [name, content, expected] of [
+  ["双换行", "你好！\n\n再见！", ["你好！", "再见！"]],
+  ["单换行", "你好！\n再见！", ["你好！\n再见！"]],
+  ["只有标点", "你好。再见？好的！……Hello. Really? Yes!", ["你好。再见？好的！……Hello. Really? Yes!"]],
+  ["无标点段落", "你好\n\n再见", ["你好", "再见"]],
+  ["多余空行", "\n\n你好！\n\n\n\n再见！\n\n", ["你好！", "再见！"]],
+  ["Windows单换行", "你好！\r\n再见！", ["你好！\n再见！"]],
+  ["Windows双换行", "你好！\r\n\r\n再见！", ["你好！", "再见！"]],
+] as const) {
+  test(`历史消息按双换行分隔气泡：${name}`, /**
+   * 验证真人和 Agent 的历史正文共用双换行规则，保留单换行和原始标点。
+   */
+  async () => {
+    const view = createPresentation();
+    try {
+      view.persisted.push(
+        { id: "human", role: "Human", content, timestamp: "2026-10-26" },
+        { id: "ai", role: "AI", content, timestamp: "2026-10-26" },
+      );
+      await view.emit("session_snapshot", { phase: "idle" }, 0);
+      assert.deepEqual(messageBubbleTexts(view.root), [...expected, ...expected]);
+    } finally {
+      view.close();
+    }
+  });
+}
+
+test("流式双换行跨片段时只分隔一次，末段在结束后与历史显示一致", /**
+ * 验证双换行到达后即可输出完整段落，单换行和标点保留在同一气泡。
+ *
+ * Args:
+ *     t (TestContext): 提供可手动推进的消息输出定时器。
+ */
+async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const view = createPresentation();
+  try {
+    await view.emit("session_snapshot", { phase: "idle" }, 0);
+    await view.emit("run_started", {}, 1);
+    // 1. 标点和单换行继续累积，第二个换行到达后才输出第一段。
+    await view.emit("text_chunk", { value: "你好！\n" }, 2);
+    t.mock.timers.tick(500);
+    assert.deepEqual(messageBubbleTexts(view.root), []);
+    await view.emit("text_chunk", { value: "\n" }, 3);
+    t.mock.timers.tick(500);
+    assert.deepEqual(messageBubbleTexts(view.root), ["你好！"]);
+    await view.emit("text_chunk", { value: "再见！\n明天见。" }, 4);
+    t.mock.timers.tick(500);
+    assert.deepEqual(messageBubbleTexts(view.root), ["你好！"]);
+
+    // 2. 流式结束后显示剩余正文，随后历史重绘采用同样的两个气泡。
+    view.history.finalizeStreamingMessage();
+    t.mock.timers.tick(500);
+    assert.deepEqual(messageBubbleTexts(view.root), ["你好！", "再见！\n明天见。"]);
+    view.persisted.push({ id: "ai", role: "AI", content: "你好！\n\n再见！\n明天见。", timestamp: "2026-10-26" });
+    await view.emit("run_completed", { value: null }, 5);
+    assert.deepEqual(messageBubbleTexts(view.root), ["你好！", "再见！\n明天见。"]);
+  } finally {
+    view.close();
+  }
+});
+
 test("流式表情标签跨分片时两处正文均不显示标签，动作每轮只播放一次", /**
  * 验证流式表情标签跨分片时两处正文均不显示标签，动作每轮只播放一次。
  *
@@ -570,22 +663,22 @@ async (t) => {
     await view.emit("text_chunk", { value: "<惊" }, 2);
     assert.equal(view.bubble.textContent, "");
     assert.deepEqual(view.motions, []);
-    await view.emit("text_chunk", { value: "讶>真有趣。<惊" }, 3);
+    await view.emit("text_chunk", { value: "讶>真有趣。\n\n<惊" }, 3);
     t.mock.timers.tick(500);
     assert.equal(view.bubble.textContent, "真有趣。");
-    assert.equal(view.root.textContent, "真有趣");
+    assert.equal(view.root.textContent, "真有趣。");
     assert.deepEqual(view.motions, ["惊讶"]);
 
     // 2. 同轮重复标签不重复动作，后续句子和最终历史仍与流式正文一致。
-    await view.emit("text_chunk", { value: "讶>后一句。" }, 4);
+    await view.emit("text_chunk", { value: "讶>后一句。\n\n" }, 4);
     t.mock.timers.tick(500);
-    assert.equal(view.bubble.textContent, "真有趣。后一句。");
-    assert.equal(view.root.textContent, "真有趣后一句");
+    assert.equal(view.bubble.textContent, "真有趣。\n\n后一句。");
+    assert.equal(view.root.textContent, "真有趣。后一句。");
     assert.deepEqual(view.motions, ["惊讶"]);
-    view.persisted.push({ id: "ai-1", role: "AI", content: "<惊讶>真有趣。<惊讶>后一句。", timestamp: "2026-10-08" });
+    view.persisted.push({ id: "ai-1", role: "AI", content: "<惊讶>真有趣。\n\n<惊讶>后一句。", timestamp: "2026-10-08" });
     await view.emit("run_completed", { value: null }, 5);
-    assert.equal(view.root.textContent, "真有趣后一句");
-    assert.equal(view.bubble.textContent, "真有趣。后一句。");
+    assert.equal(view.root.textContent, "真有趣。后一句。");
+    assert.equal(view.bubble.textContent, "真有趣。\n\n后一句。");
   } finally {
     view.close();
   }
@@ -651,7 +744,7 @@ async () => {
     await view.emit("interrupt", approval, 7);
     assert.equal(view.historyReads.calls, 2);
     assert.equal(view.approvals.opened, 1);
-    assert.equal(view.root.textContent, "工具说明");
+    assert.equal(view.root.textContent, "工具说明。");
     await view.emit("interrupt", approval, 8);
     await view.emit("authorization_resolved", {}, 9);
     assert.equal(view.historyReads.calls, 2);
@@ -664,7 +757,7 @@ async () => {
     view.persisted.push({ id: "result-ai", role: "AI", content: "完整结果。", timestamp: "2026-10-10" });
     await view.emit("run_completed", { value: null }, 14);
     assert.equal(view.historyReads.calls, 3);
-    assert.equal(view.root.textContent, "工具说明完整结果");
+    assert.equal(view.root.textContent, "工具说明。完整结果。");
     assert.equal(view.bubble.textContent, "完整结果。");
     await view.emit("run_completed", { value: null }, 14);
     assert.equal(view.historyReads.calls, 3);
@@ -709,7 +802,7 @@ async () => {
     // 2. 新轮保存结束后完整替换；再下一轮没有查询交错，仍实时显示。
     view.persisted.push({ id: "next", role: "AI", content: "下一轮前半段。后半段。", timestamp: "2026-10-10" });
     await view.emit("run_completed", { value: null }, 7, "next");
-    assert.equal(view.root.textContent, "上一轮下一轮前半段后半段");
+    assert.equal(view.root.textContent, "上一轮。下一轮前半段。后半段。");
     assert.equal(view.bubble.textContent, "下一轮前半段。后半段。");
     await view.emit("run_started", {}, 8, "later");
     await view.emit("text_chunk", { value: "实时正文。" }, 9, "later");
@@ -740,7 +833,7 @@ async () => {
     view.persisted.push({ id: "saved", role: "AI", content: "需要审批的完整说明。", timestamp: "2026-10-10" });
     await view.emit("interrupt", approval, 4);
     assert.equal(view.historyReads.calls, 3);
-    assert.equal(view.root.textContent, "需要审批的完整说明");
+    assert.equal(view.root.textContent, "需要审批的完整说明。");
     await view.emit("interrupt", approval, 5);
     assert.equal(view.historyReads.calls, 3);
   } finally {
@@ -760,7 +853,7 @@ async () => {
     await view.emit("error", { detail: "模型调用失败" }, 2);
     assert.equal(view.historyReads.calls, 2);
     assert.equal(view.bubble.textContent, "此前已保存。");
-    assert.equal(view.root.textContent, "此前已保存模型调用失败");
+    assert.equal(view.root.textContent, "此前已保存。模型调用失败");
     assert.equal(view.root.textContent.includes("未保存"), false);
   } finally {
     view.close();
