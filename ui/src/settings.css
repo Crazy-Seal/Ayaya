@@ -860,14 +860,17 @@
 }
 .channel-subscription-row span:first-child { flex: 1; font-weight: 700; }
 
+/* 每个任务独立显示卡片，完整输出展开在对应卡片内部。 */
+#background-tasks-list { display: grid; gap: var(--spacing-lg); min-width: 0; }
+.background-task-card { padding: var(--spacing-lg); min-width: 0; }
+.background-task-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.background-task-row span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.background-task-details { margin-top: var(--spacing-md); padding-top: var(--spacing-md); border-top: 1px solid var(--color-border-subtle); }
 /* 任务输出保留换行并限制高度，避免持续日志撑开设置窗口。 */
-.background-tasks-panel { padding: var(--spacing-lg); }
-.background-task-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 8px 0; }
-.background-task-row span { flex: 1; overflow-wrap: anywhere; }
-#background-task-output { max-height: 280px; overflow: auto; white-space: pre-wrap; }
+.background-task-output { margin: 0; max-height: 280px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.background-task-more { margin-top: var(--spacing-md); }
 .background-task-recent {
-  order: 1;
-  flex: 1 1 100%;
+  margin-top: var(--spacing-md);
   color: var(--color-text-secondary);
   max-height: 4em;
   overflow: auto;

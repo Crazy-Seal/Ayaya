@@ -166,8 +166,6 @@ class SettingsApp {
     this.channelsPage = new ChannelSubscriptionsPage(this.getElement("#channel-subscriptions-list"));
     this.tasksPage = new BackgroundTasksPage(
       this.getElement("#background-tasks-list"),
-      this.getElement("#background-task-output"),
-      this.getElement("#background-task-more"),
       this.getElement("#refresh-background-tasks"),
       this.toast,
     );

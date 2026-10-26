@@ -331,6 +331,33 @@ try {
     assert.match(taskText, /整理项目资料/);
     assert.match(taskText, /日记整理完成/);
     assert.doesNotMatch(taskText, /undefined/);
+    // 1. 用真实页面同时展开终端输出和日记结果，检查卡片分隔及详情归属。
+    assert.equal(await settingsWindow.webContents.executeJavaScript("document.querySelectorAll('#background-tasks-list > .background-task-card.ui-surface').length"), 3);
+    await settingsWindow.webContents.executeJavaScript(`
+      document.querySelectorAll('.background-task-row button[aria-expanded]')[0].click();
+      document.querySelectorAll('.background-task-row button[aria-expanded]')[2].click();
+    `);
+    await waitFor(settingsWindow, "document.querySelectorAll('.background-task-output')[0].textContent.includes('完整终端输出')");
+    const taskCards = await settingsWindow.webContents.executeJavaScript(`
+      Array.from(document.querySelectorAll('.background-task-card'), /**
+       * 读取各卡片在浏览器中实际显示的详情和位置。
+       * Args:
+       *     card (HTMLElement): 当前任务卡片。
+       */
+      (card) => ({
+        top: card.getBoundingClientRect().top,
+        bottom: card.getBoundingClientRect().bottom,
+        border: getComputedStyle(card).borderTopWidth,
+        expanded: !card.querySelector('.background-task-details').hidden,
+        output: card.querySelector('.background-task-output').textContent,
+      }))
+    `);
+    assert.deepEqual(taskCards.map(/** 返回各卡片详情是否展开。 */ (card) => card.expanded), [true, false, true]);
+    assert.match(taskCards[0].output, /完整终端输出/);
+    assert.equal(taskCards[2].output, "日记整理完成");
+    assert.ok(Number.parseFloat(taskCards[0].border) > 0);
+    assert.ok(taskCards[1].top > taskCards[0].bottom);
+    assert.ok(taskCards[2].top > taskCards[1].bottom);
     await capture(settingsWindow, "plugin-runtime-tasks");
     await settingsWindow.webContents.executeJavaScript("document.getElementById('exit-application-btn').click()");
     await waitFor(settingsWindow, "!document.getElementById('delete-confirm-dialog').hidden");
@@ -522,7 +549,7 @@ try {
       await capture(settingsWindow, "settings-tasks-running");
       // 2. 使用真实 preload 读取输出，再刷新完成状态，工具名和输出详情都必须保留。
       await settingsWindow.webContents.executeJavaScript("document.querySelector('.background-task-row button').click()");
-      await waitFor(settingsWindow, "document.getElementById('background-task-output').textContent.includes('完整终端输出')");
+      await waitFor(settingsWindow, "document.querySelector('.background-task-card .background-task-output').textContent.includes('完整终端输出')");
       demoTaskStatus = "completed";
       await settingsWindow.webContents.executeJavaScript("document.getElementById('refresh-background-tasks').click()");
       await waitFor(settingsWindow, "document.querySelector('.background-task-row').textContent.includes('已完成')");

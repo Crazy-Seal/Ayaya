@@ -5,7 +5,7 @@ import { RuntimeChatClient, type RuntimeChatClientOptions } from "../src/chat/ru
 import { ChatHistoryManager } from "../src/chat/chat-history-manager.js";
 import { BubbleManager } from "../src/chat/bubble.js";
 import { BackgroundTasksPage } from "../src/settings/pages/background-tasks-page.js";
-import type { ChatAttentionUpdate, ChatHistoryItem, InteractionEvent } from "../shared-types.js";
+import type { BackgroundTaskRecord, ChatAttentionUpdate, ChatHistoryItem, InteractionEvent } from "../shared-types.js";
 
 /**
  * 提供真实展示类所需的最小 DOM 行为，文本可从公开容器读取。
@@ -508,8 +508,6 @@ async (t) => {
   const view = createPresentation();
   const list = new PresentationElement();
   const page = new BackgroundTasksPage(list as unknown as HTMLElement,
-    new PresentationElement() as unknown as HTMLElement,
-    new PresentationElement() as unknown as HTMLButtonElement,
     new PresentationElement() as unknown as HTMLButtonElement);
   let reads = 0;
   let status: "running" | "completed" = "running";
@@ -549,6 +547,402 @@ async (t) => {
     await flushEvents();
     assert.equal(reads, 3);
   } finally {
+    page.setActive(false);
+    view.close();
+  }
+});
+
+/**
+ * 创建后台任务记录，只使用测试内存中的输出和会话信息。
+ *
+ * Args:
+ *     taskId (string): 测试任务编号。
+ *     outputRef (string | null): 有终端输出时提供分页引用。
+ *
+ * Returns:
+ *     BackgroundTaskRecord: 已完成的测试任务记录。
+ */
+function backgroundTask(taskId: string, outputRef: string | null): BackgroundTaskRecord {
+  return {
+    task_id: taskId, session_id: "s", tool_name: outputRef ? "exec_command" : null,
+    command: null, status: "completed", background: true, pid: null, exit_code: 0,
+    created_at: "2026-10-26T00:00:00Z", ended_at: "2026-10-26T00:00:12Z",
+    recent_output: "最近输出", name: taskId, title: taskId, result: `${taskId}结果`, error: null,
+    plugin_name: outputRef ? null : "memory", output_ref: outputRef,
+    lifetime: "independent", notify_agent: true,
+  };
+}
+
+test("每个后台任务有独立卡片，详情和分页在刷新后仍分别保留", /**
+ * 验证同时展开多个任务时结果与分页输出分别留在对应卡片中。
+ */
+async () => {
+  const view = createPresentation();
+  const list = new PresentationElement();
+  const page = new BackgroundTasksPage(list as unknown as HTMLElement,
+    new PresentationElement() as unknown as HTMLButtonElement);
+  const records = [backgroundTask("memory", null), backgroundTask("shell-a", "a"), backgroundTask("shell-b", "b")];
+  const reads: [string, number][] = [];
+  window.desktopPetApi.getBackgroundTasks = /** 返回当前测试的三条独立任务。 */
+    async () => records;
+  window.desktopPetApi.getBackgroundTaskOutput = /**
+   * 按任务和游标返回不同内容，检查各卡片是否独立读取下一页。
+   *
+   * Args:
+   *     _sessionId (string): 当前测试会话。
+   *     taskId (string): 请求输出的任务编号。
+   *     offset (number): 请求输出的字节游标。
+   */
+    async (_sessionId, taskId, offset) => {
+      reads.push([taskId, offset]);
+      return { text: offset < 20 ? `${taskId}:${offset}\n` : "",
+        next_offset: Math.min(offset + 10, 20), has_more: offset === 0 };
+    };
+  try {
+    // 1. 每条记录各自创建卡片，详情初始收起。
+    await page.render("s");
+    assert.equal(list.children.length, 3);
+    for (const card of list.children) {
+      assert.match(card.className, /\bui-surface\b/);
+      assert.equal(card.children[2].hidden, true);
+      card.children[0].children[1].handlers.get("click")?.();
+    }
+    await flushEvents();
+    const memoryDetails = list.children[0].children[2];
+    const firstDetails = list.children[1].children[2];
+    const secondDetails = list.children[2].children[2];
+    assert.equal(memoryDetails.children[0].textContent, "memory结果");
+    assert.equal(firstDetails.children[0].textContent, "shell-a:0\n");
+    assert.equal(secondDetails.children[0].textContent, "shell-b:0\n");
+
+    // 2. 刷新保留展开和分页位置；重复点击加载只发送一次请求。
+    await page.render("s");
+    assert.equal(list.children[1].children[2], firstDetails);
+    assert.equal(firstDetails.hidden, false);
+    firstDetails.children[1].handlers.get("click")?.();
+    firstDetails.children[1].handlers.get("click")?.();
+    await flushEvents();
+    assert.equal(firstDetails.children[0].textContent, "shell-a:0\nshell-a:10\n");
+    assert.equal(secondDetails.children[0].textContent, "shell-b:0\n");
+    assert.equal(firstDetails.children[1].hidden, true);
+    assert.equal(secondDetails.children[1].hidden, false);
+    assert.deepEqual(reads, [["shell-a", 0], ["shell-b", 0], ["shell-a", 10]]);
+
+    // 3. 收起一张卡片不影响另一张，重新展开保留已加载的正文。
+    list.children[1].children[0].children[1].handlers.get("click")?.();
+    assert.equal(firstDetails.hidden, true);
+    assert.equal(secondDetails.hidden, false);
+    list.children[1].children[0].children[1].handlers.get("click")?.();
+    await flushEvents();
+    assert.equal(firstDetails.hidden, false);
+    assert.equal(firstDetails.children[0].textContent, "shell-a:0\nshell-a:10\n");
+    assert.equal(secondDetails.children[0].textContent, "shell-b:0\n");
+    assert.deepEqual(reads, [["shell-a", 0], ["shell-b", 0], ["shell-a", 10], ["shell-a", 20]]);
+  } finally {
+    page.setActive(false);
+    view.close();
+  }
+});
+
+for (const expanded of [false, true]) {
+  test(`终端日志准备完成后${expanded ? "已展开详情自动" : "首次展开详情"}读取真实日志`, /**
+   * 任务先登记、后提供日志引用时，占位提示不能代替真实日志的加载状态。
+   */
+  async () => {
+    const view = createPresentation();
+    const list = new PresentationElement();
+    const page = new BackgroundTasksPage(list as unknown as HTMLElement,
+      new PresentationElement() as unknown as HTMLButtonElement);
+    const record: BackgroundTaskRecord = {
+      ...backgroundTask("shell", null), status: "running", tool_name: "exec_command",
+      result: null, error: null, plugin_name: null,
+    };
+    const offsets: number[] = [];
+    window.desktopPetApi.getBackgroundTasks = /** 返回终端启动前后同一条任务记录。 */
+      async () => [{ ...record }];
+    window.desktopPetApi.getBackgroundTaskOutput = /**
+     * 返回准备完成后的真实日志，并记录首次读取位置。
+     *
+     * Args:
+     *     _sessionId (string): 当前测试会话。
+     *     _taskId (string): 当前终端任务编号。
+     *     offset (number): 读取日志的起始字节位置。
+     */
+      async (_sessionId, _taskId, offset) => {
+        offsets.push(offset);
+        return { text: "start\n", next_offset: 6, has_more: false };
+      };
+    try {
+      // 1. 任务已登记但终端尚未准备完成，此时可以先展开结果占位提示。
+      await page.render("s");
+      const details = list.children[0].children[2];
+      if (expanded) list.children[0].children[0].children[1].handlers.get("click")?.();
+      assert.deepEqual(offsets, []);
+
+      // 2. 日志引用出现后，已经展开或此时首次展开的详情都从零读取日志。
+      record.output_ref = "output";
+      await page.render("s");
+      if (!expanded) list.children[0].children[0].children[1].handlers.get("click")?.();
+      await flushEvents();
+      assert.equal(list.children[0].children[2], details);
+      assert.equal(details.children[0].textContent, "start\n");
+      assert.deepEqual(offsets, [0]);
+    } finally {
+      page.setActive(false);
+      view.close();
+    }
+  });
+}
+
+for (const initialRead of [true, false]) {
+  test(`任务结束时${initialRead ? "首次" : "续读"}日志请求尚未返回，响应后补读最终日志`, /**
+   * 终态刷新发生于日志请求期间时，保留补读需求并在原请求结束后继续读取。
+   */
+  async () => {
+    const view = createPresentation();
+    const list = new PresentationElement();
+    const page = new BackgroundTasksPage(list as unknown as HTMLElement,
+      new PresentationElement() as unknown as HTMLButtonElement);
+    const record: BackgroundTaskRecord = {
+      ...backgroundTask("shell", "output"), status: "running", ended_at: null,
+    };
+    let output = "start\n";
+    const offsets: number[] = [];
+    let release: (() => void) | undefined;
+    window.desktopPetApi.getBackgroundTasks = /** 返回终态刷新时最新的任务状态。 */
+      async () => [{ ...record }];
+    window.desktopPetApi.getBackgroundTaskOutput = /**
+     * 先取得文件当前内容，再延迟指定响应，模拟任务在响应返回之前结束。
+     *
+     * Args:
+     *     _sessionId (string): 当前测试会话。
+     *     _taskId (string): 当前终端任务编号。
+     *     offset (number): 请求开始时已读取的日志字节数。
+     */
+      async (_sessionId, _taskId, offset) => {
+        offsets.push(offset);
+        const snapshot = { text: output.slice(offset), next_offset: output.length, has_more: false };
+        if (offsets.length === (initialRead ? 1 : 2)) {
+          await new Promise<void>(/** 保留旧响应，等待测试安排终态刷新。 */
+            (resolve) => { release = resolve; });
+        }
+        return snapshot;
+      };
+    try {
+      // 1. 详情开始读取；续读场景先显示初始日志，再发起一个等待返回的请求。
+      page.setActive(true);
+      await page.render("s");
+      list.children[0].children[0].children[1].handlers.get("click")?.();
+      await flushEvents();
+      if (!initialRead) await page.render("s");
+
+      // 2. 任务在旧响应返回前写入错误并结束，连续刷新不能并发读取相同游标。
+      record.status = "failed";
+      record.ended_at = "2026-10-26T00:00:20Z";
+      output += "error\n";
+      await page.render("s");
+      await page.render("s");
+      assert.equal(offsets.length, initialRead ? 1 : 2);
+
+      // 3. 旧响应返回后补读一次，保留旧日志并补上最后错误，随后停止请求。
+      release?.();
+      await flushEvents();
+      const details = list.children[0].children[2];
+      assert.equal(details.children[0].textContent, "start\nerror\n");
+      assert.deepEqual(offsets, initialRead ? [0, 6] : [0, 6, 6]);
+      assert.equal(details.children[1].hidden, true);
+    } finally {
+      release?.();
+      page.setActive(false);
+      view.close();
+    }
+  });
+}
+
+for (const outcome of ["还有分页", "读取失败"] as const) {
+  test(`日志请求期间的刷新遇到${outcome}时保留手动加载入口`, /**
+   * 合并刷新后仍由用户继续翻页或重试，避免自动翻页和连续失败重试。
+   */
+  async () => {
+    const view = createPresentation();
+    const list = new PresentationElement();
+    const page = new BackgroundTasksPage(list as unknown as HTMLElement,
+      new PresentationElement() as unknown as HTMLButtonElement);
+    let release: (() => void) | undefined;
+    const offsets: number[] = [];
+    window.desktopPetApi.getBackgroundTasks = /** 返回当前终端任务。 */
+      async () => [backgroundTask("shell", "output")];
+    window.desktopPetApi.getBackgroundTaskOutput = /**
+     * 首次请求等待刷新发生后再返回分页或错误，后续手动请求返回最后一页。
+     *
+     * Args:
+     *     _sessionId (string): 当前测试会话。
+     *     _taskId (string): 当前终端任务编号。
+     *     offset (number): 当前请求的日志字节位置。
+     */
+      async (_sessionId, _taskId, offset) => {
+        offsets.push(offset);
+        if (offsets.length === 1) {
+          await new Promise<void>(/** 首次请求保持等待，使页面刷新与之交错。 */
+            (resolve) => { release = resolve; });
+          if (outcome === "读取失败") throw new Error("temporary failure");
+          return { text: "start\n", next_offset: 6, has_more: true };
+        }
+        return { text: offset === 0 ? "start\nend\n" : "end\n", next_offset: 10, has_more: false };
+      };
+    try {
+      // 1. 首次请求期间连续刷新，合并刷新需求并保持一个在途请求。
+      await page.render("s");
+      list.children[0].children[0].children[1].handlers.get("click")?.();
+      await page.render("s");
+      await page.render("s");
+      release?.();
+      await flushEvents();
+      const details = list.children[0].children[2];
+      assert.deepEqual(offsets, [0]);
+      assert.equal(details.children[1].hidden, false);
+      assert.equal(details.children[1].disabled, false);
+
+      // 2. 用户继续翻页或重试时，保留正确游标，最终正文只包含真实日志。
+      details.children[1].handlers.get("click")?.();
+      await flushEvents();
+      assert.equal(details.children[0].textContent, "start\nend\n");
+      assert.deepEqual(offsets, [0, outcome === "读取失败" ? 0 : 6]);
+      assert.equal(details.children[1].hidden, true);
+    } finally {
+      release?.();
+      page.setActive(false);
+      view.close();
+    }
+  });
+}
+
+for (const mode of ["轮询", "手动刷新", "重新展开"] as const) {
+  test(`任务读到当前末尾后通过${mode}继续显示新增日志和最终错误`, /**
+   * 模拟运行中日志持续追加，验证详情保留旧正文并从已有字节游标继续读取。
+   *
+   * Args:
+   *     t (TestContext): 提供可手动推进的任务轮询定时器。
+   */
+  async (t) => {
+    t.mock.timers.enable({ apis: ["setInterval"] });
+    const view = createPresentation();
+    const list = new PresentationElement();
+    const refresh = new PresentationElement();
+    const page = new BackgroundTasksPage(list as unknown as HTMLElement,
+      refresh as unknown as HTMLButtonElement);
+    const record: BackgroundTaskRecord = {
+      ...backgroundTask("shell", "output"), status: "running", ended_at: null,
+    };
+    let output = "start\n";
+    const offsets: number[] = [];
+    window.desktopPetApi.getBackgroundTasks = /** 返回同一任务当前的运行或失败状态。 */
+      async () => [record];
+    window.desktopPetApi.getBackgroundTaskOutput = /**
+     * 返回当前日志的剩余正文；读到末尾时仍允许任务随后追加内容。
+     *
+     * Args:
+     *     _sessionId (string): 当前测试会话。
+     *     _taskId (string): 当前终端任务编号。
+     *     offset (number): 上次已读取的日志字节数，测试正文使用 ASCII。
+     */
+      async (_sessionId, _taskId, offset) => {
+        offsets.push(offset);
+        return { text: output.slice(offset), next_offset: output.length, has_more: false };
+      };
+    /** 根据用户操作或轮询时机，触发详情继续读取新增日志。 */
+    async function refreshDetails(): Promise<void> {
+      if (mode === "轮询") {
+        t.mock.timers.tick(2000);
+      } else if (mode === "手动刷新") {
+        refresh.handlers.get("click")?.();
+      } else {
+        list.children[0].children[0].children[1].handlers.get("click")?.();
+        list.children[0].children[0].children[1].handlers.get("click")?.();
+      }
+      await flushEvents();
+    }
+    try {
+      // 1. 首次展开读到当前末尾，详情保留初始正文。
+      page.setActive(mode === "轮询");
+      await page.render("s");
+      list.children[0].children[0].children[1].handlers.get("click")?.();
+      await flushEvents();
+      const details = list.children[0].children[2];
+      assert.equal(details.children[0].textContent, "start\n");
+      assert.equal(details.children[1].hidden, true);
+
+      // 2. 文件继续增长时从旧游标读取，原详情和正文继续保留。
+      output += "progress\n";
+      await refreshDetails();
+      assert.equal(list.children[0].children[2], details);
+      assert.equal(details.children[0].textContent, "start\nprogress\n");
+      assert.deepEqual(offsets, [0, 6]);
+
+      // 3. 任务结束时仍能补读最后的错误，不因终态停止轮询而遗漏尾部。
+      record.status = "failed";
+      record.ended_at = "2026-10-26T00:00:20Z";
+      output += "error\n";
+      await refreshDetails();
+      assert.equal(details.children[0].textContent, "start\nprogress\nerror\n");
+      assert.deepEqual(offsets, [0, 6, 15]);
+      assert.equal(details.children[1].hidden, true);
+    } finally {
+      page.setActive(false);
+      view.close();
+    }
+  });
+}
+
+test("任务输出迟到时保留刷新后的卡片，切换会话后丢弃旧输出", /**
+ * 验证读取输出期间刷新和切换会话时，响应只进入原会话对应的卡片。
+ */
+async () => {
+  const view = createPresentation();
+  const list = new PresentationElement();
+  const page = new BackgroundTasksPage(list as unknown as HTMLElement,
+    new PresentationElement() as unknown as HTMLButtonElement);
+  let release: (() => void) | undefined;
+  let barrier = Promise.resolve();
+  window.desktopPetApi.getBackgroundTasks = /** 返回相同编号以检查跨会话隔离。 */
+    async () => [backgroundTask("shell", "output")];
+  window.desktopPetApi.getBackgroundTaskOutput = /**
+   * 等待测试放行后按字节游标返回输出，已经读完的页返回空正文。
+   *
+   * Args:
+   *     _sessionId (string): 当前测试会话。
+   *     _taskId (string): 当前终端任务编号。
+   *     offset (number): 请求读取的字节位置，完整输出占十二字节。
+   */
+    async (_sessionId, _taskId, offset) => {
+      await barrier;
+      return { text: offset === 0 ? "完整输出" : "", next_offset: 12, has_more: false };
+    };
+  try {
+    // 1. 请求期间刷新，输出应进入刷新后仍显示的同一卡片详情。
+    await page.render("s");
+    barrier = new Promise<void>(/** 保存输出请求的放行函数。 */ (resolve) => { release = resolve; });
+    list.children[0].children[0].children[1].handlers.get("click")?.();
+    const details = list.children[0].children[2];
+    await page.render("s");
+    release?.();
+    await flushEvents();
+    assert.equal(list.children[0].children[2], details);
+    assert.equal(details.children[0].textContent, "完整输出");
+
+    // 2. 新会话复用任务编号时，也不能接收上个会话尚未结束的输出。
+    await page.render("other");
+    barrier = new Promise<void>(/** 保存旧会话输出请求的放行函数。 */ (resolve) => { release = resolve; });
+    list.children[0].children[0].children[1].handlers.get("click")?.();
+    const oldDetails = list.children[0].children[2];
+    await page.render("s");
+    release?.();
+    await flushEvents();
+    assert.equal(oldDetails.children[0].textContent, "");
+    assert.equal(list.children[0].children[2].hidden, true);
+    assert.equal(list.children[0].children[2].children[0].textContent, "");
+  } finally {
+    release?.();
     page.setActive(false);
     view.close();
   }
