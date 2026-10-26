@@ -9,6 +9,7 @@ from app.schemas.runtime_types import (
 from app.agent.state.messages import (
     AssistantMessage,
     BaseMessage,
+    ContentPart,
     HumanMessage,
     RuntimeInputMessage,
     EnvironmentPerceptionMessage,
@@ -59,15 +60,13 @@ def append_transient_context(
     """
     if not state.temporary_context:
         return state.messages
-    # 1. 按来源和条目标识固定排列，插件重复更新不会改变历史消息正文。
-    description = "\n\n".join(
-        f"[{item.title}]\n{item.text}"
-        for _, item in sorted(state.temporary_context.items())
-    )
+    # 1. 按来源和条目标识固定排列，每项正文后紧跟对应图片，保留多插件背景与图片的对应关系。
+    content: list[ContentPart] = []
+    for _, item in sorted(state.temporary_context.items()):
+        content.append(TextContent(f"[{item.title}]\n{item.text}"))
+        content.extend(item.images)
     # 2. 环境消息只进入本次请求；checkpoint 保存的是条目，不保存这条派生消息。
-    return (*state.messages, EnvironmentPerceptionMessage(
-        perception_kind="model_context", description=description,
-    ))
+    return (*state.messages, EnvironmentPerceptionMessage(content=tuple(content)))
 
 
 def build_model_window(

@@ -38,7 +38,7 @@ def test_temporary_context_restores_from_checkpoint_without_entering_history_mes
 
 def test_environment_message_is_request_only_and_cannot_activate_agent() -> None:
     """环境背景不属于运行时输入，也不能作为持久状态消息追加或恢复。"""
-    message = EnvironmentPerceptionMessage(perception_kind="model_context", description="本次请求背景")
+    message = EnvironmentPerceptionMessage(content=text_content("本次请求背景"))
     state = AgentState.create_new("environment")
     assert not message.enters_protocol_log
     with pytest.raises(TypeError, match="Agent 输入"):

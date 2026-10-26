@@ -1,6 +1,6 @@
 {
   "MessageType": ["human", "system", "assistant", "tool", "context_summary", "task_result", "plugin_notification", "environment_perception", "subagent"],
-  "MediaKind": ["human", "tool", "screenshot", "mcp"],
+  "MediaKind": ["human", "tool", "screenshot", "mcp", "environment"],
   "ImageContextState": ["available", "compacted"],
   "HistoryRole": ["Human", "AI", "AI_Tool_Calling", "Plugin"],
   "ToolSource": ["local", "mcp"],

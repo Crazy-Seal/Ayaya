@@ -860,12 +860,13 @@ export const HistoryRole = {
 } as const;
 export type HistoryRole = typeof HistoryRole[keyof typeof HistoryRole] | Lowercase<typeof HistoryRole[keyof typeof HistoryRole]>;
 
-/** 区分真人附件、工具图片和可压缩截图的来源。 */
+/** 区分真人附件、工具图片、可压缩截图和临时环境背景图片的来源。 */
 export const MediaKind = {
   HUMAN: "human",
   TOOL: "tool",
   SCREENSHOT: "screenshot",
   MCP: "mcp",
+  ENVIRONMENT: "environment",
 } as const;
 export type MediaKind = typeof MediaKind[keyof typeof MediaKind];
 

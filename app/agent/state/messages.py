@@ -225,7 +225,7 @@ class ImageContent:
     Attributes:
         url (str): 图片地址、data URL 或历史中的相对文件路径。
         detail (str | None): 图片处理提示，模型适配器决定如何使用。
-        media_kind (MediaKind): human、tool、screenshot 或 mcp。
+        media_kind (MediaKind): 真人附件、工具图片、截图、MCP 图片或临时环境背景图片。
         storage_ref (str | None): 已保存的本地相对路径。
         context_state (ImageContextState): available 表示可以发送；compacted 表示不能重载图片。
     """
@@ -735,34 +735,28 @@ class EnvironmentPerceptionMessage(BaseMessage):
     """提供本次模型请求的环境背景，只在请求末尾临时组装。
 
     Attributes:
-        perception_kind (str): 本次背景的类别。
-        description (str): 从 State 临时条目组装的背景正文。
+        content (tuple[ContentPart, ...]): 从 State 临时条目按标题、正文和对应图片排列的背景内容。
     """
     message_type: ClassVar[MessageType] = MessageType.ENVIRONMENT_PERCEPTION
-    perception_kind: str
-    description: str
+    content: tuple[ContentPart, ...]
 
     def __post_init__(self) -> None:
-        """创建请求背景后校验类别和说明正文。
+        """创建请求背景后校验并保存不可变的图文内容。
 
         Raises:
-            ValueError: 环境背景类别为空。
-            TypeError: 说明不是字符串。
+            TypeError: 正文包含 Ayaya 图文内容块之外的对象。
         """
         BaseMessage.__post_init__(self)
-        if not self.perception_kind:
-            raise ValueError("EnvironmentPerceptionMessage.perception_kind 不能为空")
-        if not isinstance(self.description, str):
-            raise TypeError("EnvironmentPerceptionMessage.description 必须是字符串")
+        object.__setattr__(self, "content", validate_content(self.content))
 
     @property
     def text(self) -> str:
-        """供模型适配器读取环境背景正文。
+        """按条目段落读取环境背景文字，供纯文本请求和说明使用。
 
         Returns:
-            str: description 中的环境变化正文。
+            str: 按原顺序以空行分隔的背景文字，不包含图片数据。
         """
-        return self.description
+        return "\n\n".join(part.text for part in self.content if isinstance(part, TextContent))
 
     @property
     def enters_protocol_log(self) -> bool:
@@ -826,7 +820,7 @@ def message_from_storage_format(data: Mapping[str, Any]) -> BaseMessage:
     values = dict(data)
     del values["message_type"]
     try:
-        if kind in {MessageType.HUMAN, MessageType.ASSISTANT, MessageType.TOOL}:
+        if kind in {MessageType.HUMAN, MessageType.ASSISTANT, MessageType.TOOL, MessageType.ENVIRONMENT_PERCEPTION}:
             values["content"] = content_from_json(values.get("content"))
         if kind == MessageType.ASSISTANT:
             values["tool_calls"] = tuple(ToolCall.from_dict(call) for call in values.get("tool_calls", []))
@@ -858,7 +852,7 @@ def notification_text(message: BaseMessage) -> str:
     if isinstance(message, PluginNotificationMessage):
         return f"[插件通知：{message.plugin_name}/{message.name}]\n{message.text}"
     if isinstance(message, EnvironmentPerceptionMessage):
-        return f"[环境感知：{message.perception_kind}]\n{message.description}"
+        return f"[环境感知]\n{message.text}"
     if isinstance(message, SubagentMessage):
         return f"[子 Agent 返回：{message.subagent_name}]\n{message.result}"
     return message.text

@@ -47,12 +47,14 @@ class TemporaryContextItem(BaseModel):
     Attributes:
         title (str): 模型可读的背景标题。
         text (str): 框架或插件整理好的背景正文。
+        images (tuple[ImageContent, ...]): 正文对应的环境图片，使用 MediaKind.ENVIRONMENT 标记来源，随本轮 checkpoint 保存。
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     title: str
-    text: str
+    text: str = ""
+    images: tuple[ImageContent, ...] = ()
 
 
 class AgentState(BaseModel):
@@ -485,7 +487,7 @@ class AgentState(BaseModel):
 
         Args:
             key (str): 来源标识与条目标识，例如 memory.recalled。
-            item (TemporaryContextItem): 本轮提供给模型的标题和正文。
+            item (TemporaryContextItem): 本轮提供给模型的标题、正文和对应图片。
         """
         self.temporary_context[key] = item
 

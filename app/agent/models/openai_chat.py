@@ -565,8 +565,16 @@ class OpenAIChatCompletionsAdapter:
                 result.append({"role": "system", "content": message.text})
             elif isinstance(message, ContextSummaryMessage):
                 result.append({"role": "user", "name": CONTEXT_SUMMARY_MESSAGE_NAME, "content": message.text})
-            elif isinstance(message, (TaskResultMessage, PluginNotificationMessage, EnvironmentPerceptionMessage, SubagentMessage)):
-                names = {"plugin_notification": "runtime_plugin_notification", "task_result": "runtime_task_result", "environment_perception": "runtime_environment_perception", "subagent": "runtime_subagent"}
+            elif isinstance(message, EnvironmentPerceptionMessage):
+                # 1.2. 环境图片随对应背景发送；纯文本背景保持原有字符串格式。
+                content = notification_text(message)
+                if any(isinstance(part, ImageContent) for part in message.content):
+                    content = self._encode_content((
+                        TextContent("[环境感知]\n"), *message.content,
+                    ))
+                result.append({"role": "user", "name": "runtime_environment_perception", "content": content})
+            elif isinstance(message, (TaskResultMessage, PluginNotificationMessage, SubagentMessage)):
+                names = {"plugin_notification": "runtime_plugin_notification", "task_result": "runtime_task_result", "subagent": "runtime_subagent"}
                 result.append({"role": "user", "name": names[message.message_type], "content": notification_text(message)})
             else:
                 raise ValueError("适配器不支持的业务消息")

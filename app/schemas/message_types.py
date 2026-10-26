@@ -37,12 +37,14 @@ class MediaKind(StrEnum):
         TOOL (MediaKind): 本地工具返回的图片。
         SCREENSHOT (MediaKind): 可从活跃上下文压缩的截图。
         MCP (MediaKind): MCP 工具返回的图片。
+        ENVIRONMENT (MediaKind): 框架或插件提供的本轮临时环境背景图片。
     """
 
     HUMAN = "human"
     TOOL = "tool"
     SCREENSHOT = "screenshot"
     MCP = "mcp"
+    ENVIRONMENT = "environment"
 
 
 class ImageContextState(StrEnum):
