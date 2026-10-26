@@ -52,7 +52,7 @@ export const confirmApplicationExit = async (dialog: Pick<ConfirmDialog, "open">
       ? "当前后台任务状态查询出错，退出前请人工确认后台任务情况。"
       : activeCount > 0
         ? "当前有正在进行的后台任务，确认要退出吗？"
-        : "退出会停止当前对话和后台任务，是否继续？";
+        : "确认要退出吗？";
     const confirmed = await dialog.open({
       title: "退出 Ayaya",
       message,

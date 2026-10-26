@@ -34,7 +34,7 @@ for (const activeCount of [0, 3]) {
         assert.equal(dialogs[0].message, "当前有正在进行的后台任务，确认要退出吗？");
         assert.equal(dialogs[0].variant, "warning");
       } else {
-        assert.equal(dialogs[0].message, "退出会停止当前对话和后台任务，是否继续？");
+        assert.equal(dialogs[0].message, "确认要退出吗？");
         assert.equal(dialogs[0].variant, "danger");
       }
     } finally {

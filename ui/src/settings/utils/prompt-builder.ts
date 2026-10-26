@@ -57,7 +57,7 @@ export function buildSystemPrompt(
      *     string: 带尖括号的表情标签。
      */
     (l) => `<${l}>`).join("");
-    prompt += `\n你可以在对话中使用以下表情标签:${tagsList}使用时必须像示例一样使用尖括号<>包裹`;
+    prompt += `\n你可以在对话中使用以下表情标签：${tagsList}，使用时必须像示例一样使用尖括号<>包裹`;
   }
 
   return prompt;
