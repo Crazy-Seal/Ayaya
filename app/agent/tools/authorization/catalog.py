@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Callable
+from app.agent.tools.core.base import BaseTool
+from app.mcp.types import PluginMCPKey
 
 from app.schemas.tool_types import MCP_TOOL_KEY_PREFIX, ToolSource
 from app.agent.tools.core.registry import ToolRegistry
@@ -28,10 +31,28 @@ class ToolCatalogEntry:
     server_name: str | None = None
     available: bool = True
     unavailable_reason: str | None = None
+    plugin_name: str | None = None
+
+    @property
+    def policy_key(self) -> str:
+        """返回工具在所属插件或独立配置中的权限键。
+
+        Returns:
+            str: 不重复包含插件归属的权限键。
+        """
+        return ToolIdentity(self.source, self.name, self.server_id, self.plugin_name).policy_key
 
 
 class LocalToolCatalogAdapter:
     """把本地 ToolRegistry 投影为统一目录。"""
+
+    def __init__(self, plugin_tools_loader: Callable[[], dict[str, tuple[type[BaseTool], ...]]] | None = None) -> None:
+        """接收应用提供的插件工具声明，工具模块不反向发现插件。
+
+        Args:
+            plugin_tools_loader (Callable | None): 返回插件名和工具类声明的函数。
+        """
+        self._plugin_tools_loader = plugin_tools_loader
 
     def list_entries(self, settings: ChatSettings) -> list[ToolCatalogEntry]:
         """读取本地工具注册信息及会话权限，新工具没有保存权限时默认要求审批。
@@ -58,6 +79,18 @@ class LocalToolCatalogAdapter:
                     identity.stable_key, ToolPolicy.ASK
                 ),
             ))
+        for plugin_name, tools in (self._plugin_tools_loader() if self._plugin_tools_loader else {}).items():
+            item = settings.agent_plugins.get(plugin_name)
+            enabled = bool(item and item.enabled)
+            for tool in tools:
+                identity = ToolIdentity.local(tool.name, plugin_name=plugin_name)
+                result.append(ToolCatalogEntry(
+                    stable_key=identity.stable_key, source=ToolSource.LOCAL, name=tool.name,
+                    display_name=getattr(tool, "display_name", tool.name), description=tool.description,
+                    policy=item.tool_permissions.get(identity.policy_key, ToolPolicy.ASK) if item else ToolPolicy.ASK,
+                    plugin_name=plugin_name, available=enabled,
+                    unavailable_reason=None if enabled else "插件未启用",
+                ))
         return result
 
 
@@ -68,15 +101,18 @@ class MCPToolCatalogAdapter:
         self,
         settings_dao: MCPSettingsDao,
         connection_manager: MCPConnectionManager,
+        plugin_servers_loader: Callable | None = None,
     ) -> None:
         """保存服务配置与共享连接依赖，列表查询时再判断服务身份和工具可用性。
 
         Args:
             settings_dao (MCPSettingsDao): 读取 MCP 服务配置的数据访问对象。
             connection_manager (MCPConnectionManager): 进程共用的 MCP 连接及工具目录管理器。
+            plugin_servers_loader (Callable | None): 应用注入的会话插件连接声明查询。
         """
         self._settings_dao = settings_dao
         self._connection_manager = connection_manager
+        self._plugin_servers_loader = plugin_servers_loader
 
     def list_entries(self, settings: ChatSettings) -> list[ToolCatalogEntry]:
         """合并已连接工具与保存过的权限名称，服务禁用、失联或身份变化时明确标记不可用。
@@ -132,6 +168,48 @@ class MCPToolCatalogAdapter:
                         else "MCP 服务未启用、未连接或工具目录不可用"
                     ),
                 ))
+        if self._plugin_servers_loader is not None:
+            result.extend(self._plugin_entries(settings))
+        return result
+
+    def _plugin_entries(self, settings: ChatSettings) -> list[ToolCatalogEntry]:
+        """查询插件连接的工具目录，未连接时保留已保存的权限名称。
+
+        Args:
+            settings (ChatSettings): 当前会话设置。
+
+        Returns:
+            list[ToolCatalogEntry]: 带明确插件归属的 MCP 工具。
+        """
+        result = []
+        for plugin_name, item in settings.agent_plugins.items():
+            try:
+                servers = {server.id: server for server in self._plugin_servers_loader(settings, plugin_name)}
+            except ValueError:
+                servers = {}
+            server_ids = set(servers)
+            server_ids.update(key.split(":", 2)[1] for key in item.tool_permissions if key.startswith(MCP_TOOL_KEY_PREFIX))
+            for server_id in sorted(server_ids):
+                key = PluginMCPKey(settings.session_id, plugin_name, server_id)
+                available = bool(item.enabled and server_id in servers and
+                                 self._connection_manager.get_available_identity(key) == item.mcp_identities.get(server_id)
+                                 and item.mcp_identities.get(server_id))
+                descriptors = self._connection_manager.get_tools(key) if available else []
+                by_name = {descriptor.name: descriptor for descriptor in descriptors}
+                prefix = f"{MCP_TOOL_KEY_PREFIX}{server_id}:"
+                names = set(by_name) | {name[len(prefix):] for name in item.tool_permissions if name.startswith(prefix)}
+                for name in sorted(names):
+                    identity = ToolIdentity.mcp(server_id, name, plugin_name=plugin_name)
+                    descriptor = by_name.get(name)
+                    result.append(ToolCatalogEntry(
+                        stable_key=identity.stable_key, source=ToolSource.MCP, name=name, display_name=name,
+                        description=descriptor.description if descriptor else "",
+                        policy=item.tool_permissions.get(identity.policy_key, ToolPolicy.ASK),
+                        plugin_name=plugin_name, server_id=server_id,
+                        server_name=servers[server_id].name if server_id in servers else server_id,
+                        available=available and descriptor is not None,
+                        unavailable_reason=None if available and descriptor else "插件服务未连接或工具目录不可用",
+                    ))
         return result
 
 

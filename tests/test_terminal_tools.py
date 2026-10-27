@@ -369,23 +369,31 @@ def test_many_completion_notices_keep_all_tool_names_and_references(tmp_path: Pa
 
 
 @pytest.mark.parametrize("legacy", ["allow", "ask", "deny"])
-def test_tool_permission_rename_preserves_saved_decisions(legacy: str) -> None:
-    """新权限优先，旧 deny 不会因工具改名被绕过。
+def test_terminal_permissions_ignore_removed_tool_settings(legacy: str) -> None:
+    """当前终端工具按自身权限执行，已删除工具的设置不参与授权。
 
     Args:
-        legacy (str): 旧 run_ps 保存的权限。
+        legacy (str): 配置中残留的已删除工具权限。
     """
     from app.agent.tools.authorization.manager import ToolAuthorization
     from app.agent.tools.authorization.models import ToolIdentity
-    from app.crud.chat_settings_dao import _reconcile_local_tool_permissions
+    from app.services.chat_settings_service import ChatSettingsService
+    from app.crud.chat_settings_dao import ChatSettingsDao
+    from app.schemas.chat_settings import ChatSettings
 
-    settings = {"tool_permissions": {"local:run_ps": legacy}}
-    assert _reconcile_local_tool_permissions(settings)
-    assert settings["tool_permissions"]["local:exec_command"] == legacy
-    assert settings["tool_permissions"]["local:write_stdin"] == ("deny" if legacy == "deny" else "ask")
-    assert not _reconcile_local_tool_permissions(settings)
-    settings["tool_permissions"]["local:exec_command"] = "deny"
-    authorization = ToolAuthorization(lambda _: SimpleNamespace(tool_permissions=settings["tool_permissions"]))
+    original = ChatSettings(session_id="chat", model_name="test", openai_api_key="test",
+                            openai_base_url="http://localhost", temperature=0.7, system_prompt="test",
+                            context_strategy={}, tool_permissions={"local:run_ps": legacy})
+    authorization = ToolAuthorization(lambda _: original)
+    for name in ("exec_command", "write_stdin"):
+        assert authorization.get_policy("chat", ToolIdentity.local(name)) == "ask"
+    service = ChatSettingsService(ChatSettingsDao())
+    settings = service.normalize(original)
+    assert settings.tool_permissions["local:exec_command"] == "ask"
+    assert settings.tool_permissions["local:write_stdin"] == "ask"
+    assert service.normalize(settings) == settings
+    settings.tool_permissions["local:exec_command"] = "deny"
+    authorization = ToolAuthorization(lambda _: settings)
     assert authorization.get_policy("chat", ToolIdentity.local("exec_command")) == "deny"
 
 

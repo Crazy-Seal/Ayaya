@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from typing import Any, TYPE_CHECKING
 
 from app.schemas.message_types import MediaKind
@@ -13,7 +12,9 @@ from app.agent.tools.core.base import BaseTool, ToolContext, ToolResult
 from app.agent.tools.authorization.manager import ToolAuthorization
 from app.agent.tools.authorization.models import ToolIdentity
 from app.mcp.identity import tool_contract_fingerprint
-from app.mcp.types import MCPToolDescriptor
+from app.mcp.types import MCPToolDescriptor, PluginMCPKey
+from app.agent.tools.core.naming import exposed_tool_name
+from app.schemas.tool_types import PLUGIN_TOOL_NAMESPACE, ToolSource
 from app.mcp.limits import (
     MAX_CONTENT_PARTS,
     MAX_SCHEMA_DEPTH,
@@ -34,12 +35,7 @@ def build_exposed_tool_name(server_id: str, remote_tool_name: str) -> str:
     Returns:
         str: 带 Server 命名空间、最长 64 字符的模型可见名称。
     """
-    raw = f"mcp__{server_id}__{remote_tool_name}"
-    normalized = re.sub(r"[^A-Za-z0-9_-]", "_", raw)
-    if normalized == raw and len(normalized) <= 64:
-        return normalized
-    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:8]
-    return f"{normalized[:54]}__{digest}"[:64]
+    return exposed_tool_name("mcp", server_id, remote_tool_name)
 
 
 class MCPToolAdapter(BaseTool):
@@ -54,6 +50,7 @@ class MCPToolAdapter(BaseTool):
         descriptor: MCPToolDescriptor,
         connection_manager: "MCPConnectionManager",
         authorization: ToolAuthorization,
+        plugin_name: str | None = None,
     ):
         """初始化 MCP 工具适配器。
 
@@ -64,17 +61,20 @@ class MCPToolAdapter(BaseTool):
             descriptor (MCPToolDescriptor): 远端工具契约描述符。
             connection_manager (MCPConnectionManager): 进程级 MCP 连接管理器。
             authorization (ToolAuthorization): 统一工具授权层。
+            plugin_name (str | None): 插件服务的归属；为空时使用独立 MCP 身份。
         """
         self.session_id = session_id
         self.server_id = server_id
+        self.plugin_name = plugin_name
+        self.connection_key = PluginMCPKey(session_id, plugin_name, server_id) if plugin_name else server_id
         self.server_name = server_name
         self.remote_tool_name = descriptor.name
-        self.identity = ToolIdentity.mcp(server_id, descriptor.name)
-        self.name = build_exposed_tool_name(server_id, descriptor.name)
+        self.identity = ToolIdentity.mcp(server_id, descriptor.name, plugin_name=plugin_name)
+        self.name = exposed_tool_name(PLUGIN_TOOL_NAMESPACE, plugin_name, ToolSource.MCP, server_id, descriptor.name) if plugin_name else build_exposed_tool_name(server_id, descriptor.name)
         self.description = f"[MCP: {server_name}] {descriptor.description}".strip()
         self.parameters_schema = descriptor.input_schema or {"type": "object", "properties": {}}
         self.tool_contract_fingerprint = tool_contract_fingerprint(descriptor)
-        self.server_identity_fingerprint = connection_manager.get_server_identity(server_id)
+        self.server_identity_fingerprint = connection_manager.get_server_identity(self.connection_key)
         self.authorization_contract_fingerprint = hashlib.sha256(
             (
                 f"{self.server_identity_fingerprint}\0"
@@ -101,7 +101,7 @@ class MCPToolAdapter(BaseTool):
 
         try:
             result = await self._connection_manager.call_tool(
-                self.server_id,
+                self.connection_key,
                 self.remote_tool_name,
                 args,
                 execution_guard=self._execution_guard,
@@ -123,7 +123,7 @@ class MCPToolAdapter(BaseTool):
         if identity_error:
             return identity_error
         if self._connection_manager.get_tool_contract_fingerprint(
-            self.server_id, self.remote_tool_name
+            self.connection_key, self.remote_tool_name
         ) != self.tool_contract_fingerprint:
             return "MCP_APPROVAL_STALE: MCP 工具定义已变化，请重新发起调用并确认"
         return None
@@ -134,10 +134,8 @@ class MCPToolAdapter(BaseTool):
         Returns:
             str | None: 身份缺失或发生变化时的错误消息；校验通过时返回 ``None``。
         """
-        expected = self._authorization.get_bound_mcp_identity(
-            self.session_id, self.server_id
-        )
-        current = self._connection_manager.get_server_identity(self.server_id)
+        expected = self._authorization.get_bound_mcp_identity(self.session_id, self.server_id, self.plugin_name)
+        current = self._connection_manager.get_server_identity(self.connection_key)
         if (
             expected != self.server_identity_fingerprint
             or current != self.server_identity_fingerprint

@@ -6,9 +6,9 @@ from typing import Any
 
 from app.mcp.types import MCPToolDescriptor
 from app.schemas.mcp import (
-    MCPServerConfig,
-    StdioMCPServerConfig,
-    StreamableHttpMCPServerConfig,
+    MCPManagedConfig,
+    StdioMCPConnectionConfig,
+    StreamableHttpMCPConnectionConfig,
 )
 
 
@@ -30,13 +30,13 @@ def _stable_hash(value: dict[str, Any]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def server_identity_fingerprint(config: MCPServerConfig) -> str:
+def server_identity_fingerprint(config: MCPManagedConfig) -> str:
     """计算 MCP 服务实现身份。
 
     显示名称、启用状态和超时等运行参数不属于服务身份。
 
     Args:
-        config (MCPServerConfig): 待计算身份的 MCP Server 配置。
+        config (MCPManagedConfig): 插件连接参数或独立服务配置。
 
     Returns:
         str: 服务身份的十六进制摘要。
@@ -44,7 +44,7 @@ def server_identity_fingerprint(config: MCPServerConfig) -> str:
     Raises:
         TypeError: 配置不是受支持的 MCP Server 类型。
     """
-    if isinstance(config, StdioMCPServerConfig):
+    if isinstance(config, StdioMCPConnectionConfig):
         return _stable_hash({
             "transport": config.transport,
             "command": config.command,
@@ -52,7 +52,7 @@ def server_identity_fingerprint(config: MCPServerConfig) -> str:
             "cwd": config.cwd,
             "env": config.env,
         })
-    if isinstance(config, StreamableHttpMCPServerConfig):
+    if isinstance(config, StreamableHttpMCPConnectionConfig):
         return _stable_hash({
             "transport": config.transport,
             "url": config.url,

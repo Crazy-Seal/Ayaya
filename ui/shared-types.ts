@@ -301,12 +301,20 @@ export type ContextStrategyConfig = {
 export type AgentPluginSettings = {
   enabled: boolean;
   config: Record<string, unknown>;
+  tool_permissions?: Record<string, ToolPolicy>;
+  mcp_identities?: Record<string, string>;
+};
+
+/** 插件 MCP 的只读状态，不包含连接参数和启停开关。 */
+export type PluginMCPStatus = {
+  id: string;
+  name: string;
+  runtime: MCPServerView["runtime"];
 };
 
 export type PluginItem = {
   name: string;
   description: string;
-  inherent: boolean;
   default_config: Record<string, unknown>;
   config_schema: Record<string, unknown>;
 };
@@ -327,6 +335,8 @@ export type ToolPolicyView = {
   server_name?: string | null;
   available: boolean;
   unavailable_reason?: string | null;
+  plugin_name?: string | null;
+  policy_key?: string;
 };
 
 export type ChatHistoryItem = {
@@ -752,14 +762,15 @@ export interface DesktopPetApi {
   }>;
   getChatHistory: (sessionId: string, start: number, limit: number) => Promise<ChatHistoryItem[]>;
   getChatHistoryLastN: (sessionId: string, n: number) => Promise<ChatHistoryItem[]>;
-  updateChatSettings: (settings: ChatSettingsData) => Promise<ChatSettingsData>;
+  updateChatSettings: (settings: ChatSettingsData) => Promise<ChatSettingsData | { configuration_errors: Array<{ loc: Array<string | number>; msg: string }> }>;
   getToolPermissions: (sessionId: string) => Promise<ToolPolicyView[]>;
   updateToolPermissions: (
     sessionId: string,
     permissions: Record<string, ToolPolicy>
   ) => Promise<ToolPolicyView[]>;
   getAvailableTools: () => Promise<{ tools: ToolItem[] }>;
-  getAvailablePlugins: () => Promise<{ plugins: PluginItem[] }>;
+  getAvailablePlugins: () => Promise<{ plugins: PluginItem[]; errors?: string[] }>;
+  getPluginMcpStatuses: (sessionId: string) => Promise<Record<string, PluginMCPStatus[]>>;
   getMcpServers: () => Promise<MCPServerView[]>;
   testMcpServer: (config: MCPServerConfig) => Promise<MCPTestResult>;
   createMcpServer: (config: MCPServerConfig) => Promise<MCPServerView>;

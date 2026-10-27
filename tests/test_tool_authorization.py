@@ -87,11 +87,12 @@ def test_new_local_tool_defaults_to_ask_without_overwriting_saved_permissions(
         tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
         monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
     """
-    from app.crud import chat_settings_dao as dao_module
+    from app.agent.tools.core.registry import ToolRegistry
+    from app.services.chat_settings_service import ChatSettingsService
 
     monkeypatch.setattr(
-        dao_module,
-        "_known_local_tool_names",
+        ToolRegistry,
+        "list_tools",
         lambda: ["read_file", "screenshot", "exec_command"],
     )
     config_file = tmp_path / "chat_settings.yaml"
@@ -99,13 +100,17 @@ def test_new_local_tool_defaults_to_ask_without_overwriting_saved_permissions(
         yaml.safe_dump({"chat_models": [_configured_model()]}, sort_keys=False),
         encoding="utf-8",
     )
-    settings = ChatSettingsDao(config_file=config_file).get_chat_settings("configured-session")
+    dao = ChatSettingsDao(config_file=config_file)
+    service = ChatSettingsService(dao)
+    settings = service.get_chat_settings_by_session("configured-session")
 
     assert settings.tool_permissions["local:read_file"] == ToolPolicy.ALLOW
     assert settings.tool_permissions["local:screenshot"] == ToolPolicy.DENY
     assert settings.tool_permissions["local:exec_command"] == ToolPolicy.ASK
     assert settings.tool_permissions["mcp:filesystem:read"] == ToolPolicy.ALLOW
 
+    import asyncio
+    asyncio.run(service.update_chat_settings(settings))
     stored = yaml.safe_load(config_file.read_text(encoding="utf-8"))["chat_models"][0]
     assert stored["tool_permissions_schema_version"] == 1
     assert stored["tool_permissions"]["local:exec_command"] == "ask"

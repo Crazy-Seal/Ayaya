@@ -130,18 +130,16 @@ class ToolAuthorization:
         """
         try:
             settings = self._settings_loader(session_id)
+            if identity.plugin_name:
+                plugin = settings.agent_plugins.get(identity.plugin_name)
+                if plugin is None or not plugin.enabled:
+                    return ToolPolicy.DENY
+                return plugin.tool_permissions.get(identity.policy_key, ToolPolicy.ASK)
             if identity.source == ToolSource.MCP:
                 server = settings.mcp.servers.get(identity.server_id or "")
                 if server is None or not server.enabled:
                     return ToolPolicy.DENY
             policy = settings.tool_permissions.get(identity.stable_key)
-            # 1. 内存设置和测试注入也遵循权限改名规则，不依赖 YAML 已经完成补齐。
-            if policy is None and identity.source == ToolSource.LOCAL:
-                legacy = settings.tool_permissions.get("local:run_ps")
-                if identity.name == "exec_command" and legacy is not None:
-                    policy = legacy
-                elif identity.name == "write_stdin" and legacy == ToolPolicy.DENY:
-                    policy = ToolPolicy.DENY
             return ToolPolicy(policy if policy is not None else ToolPolicy.ASK)
         except Exception:
             return ToolPolicy.DENY
@@ -160,18 +158,23 @@ class ToolAuthorization:
         """
         return self.get_policy(session_id, descriptor_for_tool(tool).identity) != ToolPolicy.DENY
 
-    def get_bound_mcp_identity(self, session_id: str, server_id: str) -> str | None:
+    def get_bound_mcp_identity(self, session_id: str, server_id: str, plugin_name: str | None = None) -> str | None:
         """供 MCP 适配器读取会话中保存的服务身份摘要，与当前连接的服务比较。
 
         Args:
             session_id (str): 当前操作所属的会话编号。
             server_id (str): MCP 服务的稳定编号。
+            plugin_name (str | None): 插件服务归属；为空时查询独立服务的绑定。
 
         Returns:
             str | None: 会话配置记录的服务身份摘要；服务未启用、未绑定或配置读取失败时为空。
         """
         try:
-            server = self._settings_loader(session_id).mcp.servers.get(server_id)
+            settings = self._settings_loader(session_id)
+            if plugin_name:
+                plugin = settings.agent_plugins.get(plugin_name)
+                return plugin.mcp_identities.get(server_id) if plugin and plugin.enabled else None
+            server = settings.mcp.servers.get(server_id)
             return server.identity_fingerprint if server and server.enabled else None
         except Exception:
             return None

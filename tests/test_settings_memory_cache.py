@@ -24,6 +24,7 @@ from app.schemas.mcp import MCPModelSettings, MCPServersConfig, StdioMCPServerCo
 from app.schemas.tool_permissions import ToolPolicy
 from app.services.chat_settings_service import ChatSettingsService
 from app.services.mcp_service import MCPService
+from app.services.plugin_service import PluginService
 from app.services.settings_mutation import SettingsMutationCoordinator
 from app.services.tool_permission_service import ToolPermissionService
 
@@ -370,7 +371,7 @@ async def test_mcp_settings_changes_preserve_memory_cache(
     mcp_dao = MCPSettingsDao(tmp_path / "mcp_servers.yaml")
     mcp_dao.save(MCPServersConfig(servers=[] if operation == "create" else [server]))
     manager = ConnectionProbe()
-    service = MCPService(mcp_dao, chat_dao, manager)
+    service = MCPService(mcp_dao, chat_dao, manager, PluginService())
     assert chat_dao.get_chat_settings("session").tool_permissions["mcp:server:read"] == ToolPolicy.ALLOW
     previous = memory_module.get_memory_manager("session")
     other_previous = memory_module.get_memory_manager("other-session")
@@ -420,7 +421,7 @@ async def test_mcp_without_saved_chat_changes_preserves_memory_cache(
     mcp_dao = MCPSettingsDao(tmp_path / "mcp_servers.yaml")
     mcp_dao.save(MCPServersConfig(servers=[server]))
     manager = ConnectionProbe()
-    service = MCPService(mcp_dao, chat_dao, manager)
+    service = MCPService(mcp_dao, chat_dao, manager, PluginService())
     previous = memory_module.get_memory_manager("session")
     if operation == "connect_failure":
         manager.fail_connect = True

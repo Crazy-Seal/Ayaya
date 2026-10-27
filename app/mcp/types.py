@@ -1,5 +1,23 @@
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Awaitable, Callable
+from app.schemas.mcp import MCPConnectionConfig
+
+
+@dataclass(frozen=True)
+class PluginMCPKey:
+    """按会话、插件和服务区分连接，允许不同插件使用同名服务。"""
+
+    session_id: str
+    plugin_name: str
+    server_id: str
+
+    def __str__(self) -> str:
+        """返回日志中可识别归属的名称。
+
+        Returns:
+            str: 包含会话、插件和服务的名称。
+        """
+        return f"{self.session_id}/{self.plugin_name}/{self.server_id}"
 
 
 @dataclass(frozen=True)
@@ -17,3 +35,6 @@ class MCPToolDescriptor:
     description: str
     input_schema: dict[str, Any]
     annotations: dict[str, Any] = field(default_factory=dict)
+
+
+PluginMCPBinder = Callable[[PluginMCPKey, MCPConnectionConfig, list[MCPToolDescriptor]], Awaitable[None]]

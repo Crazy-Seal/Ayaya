@@ -4,6 +4,7 @@ from app.dependencies import get_chat_settings_service
 from app.schemas.chat_settings import ChatSettings
 from app.schemas.result import Result
 from app.services.chat_settings_service import ChatSettingsService
+from app.services.plugin_service import PluginConfigurationError
 
 router = APIRouter(tags=["chat_settings"])
 
@@ -29,6 +30,8 @@ async def add_chat_settings(
     try:
         saved = await chat_settings_service.add_chat_settings(chat_settings)
         return Result(data=saved, msg="success", code=200)
+    except PluginConfigurationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -54,6 +57,8 @@ async def delete_chat_settings(
     try:
         await chat_settings_service.delete_chat_settings(session_id)
         return Result(data=None, msg="success", code=200)
+    except PluginConfigurationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -104,5 +109,7 @@ async def update_chat_settings(
     try:
         saved = await chat_settings_service.update_chat_settings(chat_settings)
         return Result(data=saved, msg="success", code=200)
+    except PluginConfigurationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

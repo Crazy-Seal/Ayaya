@@ -38,7 +38,8 @@ from app.agent.state.messages import RuntimeInputMessage
 from app.agent.tools.core.runtime import ToolRuntimeFactory
 from app.agent.tools.core.base import BaseTool
 from app.agent.tools.authorization.manager import ToolAuthorization
-from app.schemas.mcp import MCPModelSettings
+from app.schemas.mcp import MCPModelSettings, MCPConnectionConfig
+from app.mcp.types import PluginMCPBinder
 
 if TYPE_CHECKING:
     from app.schemas.chat_settings import ChatSettings
@@ -62,6 +63,7 @@ class AgentConfig:
     plugins: list[str | dict[str, Any]] = field(default_factory=list)
     skills: list[str] = field(default_factory=list)
     mcp: MCPModelSettings = field(default_factory=MCPModelSettings)
+    plugin_mcp: dict[str, tuple[MCPConnectionConfig, ...]] = field(default_factory=dict)
 
 
 class Agent:
@@ -94,6 +96,7 @@ class Agent:
         desktop: DesktopOperations | None = None,
         session_state_manager: SessionStateManager | None = None,
         plugin_runtime_factory: PluginRuntimeFactory | None = None,
+        bind_plugin_mcp: PluginMCPBinder | None = None,
     ):
         """装配 Agent 执行依赖，将后台任务启动端口注入工具管道。
 
@@ -109,9 +112,11 @@ class Agent:
             desktop (DesktopOperations | None): 应用所有的共享桌面接口，Agent 仅传给 Pipeline。
             session_state_manager (SessionStateManager | None): worker 借给本次执行的对象；省略时由 Agent 创建并关闭。
             plugin_runtime_factory (PluginRuntimeFactory | None): 按插件名称和来源轮次创建 PluginRuntime 的注入工厂。
+            bind_plugin_mcp (PluginMCPBinder | None): 连接成功后由应用层保存身份与工具默认权限。
         """
         self.config = config
         self.mcp_connection_manager = mcp_connection_manager
+        self._bind_plugin_mcp = bind_plugin_mcp
 
         # 核心管理器
         self.tool_authorization = tool_authorization
@@ -218,9 +223,18 @@ class Agent:
 
             plugin_class = PluginRegistry.get(plugin_name)
             if plugin_class:
-                plugin = plugin_class(**plugin_params)
-                await self.plugin_manager.register(plugin)
-                logger.info(f"加载插件: {plugin_name}")
+                try:
+                    plugin = plugin_class(**plugin_params)
+                    await self.plugin_manager.register(plugin)
+                    from app.agent.plugins.tool_adapter import PluginToolAdapter
+                    for tool_class in plugin_class.tools:
+                        adapter = PluginToolAdapter(plugin_name, tool_class())
+                        if self.tool_manager.has(adapter.name):
+                            raise ValueError(f"插件工具公开名称冲突: {adapter.name}")
+                        self.tool_manager.register(adapter)
+                    logger.info(f"加载插件: {plugin_name}")
+                except Exception:
+                    logger.exception("插件 '%s' 初始化失败", plugin_name)
             else:
                 logger.warning(f"插件 '{plugin_name}' 不存在于注册表中")
 
@@ -273,7 +287,7 @@ class Agent:
 
     async def _setup_mcp(self) -> None:
         """连接当前模型启用的 Server 并组装 MCP 模型工具空间。"""
-        if not self.config.mcp.servers:
+        if not self.config.mcp.servers and not self.config.plugin_mcp:
             return
         if self.mcp_connection_manager is None or self.tool_authorization is None:
             logger.warning("MCP 配置已启用，但连接管理器或统一权限层未注入")
@@ -308,6 +322,31 @@ class Agent:
                     logger.error("MCP 工具名称与现有工具冲突，已跳过: %s", adapter.name)
                     continue
                 self.tool_manager.register(adapter)
+
+        # 1. 插件连接按会话、插件、服务区分；声明即随插件启用，无独立服务开关。
+        from app.mcp.types import PluginMCPKey
+        for plugin_name, servers in self.config.plugin_mcp.items():
+            if self.plugin_manager.get_plugin(plugin_name) is None:
+                continue
+            for server in servers:
+                key = PluginMCPKey(self.config.session_id, plugin_name, server.id)
+                try:
+                    descriptors = await self.mcp_connection_manager.connect(key)
+                    if self._bind_plugin_mcp is not None:
+                        await self._bind_plugin_mcp(key, server, descriptors)
+                    for descriptor in descriptors:
+                        adapter = MCPToolAdapter(
+                            session_id=self.config.session_id, server_id=server.id,
+                            server_name=server.name, descriptor=descriptor,
+                            connection_manager=self.mcp_connection_manager,
+                            authorization=self.tool_authorization, plugin_name=plugin_name,
+                        )
+                        if self.tool_manager.has(adapter.name):
+                            logger.error("插件 MCP 工具公开名称冲突，已跳过: %s", adapter.name)
+                            continue
+                        self.tool_manager.register(adapter)
+                except MCPConnectionError as exc:
+                    logger.error("插件 MCP '%s' 连接失败: %s", key, exc)
 
     async def run(
         self,

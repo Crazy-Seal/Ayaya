@@ -71,7 +71,7 @@ export class ToolsPage implements ISettingsPage {
    *     data (PageRenderData): 当前已保存设置和本页所需模型、插件及工具目录。
    */
   render(data: PageRenderData): void {
-    this.renderToolsTable(data.dependencies?.toolPolicies || []);
+    this.renderToolsTable((data.dependencies?.toolPolicies || []).filter(/** 插件工具在插件卡片中管理。 */ (tool) => !tool.plugin_name));
   }
 
   /**

@@ -50,6 +50,8 @@ import {
   fetchToolPermissions,
   saveToolPermissions,
   fetchAvailablePlugins,
+  fetchPluginMcpStatuses,
+  PluginConfigurationError,
 } from "./chat-settings.js";
 import { getMainWindow, getChatWindow, getSettingsWindow, getTrustedRendererPolicy, openSettingsWindow, openImagePreviewWindow, setChatPinned, updateChatAttention, deliverModelError,
   beginWindowGesture, endWindowGesture, setPetPointerInteractive } from "./window-manager.js";
@@ -362,7 +364,13 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
    */
   async (_event, payload: ChatSettingsData) => {
     // 1. 后端校验和保存成功后才通知名字变化，失败时不把未保存名字显示给其他窗口。
-    const settings = await updateChatSettings(payload);
+    let settings: ChatSettingsData;
+    try {
+      settings = await updateChatSettings(payload);
+    } catch (error) {
+      if (error instanceof PluginConfigurationError) return { configuration_errors: error.issues };
+      throw error;
+    }
     const update = { sessionId: settings.session_id, name: rememberAiName(settings.session_id, settings.name) };
     // 2. 只广播显示所需的会话编号和名字，不把 API Key 等设置交给聊天页面。
     for (const window of [getChatWindow(), getSettingsWindow()]) {
@@ -419,9 +427,10 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
    *     Promise<{ plugins: PluginItem[]; }>: 包装为 plugins 的插件列表。
    */
   async () => {
-    const plugins = await fetchAvailablePlugins();
-    return { plugins };
+    return await fetchAvailablePlugins();
   });
+  trustedIpc.handle(IpcChannel.GET_PLUGIN_MCP_STATUSES, /** 查询会话内插件 MCP 的只读状态。 */
+    async (_event, sessionId: string) => await fetchPluginMcpStatuses(sessionId));
 
   trustedIpc.handle(IpcChannel.GET_MCP_SERVERS, /**
    * MCP 设置页读取服务配置和运行状态。

@@ -93,6 +93,8 @@ If you only want basic chat, configure the chat model in the settings window fir
 
 ## Development Notes
 
+See the [Plugin Development Guide (Chinese)](docs/plugin-development.md) for plugin packages, configuration, tools, MCP services, hooks, and background tasks.
+
 The backend is a FastAPI app in `main.py`. Most backend code is under `app/`:
 
 - `app/routes/` contains HTTP and streaming API routes.

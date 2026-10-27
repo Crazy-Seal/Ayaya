@@ -101,9 +101,11 @@ export interface PageRenderData {
     availableTools?: ToolItem[];
     toolPolicies?: ToolPolicyView[];
     availablePlugins?: PluginItem[];
+    pluginErrors?: string[];
     expressionLabels?: string[];
     mcpServers?: MCPServerView[];
     mcpTools?: Map<string, MCPToolInfo[]>;
+    pluginMcpStatuses?: Record<string, import("../../shared-types.js").PluginMCPStatus[]>;
   };
 }
 

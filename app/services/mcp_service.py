@@ -4,24 +4,27 @@ from typing import Any
 
 from app.crud.chat_settings_dao import ChatSettingsDao
 from app.crud.mcp_settings_dao import MCPSettingsDao
-from app.schemas.mcp import MCPServerConfig, MCPServersConfig
+from app.schemas.mcp import MCPServerConfig, MCPServersConfig, MCPServerStatus
 from app.mcp.identity import server_identity_fingerprint
+from app.mcp.types import PluginMCPKey
 from app.mcp.mcp_connection_manager import (
     MCPConnectionError,
     MCPConnectionManager,
     MCPServerDisabledError,
 )
 from app.services.settings_mutation import SettingsMutationCoordinator
+from app.services.plugin_service import PluginService
 
 
 class MCPService:
-    """编排 MCP Server 配置、连接状态和模型权限同步。"""
+    """管理手动 MCP 服务配置与权限，并组合手动服务和插件服务的连接状态。"""
 
     def __init__(
         self,
         settings_dao: MCPSettingsDao,
         chat_settings_dao: ChatSettingsDao,
         connection_manager: MCPConnectionManager,
+        plugin_service: PluginService,
         mutation_coordinator: SettingsMutationCoordinator | None = None,
     ):
         """初始化 MCP 应用服务。
@@ -30,20 +33,55 @@ class MCPService:
             settings_dao (MCPSettingsDao): MCP Server 配置数据访问对象。
             chat_settings_dao (ChatSettingsDao): 模型配置数据访问对象。
             connection_manager (MCPConnectionManager): 进程级 MCP 连接管理器。
+            plugin_service (PluginService): 根据会话参数解析插件声明的 MCP 服务。
             mutation_coordinator (SettingsMutationCoordinator | None): 可选的跨配置写入协调器。
         """
         self.settings_dao = settings_dao
         self.chat_settings_dao = chat_settings_dao
         self.connection_manager = connection_manager
+        self.plugin_service = plugin_service
         self.mutation_coordinator = mutation_coordinator or SettingsMutationCoordinator()
 
     def list_servers(self) -> list[dict[str, Any]]:
-        """列出全部 MCP Server 及其运行状态。
+        """列出手动配置的 MCP 服务及其运行状态。
 
         Returns:
             list[dict[str, Any]]: 面向设置页的 Server 视图列表。
         """
         return [self._server_view(server) for server in self.settings_dao.load().servers]
+
+    def get_plugin_mcp_status(self, session_id: str) -> dict[str, list[dict[str, Any]]]:
+        """只读组合当前会话的插件 MCP 声明和连接状态，供插件设置页显示。
+
+        Args:
+            session_id (str): 设置页正在查看的会话编号。
+
+        Returns:
+            dict[str, list[dict[str, Any]]]: 按插件分组的服务名称与状态；单个插件查询失败时保留其他结果。
+
+        Raises:
+            KeyError: 会话配置不存在，由路由转换为 HTTP 404。
+        """
+        # 1. 读取保存的会话配置，声明解析和状态查询仅生成返回数据。
+        settings = self.chat_settings_dao.get_chat_settings(session_id)
+        result = {}
+        for name, item in settings.agent_plugins.items():
+            servers = []
+            try:
+                # 2. 解析启用插件的服务声明，按会话、插件和服务查询已有连接状态。
+                declarations = self.plugin_service.prepare_plugin(name, item).mcp_servers if item.enabled else ()
+                for server in declarations:
+                    key = PluginMCPKey(session_id, name, server.id)
+                    servers.append({"id": server.id, "name": server.name,
+                                    "runtime": self.connection_manager.get_status(key)})
+            except (ValueError, MCPConnectionError) as exc:
+                # 2.1. 当前插件失败时返回错误说明，继续处理其他插件。
+                servers.append({"id": "", "name": name, "runtime": {
+                    "status": MCPServerStatus.ERROR, "tool_count": 0,
+                    "last_error": str(exc), "instructions": None,
+                }})
+            result[name] = servers
+        return result
 
     async def test_server(self, server: MCPServerConfig) -> dict[str, Any]:
         """测试一份 MCP Server 配置但不持久化。

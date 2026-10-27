@@ -497,6 +497,7 @@
 
 .plugin-card {
   padding: var(--spacing-lg);
+  min-width: 0;
 }
 
 .plugin-card-header {
@@ -505,6 +506,11 @@
   gap: var(--spacing-md);
   align-items: flex-start;
   margin-bottom: var(--spacing-md);
+}
+
+.plugin-card-introduction {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .plugin-card-title {
@@ -519,30 +525,117 @@
   font-size: var(--font-size-helper);
 }
 
-.plugin-toggle,
-.plugin-config-field {
+.plugin-toggle {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--spacing-md);
+  flex: 0 0 auto;
+  gap: var(--spacing-sm);
+  min-height: 26px;
+  white-space: nowrap;
   color: var(--color-text-secondary);
   font-size: var(--font-size-label);
+  cursor: pointer;
+}
+
+.plugin-toggle .ui-checkbox,
+.plugin-config-field .ui-checkbox {
+  margin: 0;
+  flex: 0 0 auto;
 }
 
 .plugin-config-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
   gap: var(--spacing-md);
+  align-items: stretch;
 }
 
 .plugin-config-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+  min-width: 0;
+  border: 1px solid var(--color-border-default);
   border-radius: var(--radius-md);
-  background: var(--color-bg-surface);
+  background: color-mix(in srgb, var(--color-bg-base) 88%, var(--color-bg-elevated));
   padding: var(--spacing-md);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-label);
 }
 
 .plugin-config-field input[type="number"] {
-  width: 72px;
+  width: 112px;
+  max-width: 100%;
+}
+
+.plugin-config-grid > .plugin-config-field {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+}
+
+.plugin-config-field-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+  min-height: 26px;
+}
+
+.plugin-config-field-heading label {
+  min-width: 0;
+  color: var(--color-text-primary);
+  font-weight: 600;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.plugin-config-description,
+.plugin-config-details {
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.plugin-config-details {
+  color: var(--color-text-muted);
+}
+
+.plugin-config-field--json {
+  grid-column: 1 / -1;
+}
+
+.plugin-config-null {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.plugin-config-field > :is(.plugin-config-description, .plugin-config-details, .plugin-config-error):empty {
+  display: none;
+}
+
+.plugin-config-field .ui-control {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.plugin-config-field textarea {
+  min-height: 110px;
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+}
+
+.plugin-config-error {
+  color: var(--color-danger, #d64b4b);
+  font-size: var(--font-size-label);
+  overflow-wrap: anywhere;
+}
+
+.plugin-config-summary {
+  grid-column: 1 / -1;
 }
 
 .plugins-confirm-btn {

@@ -70,7 +70,7 @@ def test_agent_factory_uses_top_level_context_strategy(monkeypatch) -> None:
         context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100),
         agent_plugins={
             "memory": AgentPluginSettings(
-                enabled=False,
+                enabled=True,
                 config={
                     "enable_diary": False,
                     "enable_episodic": True,
@@ -92,8 +92,8 @@ def test_agent_factory_uses_top_level_context_strategy(monkeypatch) -> None:
     }
 
 
-def test_agent_factory_loads_memory_when_all_memory_types_are_disabled(monkeypatch) -> None:
-    """验证所有记忆类型禁用时仍装配固有记忆插件。
+def test_agent_factory_loads_enabled_memory_when_all_memory_types_are_disabled(monkeypatch) -> None:
+    """验证插件开启但全部记忆类别关闭时，仍按插件总开关装配。
 
     Args:
         monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
@@ -105,7 +105,7 @@ def test_agent_factory_loads_memory_when_all_memory_types_are_disabled(monkeypat
     settings = _settings(
         agent_plugins={
             "memory": AgentPluginSettings(
-                enabled=False,
+                enabled=True,
                 config={
                     "enable_diary": False,
                     "enable_episodic": False,
@@ -115,7 +115,9 @@ def test_agent_factory_loads_memory_when_all_memory_types_are_disabled(monkeypat
         }
     )
 
-    config = agent_factory.build_agent(settings)
+    from app.crud.chat_settings_dao import ChatSettingsDao
+    from app.services.chat_settings_service import ChatSettingsService
+    config = agent_factory.build_agent(ChatSettingsService(ChatSettingsDao()).normalize(settings))
 
     assert config.plugins[0]["config"] == {
         "enable_diary": False,

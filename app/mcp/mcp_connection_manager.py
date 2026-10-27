@@ -16,17 +16,21 @@ from app.schemas.mcp import MCPServerStatus
 from app.mcp.identity import server_identity_fingerprint, tool_contract_fingerprint
 from app.mcp.process_env import build_mcp_process_env
 from app.mcp.limits import limit_instructions, validate_tool_catalog
-from app.mcp.types import MCPToolDescriptor
+from app.mcp.types import MCPToolDescriptor, PluginMCPKey
 from app.schemas.mcp import (
     MCPServerConfig,
+    MCPManagedConfig,
     MCPServersConfig,
     StdioMCPServerConfig,
     StreamableHttpMCPServerConfig,
+    MCPConnectionConfig,
+    StdioMCPConnectionConfig,
+    StreamableHttpMCPConnectionConfig,
 )
 
 logger = logging.getLogger(__name__)
 
-SessionFactory = Callable[[MCPServerConfig], AsyncContextManager[Any]]
+SessionFactory = Callable[[MCPManagedConfig], AsyncContextManager[Any]]
 ExecutionGuard = Callable[[], str | None]
 
 
@@ -57,7 +61,7 @@ def _idle_event() -> asyncio.Event:
 class _Generation:
     """保存一次可排空的 MCP 连接代及其调用租约状态。"""
 
-    config: MCPServerConfig
+    config: MCPManagedConfig
     session: Any
     context_manager: AsyncContextManager[Any]
     accepting_calls: bool = True
@@ -70,7 +74,7 @@ class _Generation:
 class _Connection:
     """保存一个 MCP Server 的进程级连接状态。"""
 
-    config: MCPServerConfig
+    config: MCPManagedConfig
     status: MCPServerStatus = MCPServerStatus.DISCONNECTED
     generation: _Generation | None = None
     tools: list[MCPToolDescriptor] = field(default_factory=list)
@@ -82,58 +86,98 @@ class _Connection:
 class MCPConnectionManager:
     """管理 MCP Server 连接复用、工具目录和安全调用。"""
 
+    @staticmethod
+    def _enabled(config: MCPManagedConfig) -> bool:
+        """读取独立服务开关，插件连接参数始终随所属插件启用。
+
+        Args:
+            config (MCPManagedConfig): 当前服务的连接参数。
+
+        Returns:
+            bool: 独立服务开关或插件连接的启用状态。
+        """
+        return config.enabled if isinstance(config, (StdioMCPServerConfig, StreamableHttpMCPServerConfig)) else True
+
+    async def disconnect_plugin(self, session_id: str, plugin_name: str | None = None) -> None:
+        """关闭会话下的插件连接，保留其他会话及独立服务。
+
+        Args:
+            session_id (str): 参数变化、停用或被删除的会话。
+            plugin_name (str | None): 指定插件；为空时关闭本会话全部插件连接。
+        """
+        # 1. 保存记录快照，等待某个服务退出时，其他清理请求仍可处理剩余服务。
+        for key, state in list(self._connections.items()):
+            if isinstance(key, PluginMCPKey) and key.session_id == session_id and (plugin_name is None or key.plugin_name == plugin_name):
+                async with state.lifecycle_lock:
+                    # 2. 先确认仍是原记录，已经被其他请求移除的记录由该请求负责清理。
+                    if self._connections.get(key) is not state:
+                        continue
+                    # 3. 等待实际连接退出后再删除记录，排队的建连请求会重新取得有效记录。
+                    await self._disconnect_state_locked(state)
+                    self._connections.pop(key, None)
+
     def __init__(
         self,
         config_loader: Callable[[], MCPServersConfig],
         *,
         session_factory: SessionFactory | None = None,
+        plugin_config_loader: Callable[[PluginMCPKey], MCPConnectionConfig] | None = None,
     ):
         """初始化 MCP 连接管理器。
 
         Args:
             config_loader (Callable[[], MCPServersConfig]): 按需读取最新 MCP Server 配置的函数。
             session_factory (SessionFactory | None): 可选的 MCP ClientSession 上下文工厂。
+            plugin_config_loader (Callable | None): 应用注入的插件连接参数解析函数。
         """
         self._config_loader = config_loader
+        self._plugin_config_loader = plugin_config_loader
         self._session_factory = session_factory or self._default_session_factory
-        self._connections: dict[str, _Connection] = {}
+        self._connections: dict[str | PluginMCPKey, _Connection] = {}
 
-    def _find_config(self, server_id: str) -> MCPServerConfig:
+    def _find_config(self, server_id: str | PluginMCPKey) -> MCPManagedConfig:
         """按 ID 读取最新 MCP Server 配置。
 
         Args:
-            server_id (str): MCP Server 的稳定标识。
+            server_id (str | PluginMCPKey): MCP Server 的稳定标识。
 
         Returns:
-            MCPServerConfig: 与 ID 对应的配置。
+            MCPManagedConfig: 与 ID 对应的配置。
 
         Raises:
             MCPConnectionError: 指定 Server 不存在。
         """
+        if isinstance(server_id, PluginMCPKey):
+            if self._plugin_config_loader is None:
+                raise MCPConnectionError("插件连接参数解析入口未配置")
+            try:
+                return self._plugin_config_loader(server_id)
+            except (KeyError, ValueError) as exc:
+                raise MCPConnectionError(f"插件 MCP '{server_id}' 不可用: {exc}") from exc
         for config in self._config_loader().servers:
             if config.id == server_id:
                 return config
         raise MCPConnectionError(f"MCP Server '{server_id}' 不存在")
 
-    def get_server_config(self, server_id: str) -> MCPServerConfig:
+    def get_server_config(self, server_id: str | PluginMCPKey) -> MCPManagedConfig:
         """读取指定 MCP Server 的最新全局配置。
 
         Args:
-            server_id (str): MCP Server 的稳定标识。
+            server_id (str | PluginMCPKey): MCP Server 的稳定标识。
 
         Returns:
-            MCPServerConfig: 与 ID 对应的只读 Pydantic 配置对象。
+            MCPManagedConfig: 与 ID 对应的只读 Pydantic 配置对象。
 
         Raises:
             MCPConnectionError: 指定 Server 不存在。
         """
         return self._find_config(server_id)
 
-    async def connect(self, server_id: str) -> list[MCPToolDescriptor]:
+    async def connect(self, server_id: str | PluginMCPKey) -> list[MCPToolDescriptor]:
         """建立或复用 MCP 连接并刷新工具目录。
 
         Args:
-            server_id (str): 要连接的 MCP Server ID。
+            server_id (str | PluginMCPKey): 要连接的 MCP Server ID。
 
         Returns:
             list[MCPToolDescriptor]: Server 当前暴露的工具描述符副本。
@@ -141,66 +185,77 @@ class MCPConnectionManager:
         Raises:
             MCPConnectionError: 连接、初始化或工具目录校验失败。
         """
-        config = self._find_config(server_id)
-        state = self._connections.setdefault(server_id, _Connection(config=config))
-        async with state.lifecycle_lock:
-            if state.config != config:
-                await self._disconnect_state_locked(state)
+        # 1. 按完整服务身份取得记录；等待期间被移除时，重新取得当前记录再处理。
+        while True:
+            config = self._find_config(server_id)
+            state = self._connections.setdefault(server_id, _Connection(config=config))
+            async with state.lifecycle_lock:
+                if self._connections.get(server_id) is not state:
+                    continue
+
+                # 2. 等待锁期间参数或插件开关可能变化，以当前应用配置决定是否连接。
+                config = self._find_config(server_id)
+                if state.generation is not None and (
+                    state.config != config
+                    or not self._enabled(config)
+                    or state.status != MCPServerStatus.AVAILABLE
+                ):
+                    # 2.1. 关闭旧连接也会异步等待，退出完成后再次读取最新参数。
+                    await self._disconnect_state_locked(state)
+                    config = self._find_config(server_id)
                 state.config = config
-            if not config.enabled:
-                if state.generation is not None:
-                    await self._disconnect_state_locked(state, status=MCPServerStatus.DISABLED)
-                state.config = config
-                state.status = MCPServerStatus.DISABLED
+
+                # 3. 当前服务已禁用则结束请求；相同参数的可用连接由多个请求共用。
+                if not self._enabled(config):
+                    state.status = MCPServerStatus.DISABLED
+                    state.last_error = None
+                    raise MCPServerDisabledError(f"MCP Server '{server_id}' 已禁用")
+                if state.status == MCPServerStatus.AVAILABLE and state.generation is not None:
+                    return list(state.tools)
+
+                # 4. 在仍受管理的记录上完成握手、目录校验和连接登记。
+                state.status = MCPServerStatus.CONNECTING
                 state.last_error = None
-                raise MCPServerDisabledError(f"MCP Server '{server_id}' 已禁用")
-            if state.status == MCPServerStatus.AVAILABLE and state.generation is not None:
-                return list(state.tools)
-
-            if state.generation is not None:
-                await self._disconnect_state_locked(state)
-
-            state.status = MCPServerStatus.CONNECTING
-            state.last_error = None
-            context_manager = self._session_factory(config)
-            try:
-                session = await asyncio.wait_for(
-                    context_manager.__aenter__(), timeout=config.connect_timeout_seconds
-                )
-                initialize_result = await asyncio.wait_for(
-                    session.initialize(), timeout=config.connect_timeout_seconds
-                )
-                tools_result = await asyncio.wait_for(
-                    session.list_tools(), timeout=config.connect_timeout_seconds
-                )
-                raw_tools = validate_tool_catalog(tools_result.tools)
-                tools = [self._to_descriptor(tool) for tool in raw_tools]
-                state.generation = _Generation(
-                    config=config,
-                    session=session,
-                    context_manager=context_manager,
-                )
-                state.instructions = limit_instructions(getattr(initialize_result, "instructions", None))
-                state.tools = tools
-                state.status = MCPServerStatus.AVAILABLE
-                return list(tools)
-            except Exception as exc:
+                context_manager = self._session_factory(config)
                 try:
-                    await context_manager.__aexit__(type(exc), exc, exc.__traceback__)
-                except Exception:
-                    pass
-                state.generation = None
-                state.tools = []
-                state.status = MCPServerStatus.ERROR
-                state.last_error = self._sanitize_error(config, exc)
-                logger.error("MCP '%s' 连接失败: %s", server_id, state.last_error)
-                raise MCPConnectionError(f"MCP '{server_id}' 连接失败: {state.last_error}") from exc
+                    session = await asyncio.wait_for(
+                        context_manager.__aenter__(), timeout=config.connect_timeout_seconds
+                    )
+                    initialize_result = await asyncio.wait_for(
+                        session.initialize(), timeout=config.connect_timeout_seconds
+                    )
+                    tools_result = await asyncio.wait_for(
+                        session.list_tools(), timeout=config.connect_timeout_seconds
+                    )
+                    raw_tools = validate_tool_catalog(tools_result.tools)
+                    tools = [self._to_descriptor(tool) for tool in raw_tools]
+                    state.generation = _Generation(
+                        config=config,
+                        session=session,
+                        context_manager=context_manager,
+                    )
+                    state.instructions = limit_instructions(getattr(initialize_result, "instructions", None))
+                    state.tools = tools
+                    state.status = MCPServerStatus.AVAILABLE
+                    return list(tools)
+                except Exception as exc:
+                    # 5. 握手或目录校验失败时释放本次资源，记录错误供界面查询。
+                    try:
+                        await context_manager.__aexit__(type(exc), exc, exc.__traceback__)
+                    except Exception:
+                        pass
+                    state.generation = None
+                    state.tools = []
+                    state.status = MCPServerStatus.ERROR
+                    state.last_error = self._sanitize_error(config, exc)
+                    logger.error("MCP '%s' 连接失败: %s", server_id, state.last_error)
+                    raise MCPConnectionError(f"MCP '{server_id}' 连接失败: {state.last_error}") from exc
 
-    async def disconnect(self, server_id: str) -> None:
+    async def disconnect(self, server_id: str | PluginMCPKey) -> None:
         """等待活动调用结束后断开指定 MCP Server。
 
         Args:
-            server_id (str): 要断开的 MCP Server ID。
+            server_id (str | PluginMCPKey): 要断开的 MCP Server ID。
         """
         state = self._connections.get(server_id)
         if state is not None:
@@ -212,20 +267,20 @@ class MCPConnectionManager:
                     latest = None
                 if latest is not None:
                     state.config = latest
-                    state.status = MCPServerStatus.DISABLED if not latest.enabled else MCPServerStatus.DISCONNECTED
+                    state.status = MCPServerStatus.DISABLED if not self._enabled(latest) else MCPServerStatus.DISCONNECTED
 
-    async def reconnect(self, server_id: str) -> list[MCPToolDescriptor]:
+    async def reconnect(self, server_id: str | PluginMCPKey) -> list[MCPToolDescriptor]:
         """断开并重新连接指定 MCP Server。
 
         Args:
-            server_id (str): 要重连的 MCP Server ID。
+            server_id (str | PluginMCPKey): 要重连的 MCP Server ID。
 
         Returns:
             list[MCPToolDescriptor]: 重连后获取的工具描述符。
         """
         # 1. 重连前检查最新配置；已禁用则先断开旧连接，记录禁用状态后拒绝重连。
         config = self._find_config(server_id)
-        if not config.enabled:
+        if not self._enabled(config):
             await self.disconnect(server_id)
             state = self._connections.setdefault(server_id, _Connection(config=config))
             state.config = config
@@ -253,11 +308,11 @@ class MCPConnectionManager:
             except MCPConnectionError:
                 continue
 
-    async def test_config(self, config: MCPServerConfig) -> dict[str, Any]:
+    async def test_config(self, config: MCPManagedConfig) -> dict[str, Any]:
         """使用独立临时会话测试一份未持久化的 Server 配置。
 
         Args:
-            config (MCPServerConfig): 待测试的 MCP Server 配置。
+            config (MCPManagedConfig): 待测试的 MCP Server 配置。
 
         Returns:
             dict[str, Any]: 包含状态、Server instructions 和工具目录的诊断结果。
@@ -292,11 +347,11 @@ class MCPConnectionManager:
             if entered:
                 await context_manager.__aexit__(None, None, None)
 
-    def get_tools(self, server_id: str) -> list[MCPToolDescriptor]:
+    def get_tools(self, server_id: str | PluginMCPKey) -> list[MCPToolDescriptor]:
         """获取已缓存的工具目录副本。
 
         Args:
-            server_id (str): MCP Server ID。
+            server_id (str | PluginMCPKey): MCP Server ID。
 
         Returns:
             list[MCPToolDescriptor]: 当前缓存的工具描述符；尚未连接时返回空列表。
@@ -304,11 +359,11 @@ class MCPConnectionManager:
         state = self._connections.get(server_id)
         return list(state.tools) if state else []
 
-    def get_tool_contract_fingerprint(self, server_id: str, tool_name: str) -> str | None:
+    def get_tool_contract_fingerprint(self, server_id: str | PluginMCPKey, tool_name: str) -> str | None:
         """获取当前工具契约指纹。
 
         Args:
-            server_id (str): MCP Server ID。
+            server_id (str | PluginMCPKey): MCP Server ID。
             tool_name (str): Server 中的原始工具名称。
 
         Returns:
@@ -320,17 +375,17 @@ class MCPConnectionManager:
         )
         return tool_contract_fingerprint(descriptor) if descriptor is not None else None
 
-    def get_status(self, server_id: str) -> dict[str, Any]:
+    def get_status(self, server_id: str | PluginMCPKey) -> dict[str, Any]:
         """获取 MCP Server 的可展示运行状态。
 
         Args:
-            server_id (str): MCP Server ID。
+            server_id (str | PluginMCPKey): MCP Server ID。
 
         Returns:
             dict[str, Any]: 状态、工具数量、最近错误和 instructions。
         """
         config = self._find_config(server_id)
-        if not config.enabled:
+        if not self._enabled(config):
             return {
                 "status": MCPServerStatus.DISABLED,
                 "tool_count": 0,
@@ -352,22 +407,22 @@ class MCPConnectionManager:
             "instructions": state.instructions,
         }
 
-    def get_server_identity(self, server_id: str) -> str:
+    def get_server_identity(self, server_id: str | PluginMCPKey) -> str:
         """计算指定 MCP Server 的最新身份指纹。
 
         Args:
-            server_id (str): MCP Server ID。
+            server_id (str | PluginMCPKey): MCP Server ID。
 
         Returns:
             str: 最新配置对应的服务身份指纹。
         """
         return server_identity_fingerprint(self._find_config(server_id))
 
-    def get_available_identity(self, server_id: str) -> str | None:
+    def get_available_identity(self, server_id: str | PluginMCPKey) -> str | None:
         """获取当前可用连接绑定的服务身份。
 
         Args:
-            server_id (str): MCP Server ID。
+            server_id (str | PluginMCPKey): MCP Server ID。
 
         Returns:
             str | None: 可用且配置未漂移时的身份指纹，否则返回 ``None``。
@@ -382,7 +437,7 @@ class MCPConnectionManager:
 
     async def call_tool(
         self,
-        server_id: str,
+        server_id: str | PluginMCPKey,
         tool_name: str,
         arguments: dict,
         *,
@@ -391,7 +446,7 @@ class MCPConnectionManager:
         """在可用连接代上安全调用 MCP 工具。
 
         Args:
-            server_id (str): MCP Server ID。
+            server_id (str | PluginMCPKey): MCP Server ID。
             tool_name (str): Server 中的原始工具名称。
             arguments (dict): 传递给 MCP 工具的参数。
             execution_guard (ExecutionGuard | None): 获得调用租约前执行的最终安全校验。
@@ -404,7 +459,7 @@ class MCPConnectionManager:
         """
         # 1. 调用前读取当前配置并确认启用；需要连接时等待连接完成，关闭中的连接拒绝新调用。
         config = self._find_config(server_id)
-        if not config.enabled:
+        if not self._enabled(config):
             raise MCPConnectionError(f"MCP Server '{server_id}' 已禁用")
         state = self._connections.get(server_id)
         if (
@@ -557,7 +612,7 @@ class MCPConnectionManager:
                 )
         state.tools = []
         state.instructions = None
-        state.status = status or (MCPServerStatus.DISABLED if not state.config.enabled else MCPServerStatus.DISCONNECTED)
+        state.status = status or (MCPServerStatus.DISABLED if not self._enabled(state.config) else MCPServerStatus.DISCONNECTED)
 
     @staticmethod
     def _to_descriptor(tool: Any) -> MCPToolDescriptor:
@@ -597,22 +652,22 @@ class MCPConnectionManager:
         }
 
     @staticmethod
-    def _sanitize_error(config: MCPServerConfig, exc: Exception) -> str:
+    def _sanitize_error(config: MCPManagedConfig, exc: Exception) -> str:
         """从错误消息中移除 MCP 凭据和 URL 敏感部分。
 
         Args:
-            config (MCPServerConfig): 产生错误的 MCP Server 配置。
+            config (MCPManagedConfig): 产生错误的 MCP Server 配置。
             exc (Exception): 原始异常。
 
         Returns:
             str: 已脱敏并限制长度的错误文本。
         """
         value = str(exc)
-        secrets = config.env.values() if isinstance(config, StdioMCPServerConfig) else config.headers.values()
+        secrets = config.env.values() if isinstance(config, StdioMCPConnectionConfig) else config.headers.values()
         for secret in secrets:
             if secret:
                 value = value.replace(secret, "***")
-        if isinstance(config, StreamableHttpMCPServerConfig):
+        if isinstance(config, StreamableHttpMCPConnectionConfig):
             parsed = urlsplit(config.url)
             safe_url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
             value = value.replace(config.url, safe_url)
@@ -624,11 +679,11 @@ class MCPConnectionManager:
 
     @staticmethod
     @asynccontextmanager
-    async def _default_session_factory(config: MCPServerConfig):
+    async def _default_session_factory(config: MCPManagedConfig):
         """创建与传输类型匹配的 MCP ClientSession 上下文。
 
         Args:
-            config (MCPServerConfig): MCP Server 配置。
+            config (MCPManagedConfig): MCP Server 配置。
 
         Yields:
             已进入但尚未执行 ``initialize`` 的 MCP ClientSession。
@@ -640,7 +695,7 @@ class MCPConnectionManager:
         from mcp.client.stdio import stdio_client
         from mcp.client.streamable_http import streamable_http_client
 
-        if isinstance(config, StdioMCPServerConfig):
+        if isinstance(config, StdioMCPConnectionConfig):
             params = StdioServerParameters(
                 command=config.command,
                 args=config.args,
@@ -652,7 +707,7 @@ class MCPConnectionManager:
                     yield session
             return
 
-        if isinstance(config, StreamableHttpMCPServerConfig):
+        if isinstance(config, StreamableHttpMCPConnectionConfig):
             async with httpx.AsyncClient(
                 headers=config.headers or None,
                 timeout=httpx.Timeout(

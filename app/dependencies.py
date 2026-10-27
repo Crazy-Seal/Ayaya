@@ -24,6 +24,9 @@ from app.agent.state.manager import SessionStateManager
 from app.mcp.mcp_connection_manager import MCPConnectionManager
 from app.services.mcp_service import MCPService
 from app.services.chat_settings_service import ChatSettingsService
+from app.services.plugin_service import PluginService
+from app.schemas.chat_settings import ChatSettings
+from app.schemas.mcp import MCPConnectionConfig
 from app.services.chat_history_service import ChatHistoryService
 from app.services.tool_permission_service import ToolPermissionService
 from app.services.settings_mutation import SettingsMutationCoordinator
@@ -125,6 +128,16 @@ def get_settings_mutation_coordinator() -> SettingsMutationCoordinator:
 
 
 @lru_cache(maxsize=1)
+def get_plugin_service() -> PluginService:
+    """提供设置与运行装配共用的插件声明和归属处理。
+
+    Returns:
+        PluginService: 使用应用配置存储及共用写入锁的插件模块。
+    """
+    return PluginService(get_chat_settings_dao(), get_settings_mutation_coordinator())
+
+
+@lru_cache(maxsize=1)
 def get_mcp_connection_manager() -> MCPConnectionManager:
     """构造并缓存进程级 MCP 连接管理器。
 
@@ -132,7 +145,7 @@ def get_mcp_connection_manager() -> MCPConnectionManager:
         MCPConnectionManager: 进程级 MCP 连接管理器。
     """
     dao = get_mcp_settings_dao()
-    return MCPConnectionManager(dao.load)
+    return MCPConnectionManager(dao.load, plugin_config_loader=get_plugin_service().connection_config)
 
 
 @lru_cache(maxsize=1)
@@ -205,8 +218,14 @@ def create_runtime_scheduler(supervisor: TaskSupervisor, runtime_queue: asyncio.
     mcp_manager = get_mcp_connection_manager()
     authorization = get_tool_authorization()
     desktop = get_desktop_controller()
+    settings_service = get_chat_settings_service(
+        chat_settings_dao=settings_dao,
+        mcp_settings_dao=get_mcp_settings_dao(),
+        connection_manager=mcp_manager,
+        mutation_coordinator=get_settings_mutation_coordinator(),
+    )
     def create_agent(session_id: str, session_state_manager: SessionStateManager):
-        """真正执行时读取会话设置，创建本次 Agent。
+        """真正执行时读取会话设置，经统一参数与权限整理后创建本次 Agent。
 
         Args:
             session_id (str): 当前执行会话。
@@ -215,8 +234,9 @@ def create_runtime_scheduler(supervisor: TaskSupervisor, runtime_queue: asyncio.
         Returns:
             Agent: 注入共享工具依赖的本次执行对象。
         """
+        prepared = settings_service.prepare(settings_dao.get_chat_settings(session_id))
         return build_agent(
-            settings_dao.get_chat_settings(session_id),
+            prepared.settings,
             mcp_manager,
             authorization,
             lambda tool_name, run_id, tool_call_id: ToolRuntime(
@@ -225,6 +245,9 @@ def create_runtime_scheduler(supervisor: TaskSupervisor, runtime_queue: asyncio.
             session_state_manager=session_state_manager,
             plugin_runtime_factory=lambda plugin_name, run_id: PluginRuntime(
                 plugin_name, session_id, run_id, _supervisor=supervisor, _runtime_queue=runtime_queue),
+            bind_plugin_mcp=get_plugin_service().bind_mcp,
+            plugin_mcp={name: plugin.mcp_servers for name, plugin in prepared.plugins.items()
+                        if prepared.settings.agent_plugins[name].enabled},
         )
 
     scheduler = AgentRuntimeScheduler(
@@ -259,6 +282,7 @@ def get_chat_settings_service(
         mcp_settings_dao=mcp_settings_dao,
         connection_manager=connection_manager,
         mutation_coordinator=mutation_coordinator,
+        plugin_service=get_plugin_service(),
     )
 
 
@@ -283,6 +307,7 @@ def get_mcp_service(
         mcp_settings_dao,
         chat_settings_dao,
         connection_manager,
+        get_plugin_service(),
         mutation_coordinator,
     )
 
@@ -304,11 +329,26 @@ def get_tool_permission_service(
     Returns:
         ToolPermissionService: 独立处理权限配置的应用服务，不持有执行时授权对象。
     """
+    plugins = get_plugin_service()
+
+    def plugin_servers(settings: ChatSettings, plugin_name: str) -> tuple[MCPConnectionConfig, ...]:
+        """为权限目录准备指定启用插件的连接声明。
+
+        Args:
+            settings (ChatSettings): 权限页正在查询的会话设置。
+            plugin_name (str): 当前目录项所属的插件名称。
+
+        Returns:
+            tuple[MCPConnectionConfig, ...]: 启用插件的服务声明，禁用时为空。
+        """
+        item = settings.agent_plugins[plugin_name]
+        return plugins.prepare_plugin(plugin_name, item).mcp_servers if item.enabled else ()
+
     return ToolPermissionService(
         chat_settings_dao,
         UnifiedToolCatalog(
-            LocalToolCatalogAdapter(),
-            MCPToolCatalogAdapter(mcp_settings_dao, connection_manager),
+            LocalToolCatalogAdapter(plugins.local_tools),
+            MCPToolCatalogAdapter(mcp_settings_dao, connection_manager, plugin_servers),
         ),
         mutation_coordinator,
     )

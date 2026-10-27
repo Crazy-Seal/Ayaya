@@ -4,7 +4,7 @@ from enum import StrEnum
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class MCPServerStatus(StrEnum):
@@ -73,18 +73,18 @@ class MCPModelSettings(BaseModel):
         return value
 
 
-class MCPServerConfigBase(BaseModel):
-    """定义所有 MCP Server 配置共享的字段。"""
+class MCPConnectionConfigBase(BaseModel):
+    """定义 MCP 连接参数；服务启停由所属插件或独立服务设置决定。"""
 
+    model_config = ConfigDict(extra="forbid")
     id: str = Field(pattern=SERVER_ID_PATTERN)
     name: str = Field(min_length=1, max_length=100)
-    enabled: bool = False
     connect_timeout_seconds: float = Field(default=15, gt=0, le=300)
     call_timeout_seconds: float = Field(default=60, gt=0, le=3600)
 
 
-class StdioMCPServerConfig(MCPServerConfigBase):
-    """定义通过本地标准输入输出连接的 MCP Server。"""
+class StdioMCPConnectionConfig(MCPConnectionConfigBase):
+    """定义插件通过本地标准输入输出建立连接所需的参数。"""
 
     transport: Literal[MCPTransport.STDIO] = MCPTransport.STDIO
     command: str = Field(min_length=1)
@@ -116,8 +116,8 @@ class StdioMCPServerConfig(MCPServerConfigBase):
         return value
 
 
-class StreamableHttpMCPServerConfig(MCPServerConfigBase):
-    """定义通过 Streamable HTTP 连接的 MCP Server。"""
+class StreamableHttpMCPConnectionConfig(MCPConnectionConfigBase):
+    """定义插件通过 Streamable HTTP 建立连接所需的参数。"""
 
     transport: Literal[MCPTransport.STREAMABLE_HTTP] = MCPTransport.STREAMABLE_HTTP
     url: str
@@ -145,10 +145,30 @@ class StreamableHttpMCPServerConfig(MCPServerConfigBase):
         return value.strip()
 
 
+class StdioMCPServerConfig(StdioMCPConnectionConfig):
+    """保存手动添加的本地 MCP 服务参数及独立开关。"""
+
+    enabled: bool = False
+
+
+class StreamableHttpMCPServerConfig(StreamableHttpMCPConnectionConfig):
+    """保存手动添加的 HTTP MCP 服务参数及独立开关。"""
+
+    enabled: bool = False
+
+
+MCPConnectionConfig = Annotated[
+    StdioMCPConnectionConfig | StreamableHttpMCPConnectionConfig,
+    Field(discriminator="transport"),
+]
+
+
 MCPServerConfig = Annotated[
     StdioMCPServerConfig | StreamableHttpMCPServerConfig,
     Field(discriminator="transport"),
 ]
+
+MCPManagedConfig = MCPServerConfig | MCPConnectionConfig
 
 
 class MCPServersConfig(BaseModel):

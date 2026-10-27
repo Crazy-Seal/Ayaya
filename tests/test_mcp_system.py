@@ -28,6 +28,7 @@ from app.mcp.mcp_connection_manager import (
     MCPServerDisabledError,
 )
 from app.services.mcp_service import MCPService
+from app.services.plugin_service import PluginService
 from app.services.chat_settings_service import ChatSettingsService
 from app.services.settings_mutation import SettingsMutationCoordinator
 from app.schemas.chat_settings import ChatSettings
@@ -781,7 +782,7 @@ class _MutablePolicyResolver:
         """
         return self.policy != ToolPolicy.DENY
 
-    def get_bound_mcp_identity(self, _session_id: str, _server_id: str) -> str | None:
+    def get_bound_mcp_identity(self, _session_id: str, _server_id: str, plugin_name: str | None = None) -> str | None:
         """返回当前会话绑定的 MCP 服务身份，供最终执行检查。
 
         该定义仅用于外层用例：为 Adapter 安全测试提供可变的实时权限与身份。
@@ -1734,7 +1735,7 @@ async def test_mcp_service_crud_exposes_runtime_status_and_cascades_policies(tmp
             return []
 
     manager = _Manager()
-    service = MCPService(MCPSettingsDao(mcp_file), chat_dao, manager)
+    service = MCPService(MCPSettingsDao(mcp_file), chat_dao, manager, PluginService())
     server = StdioMCPServerConfig(
         id="github",
         name="GitHub",
@@ -1819,7 +1820,7 @@ async def test_identity_change_rebinds_all_current_tools_to_ask(tmp_path: Path) 
             """
             pass
 
-    service = MCPService(MCPSettingsDao(mcp_file), chat_dao, _Manager())
+    service = MCPService(MCPSettingsDao(mcp_file), chat_dao, _Manager(), PluginService())
     new_server = old_server.model_copy(update={"command": "new-command"})
 
     await service.update_server("filesystem", new_server)
@@ -1996,7 +1997,7 @@ async def test_concurrent_server_delete_and_stale_chat_settings_put_cannot_resto
     coordinator = SettingsMutationCoordinator()
     manager = _Manager()
     mcp_service = MCPService(
-        MCPSettingsDao(mcp_file), chat_dao, manager, coordinator
+        MCPSettingsDao(mcp_file), chat_dao, manager, PluginService(), coordinator
     )
     chat_service = ChatSettingsService(
         chat_dao, MCPSettingsDao(mcp_file), manager, coordinator

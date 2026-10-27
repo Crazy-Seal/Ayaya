@@ -5,6 +5,7 @@ from app.agent.tools.authorization.models import ToolIdentity
 from app.crud.chat_settings_dao import ChatSettingsDao
 from app.schemas.tool import ToolPolicyView
 from app.schemas.tool_permissions import ToolPolicy
+from app.schemas.chat_settings import AgentPluginSettings
 from app.services.settings_mutation import SettingsMutationCoordinator
 
 
@@ -45,7 +46,7 @@ class ToolPermissionService:
         """
         settings = self._chat_settings_dao.get_chat_settings(session_id)
         return [
-            ToolPolicyView(**entry.__dict__)
+            ToolPolicyView(**entry.__dict__, policy_key=entry.policy_key)
             for entry in self._catalog.list_entries(settings)
         ]
 
@@ -97,9 +98,19 @@ class ToolPermissionService:
                 raise ValueError(f"包含未知工具权限: {', '.join(unknown)}")
             # 2. 所有工具标识有效后才合并本次权限，保留模型、人设及未修改的权限字段。
             merged = dict(settings.tool_permissions)
-            merged.update(policies)
+            plugins = {name: item.model_copy(deep=True) for name, item in settings.agent_plugins.items()}
+            entries = {entry.stable_key: entry for entry in self._catalog.list_entries(settings)}
+            for key, policy in policies.items():
+                entry = entries[key]
+                if entry.plugin_name:
+                    item = plugins.setdefault(entry.plugin_name, AgentPluginSettings(enabled=False))
+                    identity = ToolIdentity(source=entry.source, name=entry.name, server_id=entry.server_id,
+                                            plugin_name=entry.plugin_name)
+                    item.tool_permissions[identity.policy_key] = policy
+                else:
+                    merged[key] = policy
             self._chat_settings_dao.update_chat_settings(
-                session_id, settings.model_copy(update={"tool_permissions": merged}),
+                session_id, settings.model_copy(update={"tool_permissions": merged, "agent_plugins": plugins}),
             )
         # 3. 返回最新目录供设置页显示；即使查询失败，已保存配置仍然有效。
         return self.list_policies(session_id)

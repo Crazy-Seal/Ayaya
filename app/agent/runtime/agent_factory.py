@@ -4,32 +4,13 @@ from app.agent.agent import Agent, AgentConfig
 from app.agent.plugins.runtime import PluginRuntimeFactory
 from app.agent.state.manager import SessionStateManager
 from app.agent.memory.manager import get_memory_manager
-from app.schemas.chat_settings import (
-    MEMORY_DEFAULT_CONFIG,
-    ChatSettings,
-)
+from app.schemas.chat_settings import ChatSettings
 from app.mcp.mcp_connection_manager import MCPConnectionManager
 from app.agent.tools.authorization.manager import ToolAuthorization
 from app.agent.tools.core.runtime import ToolRuntimeFactory
 from app.schemas.desktop import DesktopOperations
-
-
-def _plugin_config(chat_settings: ChatSettings, name: str, defaults: dict) -> dict:
-    """从会话设置取得插件配置，在默认值副本上合并覆盖项。
-
-    Args:
-        chat_settings (ChatSettings): 当前会话的模型、角色及插件设置。
-        name (str): 当前对象的名称。
-        defaults (dict): 该插件的默认配置副本来源。
-
-    Returns:
-        dict: 该插件当前使用的独立配置字典。
-    """
-    settings = chat_settings.agent_plugins.get(name)
-    config = dict(defaults)
-    if settings:
-        config.update(settings.config)
-    return config
+from app.schemas.mcp import MCPConnectionConfig
+from app.mcp.types import PluginMCPBinder
 
 
 def build_agent(
@@ -40,6 +21,8 @@ def build_agent(
     desktop: DesktopOperations | None = None,
     session_state_manager: SessionStateManager | None = None,
     plugin_runtime_factory: PluginRuntimeFactory | None = None,
+    bind_plugin_mcp: PluginMCPBinder | None = None,
+    plugin_mcp: dict[str, tuple[MCPConnectionConfig, ...]] | None = None,
 ) -> Agent:
     """按会话设置创建 Agent，并注入共享授权与任务启动端口。
 
@@ -51,15 +34,17 @@ def build_agent(
         desktop (DesktopOperations | None): 应用共享桌面接口，各会话使用同一实例。
         session_state_manager (SessionStateManager | None): worker 拥有并借给本次 Agent 的业务对象。
         plugin_runtime_factory (PluginRuntimeFactory | None): 按插件名称和来源轮次创建 PluginRuntime 的注入工厂。
+        bind_plugin_mcp (PluginMCPBinder | None): 连接成功后的应用身份保存入口。
+        plugin_mcp (dict | None): 应用层根据会话参数准备的插件连接声明。
 
     Returns:
         Agent: 按最新会话设置装配的 Agent，尚未开始模型轮次。
     """
-    plugins: list[dict] = [
-        {
-            "name": "memory",
-            "config": _plugin_config(chat_settings, "memory", MEMORY_DEFAULT_CONFIG),
-        },
+    # 1. 应用层已经校验参数并准备连接声明，构造入口只组装运行对象。
+    plugins = [
+        {"name": name, "config": dict(settings.config)}
+        for name, settings in chat_settings.agent_plugins.items()
+        if settings.enabled
     ]
 
     config = AgentConfig(
@@ -73,6 +58,7 @@ def build_agent(
         plugins=plugins,
         skills=list(chat_settings.skills or []),
         mcp=chat_settings.mcp,
+        plugin_mcp=dict(plugin_mcp or {}),
     )
     if mcp_connection_manager is None:
         return Agent(
@@ -84,6 +70,7 @@ def build_agent(
             desktop=desktop,
             session_state_manager=session_state_manager,
             plugin_runtime_factory=plugin_runtime_factory,
+            bind_plugin_mcp=bind_plugin_mcp,
         )
     return Agent(
         config,
@@ -95,4 +82,5 @@ def build_agent(
         desktop=desktop,
         session_state_manager=session_state_manager,
         plugin_runtime_factory=plugin_runtime_factory,
+        bind_plugin_mcp=bind_plugin_mcp,
     )

@@ -10,6 +10,36 @@ import {
 import { backendFetch } from "./backend-client.js";
 import type { ChatSettingsData, ChatHistoryItem, ApiResponse, ToolItem, PluginItem } from "./types.js";
 import type { ToolPolicy, ToolPolicyView } from "../shared-types.js";
+import type { PluginMCPStatus } from "../shared-types.js";
+
+/** 插件自定义校验的字段错误，通过 IPC 普通数据返回页面。 */
+export class PluginConfigurationError extends Error {
+  /**
+   * 保存后端给出的配置字段路径。
+   *
+   * Args:
+   *     issues (Array): 配置错误路径和提示。
+   */
+  constructor(public issues: Array<{ loc: Array<string | number>; msg: string }>) {
+    super("插件参数校验失败");
+  }
+}
+
+/**
+ * 查询当前会话的插件 MCP 状态，不返回连接凭据。
+ *
+ * Args:
+ *     sessionId (string): 当前会话编号。
+ *
+ * Returns:
+ *     Promise<Record<string, PluginMCPStatus[]>>: 按插件分组的服务状态。
+ */
+export async function fetchPluginMcpStatuses(sessionId: string): Promise<Record<string, PluginMCPStatus[]>> {
+  const response = await backendFetch(`/plugins/mcp-status/${encodeURIComponent(sessionId)}`);
+  const result = await response.json() as ApiResponse<{ plugins: Record<string, PluginMCPStatus[]> }>;
+  if (!response.ok || result.code !== 200) throw new Error(result.msg || "读取插件 MCP 状态失败");
+  return result.data?.plugins || {};
+}
 import { getActiveModelRecord } from "./model-manager.js";
 
 /**
@@ -45,7 +75,7 @@ export const getDefaultAgentPluginsForTest = (): NonNullable<ChatSettingsData["a
   JSON.parse(JSON.stringify(DEFAULT_AGENT_PLUGINS)) as NonNullable<ChatSettingsData["agent_plugins"]>;
 
 /**
- * 合并已保存插件配置与默认值，保持固有记忆插件配置完整。
+ * 合并已保存插件配置与默认值，保留用户设置的启用状态。
  *
  * Args:
  *     value (Partial<ChatSettingsData>["agent_plugins"]): 当前待检查或转换的值。
@@ -64,6 +94,7 @@ const normalizeAgentPlugins = (
       ? { ...current.config }
       : {};
     result[name] = {
+      ...current,
       enabled: typeof current?.enabled === "boolean" ? current.enabled : defaults.enabled,
       config: {
         ...defaults.config,
@@ -74,6 +105,7 @@ const normalizeAgentPlugins = (
   for (const [name, current] of Object.entries(source)) {
     if (result[name]) continue;
     result[name] = {
+      ...current,
       enabled: Boolean(current?.enabled),
       config: current?.config && typeof current.config === "object" ? current.config : {},
     };
@@ -419,6 +451,10 @@ export const updateChatSettings = async (
 
   if (!res.ok) {
     const text = await res.text();
+    if (res.status === 422) {
+      const error = JSON.parse(text) as { detail?: Array<{ loc: Array<string | number>; msg: string }> };
+      if (Array.isArray(error.detail)) throw new PluginConfigurationError(error.detail);
+    }
     throw new Error(text || `更新 chat_settings 失败: ${res.status}`);
   }
 
@@ -507,7 +543,7 @@ export const saveToolPermissions = async (
 /**
  * 获取可用插件列表
  */
-export const fetchAvailablePlugins = async (): Promise<PluginItem[]> => {
+export const fetchAvailablePlugins = async (): Promise<{ plugins: PluginItem[]; errors?: string[] }> => {
   const url = "/plugins";
   const res = await backendFetch(url, { method: "GET" });
 
@@ -516,25 +552,24 @@ export const fetchAvailablePlugins = async (): Promise<PluginItem[]> => {
     throw new Error(text || `获取插件列表失败: ${res.status}`);
   }
 
-  const result = await parseJsonSafe<ApiResponse<{ plugins: PluginItem[] }>>(res);
+  const result = await parseJsonSafe<ApiResponse<{ plugins: PluginItem[]; errors?: string[] }>>(res);
   if (!result || result.code !== 200 || !result.data?.plugins) {
     throw new Error(result?.msg || "获取插件列表失败：返回格式错误");
   }
 
-  return result.data.plugins.map(/**
-   * 把插件目录项转换为页面模型，补齐固有标记、默认值和配置结构。
+  return { errors: result.data.errors, plugins: result.data.plugins.map(/**
+   * 把插件目录项转换为页面模型，补齐默认值和配置结构。
    *
    * Args:
    *     item (PluginItem): 当前遍历的配置或目录条目。
    *
    * Returns:
-   *     { name: string; description: string; inherent: boolean; default_config: Record<string, unknown>; config_schema: Record<string, unknown>; }: 单个插件的页面编辑信息。
+   *     PluginItem: 单个插件的页面编辑信息。
    */
   (item) => ({
     name: String(item.name ?? ""),
     description: String(item.description ?? ""),
-    inherent: Boolean(item.inherent),
     default_config: item.default_config ?? {},
     config_schema: item.config_schema ?? {},
-  }));
+  })) };
 };

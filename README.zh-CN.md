@@ -90,6 +90,8 @@ VLM_MODEL=qwen3-vl-plus
 
 ## 开发说明
 
+编写插件请参阅[插件开发指南](docs/plugin-development.md)，了解插件包、配置、工具、MCP 服务、钩子和后台任务。
+
 后端是一个 FastAPI 应用，入口在 `main.py`。主要代码位于 `app/`：
 
 - `app/routes/` HTTP 和流式接口。

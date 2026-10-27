@@ -1,4 +1,7 @@
-from app.schemas.tool_types import MCP_TOOL_KEY_PREFIX
+from dataclasses import dataclass
+
+from app.schemas.tool_types import LOCAL_TOOL_KEY_PREFIX, MCP_TOOL_KEY_PREFIX
+from app.agent.tools.core.registry import ToolRegistry
 from app.agent.memory.manager import get_memory_manager
 from app.crud.chat_settings_dao import ChatSettingsDao
 from app.crud.mcp_settings_dao import MCPSettingsDao
@@ -8,10 +11,24 @@ from app.schemas.mcp import MCPModelSettings, MCPServerPolicy
 from app.schemas.tool_permissions import ToolPolicy
 from app.mcp.mcp_connection_manager import MCPConnectionManager
 from app.services.settings_mutation import SettingsMutationCoordinator
+from app.services.plugin_service import PluginService, PreparedPlugin, PluginConfigurationError
+
+
+@dataclass(frozen=True)
+class PreparedChatSettings:
+    """汇总本次会话准备结果，供 Agent 复用参数和 MCP 声明。
+
+    Attributes:
+        settings (ChatSettings): 参数已整理、工具权限已补齐的会话设置副本。
+        plugins (dict[str, PreparedPlugin]): 按插件名称保存本次准备的参数和连接声明。
+    """
+
+    settings: ChatSettings
+    plugins: dict[str, PreparedPlugin]
 
 
 class ChatSettingsService:
-    """管理模型配置，协调模型级 MCP 权限写入及保存后的记忆缓存失效。"""
+    """统一整理会话参数和工具权限，协调配置保存、MCP 清理及记忆缓存失效。"""
 
     def __init__(
         self,
@@ -19,6 +36,7 @@ class ChatSettingsService:
         mcp_settings_dao: MCPSettingsDao | None = None,
         connection_manager: MCPConnectionManager | None = None,
         mutation_coordinator: SettingsMutationCoordinator | None = None,
+        plugin_service: PluginService | None = None,
     ):
         """初始化模型配置服务。
 
@@ -27,11 +45,66 @@ class ChatSettingsService:
             mcp_settings_dao (MCPSettingsDao | None): 可选的 MCP Server 配置数据访问对象。
             connection_manager (MCPConnectionManager | None): 可选的 MCP 连接管理器。
             mutation_coordinator (SettingsMutationCoordinator | None): 可选的跨配置写入协调器。
+            plugin_service (PluginService | None): 共用的插件参数校验和声明处理模块。
         """
         self.chat_settings_dao = chat_settings_dao
         self.mcp_settings_dao = mcp_settings_dao
         self.connection_manager = connection_manager
         self.mutation_coordinator = mutation_coordinator or SettingsMutationCoordinator()
+        self.plugin_service = plugin_service or PluginService()
+
+    def normalize(self, chat_settings: ChatSettings, *, validate_enabled: bool = True) -> ChatSettings:
+        """校验插件参数，统一补齐独立工具和插件本地工具的会话权限。
+
+        Args:
+            chat_settings (ChatSettings): 读取、保存或创建 Agent 时使用的会话配置。
+            validate_enabled (bool): 保存和执行前严格校验；读取设置时允许保留待修正参数。
+
+        Returns:
+            ChatSettings: 整理后的独立副本，缺失权限设为 ask，已有权限保持原值。
+
+        Raises:
+            PluginConfigurationError: 严格校验时插件参数或 MCP 声明不符合要求。
+        """
+        return self.prepare(chat_settings, validate_enabled=validate_enabled).settings
+
+    def prepare(self, chat_settings: ChatSettings, *, validate_enabled: bool = True) -> PreparedChatSettings:
+        """汇总插件准备结果并补齐工具权限，让调用方复用本次解析的连接声明。
+
+        Args:
+            chat_settings (ChatSettings): 读取、保存或创建 Agent 时使用的会话配置。
+            validate_enabled (bool): 保存和执行前严格校验；读取时保留待修正参数。
+
+        Returns:
+            PreparedChatSettings: 整理后的设置及各插件准备结果。
+
+        Raises:
+            PluginConfigurationError: 插件参数或 MCP 声明无效，错误包含对应的配置字段路径。
+        """
+        result = chat_settings.model_copy(deep=True)
+        plugins = {}
+        # 1. 每个插件只准备一次，直接使用插件准备层报告的参数字段错误。
+        for name, item in result.agent_plugins.items():
+            try:
+                prepared = self.plugin_service.prepare_plugin(name, item, validate_enabled=validate_enabled)
+            except PluginConfigurationError:
+                raise
+            except ValueError as exc:
+                raise PluginConfigurationError([{"loc": ["agent_plugins", name, "config"],
+                                                 "msg": str(exc), "type": "value_error"}]) from exc
+            item.config = prepared.config
+            plugins[name] = prepared
+        # 2. 独立工具的权限保存在会话顶层，只为当前目录中缺失的工具新增 ask。
+        for name in ToolRegistry.list_tools():
+            result.tool_permissions.setdefault(f"{LOCAL_TOOL_KEY_PREFIX}{name}", ToolPolicy.ASK)
+        # 3. 插件本地工具使用各自的权限记录，禁用插件也可提前配置工具权限。
+        for name, tools in self.plugin_service.local_tools().items():
+            item = result.agent_plugins.get(name)
+            if item is None:
+                continue
+            for tool in tools:
+                item.tool_permissions.setdefault(f"{LOCAL_TOOL_KEY_PREFIX}{tool.name}", ToolPolicy.ASK)
+        return PreparedChatSettings(result, plugins)
 
     async def add_chat_settings(self, chat_settings: ChatSettings) -> ChatSettings:
         """新增模型配置并正规化 MCP 权限，保存成功后让记忆装配使用新配置。
@@ -43,7 +116,8 @@ class ChatSettingsService:
             ChatSettings: 已保存的模型配置。
         """
         async with self.mutation_coordinator.lock:
-            saved = self.chat_settings_dao.add_chat_settings(self._sanitize_mcp(chat_settings, None))
+            normalized = self._sanitize_plugins(self.normalize(chat_settings), None)
+            saved = self.chat_settings_dao.add_chat_settings(self._sanitize_mcp(normalized, None))
             get_memory_manager.cache_clear()
             return saved
 
@@ -55,10 +129,12 @@ class ChatSettingsService:
         """
         async with self.mutation_coordinator.lock:
             self.chat_settings_dao.delete_chat_settings(session_id)
+            if self.connection_manager is not None:
+                await self.connection_manager.disconnect_plugin(session_id)
             get_memory_manager.cache_clear()
 
     def get_chat_settings_by_session(self, session_id: str) -> ChatSettings:
-        """按会话读取 DAO 中经过校验和规范化的模型设置。
+        """读取会话设置并在内存副本中整理参数与工具权限，保留待修正参数。
 
         Args:
             session_id (str): 当前操作所属的会话编号。
@@ -69,7 +145,7 @@ class ChatSettingsService:
         Raises:
             KeyError: 指定会话不存在。
         """
-        return self.chat_settings_dao.get_chat_settings(session_id)
+        return self.normalize(self.chat_settings_dao.get_chat_settings(session_id), validate_enabled=False)
 
     async def update_chat_settings(self, chat_settings: ChatSettings) -> ChatSettings:
         """更新模型配置并安全合并 MCP 权限，保存成功后使旧记忆配置失效。
@@ -85,10 +161,35 @@ class ChatSettingsService:
                 existing = self.chat_settings_dao.get_chat_settings(chat_settings.session_id)
             except KeyError:
                 existing = None
-            sanitized = self._sanitize_mcp(chat_settings, existing)
+            normalized = self._sanitize_plugins(self.normalize(chat_settings), existing)
+            sanitized = self._sanitize_mcp(normalized, existing)
             saved = self.chat_settings_dao.update_chat_settings(chat_settings.session_id, sanitized)
+            if existing is not None and self.connection_manager is not None:
+                for name, previous in existing.agent_plugins.items():
+                    current = saved.agent_plugins.get(name)
+                    if current is None or not current.enabled or current.config != previous.config:
+                        await self.connection_manager.disconnect_plugin(saved.session_id, name)
             get_memory_manager.cache_clear()
             return saved
+
+    def _sanitize_plugins(self, incoming: ChatSettings, existing: ChatSettings | None) -> ChatSettings:
+        """保留框架建立的 MCP 身份，参数变化时清除旧授权绑定。
+
+        Args:
+            incoming (ChatSettings): 已校验的待保存设置。
+            existing (ChatSettings | None): 原会话设置。
+
+        Returns:
+            ChatSettings: 不采纳客户端身份写入的配置。
+        """
+        for name, plugin in incoming.agent_plugins.items():
+            previous = existing.agent_plugins.get(name) if existing else None
+            plugin.mcp_identities = dict(previous.mcp_identities) if previous else {}
+            if previous is None or previous.config != plugin.config:
+                plugin.mcp_identities.clear()
+                plugin.tool_permissions = {key: (ToolPolicy.ASK if key.startswith(MCP_TOOL_KEY_PREFIX) else policy)
+                                           for key, policy in plugin.tool_permissions.items()}
+        return incoming
 
     def _sanitize_mcp(
         self,

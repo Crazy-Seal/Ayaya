@@ -448,6 +448,11 @@ class SettingsApp {
       try {
         const result = await window.desktopPetApi.getAvailablePlugins();
         deps.availablePlugins = result.plugins;
+        deps.pluginErrors = result.errors;
+        [deps.toolPolicies, deps.pluginMcpStatuses] = await Promise.all([
+          window.desktopPetApi.getToolPermissions(this.savedState?.session_id ?? ""),
+          window.desktopPetApi.getPluginMcpStatuses(this.savedState?.session_id ?? ""),
+        ]);
       } catch (error) {
         this.toast.error(appendErrorMessage("读取插件列表失败", error));
         deps.availablePlugins = [];
@@ -582,9 +587,8 @@ class SettingsApp {
     }
 
     // 获取当前表单数据
-    const editingData = page.getEditingData();
-
     try {
+      const editingData = page.getEditingData();
       let mcpAdjusted = false;
       if (pageName === "llm" && editingData.llm) {
         const saved = await this.saveLlmSettings(editingData.llm);
@@ -670,7 +674,7 @@ class SettingsApp {
       constraint: llmData.constraint || undefined,
     };
 
-    this.savedState = await window.desktopPetApi.updateChatSettings(newState);
+    this.savedState = await this.persistChatSettings(newState);
     return true;
   }
 
@@ -707,7 +711,7 @@ class SettingsApp {
         system_prompt,
       };
 
-      this.savedState = await window.desktopPetApi.updateChatSettings(newState);
+      this.savedState = await this.persistChatSettings(newState);
     }
   }
 
@@ -759,7 +763,28 @@ class SettingsApp {
       agent_plugins: pluginsData.agent_plugins,
     };
 
-    this.savedState = await window.desktopPetApi.updateChatSettings(newState);
+    this.savedState = await this.persistChatSettings(newState);
+  }
+
+  /**
+   * 保存设置并显示后端字段错误，跨 preload 使用普通数据传递校验结果。
+   *
+   * Args:
+   *     settings (ChatSettingsState): 需要保存的完整会话设置。
+   *
+   * Returns:
+   *     Promise<ChatSettingsState>: 后端实际保存的设置。
+   *
+   * Raises:
+   *     Error: 插件校验失败，字段错误已显示。
+   */
+  private async persistChatSettings(settings: ChatSettingsState): Promise<ChatSettingsState> {
+    const result = await window.desktopPetApi.updateChatSettings(settings);
+    if ("configuration_errors" in result) {
+      (this.pluginsPage as PluginsPage).showConfigurationErrors(result.configuration_errors);
+      throw new Error("插件参数校验失败，请检查标出的字段");
+    }
+    return result;
   }
 
   /**
@@ -781,7 +806,7 @@ class SettingsApp {
       ...this.savedState,
       context_strategy: contextData.context_strategy,
     };
-    this.savedState = await window.desktopPetApi.updateChatSettings(newState);
+    this.savedState = await this.persistChatSettings(newState);
   }
 
   /**
@@ -793,7 +818,7 @@ class SettingsApp {
   private async saveMcpSettings(mcp: NonNullable<EditingState["mcp"]>): Promise<boolean> {
     if (!this.savedState) return false;
     const newState: ChatSettingsState = { ...this.savedState, mcp };
-    const saved = await window.desktopPetApi.updateChatSettings(newState);
+    const saved = await this.persistChatSettings(newState);
     const adjusted = JSON.stringify(saved.mcp) !== JSON.stringify(mcp);
     this.savedState = saved;
     return adjusted;

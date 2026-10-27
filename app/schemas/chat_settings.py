@@ -1,4 +1,5 @@
 from typing import Any
+import json
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -18,45 +19,12 @@ class AgentPluginSettings(BaseModel):
     """保存会话中一个插件的启用标记与专属配置。"""
     enabled: bool = True
     config: dict[str, Any] = Field(default_factory=dict)
-
-
-def _merge_plugin_config(defaults: dict[str, Any], value: dict[str, Any] | None) -> dict[str, Any]:
-    """在默认配置副本上覆盖已保存值，避免修改全局默认设置。
-
-    Args:
-        defaults (dict[str, Any]): 该插件的默认配置副本来源。
-        value (dict[str, Any] | None): 当前需要校验或转换的值。
-
-    Returns:
-        dict[str, Any]: 合并后的独立配置字典。
-    """
-    merged = dict(defaults)
-    if value:
-        merged.update(value)
-    return merged
-
-
-def _validate_plugin_config(name: str, config: dict[str, Any]) -> dict[str, Any]:
-    """使用插件声明的配置模型规范化设置，未声明模型时保持原配置。
-
-    Args:
-        name (str): 当前对象的名称。
-        config (dict[str, Any]): 调用方提供的配置。
-
-    Returns:
-        dict[str, Any]: 经过配置模型转换的字典，或原字典。
-    """
-    from app.agent.plugins.registry import PluginRegistry
-
-    plugin_class = PluginRegistry.get(name)
-    config_model = getattr(plugin_class, "config_model", None) if plugin_class else None
-    if config_model is None:
-        return config
-    return config_model(**config).model_dump()
+    tool_permissions: dict[str, ToolPolicy] = Field(default_factory=dict)
+    mcp_identities: dict[str, str] = Field(default_factory=dict)
 
 
 class ChatSettings(BaseModel):
-    """承载会话的模型、角色、上下文策略和权限，构造时同步规范化插件配置。"""
+    """承载会话设置的数据结构，动态插件校验由应用层执行。"""
     session_id: str
     model_name: str
     openai_api_key: str
@@ -79,36 +47,15 @@ class ChatSettings(BaseModel):
 
     @model_validator(mode="after")
     def normalize_agent_plugins(self) -> "ChatSettings":
-        """Pydantic 字段校验后补齐固有记忆插件，并按各插件配置模型校验设置。
+        """补齐旧会话的默认记忆记录，保留用户开关和插件专属数据。
 
         Returns:
             ChatSettings: 已规范化插件设置的当前 ChatSettings。
         """
         plugins = dict(self.agent_plugins or {})
 
-        memory = plugins.get("memory")
-        if memory is None:
-            plugins["memory"] = AgentPluginSettings(
-                enabled=True,
-                config=_validate_plugin_config("memory", dict(MEMORY_DEFAULT_CONFIG)),
-            )
-        else:
-            plugins["memory"] = AgentPluginSettings(
-                enabled=True,
-                config=_validate_plugin_config(
-                    "memory",
-                    _merge_plugin_config(MEMORY_DEFAULT_CONFIG, memory.config),
-                ),
-            )
-
-        for name, settings in list(plugins.items()):
-            if name == "memory":
-                continue
-            plugins[name] = AgentPluginSettings(
-                enabled=settings.enabled,
-                config=_validate_plugin_config(name, settings.config),
-            )
-
+        # 1. 旧会话沿用记忆默认开启；已有记录中的显式禁用会继续保留。
+        plugins.setdefault("memory", AgentPluginSettings(config=dict(MEMORY_DEFAULT_CONFIG)))
         self.agent_plugins = plugins
         return self
 
@@ -127,10 +74,8 @@ class ChatSettings(BaseModel):
             self.system_prompt,
             tuple(sorted((name, value.value) for name, value in self.tool_permissions.items())),
             tuple(sorted(self.context_strategy.model_dump().items())),
-            tuple(
-                (name, settings.enabled, tuple(sorted(settings.config.items())))
-                for name, settings in sorted(self.agent_plugins.items())
-            ),
+            json.dumps({name: settings.model_dump(mode="json") for name, settings in self.agent_plugins.items()},
+                       sort_keys=True, ensure_ascii=False, separators=(",", ":")),
             tuple(self.skills or []),
             tuple(
                 (

@@ -338,8 +338,7 @@ const desktopPetApi: DesktopPetApi = {
    * Returns:
    *     Promise<any>: 后端规范化并保存后的会话设置。
    */
-  updateChatSettings: (payload) =>
-    ipcRenderer.invoke(IpcChannel.UPDATE_CHAT_SETTINGS, payload),
+  updateChatSettings: (payload) => ipcRenderer.invoke(IpcChannel.UPDATE_CHAT_SETTINGS, payload),
   /**
    * 工具设置页读取当前会话的工具目录及权限。
    *
@@ -377,6 +376,16 @@ const desktopPetApi: DesktopPetApi = {
    *     Promise<any>: 插件目录、默认值及配置结构。
    */
   getAvailablePlugins: () => ipcRenderer.invoke(IpcChannel.GET_AVAILABLE_PLUGINS),
+  /**
+   * 插件设置页读取指定会话中各插件 MCP 服务的连接状态。
+   *
+   * Args:
+   *     sessionId (string): 当前设置页正在查看的会话编号。
+   *
+   * Returns:
+   *     Promise<Record<string, PluginMCPStatus[]>>: 按插件名称分组的服务状态、工具数量和错误说明。
+   */
+  getPluginMcpStatuses: (sessionId) => ipcRenderer.invoke(IpcChannel.GET_PLUGIN_MCP_STATUSES, sessionId),
   /**
    * MCP 设置页读取服务配置及运行状态。
    *

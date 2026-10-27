@@ -48,4 +48,5 @@ app/agent/memory/diary_demo.py
 app/agent/memory/import_demo.py
 
 # ===== docs =====
-/docs/
+/docs/*
+!/docs/plugin-development.md

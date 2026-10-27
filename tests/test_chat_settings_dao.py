@@ -76,8 +76,8 @@ def test_agent_plugins_round_trip_with_long_term_memory_interval(tmp_path: Path)
     assert "memory" + "_plugins" not in raw_yaml
 
 
-def test_memory_plugin_is_inherent_even_when_disabled_or_all_types_disabled() -> None:
-    """验证记忆插件始终作为固有插件存在。"""
+def test_memory_plugin_keeps_explicit_disabled_state() -> None:
+    """验证记忆插件保留用户设置的禁用状态和各记忆类别配置。"""
     settings = ChatSettings(
         session_id="test-session",
         model_name="test-model",
@@ -99,16 +99,24 @@ def test_memory_plugin_is_inherent_even_when_disabled_or_all_types_disabled() ->
     )
 
     memory = settings.agent_plugins["memory"]
-    assert memory.enabled is True
+    assert memory.enabled is False
     assert memory.config["enable_diary"] is False
     assert memory.config["enable_episodic"] is False
     assert memory.config["enable_semantic"] is False
 
 
-def test_agent_plugin_config_is_validated_before_persistence() -> None:
-    """验证插件配置在持久保存前经过校验。"""
-    with pytest.raises(ValidationError):
-        ChatSettings(
+def test_agent_plugin_config_is_validated_before_persistence(tmp_path: Path) -> None:
+    """验证插件配置在持久保存前经过校验。
+
+    Args:
+        tmp_path (Path): Pytest 提供的隔离配置目录。
+    """
+    from app.services.plugin_service import PluginConfigurationError
+    from app.services.chat_settings_service import ChatSettingsService
+    path = tmp_path / "settings.yaml"
+    path.write_text("chat_models: []\n", encoding="utf-8")
+    with pytest.raises(PluginConfigurationError):
+        ChatSettingsService(ChatSettingsDao(path)).normalize(ChatSettings(
             session_id="test-session",
             model_name="test-model",
             openai_api_key="test-key",
@@ -122,7 +130,7 @@ def test_agent_plugin_config_is_validated_before_persistence() -> None:
                     config={"long_term_memory_every_human_messages": 0},
                 ),
             },
-        )
+        ))
 
 
 def test_context_strategy_is_required_and_validated() -> None:

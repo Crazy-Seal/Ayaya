@@ -15,7 +15,7 @@ const uiRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const output = path.join(uiRoot, ".test-dist", "desktop-smoke");
 const restoreCheck = process.argv.includes("--restore-check");
 const focusedCheck = process.argv.includes("--native-drag") || process.argv.includes("--composer-check")
-  || process.argv.includes("--message-paragraphs");
+  || process.argv.includes("--message-paragraphs") || process.argv.includes("--plugin-capabilities");
 const previousRun = restoreCheck ? JSON.parse(fs.readFileSync(path.join(output, "results.json"), "utf8")) : null;
 const isolated = fs.mkdtempSync(path.join(os.tmpdir(), "ayaya-ui-windows-"));
 let originalSavedBounds = null;
@@ -124,6 +124,14 @@ async (input, init = {}) => {
   }
   if (route.startsWith("/chat_history")) return json({ code: 200, data: history });
   if (route === "/chat_settings" && init.method === "POST") { settings = JSON.parse(init.body); return json({ code: 200, data: settings }); }
+  if (route === "/chat_settings" && init.method === "PUT") {
+    const candidate = JSON.parse(init.body);
+    if (candidate.agent_plugins?.demo?.config?.endpoint === "backend-invalid") {
+      return new Response(JSON.stringify({ detail: [{ loc: ["agent_plugins", "demo", "config", "endpoint"], msg: "连接地址被插件自定义规则拒绝" }] }), { status: 422 });
+    }
+    settings = candidate;
+    return json({ code: 200, data: settings });
+  }
   if (route.startsWith("/chat_settings")) return json({ code: 200, data: settings });
   if (route === "/agent/commands") {
     const command = JSON.parse(init.body); commands.push(command);
@@ -167,8 +175,31 @@ async (input, init = {}) => {
     { channel: "test-channel", display_name: "测试渠道", ready: false, enabled: false },
   ] });
   if (route === "/tools") return json({ code: 200, data: { tools: [] } });
-  if (route.startsWith("/tool-permissions")) return json({ code: 200, data: { tools: [] } });
-  if (route === "/plugins") return json({ code: 200, data: { plugins: [] } });
+  if (route.startsWith("/tool-permissions")) return json({ code: 200, data: { tools: process.argv.includes("--plugin-capabilities") ? [
+    { stable_key: "plugin:demo:local:read", policy_key: "local:read", source: "local", name: "read", display_name: "读取游戏", description: "本地读取", policy: "ask", plugin_name: "demo", available: true },
+    { stable_key: "plugin:demo:mcp:game:read", policy_key: "mcp:game:read", source: "mcp", name: "read", display_name: "远端读取", description: "远端读取", policy: "ask", plugin_name: "demo", server_id: "game", server_name: "游戏服务", available: true },
+  ] : [] } });
+  if (route.startsWith("/plugins/mcp-status/")) return json({ code: 200, data: { plugins: { demo: [
+    { id: "game", name: "游戏服务", runtime: { status: "available", tool_count: 1, instructions: null, last_error: null } },
+  ] } } });
+  if (route === "/plugins") return json({ code: 200, data: { plugins: process.argv.includes("--plugin-capabilities") ? [{
+    name: "memory", description: "检索和沉淀长期记忆。",
+    default_config: { enable_diary: true, enable_episodic: true, enable_semantic: true, long_term_memory_every_human_messages: 10 },
+    config_schema: { type: "object", properties: {
+      enable_diary: { type: "boolean", title: "日记记忆", description: "是否启用日记记忆。", default: true },
+      enable_episodic: { type: "boolean", title: "情景记忆", description: "是否启用情景记忆。", default: true },
+      enable_semantic: { type: "boolean", title: "语义记忆", description: "是否启用语义记忆。", default: true },
+      long_term_memory_every_human_messages: { type: "integer", title: "长期记忆提取间隔", minimum: 1, default: 10,
+        description: "每多少轮真实用户消息触发长期记忆总结/抽取。" },
+    } },
+  }, {
+    name: "demo", description: "独立插件配置和权限验证", default_config: { endpoint: "local-game", options: { count: 2 } },
+    config_schema: { type: "object", required: ["endpoint", "watch"], properties: {
+      watch: { type: "boolean", title: "监视游戏" },
+      endpoint: { type: "string", minLength: 2, title: "游戏地址", description: "由插件参数生成 MCP 连接" },
+      options: { type: "object", title: "复杂参数", properties: { count: { type: "integer", minimum: 1 } } },
+    } },
+  }] : [] } });
   if (route.startsWith("/mcp/")) return json({ code: 200, data: [] });
   throw new Error(`桌面验证禁止未知请求：${route}`);
 };
@@ -287,6 +318,83 @@ try {
   const chat = windows.openChatWindow();
   await desktopWindowRegistry.connect();
   await waitFor(chat, "document.querySelectorAll('.message-item').length >= 2 && !document.getElementById('send-btn').disabled");
+  if (process.argv.includes("--plugin-capabilities")) {
+    windows.openSettingsWindow();
+    const settingsWindow = windows.getSettingsWindow();
+    await waitFor(settingsWindow, "document.querySelector('[data-page=memory].settings-tab')");
+    await settingsWindow.webContents.executeJavaScript("document.querySelector('[data-page=memory].settings-tab').click()");
+    await waitFor(settingsWindow, "document.querySelector('[data-plugin-name=demo] textarea')");
+    // 1. 在宽窄窗口中检查真实布局，启用开关位于右上角，布尔参数与标题同行。
+    const originalSize = settingsWindow.getSize();
+    settingsWindow.setResizable(true);
+    for (const width of [1100, 700]) {
+      settingsWindow.setSize(width, 900);
+      await pause(100);
+      assert.ok(Math.abs(settingsWindow.getSize()[0] - width) <= 4);
+      const layout = await settingsWindow.webContents.executeJavaScript(`(() => {
+        const card = document.querySelector('[data-plugin-name=memory]');
+        card.scrollIntoView({ block: 'start' });
+        const header = card.querySelector('.plugin-card-header').getBoundingClientRect();
+        const toggle = card.querySelector('.plugin-toggle').getBoundingClientRect();
+        const checkbox = card.querySelector('[data-plugin-enabled]').getBoundingClientRect();
+        const fields = [...card.querySelectorAll('.plugin-config-field')];
+        return {
+          rightAligned: Math.abs(header.right - toggle.right) < 2,
+          topAligned: Math.abs(header.top - toggle.top) < 2,
+          verticallyCentered: Math.abs(toggle.y + toggle.height / 2 - checkbox.y - checkbox.height / 2) < 2,
+          noOverflow: card.scrollWidth <= card.clientWidth,
+          grouped: fields.every(field => parseFloat(getComputedStyle(field).borderTopWidth) > 0),
+          inlineBooleans: fields.filter(field => field.querySelector('input[type=checkbox]')).every(field => {
+            const label = field.querySelector('.plugin-config-field-heading label').getBoundingClientRect();
+            const input = field.querySelector('input[type=checkbox]').getBoundingClientRect();
+            return Math.abs(label.y + label.height / 2 - input.y - input.height / 2) < 2;
+          }),
+        };
+      })()`);
+      for (const [name, passed] of Object.entries(layout)) assert.equal(passed, true, `${width}px: ${name}`);
+      await capture(settingsWindow, `plugin-memory-layout-${width}`);
+    }
+    settingsWindow.setSize(...originalSize);
+    settingsWindow.setResizable(false);
+    await settingsWindow.webContents.executeJavaScript("document.querySelector('[data-plugin-name=demo]').scrollIntoView({block:'start'})");
+    const writes = () => requests.filter(route => route === "/chat_settings").length;
+    const before = writes();
+    await settingsWindow.webContents.executeJavaScript(`(() => {
+      const card=document.querySelector('[data-plugin-name=demo]');
+      card.querySelector('[data-plugin-enabled]').checked=true;
+      card.querySelector('textarea').value='{"count":0}';
+      document.getElementById('plugins-confirm-btn').click();
+    })()`);
+    await waitFor(settingsWindow, "document.querySelector('[data-plugin-name=demo]').textContent.includes('/options/count')");
+    assert.equal(await settingsWindow.webContents.executeJavaScript("document.querySelector('[data-plugin-name=demo]').textContent.includes('/watch')"), true);
+    assert.equal(writes(), before);
+    await capture(settingsWindow, "plugin-capabilities-invalid-json-field");
+    await settingsWindow.webContents.executeJavaScript(`(() => {
+      const card=document.querySelector('[data-plugin-name=demo]');
+      card.querySelector('textarea').value='{"count":3}';
+      const watch=card.querySelector('[data-config-key=watch]'); watch.checked=true; watch.dispatchEvent(new Event('input'));
+      card.querySelector('[data-config-key=endpoint]').value='backend-invalid';
+      document.getElementById('plugins-confirm-btn').click();
+    })()`);
+    await waitFor(settingsWindow, "document.querySelector('[data-plugin-name=demo]').textContent.includes('连接地址被插件自定义规则拒绝')");
+    await settingsWindow.webContents.executeJavaScript(`(() => {
+      const card=document.querySelector('[data-plugin-name=demo]');
+      card.querySelector('[data-config-key=endpoint]').value='updated-game';
+      card.querySelectorAll('select')[0].value='deny';
+      document.getElementById('plugins-confirm-btn').click();
+    })()`);
+    await waitFor(settingsWindow, "document.querySelector('[data-config-key=endpoint]')?.value==='updated-game' && document.querySelector('[data-plugin-name=demo] textarea')?.value.includes('3')");
+    await pause(300);
+    assert.equal(settings.agent_plugins.demo.tool_permissions['local:read'], 'deny');
+    assert.equal(settings.agent_plugins.demo.config.options.count, 3);
+    await capture(settingsWindow, "plugin-capabilities-saved");
+    await settingsWindow.webContents.executeJavaScript("document.querySelector('[data-page=tools].settings-tab').click()");
+    await pause(200);
+    assert.equal(await settingsWindow.webContents.executeJavaScript("document.querySelector('#tools-table-body').textContent.includes('远端读取')"), false);
+    fs.writeFileSync(path.join(output, "plugin-capabilities-results.json"), JSON.stringify({ passed: true, isolated, errors, requests }, null, 2));
+    console.log(`插件设置验证通过：${output}`);
+    return;
+  }
   if (process.argv.includes("--message-paragraphs")) {
     const initialCount = await chat.webContents.executeJavaScript("document.querySelectorAll('.message-item.ai').length");
     // 1. 按真实流式事件逐次发送换行，只有第二个换行到达才出现新的段落气泡。

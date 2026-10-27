@@ -23,12 +23,13 @@ class MemoryPluginConfig(BaseModel):
     """描述记忆插件的检索开关、图片处理及长期记忆提取间隔，供设置页校验和展示。"""
     model_config = ConfigDict(extra="forbid")
 
-    enable_diary: bool = Field(default=True, description="是否启用日记记忆。")
-    enable_episodic: bool = Field(default=True, description="是否启用情景记忆。")
-    enable_semantic: bool = Field(default=True, description="是否启用语义记忆。")
+    enable_diary: bool = Field(default=True, title="日记记忆", description="是否启用日记记忆。")
+    enable_episodic: bool = Field(default=True, title="情景记忆", description="是否启用情景记忆。")
+    enable_semantic: bool = Field(default=True, title="语义记忆", description="是否启用语义记忆。")
     long_term_memory_every_human_messages: int = Field(
         default=10,
         ge=1,
+        title="长期记忆提取间隔",
         description="每多少轮真实用户消息触发长期记忆总结/抽取。",
     )
 
@@ -49,7 +50,6 @@ class MemoryPlugin(BasePlugin):
     """
     name = "memory"
     description = "检索和沉淀长期记忆。"
-    inherent = True
     config_model = MemoryPluginConfig
     version = "1.0.0"
     priority = 100

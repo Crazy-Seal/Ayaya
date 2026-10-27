@@ -1,274 +1,180 @@
 import { PageEventType } from "../types.js";
-import type {
-  ChatSettingsState,
-  ISettingsPage,
-  PageEditingData,
-  PageEventCallback,
-  PageRenderData,
-  PluginItem,
-} from "../types.js";
+import type { ChatSettingsState, ISettingsPage, PageEditingData, PageEventCallback, PageRenderData, ToolPolicyView } from "../types.js";
+import { MCPServerStatus, ToolPolicy } from "../../../shared-types.js";
+import { PluginConfigForm, type ConfigSchema, type ConfigError } from "../plugin-config.js";
 
 type PluginSettingsMap = NonNullable<ChatSettingsState["agent_plugins"]>;
 
-const CONFIG_LABELS: Record<string, string> = {
-  enable_diary: "启用日记",
-  enable_episodic: "启用情景记忆",
-  enable_semantic: "启用语义记忆",
-  long_term_memory_every_human_messages: "每多少轮总结长期记忆",
+const MCP_STATUS_LABELS: Record<MCPServerStatus, string> = {
+  [MCPServerStatus.AVAILABLE]: "已连接",
+  [MCPServerStatus.DISCONNECTED]: "未连接",
+  [MCPServerStatus.CONNECTING]: "连接中",
+  [MCPServerStatus.DISABLED]: "未启用",
+  [MCPServerStatus.ERROR]: "连接失败",
 };
 
-const NUMBER_FIELDS = new Set([
-  "long_term_memory_every_human_messages",
-]);
-
-const BOOLEAN_FIELDS = new Set([
-  "enable_diary",
-  "enable_episodic",
-  "enable_semantic",
-]);
-
-type JsonSchemaProperty = {
-  minimum?: unknown;
-};
-
-type JsonSchemaWithProperties = {
-  properties?: Record<string, JsonSchemaProperty>;
-};
-
-/**
- * 检查插件配置结构是否包含字段定义，避免直接读取未知响应形状。
- *
- * Args:
- *     schema (unknown): 需要检查的配置结构定义。
- *
- * Returns:
- *     schema is JsonSchemaWithProperties: 对象包含 properties 时为 true。
- */
-const hasSchemaProperties = (schema: unknown): schema is JsonSchemaWithProperties => (
-  typeof schema === "object" && schema !== null && "properties" in schema
-);
-
-/**
- * 读取插件数字配置字段的最小值，没有合法定义时使用零。
- *
- * Args:
- *     plugin (PluginItem): 后端返回的插件目录项和配置定义。
- *     key (string): 当前配置字段或索引名称。
- *
- * Returns:
- *     number: 当前数字输入框应使用的最小值。
- */
-export const getNumberFieldMinimum = (plugin: PluginItem, key: string): number => {
-  if (!hasSchemaProperties(plugin.config_schema)) {
-    return 0;
-  }
-
-  const minimum = plugin.config_schema.properties?.[key]?.minimum;
-  return typeof minimum === "number" ? minimum : 0;
-};
-
-/**
- * 展示插件目录并编辑记忆能力配置，固有插件始终保持启用。
- */
+/** 在单个插件卡片中统一展示参数、工具权限及 MCP 状态。 */
 export class PluginsPage implements ISettingsPage {
-  private container: HTMLDivElement;
-  private empty: HTMLDivElement;
-  private confirmBtn: HTMLButtonElement;
   private eventCallback?: PageEventCallback;
+  private forms = new Map<string, PluginConfigForm>();
+  private policies = new Map<string, Map<string, HTMLSelectElement>>();
+  private saved: PluginSettingsMap = {};
 
   /**
-   * 绑定插件卡片容器、空状态及保存按钮。
+   * 绑定页面与保存按钮，输入校验由读取编辑数据统一执行。
    *
    * Args:
-   *     container (HTMLDivElement): 当前组件负责维护的页面容器。
-   *     empty (HTMLDivElement): 没有可展示记录时显示的占位元素。
-   *     confirmBtn (HTMLButtonElement): 用户点击后提交本页修改的按钮。
+   *     container (HTMLDivElement): 插件卡片容器。
+   *     empty (HTMLDivElement): 无插件时的提示。
+   *     confirmBtn (HTMLButtonElement): 当前会话插件保存按钮。
    */
-  constructor(
-    container: HTMLDivElement,
-    empty: HTMLDivElement,
-    confirmBtn: HTMLButtonElement
-  ) {
-    this.container = container;
-    this.empty = empty;
-    this.confirmBtn = confirmBtn;
-    this.confirmBtn.addEventListener("click", /**
-     * 用户点击保存后通知设置控制器收集并提交记忆插件配置。
-     */
-    () => {
+  constructor(private container: HTMLDivElement, private empty: HTMLDivElement, confirmBtn: HTMLButtonElement) {
+    confirmBtn.addEventListener("click", /** 将提交交给设置控制器。 */ () => {
       this.eventCallback?.({ type: PageEventType.SUBMIT, page: "memory" });
     });
   }
 
   /**
-   * 登记主设置控制器的页面事件回调。
+   * 登记页面事件处理函数。
    *
    * Args:
-   *     callback (PageEventCallback): 设置页主控制器接收本页提交或编辑事件的回调。
+   *     callback (PageEventCallback): 设置窗口接收的事件入口。
    */
-  onEvent(callback: PageEventCallback): void {
-    this.eventCallback = callback;
-  }
+  onEvent(callback: PageEventCallback): void { this.eventCallback = callback; }
 
   /**
-   * 合并目录默认值和已保存配置，逐项渲染插件卡片；没有目录时显示空提示。
+   * 用插件目录和已保存配置生成卡片，保留暂时加载失败插件的原设置。
    *
    * Args:
-   *     data (PageRenderData): 当前已保存设置和本页所需模型、插件及工具目录。
+   *     data (PageRenderData): 当前会话及已查询的插件能力目录。
    */
   render(data: PageRenderData): void {
-    const availablePlugins = data.dependencies?.availablePlugins || [];
-    const savedPlugins = data.saved.agent_plugins || {};
     this.container.innerHTML = "";
-
-    if (availablePlugins.length === 0) {
-      this.empty.hidden = false;
-      return;
+    this.forms.clear();
+    this.policies.clear();
+    this.saved = structuredClone(data.saved.agent_plugins || {});
+    const plugins = data.dependencies?.availablePlugins || [];
+    this.empty.hidden = plugins.length > 0;
+    for (const message of data.dependencies?.pluginErrors || []) {
+      const error = document.createElement("p");
+      error.className = "plugin-config-error";
+      error.textContent = message;
+      this.container.appendChild(error);
     }
-
-    this.empty.hidden = true;
-    for (const plugin of availablePlugins) {
-      this.container.appendChild(this.renderPluginCard(plugin, savedPlugins));
+    for (const plugin of plugins) {
+      const card = document.createElement("div");
+      card.className = "plugin-card ui-surface";
+      card.dataset.pluginName = plugin.name;
+      const header = document.createElement("div");
+      header.className = "plugin-card-header";
+      const introduction = document.createElement("div");
+      introduction.className = "plugin-card-introduction";
+      const title = document.createElement("div");
+      title.className = "plugin-card-title";
+      title.textContent = plugin.name;
+      const description = document.createElement("div");
+      description.className = "plugin-card-desc";
+      description.textContent = plugin.description;
+      const label = document.createElement("label");
+      label.className = "plugin-toggle";
+      label.textContent = "启用";
+      const toggle = document.createElement("input");
+      toggle.type = "checkbox";
+      toggle.className = "ui-checkbox";
+      toggle.dataset.pluginEnabled = "true";
+      toggle.checked = this.saved[plugin.name]?.enabled === true;
+      label.appendChild(toggle);
+      introduction.append(title, description);
+      header.append(introduction, label);
+      card.appendChild(header);
+      const config = { ...plugin.default_config, ...this.saved[plugin.name]?.config };
+      const form = new PluginConfigForm(plugin.config_schema as ConfigSchema, config);
+      this.forms.set(plugin.name, form);
+      card.appendChild(form.render());
+      const statuses = data.dependencies?.pluginMcpStatuses?.[plugin.name] || [];
+      for (const server of statuses) {
+        const status = document.createElement("p");
+        status.className = "plugin-mcp-status";
+        status.textContent = `${server.name}：${MCP_STATUS_LABELS[server.runtime.status]}${server.runtime.last_error ? `（${server.runtime.last_error}）` : ""}`;
+        card.appendChild(status);
+      }
+      this.policies.set(plugin.name, new Map());
+      for (const tool of data.dependencies?.toolPolicies || []) {
+        if (tool.plugin_name === plugin.name) card.appendChild(this.renderPolicy(plugin.name, tool));
+      }
+      this.container.appendChild(card);
     }
   }
 
   /**
-   * 读取插件卡片的开关和数字值，固有插件不能通过页面禁用。
+   * 生成插件本地或远端工具权限选择框。
+   *
+   * Args:
+   *     pluginName (string): 当前工具所属插件。
+   *     tool (ToolPolicyView): 后端提供的工具定义、权限和可用状态。
    *
    * Returns:
-   *     PageEditingData: 尚未保存的插件配置。
+   *     HTMLElement: 工具说明及权限选择框。
+   */
+  private renderPolicy(pluginName: string, tool: ToolPolicyView): HTMLElement {
+    const label = document.createElement("label");
+    label.className = "plugin-config-field";
+    const text = document.createElement("span");
+    text.textContent = `${tool.server_name ? `${tool.server_name} / ` : "本地工具 / "}${tool.display_name}${tool.available ? "" : `（${tool.unavailable_reason || "不可用"}）`}`;
+    const select = document.createElement("select");
+    select.className = "ui-control";
+    for (const [value, name] of [[ToolPolicy.ALLOW, "允许"], [ToolPolicy.ASK, "询问"], [ToolPolicy.DENY, "拒绝"]]) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = name;
+      select.appendChild(option);
+    }
+    select.value = tool.policy;
+    const key = tool.policy_key || tool.stable_key;
+    this.policies.get(pluginName)!.set(key, select);
+    label.append(text, select);
+    return label;
+  }
+
+  /**
+   * 校验并收集插件参数和权限，输入错误会阻止保存请求。
+   *
+   * Returns:
+   *     PageEditingData: 保留完整设置的会话插件记录。
+   *
+   * Raises:
+   *     Error: 某插件输入不满足配置要求。
    */
   getEditingData(): PageEditingData {
-    const agent_plugins: PluginSettingsMap = {};
-    this.container.querySelectorAll<HTMLElement>("[data-plugin-name]").forEach(/**
-     * 逐张插件卡片收集启用状态和配置；固有插件的启用标记始终保持 true。
-     *
-     * Args:
-     *     card (HTMLElement): 当前正在收集编辑数据的插件卡片。
-     */
-    (card) => {
-      const pluginName = card.dataset.pluginName;
-      if (!pluginName) return;
-
-      const enabledInput = card.querySelector<HTMLInputElement>('input[data-plugin-enabled="true"]');
-      const inherent = card.dataset.pluginInherent === "true";
-      const config: Record<string, unknown> = {};
-
-      card.querySelectorAll<HTMLInputElement>("input[data-config-key]").forEach(/**
-       * 逐项按字段名读取开关布尔值或数字值，忽略缺少字段名的控件。
-       *
-       * Args:
-       *     input (HTMLInputElement): 当前日志输入或配置输入框。
-       */
-      (input) => {
-        const key = input.dataset.configKey;
-        if (!key) return;
-        config[key] = input.type === "checkbox" ? input.checked : Number(input.value);
-      });
-
-      agent_plugins[pluginName] = {
-        enabled: inherent || Boolean(enabledInput?.checked),
-        config,
-      };
+    const agent_plugins = structuredClone(this.saved);
+    this.container.querySelectorAll<HTMLElement>("[data-plugin-name]").forEach(/** 读取卡片并保留未编辑字段。 */ (card) => {
+      const name = card.dataset.pluginName!;
+      const enabled = Boolean(card.querySelector<HTMLInputElement>('input[data-plugin-enabled="true"]')?.checked);
+      const config = this.forms.get(name)!.read(enabled);
+      const tool_permissions = { ...agent_plugins[name]?.tool_permissions };
+      for (const [key, select] of this.policies.get(name) || []) tool_permissions[key] = select.value as ToolPolicy;
+      agent_plugins[name] = { ...agent_plugins[name], enabled, config, tool_permissions };
     });
-
     return { plugins: { agent_plugins } };
   }
 
   /**
-   * 用目录信息和已保存配置创建单个插件卡片及受支持配置字段。
+   * 将后端自定义校验错误定位到当前插件表单。
    *
    * Args:
-   *     plugin (PluginItem): 后端返回的插件目录项和配置定义。
-   *     savedPlugins (PluginSettingsMap): 已经保存的插件配置，编辑时与默认值合并。
-   *
-   * Returns:
-   *     HTMLElement: 带插件身份和固有标记的卡片元素。
+   *     errors (Array): 带完整插件字段路径的后端错误。
    */
-  private renderPluginCard(plugin: PluginItem, savedPlugins: PluginSettingsMap): HTMLElement {
-    const saved = savedPlugins[plugin.name];
-    const config = {
-      ...plugin.default_config,
-      ...(saved?.config || {}),
-    };
-    const enabled = plugin.inherent || saved?.enabled === true;
-
-    const card = document.createElement("div");
-    card.className = "plugin-card ui-surface";
-    card.dataset.pluginName = plugin.name;
-    card.dataset.pluginInherent = String(plugin.inherent);
-
-    const header = document.createElement("div");
-    header.className = "plugin-card-header";
-
-    const titleWrap = document.createElement("div");
-    const title = document.createElement("div");
-    title.className = "plugin-card-title";
-    title.textContent = plugin.name;
-    const desc = document.createElement("div");
-    desc.className = "plugin-card-desc";
-    desc.textContent = plugin.description || "暂无说明";
-    titleWrap.append(title, desc);
-
-    const toggleLabel = document.createElement("label");
-    toggleLabel.className = "plugin-toggle";
-    const toggleText = document.createElement("span");
-    toggleText.textContent = plugin.inherent ? "固有插件" : "启用";
-    const toggle = document.createElement("input");
-    toggle.type = "checkbox";
-    toggle.className = "ui-checkbox";
-    toggle.dataset.pluginEnabled = "true";
-    toggle.checked = enabled;
-    toggle.disabled = plugin.inherent;
-    toggleLabel.append(toggleText, toggle);
-
-    header.append(titleWrap, toggleLabel);
-    card.appendChild(header);
-
-    const body = document.createElement("div");
-    body.className = "plugin-config-grid";
-    for (const [key, value] of Object.entries(config)) {
-      if (!NUMBER_FIELDS.has(key) && !BOOLEAN_FIELDS.has(key)) continue;
-      body.appendChild(this.renderConfigField(plugin, key, value));
+  showConfigurationErrors(errors: Array<{ loc: Array<string | number>; msg: string }>): void {
+    const grouped = new Map<string, ConfigError[]>();
+    for (const error of errors) {
+      const offset = error.loc.indexOf("agent_plugins");
+      if (offset < 0) continue;
+      const name = String(error.loc[offset + 1]);
+      const path = "/" + error.loc.slice(offset + 3).map(/** 转义 JSON 路径中的字段名称。 */ (part) => String(part).replace(/~/g, "~0").replace(/\//g, "~1")).join("/");
+      const list = grouped.get(name) || [];
+      list.push({ path, message: error.msg });
+      grouped.set(name, list);
     }
-    card.appendChild(body);
-
-    return card;
-  }
-
-  /**
-   * 按字段类别生成开关或数字控件，并设置后端声明的最小值。
-   *
-   * Args:
-   *     plugin (PluginItem): 后端返回的插件目录项和配置定义。
-   *     key (string): 当前配置字段或索引名称。
-   *     value (unknown): 当前待检查或转换的值。
-   *
-   * Returns:
-   *     HTMLElement: 配置字段标签及输入框。
-   */
-  private renderConfigField(plugin: PluginItem, key: string, value: unknown): HTMLElement {
-    const label = document.createElement("label");
-    label.className = "plugin-config-field";
-
-    const text = document.createElement("span");
-    text.textContent = CONFIG_LABELS[key] || key;
-
-    const input = document.createElement("input");
-    input.dataset.configKey = key;
-    if (BOOLEAN_FIELDS.has(key)) {
-      input.type = "checkbox";
-      input.className = "ui-checkbox";
-      input.checked = Boolean(value);
-    } else {
-      input.type = "number";
-      input.className = "ui-control ui-control--small";
-      input.min = String(getNumberFieldMinimum(plugin, key));
-      input.step = "1";
-      input.value = String(typeof value === "number" ? value : 0);
-    }
-
-    label.append(text, input);
-    return label;
+    for (const [name, errors] of grouped) this.forms.get(name)?.showErrors(errors);
   }
 }

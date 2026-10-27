@@ -89,13 +89,28 @@ async () => {
   assert.deepEqual(getChatSettingsCache(), updatedSettings);
 });
 
-test("前端默认 memory 插件为固有启用", /**
- * 验证前端默认 memory 插件为固有启用。
+test("前端默认开启 memory 插件", /**
+ * 验证新建配置保留记忆默认开启的行为。
  */
 () => {
   const defaults = getDefaultAgentPluginsForTest();
 
   assert.equal(defaults.memory.enabled, true);
+});
+
+test("读取配置时保留记忆插件的关闭状态", /**
+ * 后端返回用户禁用的记忆配置时，前端补齐默认参数但保留关闭状态。
+ */
+async () => {
+  globalThis.fetch = /** 返回已经关闭记忆插件的会话设置。 */
+  async () => new Response(JSON.stringify({ code: 200, msg: "success", data: {
+    ...savedSettings,
+    agent_plugins: { memory: { enabled: false, config: { enable_diary: false } } },
+  } }), { status: 200, headers: { "Content-Type": "application/json" } });
+  const settings = await fetchChatSettingsBySessionId("saved-session");
+  assert.equal(settings.agent_plugins?.memory.enabled, false);
+  assert.equal(settings.agent_plugins?.memory.config.enable_diary, false);
+  assert.equal(settings.agent_plugins?.memory.config.long_term_memory_every_human_messages, 10);
 });
 
 test("新建模型默认使用 100K token 阈值与 2/2 截图策略", /**

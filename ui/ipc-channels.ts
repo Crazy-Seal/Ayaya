@@ -17,6 +17,7 @@ export const IpcChannel = {
   GET_ACTIVE_MODEL: "desktop-pet:get-active-model",
   GET_AI_NAMES: "desktop-pet:get-ai-names",
   GET_AVAILABLE_PLUGINS: "desktop-pet:get-available-plugins",
+  GET_PLUGIN_MCP_STATUSES: "desktop-pet:get-plugin-mcp-statuses",
   GET_AVAILABLE_TOOLS: "desktop-pet:get-available-tools",
   GET_BACKGROUND_TASK_OUTPUT: "desktop-pet:get-background-task-output",
   GET_BACKGROUND_TASKS: "desktop-pet:get-background-tasks",

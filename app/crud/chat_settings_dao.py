@@ -8,51 +8,6 @@ from app.schemas.chat_settings import ChatSettings
 from app.environment import get_chat_settings_file
 
 
-def _known_local_tool_names() -> list[str]:
-    """读取已发现的本地工具名称，供配置加载时补齐新工具的默认审批权限。
-
-    Returns:
-        list[str]: 工具注册表公开的本地工具名称列表。
-    """
-    from app.agent.tools.core.registry import ToolRegistry
-
-    return ToolRegistry.list_tools()
-
-
-def _reconcile_local_tool_permissions(item: dict) -> bool:
-    """补齐新工具权限，终端工具改名时保留旧许可和拒绝。
-
-    Args:
-        item (dict): 从会话配置文件读取的单项模型配置。
-
-    Returns:
-        bool: 本次补齐或改名规则是否改变了配置内容。
-    """
-    changed = False
-    permissions = dict(item.get("tool_permissions") or {})
-    # 1. 工具改名时保留既有许可，旧 deny 不能因新增交互工具而变为 ask。
-    names = _known_local_tool_names()
-    legacy = permissions.get("local:run_ps")
-    if "exec_command" in names and "local:exec_command" not in permissions and legacy is not None:
-        permissions["local:exec_command"] = legacy
-        changed = True
-    if "write_stdin" in names and "local:write_stdin" not in permissions and legacy == ToolPolicy.DENY.value:
-        permissions["local:write_stdin"] = ToolPolicy.DENY.value
-        changed = True
-    for name in names:
-        key = f"{LOCAL_TOOL_KEY_PREFIX}{name}"
-        if key not in permissions:
-            permissions[key] = ToolPolicy.ASK.value
-            changed = True
-    if item.get("tool_permissions") != permissions:
-        item["tool_permissions"] = permissions
-        changed = True
-    if item.get("tool_permissions_schema_version") != TOOL_PERMISSIONS_SCHEMA_VERSION:
-        item["tool_permissions_schema_version"] = TOOL_PERMISSIONS_SCHEMA_VERSION
-        changed = True
-    return changed
-
-
 class ChatSettingsDao:
     """按会话读写模型设置 YAML，并管理本对象的设置缓存。"""
     def __init__(self, config_file: Path | None = None):
@@ -65,7 +20,7 @@ class ChatSettingsDao:
         self._cache: dict[str, ChatSettings] = {}
 
     def _load_chat_settings_file(self) -> dict:
-        """读取 YAML，为新本地工具补上 ask 权限；发生补齐时将配置写回文件。
+        """读取 YAML，目录相关的默认权限由应用层补齐。
 
         Returns:
             dict: 已补齐权限的配置字典。
@@ -78,13 +33,17 @@ class ChatSettingsDao:
 
         with self.config_file.open("r", encoding="utf-8") as file:
             data = yaml.safe_load(file) or {"chat_models": []}
-        # 1. 加载时补齐新工具的默认审批权限，不覆盖用户已经保存的许可。
-        migrated = False
-        for item in data.get("chat_models", []):
-            migrated = _reconcile_local_tool_permissions(item) or migrated
-        if migrated:
-            self._save_chat_settings_file(data)
         return data
+
+    def list_chat_settings(self) -> list[ChatSettings]:
+        """读取全部会话配置，供应用启动时整理插件归属。
+
+        Returns:
+            list[ChatSettings]: 文件中的全部会话设置。
+        """
+        if not self.config_file.exists():
+            return []
+        return [self._to_chat_settings(item) for item in self._load_chat_settings_file()["chat_models"]]
 
     def _save_chat_settings_file(self, data: dict) -> None:
         """先将 YAML 写入同目录临时文件，再替换目标文件，避免直接覆盖时留下半份配置。

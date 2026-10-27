@@ -22,6 +22,8 @@ class ToolPolicyView(BaseModel):
     server_name: str | None = None
     available: bool = True
     unavailable_reason: str | None = None
+    plugin_name: str | None = None
+    policy_key: str = ""
 
 
 class ToolPermissionsUpdate(BaseModel):

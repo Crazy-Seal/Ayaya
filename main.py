@@ -64,6 +64,10 @@ async def lifespan(application: FastAPI):
     Args:
         application (FastAPI): 本次启动的 FastAPI 应用及其共享对象。
     """
+    from app.dependencies import get_plugin_service
+    from app.environment import PROJECT_ROOT
+    # 1. 在接收请求前完成插件发现；发现失败保留配置并通过目录接口公开错误。
+    await get_plugin_service().discover(PROJECT_ROOT / "plugins")
     runtime_queue = asyncio.Queue()
     mcp_manager = get_mcp_connection_manager()
     consumer_started = False

@@ -4,8 +4,11 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
+from pydantic import BaseModel
 
 from app.agent.plugins.runtime import PluginRuntime
+from app.agent.tools.core.base import BaseTool
+from app.schemas.mcp import MCPConnectionConfig
 
 
 class PluginHook(str, Enum):
@@ -75,10 +78,23 @@ class BasePlugin(ABC):
 
     name: str
     description: str = ""
-    inherent: bool = False
-    config_model: Any = None
+    config_model: type[BaseModel] | None = None
     version: str = "1.0.0"
     priority: int = 100
+    tools: tuple[type[BaseTool], ...] = ()
+    mcp_servers: tuple[MCPConnectionConfig, ...] = ()
+
+    @classmethod
+    def resolve_mcp_servers(cls, config: dict[str, Any]) -> tuple[MCPConnectionConfig, ...]:
+        """根据会话插件参数返回连接声明，默认使用类中列出的服务。
+
+        Args:
+            config (dict[str, Any]): 已通过插件配置模型校验的会话参数。
+
+        Returns:
+            tuple[MCPConnectionConfig, ...]: 随插件启用的服务连接参数。
+        """
+        return cls.mcp_servers
 
     @property
     @abstractmethod
