@@ -151,11 +151,36 @@ flowchart TD
 
 插件页按配置 Schema 生成字段控件，复杂字段使用 JSON 编辑，保存前统一校验。插件自己的工具权限和 MCP 连接状态在同一卡片展示；连接参数由开发者定义。
 
-插件放在根目录 `plugins/<插件目录>/`，内置实现位于 `app/agent/plugins/`，由注册表自动发现。设置页保存每个插件的 `enabled` 和 `config`，下一轮创建 Agent 时只装配已开启的插件。所有插件都可以关闭；记忆插件仅保留默认开启的设置，用户保存的关闭状态会生效。
+插件有两个放置位置，按代码的维护和分发方式选择：
+
+| 位置 | 用途 | 发现和加载方式 |
+| --- | --- | --- |
+| `app/agent/plugins/<插件名>/` | 随 Ayaya 一起维护和发布的插件，例如 `memory`、`desktop_perception` | 框架扫描直接子模块和包，按目录名登记延迟加载目标，使用 `app.agent.plugins.<插件名>` 导入 |
+| 根目录 `plugins/<插件目录>/` | 独立安装、更新或分发的插件包，保存在框架实现目录之外 | 应用启动时加载包的 `__init__.py`，以插件类的 `name` 登记，支持包内相对导入 |
+
+两处使用同一个 `BasePlugin` 接口，都按会话启停，遵循相同的配置、工具权限及生命周期流程；插件名称在全部目录中保持唯一。
+
+设置页保存每个插件的 `enabled` 和 `config`，下一轮创建 Agent 时只装配已开启的插件。所有插件都可以关闭；记忆插件默认开启，用户保存的关闭状态会生效。
 
 ### 2.1 集中存放一个插件的文件
 
-以游戏插件为例，将它的文件集中放在仓库根目录的 `plugins/game-helper/`：
+项目自带插件以目录名作为发现时使用的插件名，目录名应与插件类的 `name` 一致，并可作为 Python 模块名。包的 `__init__.py` 导出插件类。例如：
+
+```text
+app/agent/plugins/
+├── memory/
+│   ├── __init__.py           导出 MemoryPlugin
+│   ├── memory.py             记忆插件配置和钩子
+│   ├── tools/                长期记忆和日记查询工具
+│   └── tasks/                记忆插件自己的后台任务
+└── desktop_perception/
+    ├── __init__.py           导出 DesktopPerceptionPlugin
+    ├── plugin.py            协调每次模型请求前的钩子
+    ├── capture.py           捕获当前主屏幕
+    └── compression.py       压缩工具返回的截图
+```
+
+独立插件包则集中放在根目录 `plugins/`。下面以独立分发的游戏插件为例，将文件放在 `plugins/game-helper/`：
 
 ```text
 plugins/
@@ -169,7 +194,9 @@ plugins/
 
 游戏连接、后台任务等文件也放在同一目录，按规模增加 `connection.py`、`tasks/` 等文件或子目录。开发者可以将整个目录一起管理和分发。本指南使用框架提供的展示方式。
 
-当前内置插件也按功能集中存放。记忆插件的入口是 `app/agent/plugins/memory/memory.py`，`DiaryTask` 和 `LongTermMemoryTask` 位于同一插件的 `tasks/memory_tasks.py`。`app/agent/runtime/tasks/` 保存框架通用的 `BaseTask` 和 `TaskRuntime`；插件自己的具体任务放在插件目录的 `tasks/` 中。
+记忆插件的 `DiaryTask` 和 `LongTermMemoryTask` 位于该插件的 `tasks/memory_tasks.py`。`app/agent/runtime/tasks/` 保存框架通用的 `BaseTask` 和 `TaskRuntime`；两种位置的插件都将自己的具体任务放在各自插件目录中。
+
+记忆插件在 `MemoryPlugin.tools` 中声明 `search_memory` 和 `search_diary`，实现分别位于 `memory/tools/search_memory.py` 与 `memory/tools/search_diary.py`。两个工具随记忆插件装配，权限在记忆插件卡片中管理；新出现的权限默认 `ask`。停用记忆插件后，两个查询工具也停止提供。模型看到的是框架生成的、包含插件归属的工具名称。
 
 在 `plugins/game-helper/__init__.py` 导出唯一入口类：
 
@@ -186,6 +213,8 @@ from .tools.game_help import game_help
 `game-helper` 是磁盘上的目录名，`game_helper` 是本例的插件稳定名称。加载功能按 Python 包的方式加载这个目录，让目录内的相对导入生效；插件的配置和消息来源继续使用 `name="game_helper"`。独立插件包通过 `__init__.py` 导出唯一插件类，安装和更新后重启应用。
 
 应用启动时扫描 `app/agent/plugins/` 和根目录 `plugins/`。独立包入口必须导出唯一插件类，目录内相对导入可用；安装、更新和移除后重启应用生效。
+
+桌面感知插件 `desktop_perception` 随项目提供。启用后，它在每次主模型请求前直接捕获主屏幕，保留前端窗口的当前显隐状态，将画面写入第8章的环境条目；工具返回的截图按 TTL=0、数量上限=0 的效果即时压缩，文字、其他图片和历史文件引用继续保留。停用插件后，后续 Agent 使用会话原有的截图保留配置。
 
 ### 2.2 定义用户可以修改的参数
 
@@ -1103,6 +1132,9 @@ async def execute(self, context: HookContext) -> None:  # 框架调用的插件�
 | 后台任务生命周期 | [task_supervisor.py](../app/agent/runtime/tasks/task_supervisor.py) |
 | 记忆插件钩子 | [memory.py](../app/agent/plugins/memory/memory.py) |
 | 记忆插件的具体任务 | [memory_tasks.py](../app/agent/plugins/memory/tasks/memory_tasks.py) |
+| 长期记忆查询工具 | [search_memory.py](../app/agent/plugins/memory/tools/search_memory.py) |
+| 日记查询工具 | [search_diary.py](../app/agent/plugins/memory/tools/search_diary.py) |
+| 桌面感知插件 | [plugin.py](../app/agent/plugins/desktop_perception/plugin.py) |
 | 工具运行时 | [runtime.py](../app/agent/tools/core/runtime.py) |
 | 输入与控制调度 | [agent_runtime_scheduler.py](../app/agent/runtime/agent_runtime_scheduler.py) |
 | 业务消息 | [messages.py](../app/agent/state/messages.py) |

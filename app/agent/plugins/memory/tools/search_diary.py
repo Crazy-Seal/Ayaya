@@ -1,4 +1,4 @@
-"""search_diary 工具 - 搜索指定日期范围的日记"""
+"""由记忆插件提供日记查询，使用当前工具调用所属的会话。"""
 
 from datetime import date
 from typing import Annotated
@@ -25,6 +25,9 @@ async def search_diary(
         start (str): 开始日期，格式 YYYY-MM-DD
         end (str): 结束日期，格式 YYYY-MM-DD
         context (ToolContext): 执行管道提供的工具运行上下文。
+
+    Returns:
+        str: 指定日期范围的日记、未找到日记的说明或查询错误。
     """
     session_id = context.session_id
     try:

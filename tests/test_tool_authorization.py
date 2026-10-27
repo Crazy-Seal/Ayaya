@@ -119,19 +119,23 @@ def test_new_local_tool_defaults_to_ask_without_overwriting_saved_permissions(
     assert config_file.read_bytes() == before
 
 
-def test_sample_permissions_preserve_only_the_four_enabled_tools() -> None:
-    """验证示例权限只预先允许声明的四个工具。"""
+def test_sample_permissions_keep_memory_queries_under_memory_plugin() -> None:
+    """示例把记忆查询权限保存在插件中，独立工具保留联网和截图权限。"""
     sample_path = Path(__file__).parents[1] / "config" / "chat_settings.sample.yaml"
     model = yaml.safe_load(sample_path.read_text(encoding="utf-8"))["chat_models"][0]
     permissions = model["tool_permissions"]
     assert {name for name, policy in permissions.items() if policy == "allow"} == {
-        "local:search_memory", "local:search_diary", "local:access_the_internet",
+        "local:access_the_internet",
     }
     assert {name for name, policy in permissions.items() if policy == "ask"} == {
         "local:screenshot",
     }
     assert all(policy == "deny" for name, policy in permissions.items()
-               if name not in {"local:search_memory", "local:search_diary", "local:access_the_internet", "local:screenshot"})
+               if name not in {"local:access_the_internet", "local:screenshot"})
+    assert model["agent_plugins"]["memory"]["tool_permissions"] == {
+        "local:search_memory": "allow", "local:search_diary": "allow",
+    }
+    assert "local:search_memory" not in permissions and "local:search_diary" not in permissions
 
 
 def test_permission_service_groups_local_and_mcp_tools_and_marks_unavailable(

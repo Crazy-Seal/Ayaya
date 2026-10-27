@@ -13,6 +13,7 @@ from app.agent.state.messages import (
 )
 from app.agent.plugins.memory.tasks.memory_tasks import DiaryTask, LongTermMemoryTask
 from app.schemas.runtime_types import TaskLifetime
+from .tools import search_diary, search_memory
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ class MemoryPlugin(BasePlugin):
     name = "memory"
     description = "检索和沉淀长期记忆。"
     config_model = MemoryPluginConfig
+    tools = (search_memory, search_diary)
     version = "1.0.0"
     priority = 100
 

@@ -1,4 +1,4 @@
-"""search_memory 工具 - 在长期记忆中检索相关信息"""
+"""由记忆插件提供长期记忆查询，使用当前工具调用所属的会话。"""
 
 from typing import Annotated
 
@@ -22,6 +22,9 @@ async def search_memory(
     Args:
         query (str): 搜索关键词/关键句。不要使用问句。
         context (ToolContext): 执行管道提供的工具运行上下文。
+
+    Returns:
+        str: 检索结果、未找到内容的说明或查询错误。
     """
     session_id = context.session_id
     try:

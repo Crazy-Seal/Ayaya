@@ -15,8 +15,6 @@ chat_models:
     local:exec_command: deny
     local:write_stdin: deny
     local:screenshot: ask
-    local:search_diary: allow
-    local:search_memory: allow
     local:update_plan: deny
   tool_permissions_schema_version: 1
   context_strategy:
@@ -31,6 +29,9 @@ chat_models:
         enable_episodic: true
         enable_semantic: true
         long_term_memory_every_human_messages: 10
+      tool_permissions:
+        local:search_memory: allow
+        local:search_diary: allow
   name: AI名字
   feature: 性格特点
   character: AI人设
