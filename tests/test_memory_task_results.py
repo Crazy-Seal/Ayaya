@@ -5,6 +5,7 @@ from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
+from typing import cast
 
 import pytest
 
@@ -13,6 +14,7 @@ from app.agent.memory.manager import MemoryManager
 from app.agent.memory.memories.diary import DiaryMemory
 from app.agent.memory.memories.episodic import EpisodicMemory
 from app.agent.memory.memories.semantic_mem0 import Mem0SemanticMemory
+from app.agent.models.llm_client import LLMClient
 from app.agent.plugins.base import HookContext, PluginHook
 from app.agent.plugins.memory.memory import MemoryPlugin
 from app.agent.plugins.memory.tasks.memory_tasks import DiaryTask, LongTermMemoryTask
@@ -419,12 +421,15 @@ def test_episodic_storage_failure_preserves_saved_count(failure: str) -> None:
         episodic.session_id = manager.session_id
         episodic._format_messages = Mock(return_value="对话")
         episodic._build_extraction_prompt = Mock(return_value="提示词")
-        episodic._extract_memories = AsyncMock(return_value=[
+        # 1. 从真实结构化响应解析模型，再验证保存失败和索引失败的处理结果。
+        episodic.llm = cast(LLMClient, SimpleNamespace(ainvoke_structured=AsyncMock(return_value={"memories": [
             {"content": "第一条", "event_date": "2026-10-25", "importance": 0.5},
             {"content": "第二条", "event_date": "2026-10-25", "importance": 0.6},
-        ])
-        episodic.sqlite_store = SimpleNamespace(add=AsyncMock())
-        episodic.chroma_store = SimpleNamespace(upsert=AsyncMock())
+        ]})))
+        save_memory = AsyncMock()
+        index_memory = AsyncMock()
+        episodic.sqlite_store = SimpleNamespace(add=save_memory)
+        episodic.chroma_store = SimpleNamespace(upsert=index_memory)
         if failure == "save":
             episodic.sqlite_store.add.side_effect = [RuntimeError("数据库写入失败"), None]
         else:
@@ -436,6 +441,12 @@ def test_episodic_storage_failure_preserves_saved_count(failure: str) -> None:
         assert ("数据库写入失败" if failure == "save" else "索引更新失败") in text
         assert f"情景记忆：已保存 {1 if failure == 'save' else 2} 条" in text
         assert "语义记忆：处理 1 条" in text
+        # 2. 校验后的模型写入两种存储时，保留原文字、日期字符串及重要性。
+        saved = save_memory.await_args_list[-1].kwargs
+        indexed = index_memory.await_args_list[-1].kwargs
+        assert saved["content"] == indexed["content"] == "第二条"
+        assert saved["event_date"] == indexed["metadata"]["event_date"] == "2026-10-25"
+        assert saved["importance"] == indexed["metadata"]["importance"] == 0.6
         manager.semantic_memory.add.assert_awaited_once()
     asyncio.run(scenario())
 

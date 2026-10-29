@@ -6,6 +6,7 @@ import pytest
 from pydantic import BaseModel, Field
 
 from app.agent.tools.core.base import ToolContext, ToolResult
+from app.agent.state.model import AgentState
 from app.agent.tools.core.decorator import tool
 from tests.model_capture import encoded_tool
 
@@ -151,7 +152,8 @@ def test_execute_does_not_replace_missing_required_argument_with_none() -> None:
         return value
 
     with pytest.raises(TypeError, match="value"):
-        asyncio.run(sample_tool().execute({}, None))
+        context = ToolContext(session_id="required-test", state=AgentState.create_new("required-test"))
+        asyncio.run(sample_tool().execute({}, context))
 
 
 def test_annotated_field_constraints_reach_model_schema() -> None:
@@ -290,10 +292,10 @@ def test_model_description_is_independent_of_docstring_and_context() -> None:
             "required": ["query"],
         },
     }
-    original_doc = inspect.getdoc(sample_tool._tool_func)
+    original_doc = inspect.getdoc(getattr(sample_tool, "_tool_func"))
     assert original_doc and "context (ToolContext)" in original_doc
     # 1. 维护者修改实现文档后，发送给模型的定义必须保持不变。
-    sample_tool._tool_func.__doc__ = "更新后的内部实现说明。"
+    getattr(sample_tool, "_tool_func").__doc__ = "更新后的内部实现说明。"
     assert encoded_tool(sample_tool())["function"] == function
     # 2. 模型只提交 query，由执行管道传入的 context 仍交给原函数使用。
     result = asyncio.run(sample_tool().execute({"query": "用户偏好"}, expected_context))
@@ -354,4 +356,4 @@ def test_tool_requires_explicit_description() -> None:
         return ""
 
     with pytest.raises(TypeError, match="description"):
-        tool(sample_tool)
+        tool(sample_tool)  # pyright: ignore[reportCallIssue]

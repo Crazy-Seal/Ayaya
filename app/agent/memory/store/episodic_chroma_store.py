@@ -30,14 +30,14 @@ class EpisodicChromaStore:
     def __init__(
         self,
         collection_name: str,
-        embedding_config: dict[str, Any],
+        embedding_config: EmbeddingConfig,
         persist_path: str | None = None,
     ):
         """创建向量客户端及当前会话集合；有目录时持久保存向量，未指定时使用内存集合。
 
         Args:
             collection_name (str): 当前会话独立使用的 Chroma 集合名称。
-            embedding_config (dict[str, Any]): 向量模型的地址、凭据、模型名及可选维数配置。
+            embedding_config (EmbeddingConfig): 向量模型的地址、凭据、模型名及可选维数配置。
             persist_path (str | None): 向量集合的持久目录；省略时使用内存存储。
         """
         self.collection_name = collection_name
@@ -45,12 +45,7 @@ class EpisodicChromaStore:
         self.persist_path = persist_path
 
         # 初始化 Embedding 客户端
-        self._embedding_client = EmbeddingClient(EmbeddingConfig(
-            api_key=embedding_config["api_key"],
-            model=embedding_config["model"],
-            base_url=embedding_config.get("base_url", "https://api.openai.com/v1"),
-            dimension=embedding_config.get("dimension"),
-        ))
+        self._embedding_client = EmbeddingClient(embedding_config)
 
         # 同步初始化 Chroma 客户端
         if self.persist_path:

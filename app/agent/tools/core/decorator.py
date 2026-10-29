@@ -17,7 +17,7 @@ from enum import Enum
 import json
 import types
 import typing
-from typing import Any, Callable, Type, Union, Literal, get_args, get_origin
+from typing import Any, Awaitable, Callable, Type, Union, Literal, get_args, get_origin, overload
 
 from pydantic import BaseModel
 from pydantic.fields import FieldInfo
@@ -104,11 +104,11 @@ def _parameter_schema(parameter_type: Any) -> dict:
     return schema
 
 
-def _is_json_schema_default(value: Any) -> bool:
+def _is_json_schema_default(value: object) -> bool:
     """判断函数默认值是否可安全放入 JSON Schema 的 default 字段。
 
     Args:
-        value (Any): 当前需要校验或转换的值。
+        value (object): 函数签名提供的默认值，检查能否写入 JSON Schema。
     """
     try:
         json.dumps(value)
@@ -221,8 +221,12 @@ def _build_schema(func: Callable) -> tuple[dict, str | None]:
     return schema, injected
 
 
+ToolFunction = Callable[..., Awaitable[str | ToolResult]]
+
+
+@overload
 def tool(
-    func: Callable | None = None,
+    func: ToolFunction,
     *,
     description: str,
     name: str | None = None,
@@ -230,7 +234,36 @@ def tool(
     persist_oversized_result: bool = True,
     authorization_timing: AuthorizationTiming = AuthorizationTiming.BEFORE_EXECUTE,
     parameters_schema: dict | None = None,
-) -> Any:
+) -> type[BaseTool]:
+    """直接接收异步工具函数，返回可交给注册表的工具类。"""
+    ...
+
+
+@overload
+def tool(
+    func: None = None,
+    *,
+    description: str,
+    name: str | None = None,
+    compressible: bool = False,
+    persist_oversized_result: bool = True,
+    authorization_timing: AuthorizationTiming = AuthorizationTiming.BEFORE_EXECUTE,
+    parameters_schema: dict | None = None,
+) -> Callable[[ToolFunction], type[BaseTool]]:
+    """先保存工具说明和配置，返回等待异步函数定义的装饰器。"""
+    ...
+
+
+def tool(
+    func: ToolFunction | None = None,
+    *,
+    description: str,
+    name: str | None = None,
+    compressible: bool = False,
+    persist_oversized_result: bool = True,
+    authorization_timing: AuthorizationTiming = AuthorizationTiming.BEFORE_EXECUTE,
+    parameters_schema: dict | None = None,
+) -> type[BaseTool] | Callable[[ToolFunction], type[BaseTool]]:
     """将显式模型说明与异步函数包装为 BaseTool 类，不读取函数的维护文档。
 
     用法：
@@ -247,10 +280,10 @@ def tool(
         authorization_timing (AuthorizationTiming): 授权发生在执行前，或只读准备完成后。
         parameters_schema (dict | None): 逃生口——直接给定 JSON Schema，跳过自动推导。
             用于嵌套/复杂参数（如 update_plan 的 array-of-object），签名无法表达时。
-        func (Callable | None): 需要包装或检查签名的函数。
+        func (ToolFunction | None): 返回文本或 ToolResult 的异步工具函数。
 
     Returns:
-        Any: 等待函数定义的装饰器，或包装已有函数后得到的 BaseTool 子类。
+        type[BaseTool] | Callable[[ToolFunction], type[BaseTool]]: 等待函数定义的装饰器，或包装已有函数后得到的工具类。
 
     Raises:
         ValueError: 模型说明不是字符串，或只包含空白字符。
@@ -259,11 +292,11 @@ def tool(
     if not isinstance(description, str) or not description.strip():
         raise ValueError("@tool 的 description 必须是非空字符串。")
 
-    def wrap(fn: Callable) -> Type[BaseTool]:
+    def wrap(fn: ToolFunction) -> Type[BaseTool]:
         """装饰工具函数时从签名及说明创建 BaseTool 子类，此时不执行工具正文。
 
         Args:
-            fn (Callable): 需要包装或执行的函数。
+            fn (ToolFunction): 返回文本或 ToolResult 的异步工具函数。
 
         Returns:
             Type[BaseTool]: 可供注册表与执行管道使用的工具类。
@@ -292,7 +325,7 @@ def tool(
             """
             # 1. 只转交签名中声明且模型实际提供的参数，省略字段留给 Python 应用默认值。
             # 1.1. 根据字段是否存在筛选，不按值筛选，保留显式的零、False、空串和 None。
-            kwargs: dict[str, Any] = {k: args[k] for k in param_names if k in args}
+            kwargs: dict[str, object] = {k: args[k] for k in param_names if k in args}
             # 1.2. 运行上下文始终由执行管道注入，不从模型参数读取。
             if injected:
                 kwargs[injected] = context

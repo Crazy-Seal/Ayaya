@@ -1,5 +1,8 @@
 """验证临时环境图片的模型请求、审批恢复材料和轮次结束清理。"""
 
+from openai import AsyncOpenAI
+from typing import cast
+
 import asyncio
 from contextlib import closing
 from dataclasses import replace
@@ -32,7 +35,7 @@ def adapter() -> OpenAIChatCompletionsAdapter:
     Returns:
         OpenAIChatCompletionsAdapter: 使用测试 SDK 替身、不访问模型服务的适配器。
     """
-    return OpenAIChatCompletionsAdapter(LLMConfig("test", "test"), sdk_client=SimpleNamespace())
+    return OpenAIChatCompletionsAdapter(LLMConfig("test", "test"), sdk_client=cast(AsyncOpenAI, SimpleNamespace()))
 
 
 def test_environment_images_preserve_item_order_in_model_request(adapter: OpenAIChatCompletionsAdapter) -> None:

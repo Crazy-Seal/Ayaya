@@ -5,7 +5,7 @@
 """
 
 import logging
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 from app.agent.tools.core.base import BaseTool
 from app.agent.models.contracts import ToolDefinition

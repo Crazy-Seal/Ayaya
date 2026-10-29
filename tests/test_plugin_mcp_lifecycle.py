@@ -1,5 +1,8 @@
 """验证插件声明、会话保存、实际装配和连接清理组成完整流程。"""
 
+from app.mcp.mcp_connection_manager import SessionFactory
+from typing import cast
+
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
@@ -77,7 +80,7 @@ async def test_plugin_mcp_binds_permissions_and_disconnects_on_parameter_change(
         finally:
             closed.append(config.command)
 
-    manager = MCPConnectionManager(lambda: MCPServersConfig(), session_factory=session_factory,
+    manager = MCPConnectionManager(lambda: MCPServersConfig(), session_factory=cast(SessionFactory, session_factory),
                                    plugin_config_loader=plugins.connection_config)
     service = ChatSettingsService(dao, connection_manager=manager, mutation_coordinator=coordinator, plugin_service=plugins)
     settings = ChatSettings(session_id="session", model_name="test", openai_api_key="test",

@@ -1,5 +1,8 @@
 """通过应用服务和 HTTP 接口验证插件 MCP 状态查询的分层与只读行为。"""
 
+from app.mcp.mcp_connection_manager import SessionFactory
+from typing import cast
+
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
@@ -127,7 +130,7 @@ async def test_plugin_status_queries_are_read_only_and_keep_http_contract(tmp_pa
         opened.append(config.id)
         yield Session()
 
-    manager = MCPConnectionManager(lambda: MCPServersConfig(), session_factory=session_factory,
+    manager = MCPConnectionManager(lambda: MCPServersConfig(), session_factory=cast(SessionFactory, session_factory),
                                    plugin_config_loader=plugins.connection_config)
     service = MCPService(MCPSettingsDao(tmp_path / "mcp_servers.yaml"), dao, manager, plugin_service=plugins)
     before = config_file.read_bytes()

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import Iterable
+
+from mcp.types import Tool
 
 MAX_CONTENT_PARTS = 1_000
 MAX_TOOLS_PER_SERVER = 200
@@ -22,7 +24,7 @@ class MCPResourceLimitError(ValueError):
 
 
 def validate_json_value(
-    value: Any,
+    value: object,
     *,
     label: str,
     max_depth: int,
@@ -32,7 +34,7 @@ def validate_json_value(
     """在序列化前限制 JSON 值的深度、节点数和近似字节量。
 
     Args:
-        value (Any): 待验证的 JSON 兼容值。
+        value (object): 待验证的外部输入，通过逐项检查确认是否为 JSON 兼容值。
         label (str): 错误消息中的数据名称。
         max_depth (int): 允许的最大嵌套深度。
         max_nodes (int): 允许遍历的最大节点数。
@@ -41,7 +43,7 @@ def validate_json_value(
     Raises:
         MCPResourceLimitError: 任一配额超限或对象不是 JSON 兼容值。
     """
-    stack: list[tuple[Any, int]] = [(value, 0)]
+    stack: list[tuple[object, int]] = [(value, 0)]
     nodes = 0
     size = 0
     while stack:
@@ -77,11 +79,14 @@ def validate_json_value(
             raise MCPResourceLimitError(f"{label} 大小超过限制")
 
 
-def validate_tool_catalog(tools: Iterable[Any]) -> list[Any]:
+def validate_tool_catalog(tools: Iterable[Tool]) -> list[Tool]:
     """在缓存或指纹计算前完整验证 MCP 工具目录。
 
     Args:
-        tools (Iterable[Any]): 当前向模型公开的工具定义。
+        tools (Iterable[Tool]): MCP SDK 返回、尚待检查资源配额的工具定义。
+
+    Returns:
+        list[Tool]: 通过数量、名称、说明和 Schema 配额检查的工具目录。
     """
     catalog = tools if isinstance(tools, list) else list(tools)
     if len(catalog) > MAX_TOOLS_PER_SERVER:
@@ -113,11 +118,11 @@ def validate_tool_catalog(tools: Iterable[Any]) -> list[Any]:
     return catalog
 
 
-def limit_instructions(value: Any) -> str | None:
+def limit_instructions(value: str | None) -> str | None:
     """截断过长的 Server instructions，并附带明确标记。
 
     Args:
-        value (Any): 当前需要校验或转换的值。
+        value (str | None): MCP 初始化结果提供的服务说明，可为空。
     """
     if value is None:
         return None

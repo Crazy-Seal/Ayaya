@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from typing import cast
+import ctypes
+
 import os
 import subprocess
 import sys
@@ -154,7 +157,7 @@ def test_windows_waiter_closes_process_handle() -> None:
     """等待完成后必须关闭 Windows 进程句柄。"""
     kernel32 = _FakeKernel32()
 
-    WindowsProcessWaiter(kernel32=kernel32, get_last_error=lambda: 0).wait(1234)
+    WindowsProcessWaiter(kernel32=cast("ctypes.WinDLL", kernel32), get_last_error=lambda: 0).wait(1234)
 
     assert kernel32.closed == [99]
 
@@ -164,7 +167,7 @@ def test_windows_wait_failure_still_closes_handle() -> None:
     kernel32 = _FakeKernel32(wait_result=0xFFFFFFFF)
 
     with pytest.raises(ParentProcessMonitorError):
-        WindowsProcessWaiter(kernel32=kernel32, get_last_error=lambda: 5).wait(1234)
+        WindowsProcessWaiter(kernel32=cast("ctypes.WinDLL", kernel32), get_last_error=lambda: 5).wait(1234)
 
     assert kernel32.closed == [99]
 
@@ -172,7 +175,7 @@ def test_windows_wait_failure_still_closes_handle() -> None:
 def test_default_windows_monitor_opens_handle_before_starting_thread() -> None:
     """无法打开所有者时应在服务线程启动前直接失败。"""
     kernel32 = _FakeKernel32(handle=0)
-    waiter = WindowsProcessWaiter(kernel32=kernel32, get_last_error=lambda: 87)
+    waiter = WindowsProcessWaiter(kernel32=cast("ctypes.WinDLL", kernel32), get_last_error=lambda: 87)
     thread_created = False
 
     def thread_factory(**_kwargs: object) -> _ImmediateThread:

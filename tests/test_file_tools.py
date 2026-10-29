@@ -2,7 +2,8 @@ from tests.model_capture import image_urls, image_kind, encoded_tool
 from app.agent.models.openai_message_names import TOOL_IMAGE_MESSAGE_NAME
 import asyncio
 from pathlib import Path
-from types import SimpleNamespace
+from app.agent.state.model import AgentState
+from app.agent.tools.core.base import ToolContext
 
 from app.agent.tools.read_file import read_file
 from app.agent.tools.read_image import read_image
@@ -13,16 +14,16 @@ from app.environment import get_tool_results_dir
 from app.agent.tools.core.registry import ToolRegistry
 
 
-def _context(session_id: str = "session-a") -> SimpleNamespace:
+def _context(session_id: str = "session-a") -> ToolContext:
     """为桌面或文件工具构造当前用例的运行上下文。
 
     Args:
         session_id (str): 当前操作所属的会话编号。
 
     Returns:
-        SimpleNamespace: 供外层用例断言使用的预设结果。
+        ToolContext: 绑定测试会话和内存状态的工具运行上下文。
     """
-    return SimpleNamespace(session_id=session_id)
+    return ToolContext(session_id=session_id, state=AgentState.create_new(session_id))
 
 
 def test_read_file_supports_line_and_character_ranges(tmp_path: Path, monkeypatch) -> None:
@@ -43,10 +44,10 @@ def test_read_file_supports_line_and_character_ranges(tmp_path: Path, monkeypatc
         Returns:
             tuple[str, str]: 供外层用例断言使用的预设结果。
         """
-        lines = await read_file._tool_func(
+        lines = await getattr(read_file, "_tool_func")(
             path="sample.txt", start=1, end=3, unit="line", context=_context()
         )
-        chars = await read_file._tool_func(
+        chars = await getattr(read_file, "_tool_func")(
             path="sample.txt", start=2, end=6, unit="character", context=_context()
         )
         return lines, chars
@@ -62,7 +63,7 @@ def test_read_file_resolves_current_session_artifact() -> None:
     store = ToolResultArtifactStore(get_tool_results_dir())
     reference = store.save("session-a", "第一行\n第二行\n第三行")
 
-    result = asyncio.run(read_file._tool_func(
+    result = asyncio.run(getattr(read_file, "_tool_func")(
         path=reference.uri,
         start=1,
         end=2,
@@ -106,14 +107,14 @@ def test_read_file_rejects_invalid_range_and_cross_session_artifact() -> None:
     store = ToolResultArtifactStore(get_tool_results_dir())
     reference = store.save("session-a", "secret")
 
-    invalid_range = asyncio.run(read_file._tool_func(
+    invalid_range = asyncio.run(getattr(read_file, "_tool_func")(
         path=reference.uri,
         start=2,
         end=1,
         unit="line",
         context=_context(),
     ))
-    cross_session = asyncio.run(read_file._tool_func(
+    cross_session = asyncio.run(getattr(read_file, "_tool_func")(
         path=reference.uri,
         start=None,
         end=None,
@@ -144,7 +145,7 @@ def test_read_image_returns_valid_images_as_system_tool_images(tmp_path: Path, m
     (tmp_path / "valid.png").write_bytes(png)
     (tmp_path / "invalid.png").write_bytes(b"not-png")
 
-    raw = asyncio.run(read_image._tool_func(paths=["valid.png", "invalid.png"]))
+    raw = asyncio.run(getattr(read_image, "_tool_func")(paths=["valid.png", "invalid.png"]))
     normalized = ToolResultNormalizer().normalize(raw)
 
     assert image_kind(normalized) == "tool"
@@ -167,7 +168,7 @@ def test_read_image_counts_only_valid_images_toward_limit(tmp_path: Path, monkey
     valid = b"\x89PNG\r\n\x1a\n" + b"payload"
     (tmp_path / "valid.png").write_bytes(valid)
 
-    raw = asyncio.run(read_image._tool_func(paths=[
+    raw = asyncio.run(getattr(read_image, "_tool_func")(paths=[
         *(f"invalid-{index}.png" for index in range(5)),
         "valid.png",
     ]))
@@ -236,7 +237,7 @@ def test_apply_patch_adds_updates_and_deletes_files(tmp_path: Path, monkeypatch)
 *** Delete File: delete.txt
 *** End Patch"""
 
-    result = asyncio.run(apply_patch._tool_func(patch=patch))
+    result = asyncio.run(getattr(apply_patch, "_tool_func")(patch=patch))
 
     assert result.startswith("已应用补丁")
     assert (tmp_path / "added.txt").read_text(encoding="utf-8") == "new file\n"
@@ -263,7 +264,7 @@ def test_apply_patch_validates_every_operation_before_writing(tmp_path: Path, mo
 +after
 *** End Patch"""
 
-    result = asyncio.run(apply_patch._tool_func(patch=patch))
+    result = asyncio.run(getattr(apply_patch, "_tool_func")(patch=patch))
 
     assert result.startswith("错误:")
     assert not (tmp_path / "should-not-exist.txt").exists()
@@ -284,7 +285,7 @@ def test_apply_patch_rejects_workspace_escape(tmp_path: Path, monkeypatch) -> No
 +content
 *** End Patch"""
 
-    result = asyncio.run(apply_patch._tool_func(patch=patch))
+    result = asyncio.run(getattr(apply_patch, "_tool_func")(patch=patch))
 
     assert result.startswith("错误:")
     assert not (tmp_path.parent / "escape.txt").exists()

@@ -4,7 +4,6 @@ import json
 import logging
 import os
 import re
-from typing import Any
 
 from app.agent.models.llm_client import LLMClient, LLMConfig
 from app.agent.state.messages import SystemMessage, HumanMessage, ImageContent, TextContent
@@ -42,11 +41,11 @@ def _vlm_config() -> tuple[str, str, str]:
     return api_key.strip(), base_url, model
 
 
-def extract_bboxes(content: Any, expected_count: int) -> list[list[int]]:
+def extract_bboxes(content: object, expected_count: int) -> list[list[int]]:
     """解析全部定位框，任一目标缺失、数量不符或框无效时拒绝整个结果。
 
     Args:
-        content (Any): VLM 返回的 JSON 文本或文本内容块。
+        content (object): VLM 返回的待解析内容，先将文本或内容块转换为 JSON 文本。
         expected_count (int): 请求中的目标数量，返回数组必须逐项对应。
 
     Returns:

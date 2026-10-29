@@ -1,5 +1,8 @@
 """从工具授权和 MCP 连接公共接口验证插件能力隔离。"""
 
+from app.mcp.mcp_connection_manager import SessionFactory
+from typing import cast
+
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
@@ -84,7 +87,7 @@ async def test_plugin_mcp_connects_without_enabled_and_isolates_sessions() -> No
 
     config = StdioMCPConnectionConfig(id="game", name="游戏", command="test-server")
     assert "enabled" not in config.model_dump()
-    manager = MCPConnectionManager(lambda: MCPServersConfig(), session_factory=factory,
+    manager = MCPConnectionManager(lambda: MCPServersConfig(), session_factory=cast(SessionFactory, factory),
                                    plugin_config_loader=lambda _: config)
     first = PluginMCPKey("one", "game_plugin", "game")
     second = PluginMCPKey("two", "game_plugin", "game")

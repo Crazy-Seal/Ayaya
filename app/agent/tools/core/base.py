@@ -4,7 +4,7 @@
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING
 from app.schemas.tool_types import AuthorizationTiming
 from app.schemas.message_types import MediaKind
 from app.schemas.desktop import DesktopOperations, StopRequested

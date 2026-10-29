@@ -20,6 +20,7 @@ from app.agent.memory.config import MemoryConfig
 from app.agent.memory.store.episodic_chroma_store import EpisodicChromaStore
 from app.agent.memory.store.episodic_sqlite_store import EpisodicSqliteStore
 from app.agent.models.llm_client import LLMClient, LLMConfig
+from app.agent.models.embedding_client import EmbeddingConfig
 from app.schemas.chat_settings import ChatSettings
 
 logger = logging.getLogger(__name__)
@@ -122,12 +123,12 @@ class EpisodicMemory:
         # 初始化向量存储
         self.chroma_store = EpisodicChromaStore(
             collection_name=f"{self.NAMESPACE}_{session_id}",
-            embedding_config={
-                "api_key": config.embedding_api_key,
-                "model": config.embedding_model,
-                "dimension": config.embedding_dimension,
-                "base_url": config.embedding_base_url,
-            },
+            embedding_config=EmbeddingConfig(
+                api_key=config.embedding_api_key,
+                model=config.embedding_model,
+                dimension=config.embedding_dimension,
+                base_url=config.embedding_base_url,
+            ),
             persist_path=config.chroma_path,
         )
 
@@ -189,32 +190,35 @@ class EpisodicMemory:
         for item in memory_items:
             memory_id = f"episodic_{uuid.uuid4().hex[:16]}"
 
+            # 4.1. 提取结果保留已校验模型，写入数据库和向量元数据时统一转换日期。
+            event_date = item.event_date.isoformat()
+
             metadata = {
                 "session_id": self.session_id,
-                "event_date": item["event_date"],
-                "importance": item["importance"],
+                "event_date": event_date,
+                "importance": item.importance,
                 "created_at": datetime.now().isoformat(),
             }
 
-            # 4.1. SQLite 存储是权威数据，优先保存，失败时跳过该条记忆。
+            # 4.2. SQLite 存储是权威数据，优先保存，失败时跳过该条记忆。
             try:
                 await self.sqlite_store.add(
                     record_id=memory_id,
                     session_id=self.session_id,
-                    content=item["content"],
-                    event_date=item["event_date"],
-                    importance=item["importance"],
+                    content=item.content,
+                    event_date=event_date,
+                    importance=item.importance,
                 )
             except Exception as e:
                 logger.exception("[EpisodicMemory] SQLite 存储失败: %s", e)
                 errors.append(f"保存记忆失败：{e}")
                 continue
 
-            # 4.2. 再更新向量索引，索引失败不撤销已经保存的 SQLite 记忆。
+            # 4.3. 再更新向量索引，索引失败不撤销已经保存的 SQLite 记忆。
             try:
                 await self.chroma_store.upsert(
                     record_id=memory_id,
-                    content=item["content"],
+                    content=item.content,
                     metadata=metadata,
                 )
             except Exception as e:
@@ -224,7 +228,7 @@ class EpisodicMemory:
             memory_ids.append(memory_id)
             logger.info(
                 "[EpisodicMemory] 添加记忆成功: id=%s, event_date=%s, importance=%.2f",
-                memory_id, item["event_date"], item["importance"]
+                memory_id, event_date, item.importance
             )
         logger.info(
             "[EpisodicMemory] 添加记忆完成: 总共 %d 条",
@@ -387,14 +391,14 @@ class EpisodicMemory:
     async def _extract_memories(
         self,
         prompt: str,
-    ) -> list[dict[str, Any]]:
+    ) -> list[EpisodicMemoryItem]:
         """发送 add 已完成预算处理的提示词，并验证结构化提取结果。
 
         Args:
             prompt (str): 本次实际发送的完整情景记忆提示词。
 
         Returns:
-            list[dict[str, Any]]: 记忆内容、事件日期和重要性，正常未提取到记忆时为空。
+            list[EpisodicMemoryItem]: 已校验的记忆内容、事件日期和重要性，正常未提取到记忆时为空。
 
         Raises:
             Exception: 模型提取或结构化结果验证失败，由任务记录错误原因。
@@ -406,18 +410,10 @@ class EpisodicMemory:
                 schema=EPISODIC_MEMORY_SCHEMA,
             )
 
-            # 2. 验证事件日期和重要性，再转换为存储需要的字段。
+            # 2. 验证事件日期和重要性，将模型交给 add 在入库时转换日期。
             validated = EpisodicMemoryOutput.model_validate(result)
 
-            memory_items = []
-            for item in validated.memories:
-                memory_items.append({
-                    "content": item.content,
-                    "event_date": item.event_date.isoformat(),
-                    "importance": item.importance,
-                })
-
-            return memory_items
+            return validated.memories
 
         except Exception as e:
             logger.exception("[EpisodicMemory] LLM 提取记忆失败: %s", e)

@@ -1,3 +1,8 @@
+
+from app.mcp.mcp_connection_manager import SessionFactory
+from mcp.types import CallToolResult
+from mcp.types import Tool as MCPTool
+from typing import cast
 from tests.model_capture import image_urls, image_kind
 from pathlib import Path
 from contextlib import asynccontextmanager
@@ -315,7 +320,7 @@ async def test_connection_manager_reuses_connection_and_returns_raw_tool_catalog
             )
         ]
     )
-    manager = MCPConnectionManager(lambda: config, session_factory=session_factory)
+    manager = MCPConnectionManager(lambda: config, session_factory=cast(SessionFactory, session_factory))
     first = await manager.connect("filesystem")
     second = await manager.connect("filesystem")
 
@@ -372,7 +377,7 @@ async def test_connection_manager_allows_concurrent_calls_per_server() -> None:
     config = MCPServersConfig(servers=[StdioMCPServerConfig(
         id="serial", name="Serial", enabled=True, command="python"
     )])
-    manager = MCPConnectionManager(lambda: config, session_factory=session_factory)
+    manager = MCPConnectionManager(lambda: config, session_factory=cast(SessionFactory, session_factory))
     await manager.connect("serial")
 
     await asyncio.gather(
@@ -435,7 +440,7 @@ async def test_unknown_call_error_keeps_generation_for_next_call() -> None:
         command="python",
         env={"TOKEN": "plain-secret"},
     )])
-    manager = MCPConnectionManager(lambda: config, session_factory=session_factory)
+    manager = MCPConnectionManager(lambda: config, session_factory=cast(SessionFactory, session_factory))
 
     with pytest.raises(Exception, match="未自动重试") as error:
         await manager.call_tool("lifecycle", "read_file", {})
@@ -533,7 +538,7 @@ async def test_nonfatal_call_errors_keep_generation(failure: Exception) -> None:
     config = MCPServersConfig(servers=[StdioMCPServerConfig(
         id="nonfatal", name="Nonfatal", enabled=True, command="python"
     )])
-    manager = MCPConnectionManager(lambda: config, session_factory=session_factory)
+    manager = MCPConnectionManager(lambda: config, session_factory=cast(SessionFactory, session_factory))
 
     with pytest.raises(MCPConnectionError, match="未自动重试"):
         await manager.call_tool("nonfatal", "read_file", {})
@@ -619,7 +624,7 @@ async def test_fatal_call_errors_retire_generation(failure: Exception) -> None:
     config = MCPServersConfig(servers=[StdioMCPServerConfig(
         id="fatal", name="Fatal", enabled=True, command="python"
     )])
-    manager = MCPConnectionManager(lambda: config, session_factory=session_factory)
+    manager = MCPConnectionManager(lambda: config, session_factory=cast(SessionFactory, session_factory))
 
     with pytest.raises(MCPConnectionError, match="未自动重试"):
         await manager.call_tool("fatal", "read_file", {})
@@ -682,7 +687,7 @@ async def test_one_failed_concurrent_call_does_not_cancel_other_inflight_call() 
     config = MCPServersConfig(servers=[StdioMCPServerConfig(
         id="concurrent", name="Concurrent", enabled=True, command="python"
     )])
-    manager = MCPConnectionManager(lambda: config, session_factory=session_factory)
+    manager = MCPConnectionManager(lambda: config, session_factory=cast(SessionFactory, session_factory))
     await manager.connect("concurrent")
 
     success_task = asyncio.create_task(
@@ -824,7 +829,7 @@ async def test_adapter_executes_authorized_call_and_converts_results() -> None:
             )
         ]
     )
-    manager = MCPConnectionManager(lambda: config, session_factory=session_factory)
+    manager = MCPConnectionManager(lambda: config, session_factory=cast(SessionFactory, session_factory))
     await manager.connect("filesystem")
     descriptor = manager.get_tools("filesystem")[1]
     resolver = _MutablePolicyResolver(
@@ -870,7 +875,7 @@ async def test_adapter_does_not_own_user_approval_interrupts() -> None:
     config = MCPServersConfig(servers=[StdioMCPServerConfig(
         id="filesystem", name="Filesystem", enabled=True, command="python"
     )])
-    manager = MCPConnectionManager(lambda: config, session_factory=session_factory)
+    manager = MCPConnectionManager(lambda: config, session_factory=cast(SessionFactory, session_factory))
     resolver.identity = server_identity_fingerprint(config.servers[0])
     await manager.connect("filesystem")
     descriptor = manager.get_tools("filesystem")[0]
@@ -908,7 +913,7 @@ async def test_adapter_rejects_changed_tool_contract_at_final_guard() -> None:
     config = MCPServersConfig(servers=[StdioMCPServerConfig(
         id="filesystem", name="Filesystem", enabled=True, command="python"
     )])
-    manager = MCPConnectionManager(lambda: config, session_factory=session_factory)
+    manager = MCPConnectionManager(lambda: config, session_factory=cast(SessionFactory, session_factory))
     await manager.connect("filesystem")
     descriptor = manager.get_tools("filesystem")[0]
     resolver = _MutablePolicyResolver(
@@ -950,7 +955,7 @@ async def test_adapter_rejects_server_identity_changed_after_construction() -> N
     config = MCPServersConfig(servers=[StdioMCPServerConfig(
         id="filesystem", name="Filesystem", enabled=True, command="python"
     )])
-    manager = MCPConnectionManager(lambda: config, session_factory=session_factory)
+    manager = MCPConnectionManager(lambda: config, session_factory=cast(SessionFactory, session_factory))
     await manager.connect("filesystem")
     original_identity = server_identity_fingerprint(config.servers[0])
     resolver = _MutablePolicyResolver(ToolPolicy.ALLOW, original_identity)
@@ -1028,7 +1033,7 @@ async def test_adapter_rechecks_current_policy_before_execution() -> None:
     config = MCPServersConfig(servers=[StdioMCPServerConfig(
         id="filesystem", name="Filesystem", enabled=True, command="python"
     )])
-    manager = MCPConnectionManager(lambda: config, session_factory=session_factory)
+    manager = MCPConnectionManager(lambda: config, session_factory=cast(SessionFactory, session_factory))
     resolver.identity = server_identity_fingerprint(config.servers[0])
     await manager.connect("filesystem")
     adapter = MCPToolAdapter(
@@ -1086,7 +1091,7 @@ async def test_adapter_rechecks_policy_inside_connection_lease() -> None:
             resolver.policy = ToolPolicy.DENY
             return await super().call_tool(*args, **kwargs)
 
-    manager = _PolicyChangingManager(lambda: config, session_factory=session_factory)
+    manager = _PolicyChangingManager(lambda: config, session_factory=cast(SessionFactory, session_factory))
     resolver.identity = server_identity_fingerprint(config.servers[0])
     await manager.connect("filesystem")
     adapter = MCPToolAdapter(
@@ -1125,7 +1130,7 @@ async def test_adapter_rejects_changed_policy_binding_identity() -> None:
     config = MCPServersConfig(servers=[StdioMCPServerConfig(
         id="filesystem", name="Filesystem", enabled=True, command="python"
     )])
-    manager = MCPConnectionManager(lambda: config, session_factory=session_factory)
+    manager = MCPConnectionManager(lambda: config, session_factory=cast(SessionFactory, session_factory))
     await manager.connect("filesystem")
     resolver = _MutablePolicyResolver(ToolPolicy.ALLOW, "旧身份")
     adapter = MCPToolAdapter(
@@ -1195,7 +1200,7 @@ async def test_call_timeout_is_not_replayed_keeps_generation_and_redacts_secret(
         call_timeout_seconds=0.01,
         env={"TOKEN": "plain-secret"},
     )])
-    manager = MCPConnectionManager(lambda: config, session_factory=session_factory)
+    manager = MCPConnectionManager(lambda: config, session_factory=cast(SessionFactory, session_factory))
     await manager.connect("slow")
 
     with pytest.raises(Exception, match="未自动重试") as error:
@@ -1215,13 +1220,13 @@ async def test_call_timeout_is_not_replayed_keeps_generation_and_redacts_secret(
 
 def test_adapter_converts_errors_multiple_images_and_unsupported_content() -> None:
     """验证适配器转换错误、多图片和不支持的内容。"""
-    error = MCPToolAdapter._convert_result(SimpleNamespace(
+    error = MCPToolAdapter._convert_result(cast(CallToolResult, SimpleNamespace(
         isError=True,
         content=[SimpleNamespace(type="text", text="remote failed")],
-    ))
+    )))
     assert "remote failed" in error.text
 
-    converted = MCPToolAdapter._convert_result(SimpleNamespace(
+    converted = MCPToolAdapter._convert_result(cast(CallToolResult, SimpleNamespace(
         isError=False,
         structuredContent={"large": "x" * 60_000},
         content=[
@@ -1231,7 +1236,7 @@ def test_adapter_converts_errors_multiple_images_and_unsupported_content() -> No
             SimpleNamespace(type="resource_link"),
             SimpleNamespace(type="resource"),
         ],
-    ))
+    )))
     assert image_urls(converted) == [
         "data:image/png;base64,iVBORw0KGgo=",
         "data:image/jpeg;base64,/9j/",
@@ -1243,10 +1248,10 @@ def test_adapter_converts_errors_multiple_images_and_unsupported_content() -> No
 
 def test_adapter_preserves_large_error_for_unified_normalization() -> None:
     """验证较大错误正文保留给统一结果规范化。"""
-    huge_error = MCPToolAdapter._convert_result(SimpleNamespace(
+    huge_error = MCPToolAdapter._convert_result(cast(CallToolResult, SimpleNamespace(
         isError=True,
         content=[SimpleNamespace(type="text", text="x" * 100_000)],
-    ))
+    )))
 
     assert huge_error.text == "错误: " + "x" * 100_000
 
@@ -1262,7 +1267,7 @@ def test_adapter_applies_image_quotas() -> None:
         SimpleNamespace(type="image", data="%%%", mimeType="image/png"),
         SimpleNamespace(type="image", data="iVBORw0KGgo=", mimeType="image/gif"),
     ])
-    converted = MCPToolAdapter._convert_result(SimpleNamespace(isError=False, content=images))
+    converted = MCPToolAdapter._convert_result(cast(CallToolResult, SimpleNamespace(isError=False, content=images)))
     normalized = ToolResultNormalizer().normalize(converted)
     assert len(image_urls(normalized)) == 5
     assert "已忽略 3 张工具图片：图片数量超过限制" in normalized.text
@@ -1273,22 +1278,22 @@ def test_adapter_deduplicates_exact_structured_serialization() -> None:
     structured = {"items": [1, 2], "message": "你好"}
     serialized = '{"items":[1,2],"message":"你好"}'
 
-    converted = MCPToolAdapter._convert_result(SimpleNamespace(
+    converted = MCPToolAdapter._convert_result(cast(CallToolResult, SimpleNamespace(
         isError=False,
         content=[SimpleNamespace(type="text", text=f"结果如下：\n{serialized}")],
         structuredContent=structured,
-    ))
+    )))
 
     assert converted.text == f"结果如下：\n{serialized}"
 
 
 def test_adapter_appends_structured_content_when_exact_serialization_is_absent() -> None:
     """验证缺少完全一致正文时追加结构化内容。"""
-    converted = MCPToolAdapter._convert_result(SimpleNamespace(
+    converted = MCPToolAdapter._convert_result(cast(CallToolResult, SimpleNamespace(
         isError=False,
         content=[SimpleNamespace(type="text", text='结果如下： {"value": 1}')],
         structuredContent={"value": 1},
-    ))
+    )))
 
     assert converted.text == (
         '结果如下： {"value": 1}\n\n[structuredContent]\n{"value":1}'
@@ -1297,11 +1302,11 @@ def test_adapter_appends_structured_content_when_exact_serialization_is_absent()
 
 def test_adapter_accepts_structured_result_larger_than_schema_limit() -> None:
     """验证结构化结果不受工具 Schema 大小限制误截断。"""
-    converted = MCPToolAdapter._convert_result(SimpleNamespace(
+    converted = MCPToolAdapter._convert_result(cast(CallToolResult, SimpleNamespace(
         isError=False,
         content=[],
         structuredContent={"value": "x" * (300 * 1024)},
-    ))
+    )))
 
     assert converted.text.startswith('{"value":"')
     assert "已忽略 structured content" not in converted.text
@@ -1355,10 +1360,10 @@ def test_adapter_and_normalizer_limit_content_parts_and_summarize_images(monkeyp
         return original_decode(*args, **kwargs)
 
     monkeypatch.setattr("app.agent.tools.results.normalizer.base64.b64decode", counted_decode)
-    converted = MCPToolAdapter._convert_result(SimpleNamespace(
+    converted = MCPToolAdapter._convert_result(cast(CallToolResult, SimpleNamespace(
         isError=False,
         content=_RepeatedInvalidImages(),
-    ))
+    )))
     normalized = ToolResultNormalizer().normalize(converted)
 
     assert decode_calls == 1_000
@@ -1375,7 +1380,7 @@ def test_adapter_does_not_preserve_untrusted_content_type_or_mime_values() -> No
     ]
     parts.extend(SimpleNamespace(type=f"attacker-{index}") for index in range(500))
 
-    converted = MCPToolAdapter._convert_result(SimpleNamespace(isError=False, content=parts))
+    converted = MCPToolAdapter._convert_result(cast(CallToolResult, SimpleNamespace(isError=False, content=parts)))
     normalized = ToolResultNormalizer().normalize(converted)
 
     assert "image/attacker-" not in normalized.text
@@ -1414,10 +1419,10 @@ def test_adapter_applies_content_part_limit_to_every_part_type(part_type: str) -
             for _ in range(100_000):
                 yield SimpleNamespace(type=part_type, text="x")
 
-    converted = MCPToolAdapter._convert_result(SimpleNamespace(
+    converted = MCPToolAdapter._convert_result(cast(CallToolResult, SimpleNamespace(
         isError=False,
         content=_RepeatedParts(),
-    ))
+    )))
 
     assert "已忽略 99000 个 MCP content parts" in converted.text
     if part_type != "text":
@@ -1475,10 +1480,10 @@ def test_unified_image_normalizer_stops_at_mcp_content_part_limit(monkeypatch) -
         "app.agent.tools.results.normalizer._has_valid_signature",
         counted_signature,
     )
-    converted = MCPToolAdapter._convert_result(SimpleNamespace(
+    converted = MCPToolAdapter._convert_result(cast(CallToolResult, SimpleNamespace(
         isError=False,
         content=_RepeatedImages(),
-    ))
+    )))
     normalized = ToolResultNormalizer().normalize(converted)
 
     assert signature_calls == 1_000
@@ -1495,7 +1500,7 @@ def test_tool_catalog_and_instructions_quotas() -> None:
         for index in range(201)
     ]
     with pytest.raises(ValueError, match="工具数量"):
-        validate_tool_catalog(tools)
+        validate_tool_catalog(cast(list[MCPTool], tools))
 
     oversized_schema = SimpleNamespace(
         name="large",
@@ -1504,7 +1509,7 @@ def test_tool_catalog_and_instructions_quotas() -> None:
         annotations={},
     )
     with pytest.raises(ValueError, match="Schema"):
-        validate_tool_catalog([oversized_schema])
+        validate_tool_catalog(cast(list[MCPTool], [oversized_schema]))
 
     limited = limit_instructions("x" * 30_000)
     assert limited is not None and len(limited) < 21_000
@@ -1531,7 +1536,7 @@ async def test_disabled_server_never_creates_session_on_connect_or_reconnect() -
         calls.append(server.id)
         yield _FakeSession()
 
-    manager = MCPConnectionManager(lambda: config, session_factory=session_factory)
+    manager = MCPConnectionManager(lambda: config, session_factory=cast(SessionFactory, session_factory))
     with pytest.raises(MCPServerDisabledError):
         await manager.connect("disabled")
     with pytest.raises(MCPServerDisabledError):

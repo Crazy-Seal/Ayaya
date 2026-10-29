@@ -6,7 +6,7 @@ from app.crud.chat_settings_dao import ChatSettingsDao
 from app.crud.mcp_settings_dao import MCPSettingsDao
 from app.schemas.mcp import MCPServerConfig, MCPServersConfig, MCPServerStatus
 from app.mcp.identity import server_identity_fingerprint
-from app.mcp.types import PluginMCPKey
+from app.mcp.types import MCPToolDescriptor, PluginMCPKey
 from app.mcp.mcp_connection_manager import (
     MCPConnectionError,
     MCPConnectionManager,
@@ -208,12 +208,12 @@ class MCPService:
             self._reconcile_policies(server, tools)
             return self._server_view(server)
 
-    def _reconcile_policies(self, server: MCPServerConfig, tools: list[Any]) -> None:
+    def _reconcile_policies(self, server: MCPServerConfig, tools: list[MCPToolDescriptor]) -> None:
         """按服务身份和最新工具目录同步所有模型权限。
 
         Args:
             server (MCPServerConfig): 已成功连接的 Server 配置。
-            tools (list[Any]): Server 当前暴露的工具描述符。
+            tools (list[MCPToolDescriptor]): Server 当前暴露的工具描述符。
         """
         self.chat_settings_dao.reconcile_mcp_server_tools(
             server.id,

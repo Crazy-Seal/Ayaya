@@ -1,3 +1,5 @@
+
+from typing import cast
 from tests.model_capture import capture_input
 from pathlib import Path
 
@@ -395,12 +397,12 @@ def test_local_description_and_authorization_timing_are_part_of_approval_contrac
         parameters_schema = {"type": "object"}
         authorization_timing = "before_execute"
 
-    original = descriptor_for_tool(Tool())
+    original = descriptor_for_tool(cast(BaseTool, Tool()))
     Tool.description = "读取多个文件"
-    changed_description = descriptor_for_tool(Tool())
+    changed_description = descriptor_for_tool(cast(BaseTool, Tool()))
     Tool.description = "读取一个文件"
     Tool.authorization_timing = "after_prepare"
-    changed_timing = descriptor_for_tool(Tool())
+    changed_timing = descriptor_for_tool(cast(BaseTool, Tool()))
 
     assert original.contract_fingerprint != changed_description.contract_fingerprint
     assert original.contract_fingerprint != changed_timing.contract_fingerprint

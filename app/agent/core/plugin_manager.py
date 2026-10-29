@@ -9,6 +9,7 @@ from collections import defaultdict
 from typing import Any, Callable
 
 from app.agent.plugins.runtime import PluginRuntime
+from app.agent.state.model import AgentState
 
 from app.agent.plugins.base import BasePlugin, HookContext, PluginHook
 
@@ -91,7 +92,7 @@ class PluginManager:
     async def run_hooks(
         self,
         hook: PluginHook,
-        state: Any,
+        state: AgentState,
         data: Any = None,
         metadata: dict | None = None
     ) -> None:
@@ -99,7 +100,7 @@ class PluginManager:
 
         Args:
             hook (PluginHook): 钩子类型
-            state (Any): Agent 状态
+            state (AgentState): 当前会话的内存状态。
             data (Any): 钩子相关数据
             metadata (dict | None): 元数据
 

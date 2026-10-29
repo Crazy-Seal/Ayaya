@@ -7,6 +7,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from app.agent.plugins.runtime import PluginRuntime
+from app.agent.state.model import AgentState
 from app.agent.tools.core.base import BaseTool
 from app.schemas.mcp import MCPConnectionConfig
 
@@ -41,7 +42,7 @@ class HookContext:
     """钩子上下文：字段引用固定，状态及钩子数据只允许原地修改。"""
 
     hook: PluginHook
-    agent_state: Any
+    agent_state: AgentState
     data: Any
     metadata: dict = field(default_factory=dict)
     runtime: PluginRuntime | None = None
@@ -50,7 +51,7 @@ class HookContext:
     def create(
         cls,
         hook: PluginHook,
-        state: Any,
+        state: AgentState,
         data: Any = None,
         metadata: dict | None = None,
         runtime: PluginRuntime | None = None,
@@ -59,7 +60,7 @@ class HookContext:
 
         Args:
             hook (PluginHook): 当前插件登记或执行的时机。
-            state (Any): 当前会话的内存 AgentState；保存由调用方负责。
+            state (AgentState): 当前会话的内存状态；保存由调用方负责。
             data (Any): 需要解析或保存的结构化数据。
             metadata (dict | None): 本次插件执行的附加调用信息。
             runtime (PluginRuntime | None): 框架绑定插件、会话、来源轮次及任务编号的调用对象。

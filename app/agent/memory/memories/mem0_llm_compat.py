@@ -9,6 +9,7 @@ import logging
 from typing import Any
 
 from mem0.memory.utils import remove_code_blocks
+from mem0.llms.base import LLMBase
 
 
 logger = logging.getLogger(__name__)
@@ -29,11 +30,11 @@ class Mem0FactSchemaError(ValueError):
 class Mem0FactExtractionLLMAdapter:
     """在 Mem0 自带 LLM 外围规范化事实提取响应。"""
 
-    def __init__(self, delegate: Any) -> None:
+    def __init__(self, delegate: LLMBase) -> None:
         """保存原模型客户端，仅在识别到 Mem0 事实提取请求时规范化其响应结构。
 
         Args:
-            delegate (Any): 原有模型客户端，非事实提取请求原样交给它。
+            delegate (LLMBase): 原有模型客户端，非事实提取请求原样交给它。
         """
         self._delegate = delegate
 
@@ -118,11 +119,11 @@ class Mem0FactExtractionLLMAdapter:
         )
 
     @staticmethod
-    def _normalize_fact_response(response: Any) -> str:
+    def _normalize_fact_response(response: object) -> str:
         """校验事实提取 JSON，并兼容把 memories 列表改名为 facts；无法识别的结构明确报错。
 
         Args:
-            response (Any): 模型返回的事实提取文本。
+            response (object): 模型返回的事实提取结果，先检查文本类型再解析 JSON。
 
         Returns:
             str: 仅包含经校验 facts 列表的 JSON 字符串。

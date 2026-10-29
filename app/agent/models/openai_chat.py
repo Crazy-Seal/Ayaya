@@ -2,9 +2,13 @@
 
 import json
 import logging
-from typing import Any, AsyncIterator, Sequence
+from typing import Any, AsyncIterator, Literal, Sequence, overload
+from types import TracebackType
 
-from openai import AsyncOpenAI, OpenAI
+from openai import AsyncOpenAI, AsyncStream, OpenAI
+from openai.types import CompletionUsage
+from openai.types.chat import ChatCompletion, ChatCompletionChunk, ChatCompletionMessageCustomToolCall
+from openai.types.chat.chat_completion_chunk import ChoiceDeltaToolCall
 from app.agent.models.contracts import ModelFinishReason, InputMessage, LLMConfig, LLMResponse, StreamChunk, TokenUsage, ToolDefinition, ModelContextOverflowError, ProjectedMessage
 from app.schemas.message_types import COMPRESSED_SCREENSHOT_PLACEHOLDER, MediaKind, ImageContextState
 from app.agent.state.messages import (BaseMessage, HumanMessage, AssistantMessage, ToolMessage, SystemMessage,
@@ -22,11 +26,12 @@ class OpenAIChatCompletionsAdapter:
 
     _stream_usage_capabilities: dict[tuple[str, str], bool] = {}
 
-    def __init__(self, config: LLMConfig, *, sdk_client: Any = None):
+    def __init__(self, config: LLMConfig, *, sdk_client: AsyncOpenAI | None = None):
         """按模型地址、凭据和超时装配异步客户端，尚未调用模型。
 
         Args:
             config (LLMConfig): 调用方提供的配置。
+            sdk_client (AsyncOpenAI | None): 可注入的 OpenAI 异步客户端，省略时根据配置创建。
         """
         self.config = config
         self._sync_client = None
@@ -52,11 +57,14 @@ class OpenAIChatCompletionsAdapter:
         """
         return self
 
-    async def __aexit__(self, *args) -> None:
+    async def __aexit__(self, exc_type: type[BaseException] | None,
+                        exc: BaseException | None, traceback: TracebackType | None) -> None:
         """异步上下文结束时关闭模型连接，不吞掉调用异常。
 
         Args:
-            args (Any): 当前工具调用或被包装函数的参数。
+            exc_type (type[BaseException] | None): 退出时的异常类型，正常结束时为空。
+            exc (BaseException | None): 当前异常，正常结束时为空。
+            traceback (TracebackType | None): 当前异常的调用记录。
         """
         await self.close()
 
@@ -88,14 +96,14 @@ class OpenAIChatCompletionsAdapter:
     def _accumulate_tool_call(
         acc: list[dict],
         active_by_index: dict[int, int],
-        tc_delta: Any,
+        tc_delta: ChoiceDeltaToolCall,
     ) -> None:
         """按 call id 聚合工具 delta，并兼容网关重复使用同一 index。
 
         Args:
             acc (list[dict]): 按工具调用编号累积的名称、参数和附加协议内容。
             active_by_index (dict[int, int]): 流式工具索引到当前调用记录位置的映射。
-            tc_delta (Any): SDK 本次提供的工具调用片段。
+            tc_delta (ChoiceDeltaToolCall): SDK 本次提供的工具调用片段。
         """
         idx = tc_delta.index if tc_delta.index is not None else 0
         incoming_id = tc_delta.id or ""
@@ -202,7 +210,7 @@ class OpenAIChatCompletionsAdapter:
         Yields:
             StreamChunk: 文本 delta 即时产出；工具调用在流末一次性产出（避免重复发射）。
         """
-        payload = self._base_payload(messages, stream=True, **kwargs)
+        payload = self._base_payload(messages, **kwargs)
         if tools:
             payload["tools"] = self.encode_tools(tools)
         # 1. 按地址和模型缓存网关是否支持流式用量，首次请求先尝试读取真实 token 数。
@@ -221,7 +229,7 @@ class OpenAIChatCompletionsAdapter:
 
         try:
             try:
-                stream = await self._request(payload)
+                stream = await self._request(payload, stream=True)
             except Exception as exc:
                 message = str(exc).lower()
                 unsupported = "stream_options" in message and any(
@@ -233,7 +241,7 @@ class OpenAIChatCompletionsAdapter:
                 # 1.1. 只有明确拒绝 stream_options 才去掉该选项重试，其他调用错误继续抛出。
                 self._stream_usage_capabilities[capability_key] = False
                 payload.pop("stream_options", None)
-                stream = await self._request(payload)
+                stream = await self._request(payload, stream=True)
             # 2. 用量可能在没有 choices 的末尾片段到达，先读取用量再判断是否有正文。
             async for chunk in stream:
                 usage = getattr(chunk, "usage", None)
@@ -249,8 +257,9 @@ class OpenAIChatCompletionsAdapter:
                 choice = chunk.choices[0]
                 delta = choice.delta
                 refused = refused or bool(getattr(delta, "refusal", None))
-                if delta is not None and getattr(delta, "extra_content", None):
-                    assistant_extra = delta.extra_content
+                extra_content = getattr(delta, "extra_content", None)
+                if extra_content:
+                    assistant_extra = extra_content
 
                 if delta and delta.content:
                     yield StreamChunk(content=delta.content)
@@ -300,7 +309,7 @@ class OpenAIChatCompletionsAdapter:
         Returns:
             LLMResponse: 正文、工具调用、结束原因与可用恢复材料。
         """
-        payload = self._base_payload(messages, stream=False, **kwargs)
+        payload = self._base_payload(messages, **kwargs)
         if tools:
             payload["tools"] = self.encode_tools(tools)
 
@@ -315,7 +324,10 @@ class OpenAIChatCompletionsAdapter:
 
         tool_calls: list[ToolCall] = []
         if getattr(message, "tool_calls", None):
-            for tc in message.tool_calls:
+            for tc in message.tool_calls or ():
+                # 1. 本项目向模型声明函数工具；SDK 的自由文本自定义工具不能按函数参数解析。
+                if isinstance(tc, ChatCompletionMessageCustomToolCall):
+                    raise ValueError("模型返回不支持的自定义工具调用")
                 args = self._parse_tool_arguments(tc.function.arguments or "")
                 extra_content = getattr(tc, "extra_content", None)
                 if extra_content and hasattr(extra_content, "model_dump"):
@@ -357,7 +369,6 @@ class OpenAIChatCompletionsAdapter:
         max_attempts = 2
         payload = self._base_payload(
             messages,
-            stream=False,
             response_format={
                 "type": "json_schema",
                 "json_schema": {
@@ -433,11 +444,11 @@ class OpenAIChatCompletionsAdapter:
 
 
     @staticmethod
-    def _usage(usage: Any) -> TokenUsage | None:
+    def _usage(usage: CompletionUsage | None) -> TokenUsage | None:
         """读取可选 SDK 用量，同步与异步完整响应使用相同业务结构。
 
         Args:
-            usage (Any): 网关返回的用量对象；可能缺失。
+            usage (CompletionUsage | None): SDK 响应或流片段的用量对象；可能缺失。
         Returns:
             TokenUsage | None: 已规范化的用量，缺失时返回 None。
         """
@@ -609,14 +620,28 @@ class OpenAIChatCompletionsAdapter:
         system = encoded.pop(0)["content"] if encoded and encoded[0]["role"] == "system" else ""
         return RoughTokenEstimator().estimate_raw(system_prompt=system, tools=self.encode_tools(tools), messages=encoded)
 
-    async def _request(self, payload: dict) -> Any:
+    @overload
+    async def _request(self, payload: dict, *, stream: Literal[True]) -> AsyncStream[ChatCompletionChunk]:
+        """按流式请求返回 SDK 响应流，供逐段读取正文和工具调用。"""
+        ...
+
+    @overload
+    async def _request(self, payload: dict, *, stream: Literal[False] = False) -> ChatCompletion:
+        """按普通请求返回完整 SDK 响应，供转换正文和工具调用。"""
+        ...
+
+    async def _request(self, payload: dict, *, stream: bool = False) -> ChatCompletion | AsyncStream[ChatCompletionChunk]:
         """发起 SDK 请求，将明确上下文超限转换为公共异常。
 
         Args:
             payload (dict): 适配器生成的独立 SDK 请求。
+            stream (bool): 是否逐段接收模型响应，由调用流程明确指定。
+
+        Returns:
+            ChatCompletion | AsyncStream[ChatCompletionChunk]: 普通响应或可异步读取的模型响应流。
         """
         try:
-            return await self._client.chat.completions.create(**payload)
+            return await self._client.chat.completions.create(**payload, stream=stream)
         except Exception as exc:
             self._raise_model_error(exc)
             raise

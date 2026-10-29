@@ -6,9 +6,13 @@ import time
 from collections.abc import Mapping
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import TypeAlias, TypeVar
 
 from app.environment import get_data_dir, is_test_environment
+
+
+_ResultT = TypeVar("_ResultT")
+_LogValue: TypeAlias = str | int | float | bool | None | list["_LogValue"] | dict[str, "_LogValue"]
 
 
 def shorten_for_log(text: str, max_len: int = 200) -> str:
@@ -58,21 +62,21 @@ def _ensure_tool_file_handler(logger: logging.Logger) -> None:
         logger.addHandler(file_handler)
 
 
-def _sanitize_value(value: Any) -> Any:
+def _sanitize_value(value: object) -> _LogValue:
     """递归读取普通字典和只读映射，将参数及输出转换为脱敏、限长的日志片段。
 
     Args:
-        value (Any): 当前需要校验或转换的值。
+        value (object): 工具调用的任意参数或结果，按实际类型转换为日志内容。
 
     Returns:
-        Any: 日志使用的容器副本或标量，原工具参数保持不变。
+        _LogValue: 日志使用的容器副本或标量，原工具参数保持不变。
     """
     if isinstance(value, str):
         return shorten_for_log(value, max_len=500)
     if isinstance(value, (int, float, bool)) or value is None:
         return value
     if isinstance(value, Mapping):
-        safe: dict[str, Any] = {}
+        safe: dict[str, _LogValue] = {}
         for key, item in value.items():
             key_str = str(key)
             if any(word in key_str.lower() for word in _SENSITIVE_KEYS):
@@ -85,16 +89,16 @@ def _sanitize_value(value: Any) -> Any:
     return shorten_for_log(repr(value), max_len=500)
 
 
-def _sanitize_params(params: dict[str, Any]) -> dict[str, Any]:
+def _sanitize_params(params: dict[str, object]) -> dict[str, _LogValue]:
     """按参数名遮蔽凭据类字段，再递归清理其他值，供工具调用日志使用。
 
     Args:
-        params (dict[str, Any]): 经过敏感字段过滤的调用参数。
+        params (dict[str, object]): 原始调用参数，按名称过滤敏感字段。
 
     Returns:
-        dict[str, Any]: 可写日志的参数副本，敏感字段显示为星号。
+        dict[str, _LogValue]: 可写日志的参数副本，敏感字段显示为星号。
     """
-    safe: dict[str, Any] = {}
+    safe: dict[str, _LogValue] = {}
     for key, value in params.items():
         key_lower = key.lower()
         if any(word in key_lower for word in _SENSITIVE_KEYS):
@@ -106,11 +110,11 @@ def _sanitize_params(params: dict[str, Any]) -> dict[str, Any]:
 
 async def log_tool_call_result(
     tool_name: str,
-    params: Mapping[str, Any],
-    result: Any,
+    params: Mapping[str, object],
+    result: _ResultT,
     *,
     logger_name: str = "app.agent.tools",
-) -> Any:
+) -> _ResultT:
     """记录一次工具调用的参数和输出。
 
     适用于调用点已取得工具名、普通或只读参数映射和结果的场景，写入前统一脱敏。
@@ -119,9 +123,12 @@ async def log_tool_call_result(
 
     Args:
         tool_name (str): 注册表中使用的工具名称。
-        params (Mapping[str, Any]): 工具实际使用的调用参数，日志会递归转换并脱敏。
-        result (Any): 当前工具或被包装函数返回的结果。
+        params (Mapping[str, object]): 工具实际使用的调用参数，日志会递归转换并脱敏。
+        result (_ResultT): 当前工具或被包装函数返回的结果，记录后保留原类型及对象。
         logger_name (str): 当前工具日志使用的 logger 名称。
+
+    Returns:
+        _ResultT: 原始结果对象，类型与传入结果一致。
     """
     logger = logging.getLogger(logger_name)
     _ensure_tool_file_handler(logger)

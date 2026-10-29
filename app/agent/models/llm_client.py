@@ -1,8 +1,14 @@
 """统一模型入口：装配适配器，调用方只处理 Ayaya 消息。"""
 
-from typing import Any, AsyncIterator, Sequence
+from __future__ import annotations
+
+from typing import Any, AsyncIterator, Sequence, TYPE_CHECKING
+from types import TracebackType
 from app.agent.models.contracts import OPENAI_CHAT_COMPLETIONS, InputMessage, LLMConfig, LLMResponse, StreamChunk, TokenUsage, ToolDefinition, ModelAdapter, ModelContextOverflowError
 from app.agent.state.messages import BaseMessage
+
+if TYPE_CHECKING:
+    from openai import AsyncOpenAI
 
 
 class LLMClient:
@@ -12,13 +18,13 @@ class LLMClient:
         config (LLMConfig): 本实例固定使用的调用配置。
     """
 
-    def __init__(self, config: LLMConfig, *, adapter: ModelAdapter | None = None, sdk_client: Any = None):
+    def __init__(self, config: LLMConfig, *, adapter: ModelAdapter | None = None, sdk_client: AsyncOpenAI | None = None):
         """装配实现，不调用模型。
 
         Args:
             config (LLMConfig): 地址、模型及内部协议选择。
             adapter (ModelAdapter | None): 业务接口的测试或扩展实现。
-            sdk_client (Any): OpenAI 网络测试替身。
+            sdk_client (AsyncOpenAI | None): 可注入的 OpenAI 异步客户端，测试时替换其网络请求。
         Raises:
             ValueError: 未知协议且没有显式适配器。
         """
@@ -124,11 +130,14 @@ class LLMClient:
         """进入异步资源管理范围。"""
         return self
 
-    async def __aexit__(self, *args: Any) -> None:
+    async def __aexit__(self, exc_type: type[BaseException] | None,
+                        exc: BaseException | None, traceback: TracebackType | None) -> None:
         """离开资源范围时关闭连接，不吞掉调用错误。
 
         Args:
-            args (Any): 异步上下文退出时提供的异常类型、异常和 traceback。
+            exc_type (type[BaseException] | None): 退出时的异常类型，正常结束时为空。
+            exc (BaseException | None): 当前异常，正常结束时为空。
+            traceback (TracebackType | None): 当前异常的调用记录。
         """
         await self.close()
 

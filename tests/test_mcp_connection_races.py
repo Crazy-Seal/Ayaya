@@ -1,5 +1,8 @@
 """通过受控的连接退出等待，验证配置变更和插件连接清理可以安全并发。"""
 
+from app.mcp.mcp_connection_manager import SessionFactory
+from typing import cast
+
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -122,7 +125,7 @@ async def test_plugin_connect_waiting_for_removal_stays_managed(request_count: i
     """
     server = ControlledServer()
     manager = MCPConnectionManager(
-        MCPServersConfig, session_factory=server.session_factory, plugin_config_loader=server.load_config,
+        MCPServersConfig, session_factory=cast(SessionFactory, server.session_factory), plugin_config_loader=server.load_config,
     )
     key = PluginMCPKey("chat", "plugin", "game")
     tasks = []
@@ -155,7 +158,7 @@ async def test_connect_reads_latest_config_after_waiting_for_disconnect() -> Non
     """普通断开保留记录时，排队请求也必须使用等待期间更新的参数。"""
     server = ControlledServer()
     manager = MCPConnectionManager(
-        MCPServersConfig, session_factory=server.session_factory, plugin_config_loader=server.load_config,
+        MCPServersConfig, session_factory=cast(SessionFactory, server.session_factory), plugin_config_loader=server.load_config,
     )
     key = PluginMCPKey("chat", "plugin", "game")
     tasks = []
@@ -188,7 +191,7 @@ async def test_queued_connect_rejects_unavailable_plugin_config(remove_record: b
     """
     server = ControlledServer()
     manager = MCPConnectionManager(
-        MCPServersConfig, session_factory=server.session_factory, plugin_config_loader=server.load_config,
+        MCPServersConfig, session_factory=cast(SessionFactory, server.session_factory), plugin_config_loader=server.load_config,
     )
     key = PluginMCPKey("chat", "plugin", "game")
     tasks = []
@@ -221,7 +224,7 @@ async def test_connect_reads_latest_config_after_closing_changed_connection() ->
     """建连请求自己等待旧服务退出时，也采用退出期间再次更新的参数。"""
     server = ControlledServer()
     manager = MCPConnectionManager(
-        MCPServersConfig, session_factory=server.session_factory, plugin_config_loader=server.load_config,
+        MCPServersConfig, session_factory=cast(SessionFactory, server.session_factory), plugin_config_loader=server.load_config,
     )
     key = PluginMCPKey("chat", "plugin", "game")
     tasks = []
@@ -264,7 +267,7 @@ async def test_session_cleanup_tolerates_concurrent_plugin_cleanup() -> None:
         return other_config if key == second else server.load_config(key)
 
     manager = MCPConnectionManager(
-        MCPServersConfig, session_factory=server.session_factory, plugin_config_loader=load_config,
+        MCPServersConfig, session_factory=cast(SessionFactory, server.session_factory), plugin_config_loader=load_config,
     )
     tasks = []
     try:

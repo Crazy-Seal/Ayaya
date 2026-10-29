@@ -8,6 +8,7 @@ import sys
 import time
 
 import pytest
+from mcp.types import TextContent
 
 from app.schemas.mcp import MCPServersConfig, StdioMCPServerConfig, StreamableHttpMCPServerConfig
 from app.mcp.mcp_connection_manager import MCPConnectionManager
@@ -43,6 +44,8 @@ async def test_real_stdio_uses_minimal_environment_and_explicit_overrides(monkey
         overridden = await manager.call_tool(
             "real_stdio", "read_environment", {"name": "AYAYA_MCP_OVERRIDE"}
         )
+        assert isinstance(inherited.content[0], TextContent)
+        assert isinstance(overridden.content[0], TextContent)
         assert inherited.content[0].text == ""
         assert overridden.content[0].text == "from-config"
     finally:

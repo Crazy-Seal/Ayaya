@@ -1,5 +1,9 @@
 """验证模型网络响应释放、恢复材料及 MCP 内容顺序。"""
 
+from mcp.types import CallToolResult
+from openai import AsyncOpenAI
+from typing import cast
+
 import asyncio
 import base64
 from types import SimpleNamespace
@@ -57,8 +61,8 @@ def test_stopping_stream_closes_sdk_response() -> None:
 
     async def stop_after_first_chunk():
         """模拟停止回答，关闭统一入口产生的流。"""
-        client = LLMClient(LLMConfig("test", "test"), sdk_client=SimpleNamespace(
-            chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+        client = LLMClient(LLMConfig("test", "test"), sdk_client=cast(AsyncOpenAI, SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create)))))
         stream = client.astream([HumanMessage(content=text_content("问题"))])
         assert (await anext(stream)).content == "正文"
         await stream.aclose()
@@ -81,8 +85,8 @@ def test_complete_response_retains_usage_refusal_and_owned_material() -> None:
             content="", tool_calls=[], refusal="拒绝", extra_content={"signature": "opaque"}))],
             usage=SimpleNamespace(prompt_tokens=12, completion_tokens=3, total_tokens=15))
 
-    client = LLMClient(LLMConfig("test", "test"), sdk_client=SimpleNamespace(
-        chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    client = LLMClient(LLMConfig("test", "test"), sdk_client=cast(AsyncOpenAI, SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create)))))
     response = asyncio.run(client.ainvoke([HumanMessage(content=text_content("问题"))]))
     assert response.finish_reason == "refused"
     assert response.usage.total_tokens == 15
@@ -93,11 +97,11 @@ def test_complete_response_retains_usage_refusal_and_owned_material() -> None:
 def test_mcp_interleaved_content_preserves_order_and_image_quota() -> None:
     """MCP 文字与图片交错顺序不变，共享同一图片对象也不能绕过数量限制。"""
     data = base64.b64encode(b"\x89PNG\r\n\x1a\nfixture").decode()
-    converted = MCPToolAdapter._convert_result(SimpleNamespace(content=[
+    converted = MCPToolAdapter._convert_result(cast(CallToolResult, SimpleNamespace(content=[
         SimpleNamespace(type="text", text="前"),
         SimpleNamespace(type="image", mimeType="image/png", data=data),
         SimpleNamespace(type="text", text="后"),
-    ]))
+    ])))
     normalized = ToolResultNormalizer().normalize(converted)
     assert [type(block) for block in normalized.content] == [TextContent, ImageContent, TextContent]
     assert normalized.content[0].text == "前" and normalized.content[2].text == "后"

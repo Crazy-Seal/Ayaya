@@ -2,14 +2,13 @@
 
 import json
 import math
-from typing import Any
 
 
-def stable_json(value: Any) -> str:
+def stable_json(value: object) -> str:
     """以稳定键序列化值，供估算和指纹计算复用。
 
     Args:
-        value (Any): 当前需要校验或转换的值。
+        value (object): 待估算或计算指纹的数据，不可直接编码的对象转换为文字。
     """
     return json.dumps(
         value,
@@ -41,11 +40,11 @@ class RoughTokenEstimator:
     TOOL_CALL_OVERHEAD = 12
     IMAGE_TOKENS = 2_000
 
-    def estimate_value(self, value: Any) -> int:
+    def estimate_value(self, value: object) -> int:
         """粗估文本或多模态值的输入大小，图片按固定开销计算而不计 Base64 文本长度。
 
         Args:
-            value (Any): 当前需要校验或转换的值。
+            value (object): 待估算的文本、多模态列表或其他值，按实际类型处理。
 
         Returns:
             int: 该内容的粗估 token 数。

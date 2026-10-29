@@ -5,12 +5,13 @@ import logging
 from urllib.parse import urlsplit, urlunsplit
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, AsyncContextManager, Callable
+from typing import Any, AsyncContextManager, AsyncIterator, Callable
 
 import anyio
 import httpx
+from mcp import ClientSession
 from mcp.shared.exceptions import McpError
-from mcp.types import CONNECTION_CLOSED
+from mcp.types import CONNECTION_CLOSED, CallToolResult, Tool
 
 from app.schemas.mcp import MCPServerStatus
 from app.mcp.identity import server_identity_fingerprint, tool_contract_fingerprint
@@ -30,7 +31,7 @@ from app.schemas.mcp import (
 
 logger = logging.getLogger(__name__)
 
-SessionFactory = Callable[[MCPManagedConfig], AsyncContextManager[Any]]
+SessionFactory = Callable[[MCPManagedConfig], AsyncContextManager[ClientSession]]
 ExecutionGuard = Callable[[], str | None]
 
 
@@ -62,8 +63,8 @@ class _Generation:
     """保存一次可排空的 MCP 连接代及其调用租约状态。"""
 
     config: MCPManagedConfig
-    session: Any
-    context_manager: AsyncContextManager[Any]
+    session: ClientSession
+    context_manager: AsyncContextManager[ClientSession]
     accepting_calls: bool = True
     active_calls: int = 0
     lease_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -442,7 +443,7 @@ class MCPConnectionManager:
         arguments: dict,
         *,
         execution_guard: ExecutionGuard | None = None,
-    ) -> Any:
+    ) -> CallToolResult:
         """在可用连接代上安全调用 MCP 工具。
 
         Args:
@@ -452,7 +453,7 @@ class MCPConnectionManager:
             execution_guard (ExecutionGuard | None): 获得调用租约前执行的最终安全校验。
 
         Returns:
-            Any: MCP SDK 返回的原始调用结果。
+            CallToolResult: MCP SDK 返回的原始调用结果。
 
         Raises:
             MCPConnectionError: Server 不可用、校验失败、调用超时或执行失败。
@@ -615,11 +616,11 @@ class MCPConnectionManager:
         state.status = status or (MCPServerStatus.DISABLED if not self._enabled(state.config) else MCPServerStatus.DISCONNECTED)
 
     @staticmethod
-    def _to_descriptor(tool: Any) -> MCPToolDescriptor:
+    def _to_descriptor(tool: Tool) -> MCPToolDescriptor:
         """把 MCP SDK 工具对象转换为内部描述符。
 
         Args:
-            tool (Any): MCP SDK 返回的工具对象。
+            tool (Tool): MCP SDK 返回的工具对象。
 
         Returns:
             MCPToolDescriptor: 与 SDK 类型解耦的不可变工具描述符。
@@ -679,19 +680,19 @@ class MCPConnectionManager:
 
     @staticmethod
     @asynccontextmanager
-    async def _default_session_factory(config: MCPManagedConfig):
+    async def _default_session_factory(config: MCPManagedConfig) -> AsyncIterator[ClientSession]:
         """创建与传输类型匹配的 MCP ClientSession 上下文。
 
         Args:
             config (MCPManagedConfig): MCP Server 配置。
 
         Yields:
-            已进入但尚未执行 ``initialize`` 的 MCP ClientSession。
+            ClientSession: 已进入但尚未执行 ``initialize`` 的 MCP 客户端会话。
 
         Raises:
             MCPConnectionError: 配置使用不受支持的传输类型。
         """
-        from mcp import ClientSession, StdioServerParameters
+        from mcp import StdioServerParameters
         from mcp.client.stdio import stdio_client
         from mcp.client.streamable_http import streamable_http_client
 

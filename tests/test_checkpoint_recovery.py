@@ -379,6 +379,7 @@ def test_interrupt_paths_respect_checkpoint_failure_and_optional_storage(
             if current.is_interrupted() and fail:
                 # 失败发生在钩子之后，但事件尚未发出。
                 assert current.extra["interrupt_ids"] == plugin.interrupt_ids
+                assert current.interrupt_data is not None
                 failed_saves.append(current.interrupt_data["request_id"])
                 raise RuntimeError("中断保存失败")
             return 1

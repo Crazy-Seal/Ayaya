@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from datetime import date, datetime, time, timezone, timedelta
 from pathlib import Path
-from typing import Any
 from zoneinfo import ZoneInfo
 
 import aiosqlite
@@ -142,7 +141,7 @@ class ChatHistoryStore:
             list[tuple]: 按数据库编号递增的协议行；协议表尚不存在时返回空列表。
         """
         clauses = ["session_id = ?"]
-        params: list[Any] = [session_id]
+        params: list[str | int] = [session_id]
         if max_history_id is not None:
             clauses.append("id <= ?")
             params.append(max_history_id)
@@ -225,7 +224,7 @@ class ChatHistoryStore:
             date | None: 符合条件的有效日期；没有记录时为空。
         """
         clauses = ["session_id = ?"]
-        params: list[Any] = [session_id]
+        params: list[str | int] = [session_id]
         if max_history_id is not None:
             clauses.append("id <= ?")
             params.append(max_history_id)
@@ -295,7 +294,7 @@ class ChatHistoryStore:
             return []
         start, _ = self._local_date_to_utc_range(before_date)
         clauses = ["session_id = ?", "created_at < ?"]
-        params: list[Any] = [session_id, start.isoformat()]
+        params: list[str | int] = [session_id, start.isoformat()]
         if max_history_id is not None:
             clauses.append("id <= ?")
             params.append(max_history_id)
@@ -381,7 +380,7 @@ class ChatHistoryStore:
                 return [], []
             while len(complete) < required:
                 clauses = ["session_id = ?"]
-                params: list[Any] = [session_id]
+                params: list[str | int] = [session_id]
                 if before_id is not None:
                     clauses.append("id < ?")
                     params.append(before_id)

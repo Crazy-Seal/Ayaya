@@ -2,8 +2,8 @@
 
 import asyncio
 import json
-from dataclasses import asdict
-from typing import Any, AsyncIterator
+from dataclasses import Field, asdict
+from typing import AsyncIterator, ClassVar, Protocol
 
 from app.agent.state.messages import to_json_value
 
@@ -11,13 +11,23 @@ from app.agent.state.messages import to_json_value
 SSE_HEARTBEAT_SECONDS = 60.0
 
 
+class _DataclassEvent(Protocol):
+    """约定 SSE 输入可由 dataclasses.asdict 转为独立事件字典。
+
+    Attributes:
+        __dataclass_fields__ (dict[str, Field[object]]): dataclass 自动生成的事件字段定义。
+    """
+
+    __dataclass_fields__: ClassVar[dict[str, Field[object]]]
+
+
 async def stream_sse_json(
-    source: AsyncIterator[Any], *, heartbeat_interval: float = SSE_HEARTBEAT_SECONDS,
+    source: AsyncIterator[_DataclassEvent], *, heartbeat_interval: float = SSE_HEARTBEAT_SECONDS,
 ) -> AsyncIterator[str]:
     """持续消费领域事件，空闲时发送不进入业务序号的注释心跳。
 
     Args:
-        source (AsyncIterator[Any]): 产生 dataclass 事件或桌面执行请求的订阅。
+        source (AsyncIterator[_DataclassEvent]): 产生 dataclass 事件的独立观察订阅。
         heartbeat_interval (float): 无数据时发送心跳的间隔秒数，默认每分钟一次。
 
     Yields:

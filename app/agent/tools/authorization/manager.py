@@ -12,7 +12,7 @@ from app.schemas.runtime_types import (
     ApprovalDecisionKind, InterruptKind,
 )
 from app.agent.state.messages import to_json_value
-from app.agent.tools.core.base import InterruptEvent, ToolResult
+from app.agent.tools.core.base import BaseTool, InterruptEvent, ToolResult
 from app.schemas.tool_permissions import ToolPolicy
 
 from .models import (
@@ -48,7 +48,7 @@ def _fingerprint(value: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def descriptor_for_tool(tool: Any) -> ToolDescriptor:
+def descriptor_for_tool(tool: BaseTool) -> ToolDescriptor:
     """读取工具的来源、名称、参数定义和审批时机，整理为权限检查所需的信息。
 
     ToolManager 筛选模型工具列表、Pipeline 检查一次工具调用时使用本函数。
@@ -56,7 +56,7 @@ def descriptor_for_tool(tool: Any) -> ToolDescriptor:
     用于发现用户批准后工具或服务已经发生变化。
 
     Args:
-        tool (Any): 当前已注册的本地工具或 MCP 工具适配器。
+        tool (BaseTool): 当前已注册的本地工具或 MCP 工具适配器。
 
     Returns:
         ToolDescriptor: 区分工具来源、判断审批时机及比较工具定义所需的信息。
@@ -144,14 +144,14 @@ class ToolAuthorization:
         except Exception:
             return ToolPolicy.DENY
 
-    def is_exposed(self, session_id: str, tool: Any) -> bool:
+    def is_exposed(self, session_id: str, tool: BaseTool) -> bool:
         """供 ToolManager 筛选模型工具列表，供 MCP 适配器在远端调用前复核是否被禁用。
 
         allow 和 ask 都允许模型看见工具；ask 的具体操作仍由 Pipeline 请求用户审批。
 
         Args:
             session_id (str): 当前操作所属的会话编号。
-            tool (Any): 需要注册或执行的工具对象。
+            tool (BaseTool): 需要注册或执行的工具对象。
 
         Returns:
             bool: 当前权限不是 deny 时为 True。

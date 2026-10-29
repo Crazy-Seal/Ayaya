@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING
+
+from mcp.types import CallToolResult
 
 from app.schemas.message_types import MediaKind
 from app.agent.state.messages import TextContent, ImageContent, content_text
@@ -144,11 +146,11 @@ class MCPToolAdapter(BaseTool):
         return None
 
     @staticmethod
-    def _convert_result(result: Any) -> ToolResult:
+    def _convert_result(result: CallToolResult) -> ToolResult:
         """把 MCP SDK 调用结果转换为 Ayaya 工具结果。
 
         Args:
-            result (Any): MCP SDK 返回的原始调用结果。
+            result (CallToolResult): MCP SDK 返回的原始调用结果。
 
         Returns:
             ToolResult: 包含文本、结构化内容和图片的统一工具结果。

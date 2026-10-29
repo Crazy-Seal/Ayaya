@@ -1,3 +1,6 @@
+
+from mem0.llms.base import LLMBase
+from typing import cast
 import json
 
 import pytest
@@ -68,7 +71,7 @@ def _fact_messages() -> list[dict]:
 def test_fact_adapter_normalizes_memories_alias_without_retry() -> None:
     """验证memories 别名规范化为 facts 且不重试。"""
     delegate = _FakeLLM(['{"memories":["用户喜欢卡牌游戏"]}'])
-    adapter = Mem0FactExtractionLLMAdapter(delegate)
+    adapter = Mem0FactExtractionLLMAdapter(cast(LLMBase, delegate))
 
     response = adapter.generate_response(
         _fact_messages(),
@@ -82,7 +85,7 @@ def test_fact_adapter_normalizes_memories_alias_without_retry() -> None:
 def test_fact_adapter_preserves_standard_facts_contract() -> None:
     """验证标准 facts 结构保持不变。"""
     delegate = _FakeLLM(['{"facts":[]}'])
-    adapter = Mem0FactExtractionLLMAdapter(delegate)
+    adapter = Mem0FactExtractionLLMAdapter(cast(LLMBase, delegate))
 
     response = adapter.generate_response(_fact_messages())
 
@@ -95,7 +98,7 @@ def test_fact_adapter_accepts_memories_alias_in_json_code_block() -> None:
     delegate = _FakeLLM([
         '```json\n{"memories":["用户喜欢卡牌游戏"]}\n```',
     ])
-    adapter = Mem0FactExtractionLLMAdapter(delegate)
+    adapter = Mem0FactExtractionLLMAdapter(cast(LLMBase, delegate))
 
     response = adapter.generate_response(_fact_messages())
 
@@ -106,7 +109,7 @@ def test_fact_adapter_does_not_modify_update_stage_payload() -> None:
     """验证非事实提取阶段响应不被修改。"""
     raw = '{"memory":[{"id":"0","text":"内容","event":"ADD"}]}'
     delegate = _FakeLLM([raw])
-    adapter = Mem0FactExtractionLLMAdapter(delegate)
+    adapter = Mem0FactExtractionLLMAdapter(cast(LLMBase, delegate))
 
     response = adapter.generate_response([
         {"role": "user", "content": "比较新事实和已有记忆"},
@@ -122,7 +125,7 @@ def test_fact_adapter_retries_unknown_schema_once() -> None:
         '{"items":["用户喜欢卡牌游戏"]}',
         '{"facts":["用户喜欢卡牌游戏"]}',
     ])
-    adapter = Mem0FactExtractionLLMAdapter(delegate)
+    adapter = Mem0FactExtractionLLMAdapter(cast(LLMBase, delegate))
     original_messages = _fact_messages()
 
     response = adapter.generate_response(original_messages)
@@ -136,7 +139,7 @@ def test_fact_adapter_retries_unknown_schema_once() -> None:
 def test_fact_adapter_raises_after_one_failed_repair() -> None:
     """验证一次修复仍失败后明确抛错。"""
     delegate = _FakeLLM(['{"items":[]}', '{"result":[]}'])
-    adapter = Mem0FactExtractionLLMAdapter(delegate)
+    adapter = Mem0FactExtractionLLMAdapter(cast(LLMBase, delegate))
 
     with pytest.raises(Mem0FactSchemaError, match="两次响应均不符合"):
         adapter.generate_response(_fact_messages())
@@ -163,7 +166,7 @@ def test_fact_adapter_rejects_invalid_shapes_after_one_retry(
         responses (list[object]): 按模型调用顺序准备的最终响应。
     """
     delegate = _FakeLLM(responses)
-    adapter = Mem0FactExtractionLLMAdapter(delegate)
+    adapter = Mem0FactExtractionLLMAdapter(cast(LLMBase, delegate))
 
     with pytest.raises(Mem0FactSchemaError, match="两次响应均不符合"):
         adapter.generate_response(_fact_messages())

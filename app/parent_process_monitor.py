@@ -8,7 +8,7 @@ import os
 import sys
 import threading
 from collections.abc import Callable, Mapping
-from typing import Any, Protocol
+from typing import Protocol
 
 
 logger = logging.getLogger(__name__)
@@ -39,13 +39,13 @@ class WindowsProcessWaiter:
     def __init__(
         self,
         *,
-        kernel32: Any | None = None,
+        kernel32: ctypes.WinDLL | None = None,
         get_last_error: Callable[[], int] | None = None,
     ) -> None:
         """初始化 Windows 进程等待器。
 
         Args:
-            kernel32 (Any | None): 可选的 Kernel32 API 对象，主要用于测试。
+            kernel32 (ctypes.WinDLL | None): 可注入的 Windows 系统 DLL，省略时加载 Kernel32 并配置函数签名。
             get_last_error (Callable[[], int] | None): 返回最近一个 Windows 错误码的函数。
 
         Raises:
@@ -113,15 +113,15 @@ class _OpenedWindowsProcess:
     def __init__(
         self,
         *,
-        kernel32: Any,
-        handle: Any,
+        kernel32: ctypes.WinDLL,
+        handle: int,
         get_last_error: Callable[[], int],
     ) -> None:
         """接管已打开的 Windows 进程句柄，保存等待与关闭所需的系统接口。
 
         Args:
-            kernel32 (Any): 已配置 Windows 进程接口的系统 DLL 对象。
-            handle (Any): 已经打开且由本对象负责关闭的进程句柄。
+            kernel32 (ctypes.WinDLL): 已配置 Windows 进程接口的系统 DLL 对象。
+            handle (int): 已经打开且由本对象负责关闭的进程句柄。
             get_last_error (Callable[[], int]): 读取最近一次 Windows 系统调用错误编号的函数。
         """
         self._kernel32 = kernel32
