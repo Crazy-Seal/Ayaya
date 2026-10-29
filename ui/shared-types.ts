@@ -71,12 +71,27 @@ export const InteractionEventKind = {
   RUN_STARTED: "run_started",
   TEXT_CHUNK: "text_chunk",
   TOOL_CALL: "tool_call",
+  TOOL_COMPLETED: "tool_completed",
   INTERRUPT: "interrupt",
   AUTHORIZATION_RESOLVED: "authorization_resolved",
   RUN_COMPLETED: "run_completed",
   ERROR: "error",
 } as const;
 export type InteractionEventKind = typeof InteractionEventKind[keyof typeof InteractionEventKind];
+
+/**
+ * 工具完成并保存后提供的调用标识和历史查询终点。
+ *
+ * Attributes:
+ *     tool_call_id (string): 本次工具调用的编号。
+ *     tool_name (string): 已执行完成的工具名称。
+ *     message_id (string): 已保存结果消息的编号，历史查询包含该消息并排除其后的回复。
+ */
+export type ToolCompletedData = {
+  tool_call_id: string;
+  tool_name: string;
+  message_id: string;
+};
 
 /**
  * 区分人工授权请求与独立桌面执行 continuation。
@@ -761,7 +776,7 @@ export interface DesktopPetApi {
     latestAiMessage: string | null;
   }>;
   getChatHistory: (sessionId: string, start: number, limit: number) => Promise<ChatHistoryItem[]>;
-  getChatHistoryLastN: (sessionId: string, n: number) => Promise<ChatHistoryItem[]>;
+  getChatHistoryLastN: (sessionId: string, n: number, throughMessageId?: string) => Promise<ChatHistoryItem[]>;
   updateChatSettings: (settings: ChatSettingsData) => Promise<ChatSettingsData | { configuration_errors: Array<{ loc: Array<string | number>; msg: string }> }>;
   getToolPermissions: (sessionId: string) => Promise<ToolPolicyView[]>;
   updateToolPermissions: (

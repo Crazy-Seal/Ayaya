@@ -33,6 +33,7 @@
     "run_started",
     "text_chunk",
     "tool_call",
+    "tool_completed",
     "interrupt",
     "authorization_resolved",
     "run_completed",

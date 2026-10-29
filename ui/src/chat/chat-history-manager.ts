@@ -233,15 +233,16 @@ export class ChatHistoryManager {
   }
 
   /**
-   * 读取历史并校验请求版本，返回实际显示的记录供聊天气泡复用。
+   * 读取历史并校验请求版本，工具完成刷新时只显示到指定结果消息。
    *
    * Args:
    *     sessionId (string): 共享 Ayaya 会话标识。
+   *     throughMessageId (string | undefined): 工具完成刷新时的结果消息编号，排除其后已经保存的回复。
    *
    * Returns:
    *     Promise<ChatHistoryItem[] | null>: 已应用的历史；查询被会话切换或新内容作废时返回 null。
    */
-  async loadHistory(sessionId: string): Promise<ChatHistoryItem[] | null> {
+  async loadHistory(sessionId: string, throughMessageId?: string): Promise<ChatHistoryItem[] | null> {
     // 1. 捕获请求代次和视图版本，新增量或会话切换使旧历史加载失效。
     const request = ++this.historyRequest;
     const revision = this.historyRevision;
@@ -251,7 +252,7 @@ export class ChatHistoryManager {
       this.stopOutputTimer();
     }
     // 直接获取最后 100 条记录，足够包含 10 对消息
-    const lastNHistory = await window.desktopPetApi.getChatHistoryLastN(sessionId, 100);
+    const lastNHistory = await window.desktopPetApi.getChatHistoryLastN(sessionId, 100, throughMessageId);
     // 2. 加载结果仍属于当前视图时才应用，避免用旧列表覆盖实时文本。
     if (request !== this.historyRequest || revision !== this.historyRevision
         || (this.sessionId && sessionId !== this.sessionId)) return null;

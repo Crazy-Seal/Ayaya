@@ -102,7 +102,7 @@ class ChatHistoryDao:
         # 2. 工具文字仍隐藏，图片保持独立可见气泡并使用稳定派生编号。
         if isinstance(message, ToolMessage):
             return [{**base, "id": f"{message.message_id}:images", "role": HistoryRole.AI,
-                     "content": f"[系统消息]工具 {message.tool_name} 返回图片: ", "images": images}] if images else []
+                     "content": "", "images": images}] if images else []
         if not isinstance(message, AssistantMessage):
             return []
         result = []
@@ -218,12 +218,18 @@ class ChatHistoryDao:
             logger.exception("[ChatHistory][session=%s] 查询聊天记录失败", session_id)
             return []
 
-    async def list_chat_history_last_n_async(self, session_id: str, n: int = 100) -> list[dict[str, str]]:
-        """查询会话最后 N 条历史记录，按时间升序返回。
+    async def list_chat_history_last_n_async(
+        self, session_id: str, n: int = 100, *, through_message_id: str | None = None,
+    ) -> list[dict[str, str]]:
+        """查询最近 N 条可见历史，可限定到某次已保存的工具结果，按原顺序返回。
 
         Args:
             session_id (str): 当前操作所属的会话编号。
-            n (int): 最多返回的日记条数。
+            n (int): 最多返回的可见历史条数。
+            through_message_id (str | None): 查询包含该消息及此前记录，省略时读取最新历史。
+
+        Raises:
+            LookupError: 查询终点不属于当前会话或已被删除。
         """
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         n = max(n, 0)
@@ -236,6 +242,16 @@ class ChatHistoryDao:
             async with aiosqlite.connect(str(self.db_path)) as conn:
                 if not await self._protocol_table_exists(conn):
                     return []
+                # 1. 按会话核对查询终点，后续倒序分块查询始终排除工具完成之后的新消息。
+                if through_message_id is not None:
+                    anchors = await conn.execute_fetchall(
+                        "SELECT id FROM conversation_messages WHERE session_id = ? AND message_id = ?",
+                        (session_id, through_message_id),
+                    )
+                    if not anchors:
+                        raise LookupError("历史查询终点不存在于当前会话")
+                    before_id = int(anchors[0][0]) + 1
+                # 2. 仍按可见消息数量分页；无图片的工具结果可以作为查询终点，但不占展示条数。
                 while visible_count < n:
                     rows = await self._fetch_protocol_chunk(
                         conn,
@@ -259,6 +275,8 @@ class ChatHistoryDao:
                 for item in group
             ]
             return ordered[-n:]
+        except LookupError:
+            raise
         except MessageContractError:
             logger.exception("[ChatHistory][session=%s] 消息契约不兼容", session_id)
             raise

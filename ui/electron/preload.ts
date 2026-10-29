@@ -318,17 +318,18 @@ const desktopPetApi: DesktopPetApi = {
   getChatHistory: (sessionId, start, limit) =>
     ipcRenderer.invoke(IpcChannel.GET_CHAT_HISTORY, sessionId, start, limit),
   /**
-   * 页面读取会话最近若干条历史，供聊天列表恢复。
+   * 页面读取最近聊天历史，工具完成刷新时传入结果消息编号作为查询终点。
    *
    * Args:
    *     sessionId (string): 当前操作所属的会话编号。
    *     n (number): 最多读取的历史消息数量。
+   *     throughMessageId (string | undefined): 工具完成后的查询终点，省略时读取最新历史。
    *
    * Returns:
    *     Promise<any>: 按原对话顺序排列的最近消息。
    */
-  getChatHistoryLastN: (sessionId, n) =>
-    ipcRenderer.invoke(IpcChannel.GET_CHAT_HISTORY_LAST_N, sessionId, n),
+  getChatHistoryLastN: (sessionId, n, throughMessageId) =>
+    ipcRenderer.invoke(IpcChannel.GET_CHAT_HISTORY_LAST_N, sessionId, n, throughMessageId),
   /**
    * 页面把会话模型、角色和插件设置交给主进程保存。
    *

@@ -342,12 +342,13 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
      *     _event (IpcMainInvokeEvent): Electron 传入的事件对象，不作为业务载荷使用。
      *     sessionId (string): 当前操作所属的会话编号。
      *     n (number): 最多读取的历史消息数量。
+     *     throughMessageId (string | undefined): 工具完成后的历史终点，省略时读取最新消息。
      *
      * Returns:
      *     Promise<ChatHistoryItem[]>: 最近可见消息列表。
      */
-    async (_event, sessionId: string, n: number) => {
-      return await fetchChatHistoryLastN(sessionId, n);
+    async (_event, sessionId: string, n: number, throughMessageId?: string) => {
+      return await fetchChatHistoryLastN(sessionId, n, throughMessageId);
     }
   );
 

@@ -24,6 +24,7 @@ class PresentationElement {
   disabled = false;
   title = "";
   src = "";
+  style: Partial<CSSStyleDeclaration> = {};
   attributes = new Map<string, string>();
   handlers = new Map<string, () => void>();
   scrollHeight = 100;
@@ -208,7 +209,10 @@ function createPresentation(withTaskEntry = false) {
   const bubble = new PresentationElement();
   const motions: string[] = [];
   const persisted: ChatHistoryItem[] = [];
-  const historyReads = { calls: 0, barrier: null as Promise<void> | null, failure: null as string | null };
+  const historyReads = {
+    calls: 0, barrier: null as Promise<void> | null, failure: null as string | null,
+    throughIds: [] as Array<string | undefined>, boundaries: new Map<string, number>(),
+  };
   const approvals = { opened: 0 };
   const attention: ChatAttentionUpdate[] = [];
   const taskHeader = new PresentationElement();
@@ -273,12 +277,19 @@ function createPresentation(withTaskEntry = false) {
     /**
      * 返回当前测试预设的权威历史，不访问真实后端。
      *
+     * Args:
+     *     _sessionId (string): 当前测试会话。
+     *     _n (number): 请求的历史条数。
+     *     throughMessageId (string | undefined): 工具结果查询终点。
      * Returns:
      *     Promise<ChatHistoryItem[]>: 场景已经提交的历史列表。
      */
-    getChatHistoryLastN: async () => {
+    getChatHistoryLastN: async (_sessionId: string, _n: number, throughMessageId?: string) => {
       historyReads.calls += 1;
-      const saved = [...persisted];
+      historyReads.throughIds.push(throughMessageId);
+      const limit = throughMessageId === undefined ? persisted.length : historyReads.boundaries.get(throughMessageId);
+      assert.notEqual(limit, undefined, "工具刷新必须指定已知的历史查询终点");
+      const saved = persisted.slice(0, limit);
       await historyReads.barrier;
       if (historyReads.failure) throw new Error(historyReads.failure);
       return saved;
@@ -1116,8 +1127,8 @@ async (t) => {
   }
 });
 
-test("历史只在初始化、人工审批和终态读取，重复审批及后端工具操作不重复查询", /**
- * 验证后端直接执行工具期间不额外读取聊天历史。
+test("历史在初始化、审批和终态读取，工具开始及重复审批不重复查询", /**
+ * 验证工具开始仅更新提示，审批和终态按既有规则读取历史。
  */
 async () => {
   const view = createPresentation();
@@ -1158,6 +1169,90 @@ async () => {
   } finally {
     view.close();
   }
+});
+
+/**
+ * 从真实展示器创建的节点中读取图片地址，检查轮末重绘前后是否重复。
+ * Args:
+ *     element (PresentationElement): 聊天节点或子节点。
+ * Returns:
+ *     string[]: 当前子树里的图片地址。
+ */
+function imageSources(element: PresentationElement): string[] {
+  return [...(element.src ? [element.src] : []), ...element.children.flatMap(imageSources)];
+}
+
+for (const restored of [false, true]) {
+  test(`工具完成立即显示图片，刷新期间的后续正文继续实时显示（${restored ? "重连" : "普通"}）`, /**
+   * 使用真实客户端和展示器，验证查询限定、事件积压、图片去重和后续流式正文。
+   * Args:
+   *     t (TestContext): 手动推进段落输出定时器。
+   */
+  async (t) => {
+    t.mock.timers.enable({ apis: ["setInterval"] });
+    const view = createPresentation();
+    let release: (() => void) | undefined;
+    try {
+      await view.emit("session_snapshot", { phase: restored ? "running" : "idle", run_id: restored ? "r" : null }, 0);
+      await view.emit("run_started", {}, 1);
+      await view.emit("text_chunk", { value: "工具前说明" }, 2);
+      await view.emit("tool_call", { value: "control_screen" }, 3);
+      // 1. 模拟后端已经抢先保存下一步回答；工具完成刷新只能读到工具结果。
+      view.persisted.push(
+        { id: "before", role: "AI", content: "工具前说明", timestamp: "2026-10-29" },
+        { id: "result:images", role: "AI", content: "", images: ["screenshot/one.png"], timestamp: "2026-10-29" },
+        { id: "after", role: "AI", content: "工具后\n\n继续回答", timestamp: "2026-10-29" },
+      );
+      view.historyReads.boundaries.set("result", 2);
+      view.historyReads.barrier = new Promise<void>(/** 暂停工具刷新，让后续正文在查询期间到达。 */
+        (resolve) => { release = resolve; });
+      await view.emit("tool_completed", { value: { tool_call_id: "call", tool_name: "control_screen", message_id: "result" } }, 4);
+      await view.emit("text_chunk", { value: "工具后\n\n" }, 5);
+      await view.emit("text_chunk", { value: "继续回答" }, 6);
+      release?.();
+      await flushEvents();
+      assert.equal(view.historyReads.calls, 2);
+      assert.equal(view.historyReads.throughIds[1], "result");
+      assert.equal(imageSources(view.root).length, 1);
+      assert.doesNotMatch(view.root.textContent, /\[系统消息\]|返回图片/);
+      assert.deepEqual(messageBubbleTexts(view.root), ["工具前说明", ""]);
+      // 2. 本轮尚未结束，排队正文已恢复逐段显示，图片位于工具前说明之后。
+      t.mock.timers.tick(500);
+      assert.deepEqual(messageBubbleTexts(view.root), ["工具前说明", "", "工具后"]);
+      assert.equal(view.bubble.textContent, "工具后\n\n继续回答");
+      // 3. 轮末按最新历史重绘，图片和正文均只出现一次。
+      view.historyReads.barrier = null;
+      await view.emit("run_completed", {}, 7);
+      assert.equal(imageSources(view.root).length, 1);
+      assert.deepEqual(messageBubbleTexts(view.root), ["工具前说明", "", "工具后", "继续回答"]);
+    } finally {
+      release?.();
+      view.close();
+    }
+  });
+}
+
+test("工具完成刷新失败仍继续流式回答", /**
+ * 查询失败保留已有说明，下一步模型正文继续显示，不等整轮结束。
+ * Args:
+ *     t (TestContext): 手动推进段落输出定时器。
+ */
+async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const view = createPresentation();
+  try {
+    await view.emit("session_snapshot", { phase: "idle" }, 0);
+    await view.emit("run_started", {}, 1);
+    await view.emit("text_chunk", { value: "工具前说明" }, 2);
+    await view.emit("tool_call", { value: "read_file" }, 3);
+    view.historyReads.boundaries.set("result", 0);
+    view.historyReads.failure = "历史离线";
+    await view.emit("tool_completed", { value: { tool_call_id: "call", tool_name: "read_file", message_id: "result" } }, 4);
+    await view.emit("text_chunk", { value: "工具后回答\n\n" }, 5);
+    t.mock.timers.tick(500);
+    assert.deepEqual(messageBubbleTexts(view.root), ["工具前说明", "工具后回答"]);
+    assert.match(view.root.textContent, /历史读取失败/);
+  } finally { view.close(); }
 });
 
 test("历史查询期间到达的新回答先不显示，结束时完整显示且下一轮继续实时输出", /**

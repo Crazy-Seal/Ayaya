@@ -227,17 +227,21 @@ export const fetchChatHistoryPageBySessionId = async (
 };
 
 /**
- * 获取最后 N 条聊天历史
+ * 获取最近 N 条聊天历史，工具执行中刷新时可限定到已保存结果。
  *
  * Args:
  *     sessionId (string): 当前操作所属的会话编号。
  *     n (number): 最多读取的历史消息数量。
+ *     throughMessageId (string | undefined): 包含该消息并排除后续记录的查询终点。
  */
 export const fetchChatHistoryLastN = async (
   sessionId: string,
-  n: number
+  n: number,
+  throughMessageId?: string,
 ): Promise<ChatHistoryItem[]> => {
-  const url = `/chat_history_last_n/${encodeURIComponent(sessionId)}?n=${n}`;
+  const endpoint = `/chat_history_last_n/${encodeURIComponent(sessionId)}?n=${n}`;
+  const url = throughMessageId === undefined ? endpoint
+    : `${endpoint}&through_message_id=${encodeURIComponent(throughMessageId)}`;
   const res = await backendFetch(url, {
     method: "GET",
   });
@@ -254,15 +258,17 @@ export const fetchChatHistoryLastN = async (
   }
 
   return result.data.map(/**
-   * 最近历史响应到达后统一字段类型，缺少图片列表时保留为空。
+   * 最近历史响应到达后保留消息编号和来源，供实时消息去重并恢复图片与正文。
    *
    * Args:
    *     item (Partial<ChatHistoryItem>): 当前遍历的配置或目录条目。
    *
    * Returns:
-   *     { role: string; content: string; timestamp: string; images: string[] | undefined; }: 规范化的单条最近历史消息。
+   *     ChatHistoryItem: 保留身份、来源和图片的最近历史消息。
    */
   (item) => ({
+    id: item.id,
+    origin_channel: item.origin_channel,
     role: String(item.role ?? "") as HistoryRole,
     content: String(item.content ?? ""),
     timestamp: String(item.timestamp ?? ""),

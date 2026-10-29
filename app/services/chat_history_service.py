@@ -24,15 +24,19 @@ class ChatHistoryService:
         """
         return await self.chat_history_dao.list_chat_history_async(session_id, start, limit)
 
-    async def get_chat_history_last_n(self, session_id: str, n: int = 100) -> list[dict[str, str]]:
-        """查询最近若干条可见历史，供聊天页恢复当前消息。
+    async def get_chat_history_last_n(
+        self, session_id: str, n: int = 100, *, through_message_id: str | None = None,
+    ) -> list[dict[str, str]]:
+        """查询最近可见历史，工具执行中刷新时只读到指定结果消息。
 
         Args:
             session_id (str): 当前操作所属的会话编号。
             n (int): 最多返回的可见消息数量。
+            through_message_id (str | None): 可选的结果消息编号，包含该消息并排除其后的记录。
 
         Returns:
             list[dict[str, str]]: 最近消息按原顺序排列的字典列表。
         """
-        return await self.chat_history_dao.list_chat_history_last_n_async(session_id, n)
-
+        return await self.chat_history_dao.list_chat_history_last_n_async(
+            session_id, n, through_message_id=through_message_id,
+        )

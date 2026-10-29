@@ -195,7 +195,7 @@ class ExecutionPipeline:
                 )
                 return
 
-            await self._commit_completed_tool_call(
+            yield await self._commit_completed_tool_call(
                 state,
                 interrupted_call,
                 result,
@@ -226,7 +226,7 @@ class ExecutionPipeline:
                 )
                 return
 
-            await self._commit_completed_tool_call(
+            yield await self._commit_completed_tool_call(
                 state,
                 tool_call,
                 result,
@@ -402,7 +402,7 @@ class ExecutionPipeline:
                     )
                     return
 
-                await self._commit_completed_tool_call(
+                yield await self._commit_completed_tool_call(
                     state,
                     tool_call,
                     result,
@@ -768,8 +768,8 @@ class ExecutionPipeline:
         tool_call: ToolCall,
         result: ToolResult,
         session_state_manager: SessionStateManager | None,
-    ) -> None:
-        """完整提交一个已经执行完成的工具调用。
+    ) -> AgentEvent:
+        """保存完整工具结果，成功后报告调用完成，供界面查询对应历史。
 
         完整工具结果和 pending 状态会在同一个 checkpoint 前同步
         更新，避免持久化“调用已闭合但结果图片尚未保存”的中间状态。
@@ -779,13 +779,20 @@ class ExecutionPipeline:
             tool_call (ToolCall): 已执行完成的工具调用。
             result (ToolResult): 工具执行结果。
             session_state_manager (SessionStateManager | None): 中间进度的会话状态业务对象。
+
+        Returns:
+            AgentEvent: 携带调用编号、工具名和结果消息编号的工具完成事件；保存失败时抛出异常。
         """
         # 1. 完整结果立即进入状态；不再为 API 排列拆出或延迟图片。
-        state.record_tool_result(tool_call, result.content, compressible=bool(
+        message = state.record_tool_result(tool_call, result.content, compressible=bool(
             getattr(self._tool_manager.get(tool_call.name), "compressible", False)))
         if result.state_updates:
             state.update_extra(result.state_updates)
         await self._checkpoint(state, session_state_manager)
+        # 2. 保存完成后才允许界面查询；消息编号让查询停在本次结果，后续回复仍由正文事件显示。
+        return AgentEvent(EventType.TOOL_COMPLETED, {
+            "tool_call_id": tool_call.id, "tool_name": tool_call.name, "message_id": message.message_id,
+        })
 
     async def _commit_interrupt(
         self,

@@ -32,6 +32,7 @@ INPUT_DELIVERY_MAX_ATTEMPTS = 4
 AGENT_TO_INTERACTION_EVENT = {
     EventType.TEXT_CHUNK: InteractionEventKind.TEXT_CHUNK,
     EventType.TOOL_CALL: InteractionEventKind.TOOL_CALL,
+    EventType.TOOL_COMPLETED: InteractionEventKind.TOOL_COMPLETED,
     EventType.INTERRUPT: InteractionEventKind.INTERRUPT,
     EventType.ERROR: InteractionEventKind.ERROR,
     EventType.DONE: InteractionEventKind.RUN_COMPLETED,

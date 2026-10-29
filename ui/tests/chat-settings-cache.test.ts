@@ -5,6 +5,7 @@ import {
   clearChatSettingsCache,
   createEmptyChatSettings,
   fetchChatSettingsBySessionId,
+  fetchChatHistoryLastN,
   getDefaultAgentPluginsForTest,
   getChatSettingsCache,
   runMcpMutationWithCacheInvalidation,
@@ -15,6 +16,26 @@ import type { ChatSettingsData } from "../shared-types.js";
 import { configureBackendClient } from "../electron/backend-client.js";
 
 const originalFetch = globalThis.fetch;
+
+test("工具完成历史查询传递终点并保留消息身份和图片", /**
+ * 检查实际 HTTP 请求参数以及返回到 Renderer 的消息编号，避免刷新越过工具结果。
+ */
+async () => {
+  const item = { id: "result:images", role: "AI", content: "", timestamp: "2026-10-29",
+    images: ["screenshot/one.png"], origin_channel: "desktop" };
+  let requested = "";
+  globalThis.fetch = /**
+   * 记录历史请求地址，返回工具图片的完整展示项。
+   * Args:
+   *     input (RequestInfo | URL): 后端客户端生成的历史查询地址。
+   */
+    async (input) => { requested = String(input); return Response.json({ code: 200, data: [item] }); };
+  const result = await fetchChatHistoryLastN("session", 100, "result/with space");
+  const query = new URL(requested).searchParams;
+  assert.equal(query.get("through_message_id"), "result/with space");
+  assert.equal(query.get("n"), "100");
+  assert.deepEqual(result, [item]);
+});
 
 const savedSettings: ChatSettingsData = {
   session_id: "saved-session",

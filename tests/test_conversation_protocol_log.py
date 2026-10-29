@@ -314,7 +314,7 @@ def test_chat_history_routes_map_contract_errors_to_explicit_500(route) -> None:
         if route is list_chat_history:
             await route("session", 0, 200, BrokenHistoryService())
         else:
-            await route("session", 100, BrokenHistoryService())
+            await route("session", 100, through_message_id=None, chat_history_service=BrokenHistoryService())
 
     with pytest.raises(HTTPException) as exc_info:
         asyncio.run(invoke())

@@ -110,6 +110,7 @@ class InteractionEventKind(str, Enum):
         RUN_STARTED (InteractionEventKind): 轮次开始或恢复，协议值为 run_started。
         TEXT_CHUNK (InteractionEventKind): 模型正文分片，协议值为 text_chunk。
         TOOL_CALL (InteractionEventKind): 工具调用提示，协议值为 tool_call。
+        TOOL_COMPLETED (InteractionEventKind): 工具结果已保存，协议值为 tool_completed。
         INTERRUPT (InteractionEventKind): 待处理审批或执行请求，协议值为 interrupt。
         AUTHORIZATION_RESOLVED (InteractionEventKind): 审批首个有效决定，协议值为 authorization_resolved。
         RUN_COMPLETED (InteractionEventKind): 轮次结束，协议值为 run_completed。
@@ -124,6 +125,7 @@ class InteractionEventKind(str, Enum):
     RUN_STARTED = "run_started"
     TEXT_CHUNK = "text_chunk"
     TOOL_CALL = "tool_call"
+    TOOL_COMPLETED = "tool_completed"
     INTERRUPT = "interrupt"
     AUTHORIZATION_RESOLVED = "authorization_resolved"
     RUN_COMPLETED = "run_completed"

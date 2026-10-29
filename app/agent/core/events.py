@@ -6,12 +6,13 @@ from typing import Any
 
 
 class EventType(str, Enum):
-    """定义 Agent 报告的执行开始、输入提交、正文、工具、中断和结束事件。"""
+    """定义 Agent 报告的执行开始、输入提交、正文、工具开始与完成、中断和结束事件。"""
 
     RUN_STARTED = "run_started"
     HUMAN_INPUT_COMMITTED = "human_input_committed"
     TEXT_CHUNK = "text_chunk"
     TOOL_CALL = "tool_call"
+    TOOL_COMPLETED = "tool_completed"
     INTERRUPT = "interrupt"
     ERROR = "error"
     DONE = "done"

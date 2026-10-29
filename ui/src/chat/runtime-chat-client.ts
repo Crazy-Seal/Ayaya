@@ -6,7 +6,7 @@ import { BackgroundTaskEntry } from "./background-task-entry.js";
 import {
   CommandKind, DESKTOP_CHANNEL, InteractionEventKind, InterruptKind, SessionPhase,
 } from "../../shared-types.js";
-import type { ChatAttentionUpdate, ChatHistoryItem, FailedInteractionInput } from "../../shared-types.js";
+import type { ChatAttentionUpdate, ChatHistoryItem, FailedInteractionInput, ToolCompletedData } from "../../shared-types.js";
 import type { BubbleManager } from "./bubble.js";
 import type { ChatHistoryManager } from "./chat-history-manager.js";
 import type {
@@ -89,9 +89,9 @@ export interface RuntimeChatClientOptions {
  *     eventTail (Promise<void>): 串行事件处理链，历史加载完成之前不处理下一事件。
  *     initialized (boolean): 新页面已应用首次快照和历史查询结果后，才允许提交输入。
  *     sessionRevision (number): 每次初始化递增，防止旧会话或旧初始化的异步结果更新当前页面。
- *     deferredRuns (Set<string>): 重连或历史查询期间到达的运行编号，只在保存结束后显示正文。
+ *     deferredRuns (Set<string>): 尚未取得完整历史的回答编号，在工具结果或轮末历史同步成功后继续展示。
  *     pendingEvents (Map<InteractionEvent, number>): 尚未处理的事件及页面代次，供历史查询识别积压正文。
- *     refreshingRevision (number | null): 正在读取历史的页面代次，查询期间到达的正文不能实时追加。
+ *     refreshingRevision (number | null): 正在读取最新历史的页面代次；限定工具结果终点的查询不设置此值。
  *     refreshedApprovals (Set<string>): 本启动代次中已成功刷新历史的审批编号，避免同审批重复查询。
  */
 export class RuntimeChatClient {
@@ -345,15 +345,18 @@ export class RuntimeChatClient {
   }
 
   /**
-   * 在初始化、审批等待和终态读取历史，用同一次查询的正文更新列表与桌面气泡。
+   * 在初始化、审批、工具完成和终态读取历史；工具完成时限定到已保存结果，后续正文继续实时显示。
    *
    * 本方法由串行事件处理调用；后端完成或审批事件已经先保存对应状态。
    * 错误事件只保证此前保存仍在。查询失败保留已经显示的正文，不自动重试。
    *
+   * Args:
+   *     throughMessageId (string | undefined): 工具完成后的查询终点；省略时读取最新历史并延后期间到达的正文。
+   *
    * Returns:
    *     Promise<boolean>: 历史仍属于当前页面且成功应用时为 true，否则为 false。
    */
-  private async refreshHistory(): Promise<boolean> {
+  private async refreshHistory(throughMessageId?: string): Promise<boolean> {
     const revision = this.sessionRevision;
     const sessionId = this.sessionId;
     // 1. 结束本地草稿，历史管理器在查询前显示剩余段落并停止输出动画。
@@ -361,13 +364,16 @@ export class RuntimeChatClient {
     this.options.chatHistory.hideTypingIndicator();
     this.options.chatHistory.finalizeToolCallIndicator();
     this.partial = "";
-    this.refreshingRevision = revision;
-    // 1.1. 已排队及随后到达的正文可能已进入数据库，统一等该回答结束后展示。
-    for (const [event, queuedRevision] of this.pendingEvents) {
-      if (queuedRevision === revision) this.deferReceivedReply(event);
+    // 1.1. 最新历史可能包含排队正文；工具结果限定查询排除了后续回复，可以继续按事件顺序显示。
+    const deferReplies = throughMessageId === undefined;
+    if (deferReplies) {
+      this.refreshingRevision = revision;
+      for (const [event, queuedRevision] of this.pendingEvents) {
+        if (queuedRevision === revision) this.deferReceivedReply(event);
+      }
     }
     try {
-      const history = await this.options.chatHistory.loadHistory(sessionId);
+      const history = await this.options.chatHistory.loadHistory(sessionId, throughMessageId);
       if (revision !== this.sessionRevision || sessionId !== this.sessionId || history === null) return false;
       this.reportHistoryAttention(history);
       // 2. 历史与实时正文使用相同标签清洗规则，但读取历史不能重播模型表情。
@@ -375,6 +381,7 @@ export class RuntimeChatClient {
       for (let index = history.length - 1; index >= 0; index -= 1) {
         const item = history[index];
         if (item.role.toLowerCase() !== HistoryRole.AI.toLowerCase() && item.role.toLowerCase() !== HistoryRole.ASSISTANT) continue;
+        if (!item.content.trim()) continue;
         latestText = item.content.replace(/<([^<>]+)>/g, "").replace(/<[^<>\s]*$/, "").trim();
         break;
       }
@@ -387,7 +394,7 @@ export class RuntimeChatClient {
       return false;
     } finally {
       // 3. 会话切换后不能解除新页面的查询保护，也不能用旧查询更新其显示。
-      if (this.refreshingRevision === revision) this.refreshingRevision = null;
+      if (deferReplies && this.refreshingRevision === revision) this.refreshingRevision = null;
     }
   }
 
@@ -799,6 +806,15 @@ export class RuntimeChatClient {
     } else if (event.kind === InteractionEventKind.TOOL_CALL) {
       this.currentToolActive = true;
       this.options.chatHistory.showToolCallMessage(String(event.payload.value || "工具"));
+    } else if (event.kind === InteractionEventKind.TOOL_COMPLETED) {
+      // 1. 工具结果已保存，先收尾当前文字和调用提示，再查询截至该结果的历史。
+      const completed = event.payload.value as ToolCompletedData;
+      this.currentToolActive = false;
+      const loaded = await this.refreshHistory(completed.message_id);
+      if (event.session_id !== this.sessionId || revision !== this.sessionRevision) return;
+      // 2. 有了当前工具结果前的完整历史，重连期间延后的本轮正文也可以从下一片段继续显示。
+      if (loaded) this.deferredRuns.delete(this.replyKey(event.run_id || this.runId));
+      this.options.chatHistory.showTypingIndicator();
     } else if (event.kind === InteractionEventKind.INTERRUPT) {
       this.finishStreaming();
       const value = event.payload.value as Record<string, unknown>;
