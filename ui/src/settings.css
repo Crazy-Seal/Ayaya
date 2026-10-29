@@ -416,12 +416,12 @@
 
 .tools-table-wrap {
   flex: 1;
+  min-width: 0;
   overflow: auto;
 }
 
 .tools-table {
   width: 100%;
-  min-width: 680px;
   table-layout: fixed;
 }
 
@@ -430,7 +430,7 @@
 }
 
 .tools-col-name {
-  width: 220px;
+  width: 34%;
 }
 
 .tools-col-policy {
@@ -439,6 +439,7 @@
 
 .tools-table td {
   vertical-align: top;
+  overflow-wrap: anywhere;
 }
 
 .tools-table thead th {
@@ -458,6 +459,41 @@
   color: var(--color-text-secondary);
   font-size: var(--font-size-table-body);
   text-align: left;
+}
+
+/* MCP 分组可用鼠标或键盘展开，长服务名和工具名随表格宽度换行。 */
+.tool-group-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tool-group-toggle span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.tool-group-toggle .ui-icon {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+}
+
+.tool-group-toggle[aria-expanded="false"] .ui-icon {
+  transform: rotate(-90deg);
+}
+
+.tool-group-toggle:focus-visible {
+  outline: 2px solid var(--color-text-accent);
+  outline-offset: 4px;
 }
 
 .tool-policy-select {
@@ -507,6 +543,7 @@
   align-items: flex-start;
   margin-bottom: var(--spacing-md);
 }
+
 
 .plugin-card-introduction {
   min-width: 0;

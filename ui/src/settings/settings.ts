@@ -435,9 +435,11 @@ class SettingsApp {
 
     if (pageName === "tools") {
       try {
-        deps.toolPolicies = await window.desktopPetApi.getToolPermissions(
-          this.savedState?.session_id ?? ""
-        );
+        // 1. 工具权限与服务开关同时加载，工具分组按启用状态决定首次是否展开。
+        [deps.toolPolicies, deps.mcpServers] = await Promise.all([
+          window.desktopPetApi.getToolPermissions(this.savedState?.session_id ?? ""),
+          window.desktopPetApi.getMcpServers(),
+        ]);
       } catch (error) {
         this.toast.error(appendErrorMessage("读取工具权限失败", error));
         deps.toolPolicies = [];
