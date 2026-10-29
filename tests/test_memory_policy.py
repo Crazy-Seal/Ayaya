@@ -283,7 +283,7 @@ def test_check_diary_is_noop_when_diary_disabled() -> None:
             MemoryConfig(),
             _chat_settings(enable_diary=False, enable_episodic=False, enable_semantic=False),
         )
-        await manager.generate_diary()
+        assert await manager.prepare_diary() is None
 
     asyncio.run(scenario())
 
@@ -328,7 +328,7 @@ def test_memory_manager_check_diary_uses_protocol_history_cutoff(monkeypatch) ->
             """
             pass
 
-        async def check_and_generate(
+        async def prepare_generation(
             self,
             effective_date: date,
             *,
@@ -352,7 +352,7 @@ def test_memory_manager_check_diary_uses_protocol_history_cutoff(monkeypatch) ->
         MemoryConfig(),
         _chat_settings(enable_diary=True, enable_episodic=False, enable_semantic=False),
     )
-    asyncio.run(manager.generate_diary(max_history_id=17))
+    asyncio.run(manager.prepare_diary(max_history_id=17))
 
     assert checks and checks[0][1] == 17
 

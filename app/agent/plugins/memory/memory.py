@@ -7,7 +7,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.agent.plugins.base import BasePlugin, HookContext, PluginHook
 from app.agent.state.model import AgentState, TemporaryContextItem
-from app.agent.memory.manager import get_memory_manager
+from app.agent.memory.manager import MemoryManager, get_memory_manager
+from app.agent.plugins.runtime import PluginRuntime
+from app.agent.utils.infra.owned_work import complete_owned_work
 from app.agent.state.messages import (
     HumanMessage,
 )
@@ -118,8 +120,12 @@ class MemoryPlugin(BasePlugin):
                 manager = memory_job["manager"]
                 cutoff = memory_job["protocol_history_cutoff"]
                 if memory_job["check_diary"]:
-                    await context.runtime.submit_task(DiaryTask(manager, cutoff), name="memory.check_diary",
-                        title="整理历史日记", lifetime=TaskLifetime.INDEPENDENT, notify_agent=False)
+                    # 1.1. 检查与登记作为短操作完成后再传播取消，已接管任务的标记交给任务清理。
+                    try:
+                        await complete_owned_work(self._submit_diary_task(manager, cutoff, context.runtime))
+                    except Exception:
+                        # 1.2. 日记检查失败保留日志，长期记忆任务和本轮记忆召回继续处理。
+                        logger.exception("[MemoryPlugin] 准备或提交日记任务失败")
                 if memory_job["extract_long_term_memory"]:
                     await context.runtime.submit_task(LongTermMemoryTask(manager, memory_job["session_id"], cutoff,
                         memory_job["long_term_memory_turns"], self.config.enable_episodic, self.config.enable_semantic),
@@ -129,6 +135,28 @@ class MemoryPlugin(BasePlugin):
             runtime_context = (context.data or {}).get("runtime_context") if isinstance(context.data, dict) else None
             if runtime_context is not None:
                 await self._inject_context(state, runtime_context)
+
+    async def _submit_diary_task(self, manager: MemoryManager, cutoff: int, runtime: PluginRuntime) -> None:
+        """先检查是否需要日记，成功准备后登记任务；登记失败时释放日期标记。
+
+        Args:
+            manager (MemoryManager): 当前激活准备阶段取得的记忆管理器。
+            cutoff (int): 本次输入保存前的历史最大编号。
+            runtime (PluginRuntime): 固定来源会话和轮次的任务提交入口。
+        """
+        generation = await manager.prepare_diary(max_history_id=cutoff)
+        if generation is None:
+            return
+        try:
+            await runtime.submit_task(
+                DiaryTask(manager, generation), name="memory.check_diary",
+                title=f"生成 {generation.target_date.isoformat()} 日记",
+                lifetime=TaskLifetime.INDEPENDENT, notify_agent=False,
+            )
+        except BaseException:
+            # 1. 外层保护确保取消不打断任务交接；实际登记失败时由此释放未交付的材料。
+            generation.release()
+            raise
 
     async def _inject_context(self, state, runtime_context) -> None:
         """仅用本轮真人消息检索语义和情景记忆，后台唤醒仍可取得日记上下文。

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from app.agent.runtime.tasks.base import BaseTask
 from app.agent.plugins.runtime import PluginRuntime
 from app.agent.state.messages import HumanMessage
+from app.agent.memory.memories.diary import DiaryGeneration
 
 if TYPE_CHECKING:
     from app.agent.memory.manager import MemoryManager
@@ -19,23 +20,30 @@ MEMORY_HISTORY_HUMAN_MESSAGES = 5
 
 @dataclass
 class DiaryTask(BaseTask):
-    """按准备好的历史截止位置整理日记，Manager 由应用记忆缓存持有。
+    """使用已确认的日期和对话生成日记，结束时释放该日期的处理中标记。
 
     Attributes:
         manager (MemoryManager): 应用缓存持有的记忆业务对象。
-        cutoff (int): 输入保存前确定的历史最大编号。
+        generation (DiaryGeneration): 提交前准备好的日记材料及处理中标记。
     """
 
     manager: MemoryManager
-    cutoff: int
+    generation: DiaryGeneration
 
-    async def run(self, runtime: PluginRuntime) -> None:
-        """等待日记整理完成；运行日志不作为任务结果返回。
+    async def run(self, runtime: PluginRuntime) -> str:
+        """生成并保存日记，成功返回摘要，失败由 Supervisor 记录错误。
 
         Args:
             runtime (PluginRuntime): 框架绑定插件、会话、来源轮次及任务编号的调用对象。
+
+        Returns:
+            str: 包含日记日期的成功摘要。
         """
-        await self.manager.generate_diary(max_history_id=self.cutoff)
+        return await self.manager.generate_diary(self.generation)
+
+    async def cleanup(self) -> None:
+        """生成结束或任务启动前被停止时释放标记，让后续激活能够重新检查。"""
+        self.generation.release()
 
 
 @dataclass

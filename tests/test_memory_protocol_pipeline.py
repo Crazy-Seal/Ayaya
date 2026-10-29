@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 from app.agent.plugins.base import HookContext, PluginHook
 from app.agent.state.manager import SessionStateManager
-from app.agent.memory.memories.diary import DiaryMemory
+from app.agent.memory.memories.diary import DiaryGeneration, DiaryMemory
 from app.agent.memory.memories.episodic import EpisodicMemory
 from app.agent.memory.store.chat_history_store import ChatHistoryStore
 from app.agent.state.messages import (
@@ -270,7 +270,11 @@ def test_diary_generation_restores_previous_diaries_and_conversation_context() -
         memory.chat_history_store = ChatStore()
         memory.store = DiaryStore()
         memory.llm = LLM()
-        await memory.check_and_generate(date(2026, 9, 2), max_history_id=42)
+        generation = await memory.prepare_generation(date(2026, 9, 2), max_history_id=42)
+        try:
+            await memory.generate(generation.target_date, generation.messages, max_history_id=generation.max_history_id)
+        finally:
+            generation.release()
         return memory
     memory = asyncio.run(scenario())
     assert memory.chat_history_store.before_calls == [{
@@ -321,9 +325,14 @@ def test_memory_jobs_start_only_after_input_commit_with_frozen_history(tmp_path,
             """返回准备阶段固定的历史范围。"""
             return 84
 
-        async def generate_diary(self, *, max_history_id):
+        async def prepare_diary(self, *, max_history_id):
+            """提供需要实际生成的日期和固定历史范围。"""
+            return DiaryGeneration("session", date(2026, 9, 1), [], max_history_id)
+
+        async def generate_diary(self, generation):
             """记录实际任务使用的截止编号。"""
-            calls.append(max_history_id)
+            calls.append(generation.max_history_id)
+            return "日记生成成功"
 
     monkeypatch.setattr(memory_plugin_module, "get_memory_manager", lambda session: MemoryManager())
 

@@ -9,7 +9,7 @@ from typing import Any
 from app.agent.memory.config import MemoryConfig
 from app.agent.memory.memories.episodic import EpisodicMemory
 from app.agent.memory.memories.semantic_mem0 import Mem0SemanticMemory
-from app.agent.memory.memories.diary import DiaryMemory
+from app.agent.memory.memories.diary import DiaryGeneration, DiaryMemory
 from app.agent.memory.store.chat_history_store import ChatHistoryStore
 from app.agent.state.messages import BaseMessage
 from app.crud.chat_settings_dao import ChatSettingsDao
@@ -160,20 +160,43 @@ class MemoryManager:
             return 0
         return await self.chat_history_store.get_latest_message_id(self.session_id)
 
-    async def generate_diary(self, *, max_history_id: int | None = None) -> None:
-        """在真人输入提交前，启动为上一有效聊天日生成日记的后台任务
+    async def prepare_diary(self, *, max_history_id: int | None = None) -> DiaryGeneration | None:
+        """新输入保存后检查已结束聊天日，为确实需要生成的日记准备固定材料。
 
         Args:
             max_history_id (int | None): 本次提取开始前捕获的协议日志最大编号；排除之后到达的消息。
+
+        Returns:
+            DiaryGeneration | None: 已持有处理中标记的材料，禁用或无需生成时为空。
         """
         now = datetime.now(self.config.timezone)
         today = self._get_effective_date(now)
 
         if self.diary_memory is not None:
-            await self.diary_memory.check_and_generate(
+            return await self.diary_memory.prepare_generation(
                 today,
                 max_history_id=max_history_id,
             )
+
+    async def generate_diary(self, generation: DiaryGeneration) -> str:
+        """后台任务使用准备好的日期和对话生成日记，保存成功后返回面板摘要。
+
+        Args:
+            generation (DiaryGeneration): 提交任务前读取的日记日期、对话和历史范围。
+
+        Returns:
+            str: 包含日记日期的成功摘要。
+
+        Raises:
+            RuntimeError: 日记记忆不可用。
+            Exception: 模型生成或日记保存失败，由后台任务记录失败原因。
+        """
+        if self.diary_memory is None:
+            raise RuntimeError("日记记忆未启用，无法生成日记")
+        await self.diary_memory.generate(
+            generation.target_date, generation.messages, max_history_id=generation.max_history_id,
+        )
+        return f"日记生成成功：{generation.target_date.isoformat()}，已保存 1 篇日记。"
 
     async def has_diary_for_effective_date(self, effective_date: str) -> bool:
         """供上下文压缩查询当前会话某有效日期是否已有日记，不生成新的日记。

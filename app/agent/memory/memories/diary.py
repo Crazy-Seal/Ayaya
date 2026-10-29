@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import logging
+from dataclasses import dataclass, field
 from datetime import date
 
 from app.schemas.runtime_types import (
@@ -23,7 +23,33 @@ from app.agent.models.llm_client import LLMClient, LLMConfig
 from app.schemas.chat_settings import ChatSettings
 
 
-logger = logging.getLogger(__name__)
+# 同一进程中的记忆实例共用处理中记录，修改设置后重新创建实例仍能避免重复生成。
+_pending_diaries: set[tuple[str, date]] = set()
+
+
+@dataclass
+class DiaryGeneration:
+    """保存已确认需要生成的日记材料，并持有该会话该日期的处理标记。
+
+    Attributes:
+        session_id (str): 日记所属会话。
+        target_date (date): 本次要生成日记的有效聊天日。
+        messages (list[BaseMessage]): 按输入保存前历史范围读取的当日对话。
+        max_history_id (int | None): 查询前情时沿用的历史最大编号。
+        _released (bool): 是否已释放标记，保证重复清理不会影响后续重试。
+    """
+
+    session_id: str
+    target_date: date
+    messages: list[BaseMessage]
+    max_history_id: int | None
+    _released: bool = field(default=False, init=False, repr=False)
+
+    def release(self) -> None:
+        """准备后的提交失败或任务清理时释放标记，让后续激活能够重新检查。"""
+        if not self._released:
+            _pending_diaries.discard((self.session_id, self.target_date))
+            self._released = True
 
 
 class DiaryMemory:
@@ -66,31 +92,44 @@ class DiaryMemory:
             timeout=60.0,
         ))
 
-    async def check_and_generate(
+    async def prepare_generation(
         self, today: date, *, max_history_id: int | None = None
-    ) -> None:
-        """真人输入提交前由记忆插件检查最近一个已结束聊天日；该日尚无日记且有历史时才生成。
+    ) -> DiaryGeneration | None:
+        """输入保存后检查最近已结束聊天日，只为尚无日记且有对话的日期准备生成材料。
 
         Args:
             today (date): 按配置时区及凌晨分界小时计算的当前有效日期。
             max_history_id (int | None): 本次提取开始前捕获的协议日志最大编号；排除之后到达的消息。
+
+        Returns:
+            DiaryGeneration | None: 持有处理中标记的生成材料；已有日记、正在处理或无历史时为空。
         """
         # 1. 只检查当前有效日期之前最近的聊天日，并使用输入提交前捕获的历史编号边界。
         target = await self.chat_history_store.get_last_chat_date(
             self.session_id, exclude_today=today, max_history_id=max_history_id
         )
-        if target is None or await self.has_diary(target):
+        if target is None:
             return
-        # 2. 该日已有日记就不生成；没有日记时再取当日对话，空历史也不调用模型。
-        messages = await self.chat_history_store.get_messages_by_date(
-            self.session_id, target, max_history_id=max_history_id
-        )
-        if messages:
-            await self._generate_diary(
-                target,
-                messages,
-                max_history_id=max_history_id,
+        # 2. 检查与加入之间没有异步等待，其他激活会在数据库检查和模型生成期间直接跳过。
+        key = (self.session_id, target)
+        if key in _pending_diaries:
+            return
+        _pending_diaries.add(key)
+        generation = None
+        try:
+            # 3. 已有日记或空对话只结束检查；需要生成时把固定日期和材料交给后台任务。
+            if await self.has_diary(target):
+                return
+            messages = await self.chat_history_store.get_messages_by_date(
+                self.session_id, target, max_history_id=max_history_id
             )
+            if messages:
+                generation = DiaryGeneration(self.session_id, target, messages, max_history_id)
+            return generation
+        finally:
+            # 4. 跳过、查询失败或检查被取消时立即释放；成功准备后由提交方或任务清理释放。
+            if generation is None:
+                _pending_diaries.discard(key)
 
     async def add(self, date_obj: date, content: str) -> int:
         """把指定有效日期的日记正文交给 SQLite 存储并提交。
@@ -154,44 +193,41 @@ class DiaryMemory:
             f"【{day.isoformat()}】\n{content}" for day, content in reversed(diaries)
         )
 
-    async def _generate_diary(
+    async def generate(
         self,
         target_date: date,
         messages: list[BaseMessage],
         *,
         max_history_id: int | None = None,
     ) -> None:
-        """读取旧日记和目标日期之前的对话作为前情，调用模型生成目标日记后保存；失败只记日志。
+        """读取旧日记和更早对话作为前情，调用模型并保存日记，失败交给任务框架记录。
 
         Args:
             target_date (date): 需要生成日记的有效日期。
             messages (list[BaseMessage]): 按对话顺序排列的消息集合。
             max_history_id (int | None): 本次提取开始前捕获的协议日志最大编号；排除之后到达的消息。
         """
-        try:
-            # 1. 旧日记和更早对话仅提供前情，目标日消息才是本次需要记录的事实。
-            previous_diaries = await self.store.get_recent_before_date(
-                self.session_id,
-                target_date,
-                n=self.config.recent_diaries_count,
-            )
-            previous_messages = await self.chat_history_store.get_messages_before_date(
-                self.session_id,
-                target_date,
-                limit=10,
-                max_history_id=max_history_id,
-            )
-            prompt = self._build_diary_prompt(
-                messages,
-                target_date,
-                previous_diaries=previous_diaries,
-                previous_messages=previous_messages,
-            )
-            # 2. 模型成功返回后保存该日正文；生成或保存失败记日志，稍后检查时可以再次尝试。
-            response = await self.llm.ainvoke([HumanMessage(content=text_content(prompt))])
-            await self.add(target_date, response.text)
-        except Exception:
-            logger.exception("[DiaryMemory] 生成日记失败: date=%s", target_date)
+        # 1. 旧日记和更早对话仅提供前情，目标日消息才是本次需要记录的事实。
+        previous_diaries = await self.store.get_recent_before_date(
+            self.session_id,
+            target_date,
+            n=self.config.recent_diaries_count,
+        )
+        previous_messages = await self.chat_history_store.get_messages_before_date(
+            self.session_id,
+            target_date,
+            limit=10,
+            max_history_id=max_history_id,
+        )
+        prompt = self._build_diary_prompt(
+            messages,
+            target_date,
+            previous_diaries=previous_diaries,
+            previous_messages=previous_messages,
+        )
+        # 2. 模型成功返回后保存正文；任何一步失败均向上传播，由任务框架保存失败状态。
+        response = await self.llm.ainvoke([HumanMessage(content=text_content(prompt))])
+        await self.add(target_date, response.text)
 
     def _build_diary_prompt(
         self,
