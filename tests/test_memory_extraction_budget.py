@@ -194,7 +194,7 @@ def test_disabled_extractor_does_not_prepare_or_send_material(disabled: str) -> 
 
 
 def test_material_preparation_failure_does_not_prevent_other_extraction() -> None:
-    """验证一种提取器构造材料失败时，另一种仍正常提取并汇总结果。"""
+    """一种提取器构造材料失败时，另一种仍完成提取，异常摘要保留其数量。"""
     async def scenario() -> None:
         """缺少情景角色配置时只使情景提取失败，语义提取仍使用真实材料逻辑。"""
         episodic, semantic = make_extractors(1)
@@ -203,7 +203,8 @@ def test_material_preparation_failure_does_not_prevent_other_extraction() -> Non
         manager.episodic_memory = episodic
         manager.semantic_memory = semantic
         messages, history = extraction_messages()
-        assert await manager.add(messages, history) == {"episodic": 0, "semantic": 1}
+        with pytest.raises(RuntimeError, match="部分失败.*语义记忆：处理 1 条"):
+            await manager.add(messages, history)
         assert episodic.llm.requests == []
         assert len(semantic._memory.requests) == 1
 

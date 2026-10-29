@@ -11,9 +11,11 @@ import pytest
 from app.agent.memory.config import MemoryConfig
 from app.agent.memory.manager import MemoryManager
 from app.agent.memory.memories.diary import DiaryMemory
+from app.agent.memory.memories.episodic import EpisodicMemory
+from app.agent.memory.memories.semantic_mem0 import Mem0SemanticMemory
 from app.agent.plugins.base import HookContext, PluginHook
 from app.agent.plugins.memory.memory import MemoryPlugin
-from app.agent.plugins.memory.tasks.memory_tasks import DiaryTask
+from app.agent.plugins.memory.tasks.memory_tasks import DiaryTask, LongTermMemoryTask
 from app.agent.plugins.runtime import PluginRuntime
 from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
 from app.agent.state.model import AgentState
@@ -174,6 +176,64 @@ def test_diary_failure_or_stop_releases_reservation_for_retry(tmp_path: Path, st
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("failed", ["none", "episodic", "semantic", "both"])
+def test_long_term_task_reports_counts_and_extraction_failures(tmp_path: Path, failed: str) -> None:
+    """长期记忆完成显示两类数量，部分或全部失败显示原因及已经完成的数量。"""
+    async def scenario() -> None:
+        """通过真实协调者、任务记录及面板查询验证结果传递。"""
+        manager = make_manager()
+        if failed in ("episodic", "both"):
+            manager.episodic_memory.add.side_effect = RuntimeError("情景模型失败")
+        if failed in ("semantic", "both"):
+            manager.semantic_memory.add.side_effect = RuntimeError("语义模型失败")
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "tasks.db"))
+        runtime = PluginRuntime("memory", manager.session_id, "run", supervisor, supervisor.runtime_queue)
+        try:
+            task_id = await runtime.submit_task(
+                LongTermMemoryTask(manager, manager.session_id, 42, 1, True, True),
+                name="memory.persist_long_term", title="提取长期记忆",
+                lifetime=TaskLifetime.INDEPENDENT, notify_agent=False,
+            )
+            record = await runtime.wait_task(task_id, timeout_ms=1000)
+            assert record.status == (TaskStatus.COMPLETED if failed == "none" else TaskStatus.FAILED)
+            text = record.result if failed == "none" else record.error
+            assert "情景记忆" in text and "语义记忆" in text
+            if failed not in ("episodic", "both"):
+                assert "2 条" in text
+            else:
+                assert "情景模型失败" in text
+            if failed not in ("semantic", "both"):
+                assert "1 条" in text
+            else:
+                assert "语义模型失败" in text
+            manager.episodic_memory.add.assert_awaited_once()
+            manager.semantic_memory.add.assert_awaited_once()
+            response = await list_background_tasks(manager.session_id, supervisor)
+            assert response["tasks"][0]["result"] == record.result
+            assert response["tasks"][0]["error"] == record.error
+        finally:
+            await supervisor.close()
+    asyncio.run(scenario())
+
+
+def test_extractor_errors_are_not_reported_as_empty_success() -> None:
+    """外部模型失败通过真实情景和语义提取入口向上传播。"""
+    async def scenario() -> None:
+        """仅替换外部模型调用，确认提取器自身不吞掉错误。"""
+        episodic = object.__new__(EpisodicMemory)
+        episodic.llm = SimpleNamespace(ainvoke_structured=AsyncMock(side_effect=RuntimeError("情景服务不可用")))
+        with pytest.raises(RuntimeError, match="情景服务不可用"):
+            await episodic._extract_memories("聊天")
+        semantic = object.__new__(Mem0SemanticMemory)
+        semantic.config = MemoryConfig()
+        semantic.session_id = "s"
+        semantic._convert_messages = Mock(return_value=[{"role": "user", "content": "聊天"}])
+        semantic._memory = SimpleNamespace(add=Mock(side_effect=RuntimeError("语义服务不可用")))
+        with pytest.raises(RuntimeError, match="语义服务不可用"):
+            await semantic.add([HumanMessage(content=text_content("聊天"))])
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("failure", ["model", "save"])
 def test_diary_generation_and_save_errors_reach_task_record(tmp_path: Path, failure: str) -> None:
     """真实日记生成入口的模型和保存错误均使后台任务失败。"""
@@ -323,6 +383,60 @@ def test_diary_reservations_are_isolated_by_session_and_date() -> None:
         finally:
             for generation in generations:
                 generation.release()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("case", ["zero", "disabled", "no_store", "insufficient"])
+def test_long_term_task_explains_empty_disabled_and_skipped_results(case: str) -> None:
+    """正常零条、禁用提取器和缺少完整材料都有明确结果摘要。"""
+    async def scenario() -> None:
+        """通过任务业务入口确认不同空结果的含义。"""
+        manager = make_manager()
+        manager.episodic_memory.add.return_value = []
+        manager.semantic_memory.add.return_value = []
+        if case == "no_store":
+            manager.chat_history_store = None
+        elif case == "insufficient":
+            manager.chat_history_store.get_recent_completed_turns.return_value = ([], [])
+        task = LongTermMemoryTask(manager, manager.session_id, 42, 1, case != "disabled", True)
+        result = await task.run(Mock(spec=PluginRuntime))
+        if case in ("no_store", "insufficient"):
+            assert "跳过" in result
+        else:
+            assert "完成" in result and "0 条" in result
+            assert ("未启用" in result) == (case == "disabled")
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("failure", ["save", "index"])
+def test_episodic_storage_failure_preserves_saved_count(failure: str) -> None:
+    """部分存储或索引失败保留已保存的数量，并继续完成另一类记忆提取。"""
+    async def scenario() -> None:
+        """通过真实情景保存流程和记忆汇总验证部分完成的错误摘要。"""
+        manager = make_manager()
+        episodic = object.__new__(EpisodicMemory)
+        episodic.config = MemoryConfig()
+        episodic.session_id = manager.session_id
+        episodic._format_messages = Mock(return_value="对话")
+        episodic._build_extraction_prompt = Mock(return_value="提示词")
+        episodic._extract_memories = AsyncMock(return_value=[
+            {"content": "第一条", "event_date": "2026-10-25", "importance": 0.5},
+            {"content": "第二条", "event_date": "2026-10-25", "importance": 0.6},
+        ])
+        episodic.sqlite_store = SimpleNamespace(add=AsyncMock())
+        episodic.chroma_store = SimpleNamespace(upsert=AsyncMock())
+        if failure == "save":
+            episodic.sqlite_store.add.side_effect = [RuntimeError("数据库写入失败"), None]
+        else:
+            episodic.chroma_store.upsert.side_effect = [RuntimeError("索引更新失败"), None]
+        manager.episodic_memory = episodic
+        with pytest.raises(RuntimeError) as error:
+            await manager.add([HumanMessage(content=text_content("聊天"))])
+        text = str(error.value)
+        assert ("数据库写入失败" if failure == "save" else "索引更新失败") in text
+        assert f"情景记忆：已保存 {1 if failure == 'save' else 2} 条" in text
+        assert "语义记忆：处理 1 条" in text
+        manager.semantic_memory.add.assert_awaited_once()
     asyncio.run(scenario())
 
 

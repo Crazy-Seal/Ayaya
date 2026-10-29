@@ -66,21 +66,33 @@ class LongTermMemoryTask(BaseTask):
     enable_episodic: bool
     enable_semantic: bool
 
-    async def run(self, runtime: PluginRuntime) -> None:
-        """读取固定历史范围并等待提取完成，缺少完整材料时沿用跳过行为。
+    async def run(self, runtime: PluginRuntime) -> str:
+        """读取固定轮次并返回提取数量，跳过返回原因，失败交给 Supervisor 保存。
 
         Args:
             runtime (PluginRuntime): 框架绑定插件、会话、来源轮次及任务编号的调用对象。
+
+        Returns:
+            str: 两类记忆的完成数量，或跳过本次提取的具体原因。
         """
         store = self.manager.chat_history_store
         if store is None:
             logger.warning("协议日志查询器未启用，跳过长期记忆")
-            return
+            return "跳过长期记忆提取：协议日志查询器未启用。"
         history, recent = await store.get_recent_completed_turns(self.session_id,
             current_turns=self.batch_turns, history_turns=MEMORY_HISTORY_HUMAN_MESSAGES,
             max_history_id=self.cutoff)
         if sum(isinstance(message, HumanMessage) for message in recent) < self.batch_turns:
             logger.warning("完整协议轮次不足，跳过本次长期记忆提取")
-            return
-        await self.manager.add(recent, history,
+            return "跳过长期记忆提取：完整协议轮次不足。"
+        counts = await self.manager.add(recent, history,
             enable_episodic=self.enable_episodic, enable_semantic=self.enable_semantic)
+        episodic = (
+            f"已保存 {counts['episodic']} 条"
+            if self.enable_episodic and self.manager.episodic_memory is not None else "未启用"
+        )
+        semantic = (
+            f"处理 {counts['semantic']} 条"
+            if self.enable_semantic and self.manager.semantic_memory is not None else "未启用"
+        )
+        return f"长期记忆提取完成；情景记忆：{episodic}；语义记忆：{semantic}。"

@@ -5,6 +5,24 @@ from datetime import datetime
 from typing import Any
 
 
+class MemoryExtractionError(RuntimeError):
+    """报告提取或存储失败，同时保留本次已经保存的记忆数量。
+
+    Attributes:
+        saved_count (int): 本次已经成功保存的记忆数量，包含出错后继续处理成功的条目。
+    """
+
+    def __init__(self, message: str, *, saved_count: int = 0) -> None:
+        """保存错误摘要和已完成数量，供上层汇总任务失败原因。
+
+        Args:
+            message (str): 本次提取或存储失败的原因。
+            saved_count (int): 本次已经保存的记忆条数。
+        """
+        super().__init__(message)
+        self.saved_count = saved_count
+
+
 @dataclass
 class MemoryItem:
     """记忆项基类"""

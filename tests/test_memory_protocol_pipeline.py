@@ -421,6 +421,10 @@ def test_long_term_memory_uses_frozen_protocol_cutoff(tmp_path) -> None:
                 "history_count": len(history),
                 **kwargs,
             })
+            return {"episodic": 0, "semantic": 0}
+
+        episodic_memory = None
+        semantic_memory = None
     async def scenario():
         """由外层测试调用，完成“长期记忆提取使用捕获的协议日志边界”的异步步骤。"""
         from app.agent.plugins.memory.tasks.memory_tasks import LongTermMemoryTask

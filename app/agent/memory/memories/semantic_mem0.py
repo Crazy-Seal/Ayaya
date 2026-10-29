@@ -188,7 +188,10 @@ class Mem0SemanticMemory:
             history (list[BaseMessage] | None): 仅作前情提要、不压缩的历史消息。
 
         Returns:
-            list[str]: Mem0 返回的记忆编号，空材料或外部提取失败时为空。
+            list[str]: Mem0 返回的记忆编号，空材料或没有提取结果时为空。
+
+        Raises:
+            Exception: 外部提取失败，由记忆管理器汇总为任务错误。
         """
         if not messages:
             return []
@@ -236,7 +239,7 @@ class Mem0SemanticMemory:
 
         except Exception as e:
             logger.warning("[Mem0SemanticMemory] 添加失败: %s", e)
-            return []
+            raise
 
     async def search(self, query: str, top_k: int = 3) -> list[MemoryItem]:
         """按当前会话范围检索相关语义记忆，并转换为项目记忆条目。

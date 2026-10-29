@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta
 from functools import lru_cache
 from typing import Any
 
+from app.agent.memory.base import MemoryExtractionError
 from app.agent.memory.config import MemoryConfig
 from app.agent.memory.memories.episodic import EpisodicMemory
 from app.agent.memory.memories.semantic_mem0 import Mem0SemanticMemory
@@ -98,7 +99,7 @@ class MemoryManager:
         enable_episodic: bool = True,
         enable_semantic: bool = True,
     ) -> dict[str, int]:
-        """并行交付领域消息给启用的提取器，独立汇总情景和语义记忆数量。
+        """并行交付领域消息给启用的提取器，汇总数量并报告部分或全部失败。
 
         记忆插件提供已选定的当前批次与历史；本方法不格式化或估算子模块的
         输入。每个提取器使用自己的配置处理预算，一个提取器失败不阻止另一个。
@@ -110,47 +111,74 @@ class MemoryManager:
             enable_semantic (bool): 本次是否执行语义记忆提取。
 
         Returns:
-            dict[str, int]: 两种提取器分别保存的记忆数量，禁用或失败时为零。
+            dict[str, int]: 情景记忆保存数量和语义记忆处理数量，禁用项为零。
+
+        Raises:
+            RuntimeError: 至少一类提取失败，摘要包含两类的完成数量和失败原因。
         """
         # 1. 固定本次交付列表；两个提取器分别接收列表副本，预算处理不影响另一方。
         messages = list(messages)
         history = list(history or [])
 
-        async def process_episodic() -> int:
-            """交付当前批次给情景提取器，失败时只将本项数量记为零。
+        async def process_episodic() -> tuple[int, str | None]:
+            """交付当前批次给情景提取器，保留已保存数量和失败原因。
 
             Returns:
-                int: 本次保存的情景记忆数量。
+                tuple[int, str | None]: 本次保存数量和可选错误摘要。
             """
             if not enable_episodic or self.episodic_memory is None:
-                return 0
+                return 0, None
             try:
                 episodic_ids = await self.episodic_memory.add(list(messages), list(history))
-                return len(episodic_ids)
+                return len(episodic_ids), None
+            except MemoryExtractionError as e:
+                return e.saved_count, str(e)
             except Exception as e:
                 logger.warning("[MemoryManager] 情景记忆处理失败: %s", e)
-                return 0
+                return 0, str(e)
 
-        async def process_semantic() -> int:
-            """交付当前批次给语义提取器，失败时只将本项数量记为零。
+        async def process_semantic() -> tuple[int, str | None]:
+            """交付当前批次给语义提取器，区分正常空结果和提取失败。
 
             Returns:
-                int: 本次保存的语义记忆数量。
+                tuple[int, str | None]: 本次处理数量和可选错误摘要。
             """
             if not enable_semantic or self.semantic_memory is None:
-                return 0
+                return 0, None
             try:
                 semantic_ids = await self.semantic_memory.add(list(messages), list(history))
-                return len(semantic_ids)
+                return len(semantic_ids), None
             except Exception as e:
                 logger.warning("[MemoryManager] 语义记忆处理失败: %s", e)
-                return 0
+                return 0, str(e)
 
         # 2. 并行等待启用的提取器完成，保持两项结果和异常处理相互独立。
-        episodic_count, semantic_count = await asyncio.gather(
+        episodic_result, semantic_result = await asyncio.gather(
             process_episodic(),
             process_semantic(),
         )
+
+        episodic_count, episodic_error = episodic_result
+        semantic_count, semantic_error = semantic_result
+        # 3. 一类失败仍保留另一类的工作结果；错误交给任务框架保存为失败并展示完整摘要。
+        if episodic_error is not None or semantic_error is not None:
+            details = []
+            for label, verb, count, error, enabled in (
+                ("情景记忆", "已保存", episodic_count, episodic_error,
+                 enable_episodic and self.episodic_memory is not None),
+                ("语义记忆", "处理", semantic_count, semantic_error,
+                 enable_semantic and self.semantic_memory is not None),
+            ):
+                text = f"{verb} {count} 条" if enabled else "未启用"
+                if error is not None:
+                    text += f"，失败：{error}"
+                details.append(f"{label}：{text}")
+            enabled_count = int(enable_episodic and self.episodic_memory is not None) + int(
+                enable_semantic and self.semantic_memory is not None
+            )
+            error_count = int(episodic_error is not None) + int(semantic_error is not None)
+            status = "部分失败" if error_count < enabled_count else "失败"
+            raise RuntimeError(f"长期记忆提取{status}；" + "；".join(details))
 
         return {"episodic": episodic_count, "semantic": semantic_count}
 

@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.agent.memory.base import MemoryItem
+from app.agent.memory.base import MemoryExtractionError, MemoryItem
 from app.agent.memory.materials import compress_tool_results
 from app.agent.state.messages import (
     notification_text, text_content, format_tool_arguments,
@@ -161,6 +161,10 @@ class EpisodicMemory:
 
         Returns:
             list[str]: 成功保存到 SQLite 的记忆编号。
+
+        Raises:
+            MemoryExtractionError: 部分记忆保存或索引更新失败，包含已经保存的数量。
+            Exception: 模型提取或结构化结果验证失败。
         """
         # 1. 先按既有时间、来源和工具规则构造文本，没有可提取内容时不调用模型。
         messages_text = self._format_messages(messages)
@@ -181,6 +185,7 @@ class EpisodicMemory:
 
         # 4. 存储每条记忆（双写：SQLite + Chroma）。
         memory_ids = []
+        errors: list[str] = []
         for item in memory_items:
             memory_id = f"episodic_{uuid.uuid4().hex[:16]}"
 
@@ -202,6 +207,7 @@ class EpisodicMemory:
                 )
             except Exception as e:
                 logger.exception("[EpisodicMemory] SQLite 存储失败: %s", e)
+                errors.append(f"保存记忆失败：{e}")
                 continue
 
             # 4.2. 再更新向量索引，索引失败不撤销已经保存的 SQLite 记忆。
@@ -213,6 +219,7 @@ class EpisodicMemory:
                 )
             except Exception as e:
                 logger.warning("[EpisodicMemory] Chroma 存储失败（SQLite 已保存）: %s", e)
+                errors.append(f"记忆已保存，更新检索索引失败：{e}")
 
             memory_ids.append(memory_id)
             logger.info(
@@ -224,6 +231,9 @@ class EpisodicMemory:
             len(memory_ids)
         )
 
+        # 5. 保留已成功保存的条数，同时让后台任务明确显示保存或检索索引更新失败。
+        if errors:
+            raise MemoryExtractionError("；".join(errors), saved_count=len(memory_ids))
         return memory_ids
 
     async def search(self, query: str, top_k: int = 3) -> list[MemoryItem]:
@@ -384,9 +394,12 @@ class EpisodicMemory:
             prompt (str): 本次实际发送的完整情景记忆提示词。
 
         Returns:
-            list[dict[str, Any]]: 记忆内容、事件日期和重要性；提取或验证失败时为空。
+            list[dict[str, Any]]: 记忆内容、事件日期和重要性，正常未提取到记忆时为空。
+
+        Raises:
+            Exception: 模型提取或结构化结果验证失败，由任务记录错误原因。
         """
-        # 1. 只发送已构造的请求，模型失败或结构化结果无效时沿用空结果处理。
+        # 1. 只发送已构造的请求，模型失败或结构化结果无效时向上传播错误。
         try:
             result = await self.llm.ainvoke_structured(
                 messages=[HumanMessage(content=text_content(prompt))],
@@ -408,7 +421,7 @@ class EpisodicMemory:
 
         except Exception as e:
             logger.exception("[EpisodicMemory] LLM 提取记忆失败: %s", e)
-            return []
+            raise
 
     def _format_messages(self, messages: list[BaseMessage], *, mark_as_history: bool = False) -> str:
         """构造情景提取文本，保留消息时间、渠道来源和既有工具上下文规则。
