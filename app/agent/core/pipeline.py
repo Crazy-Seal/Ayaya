@@ -8,8 +8,7 @@ tool_call_id/tool_args/resume_state）写入 state.interrupt_data，使恢复能
 在另一个请求（甚至进程重启后）重入同一工具——无需依赖存活的协程。
 """
 from contextlib import aclosing
-from typing import Sequence
-from app.agent.models.contracts import ModelFinishReason, InputMessage, ToolDefinition
+from app.agent.models.contracts import ModelFinishReason, StreamChunk
 
 import logging
 from typing import Any, AsyncIterator, Protocol
@@ -27,7 +26,7 @@ from app.agent.core.plugin_manager import PluginManager
 from app.agent.core.response_filter import AssistantTimePrefixFilter
 from app.agent.core.tool_manager import ToolManager
 from app.agent.state.messages import ProviderData
-from app.agent.models.llm_client import StreamChunk
+from app.agent.models.llm_client import LLMClient
 from app.agent.plugins.base import PluginHook
 from app.agent.state.messages import (
     HumanMessage,
@@ -50,32 +49,12 @@ class SystemPromptSource(Protocol):
     system_prompt: str
 
 
-class StreamingLLMClient(Protocol):
-    """Pipeline 调用流式模型所需的最小接口。"""
-
-    def astream(
-        self,
-        messages: Sequence[InputMessage],
-        tools: Sequence[ToolDefinition] | None = None,
-    ) -> AsyncIterator[StreamChunk]:
-        """执行管道调用主模型时取得流式文字、工具调用和用量片段。
-
-        Args:
-            messages (Sequence[InputMessage]): 按对话顺序排列的消息集合。
-            tools (Sequence[ToolDefinition] | None): 当前向模型公开的工具定义。
-
-        Returns:
-            AsyncIterator[StreamChunk]: 按到达顺序产出 StreamChunk 的异步迭代器。
-        """
-        ...
-
-
 class ExecutionPipeline:
     """执行模型与工具循环，在安全点响应停止信号并保留完整工具协议。
 
     Attributes:
         _prompt_source (SystemPromptSource): 当前模型循环使用的系统提示来源。
-        _llm_client (StreamingLLMClient): 可替换的流式模型客户端。
+        _llm_client (LLMClient): 统一模型调用客户端。
         _tool_manager (ToolManager): 本地及 MCP 工具注册管理器。
         _plugin_manager (PluginManager): 插件生命周期与执行钩子的分发器。
         _tool_result_normalizer (ToolResultNormalizer): 工具输出与媒体的统一规范化器。
@@ -88,7 +67,7 @@ class ExecutionPipeline:
         self,
         *,
         prompt_source: SystemPromptSource,
-        llm_client: StreamingLLMClient,
+        llm_client: LLMClient,
         tool_manager: ToolManager,
         plugin_manager: PluginManager,
         model_input: ModelInputCoordinator,
@@ -100,7 +79,7 @@ class ExecutionPipeline:
 
         Args:
             prompt_source (SystemPromptSource): 当前模型循环使用的系统提示来源。
-            llm_client (StreamingLLMClient): 可替换的流式模型客户端。
+            llm_client (LLMClient): 统一模型调用客户端。
             tool_manager (ToolManager): 本地及 MCP 工具注册管理器。
             plugin_manager (PluginManager): 插件生命周期与执行钩子的分发器。
             model_input (ModelInputCoordinator): 模型消息投影、上下文压缩和溢出恢复协调器。
