@@ -8,8 +8,8 @@ from app.agent.context import ContextStrategyConfig
 from app.schemas.chat_settings import AgentPluginSettings, ChatSettings
 
 
-def test_skills_survive_round_trip(tmp_path: Path) -> None:
-    """验证技能设置经 YAML 保存读取仍完整。
+def test_legacy_settings_drop_retired_skills_on_save(tmp_path: Path) -> None:
+    """验证旧会话可读取，重新保存后清除已废弃的技能字段并保留插件设置。
 
     Args:
         tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
@@ -25,14 +25,23 @@ def test_skills_survive_round_trip(tmp_path: Path) -> None:
         temperature=0.1,
         system_prompt="test",
         context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100),
-        skills=["sample"],
     )
-
     dao.add_chat_settings(settings)
-    reloaded = ChatSettingsDao(config_file=config_file).get_chat_settings("test-session")
+    # 1. 在临时 YAML 中补入旧字段，模拟删除旧 Skill 功能前保存的会话。
+    with config_file.open("a", encoding="utf-8") as file:
+        file.write("  skills: [sample]\n")
 
-    assert reloaded.skills == ["sample"]
+    # 2. 通过新的 DAO 读取旧配置，保存后再次读取，确认会话参数与插件保持完整。
+    reloaded_dao = ChatSettingsDao(config_file=config_file)
+    reloaded = reloaded_dao.get_chat_settings("test-session")
+    reloaded_dao.update_chat_settings("test-session", reloaded)
+    saved = ChatSettingsDao(config_file=config_file).get_chat_settings("test-session")
+
+    assert saved.system_prompt == "test"
     assert reloaded.agent_plugins["memory"].enabled is True
+    assert saved.agent_plugins == reloaded.agent_plugins
+    assert "skills" not in saved.model_dump()
+    assert "skills:" not in config_file.read_text(encoding="utf-8")
 
 
 def test_agent_plugins_round_trip_with_long_term_memory_interval(tmp_path: Path) -> None:
@@ -63,7 +72,6 @@ def test_agent_plugins_round_trip_with_long_term_memory_interval(tmp_path: Path)
                 },
             )
         },
-        skills=[],
     )
 
     dao.add_chat_settings(settings)

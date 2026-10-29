@@ -35,7 +35,6 @@ class ChatSettings(BaseModel):
     tool_permissions_schema_version: int = TOOL_PERMISSIONS_SCHEMA_VERSION
     context_strategy: ContextStrategyConfig
     agent_plugins: dict[str, AgentPluginSettings] | None = None
-    skills: list[str] | None = None
     mcp: MCPModelSettings = Field(default_factory=MCPModelSettings)
 
     name: str | None = None
@@ -76,7 +75,6 @@ class ChatSettings(BaseModel):
             tuple(sorted(self.context_strategy.model_dump().items())),
             json.dumps({name: settings.model_dump(mode="json") for name, settings in self.agent_plugins.items()},
                        sort_keys=True, ensure_ascii=False, separators=(",", ":")),
-            tuple(self.skills or []),
             tuple(
                 (
                     server_id,

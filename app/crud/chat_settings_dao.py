@@ -85,7 +85,6 @@ class ChatSettingsDao:
             ),
             context_strategy=item["context_strategy"],
             agent_plugins=item.get("agent_plugins") or {},
-            skills=item.get("skills"),
             mcp=item.get("mcp") or {},
             # 提示词模板字段
             name=item.get("name"),

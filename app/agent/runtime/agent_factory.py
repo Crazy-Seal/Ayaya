@@ -56,7 +56,6 @@ def build_agent(
         system_prompt=chat_settings.system_prompt,
         context_strategy=chat_settings.context_strategy,
         plugins=plugins,
-        skills=list(chat_settings.skills or []),
         mcp=chat_settings.mcp,
         plugin_mcp=dict(plugin_mcp or {}),
     )

@@ -61,7 +61,6 @@ class AgentConfig:
     system_prompt: str = ""
     tools: list[str] = field(default_factory=list)
     plugins: list[str | dict[str, Any]] = field(default_factory=list)
-    skills: list[str] = field(default_factory=list)
     mcp: MCPModelSettings = field(default_factory=MCPModelSettings)
     plugin_mcp: dict[str, tuple[MCPConnectionConfig, ...]] = field(default_factory=dict)
 
@@ -178,9 +177,6 @@ class Agent:
         # 加载插件
         await self._setup_plugins()
 
-        # 加载能力包（Skill）：可引入额外工具/插件/提示词片段
-        await self._setup_skills()
-
         # 初始化 MCP
         await self._setup_mcp()
 
@@ -188,7 +184,7 @@ class Agent:
         logger.info(f"Agent 初始化完成: {self.config.session_id}")
 
     async def _setup_tools(self) -> None:
-        """按会话设置创建本地及 MCP 工具适配器，并装配技能提供的工具。"""
+        """按工具权限和会话配置，从工具注册表创建并登记本地工具。"""
         # 从工具注册表加载
         from app.agent.tools.core.registry import ToolRegistry
 
@@ -237,53 +233,6 @@ class Agent:
                     logger.exception("插件 '%s' 初始化失败", plugin_name)
             else:
                 logger.warning(f"插件 '{plugin_name}' 不存在于注册表中")
-
-    async def _setup_skills(self) -> None:
-        """加载能力包：注册其工具/插件并追加提示词片段。"""
-        if not self.config.skills:
-            return
-
-        from app.agent.skills.registry import SkillRegistry
-        from app.agent.tools.core.registry import ToolRegistry
-        from app.agent.plugins.registry import PluginRegistry
-
-        for skill_name in self.config.skills:
-            skill_cls = SkillRegistry.get(skill_name)
-            if not skill_cls:
-                logger.warning("Skill '%s' 不存在于注册表中", skill_name)
-                continue
-            skill = skill_cls()
-
-            # 引入工具
-            for tool_name in skill.tools or []:
-                if self.tool_manager.has(tool_name):
-                    continue
-                tool_cls = ToolRegistry.get(tool_name)
-                if tool_cls:
-                    self.tool_manager.register(tool_cls())
-                else:
-                    logger.warning("Skill '%s' 引用的工具 '%s' 不存在", skill_name, tool_name)
-
-            # 引入插件
-            for plugin_name in skill.plugins or []:
-                if plugin_name in self.plugin_manager:
-                    continue
-                plugin_cls = PluginRegistry.get(plugin_name)
-                if plugin_cls:
-                    await self.plugin_manager.register(plugin_cls())
-                else:
-                    logger.warning("Skill '%s' 引用的插件 '%s' 不存在", skill_name, plugin_name)
-
-            # 追加提示词片段
-            if skill.system_prompt_fragment:
-                self.config.system_prompt = (
-                    f"{self.config.system_prompt}\n\n{skill.system_prompt_fragment}"
-                    if self.config.system_prompt
-                    else skill.system_prompt_fragment
-                )
-
-            await skill.on_load()
-            logger.info("加载 Skill: %s", skill_name)
 
     async def _setup_mcp(self) -> None:
         """连接当前模型启用的 Server 并组装 MCP 模型工具空间。"""

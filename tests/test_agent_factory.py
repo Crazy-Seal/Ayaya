@@ -19,7 +19,6 @@ def _settings(agent_plugins=None, context_strategy=None):
         system_prompt="test",
         agent_plugins=agent_plugins,
         context_strategy=context_strategy or ContextStrategyConfig(compression_trigger_tokens_k=100),
-        skills=[],
         name="Ayaya",
         feature="温柔",
         character="助手",

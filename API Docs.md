@@ -116,7 +116,7 @@ data: {"session_id":"default","kind":"text_chunk","payload":{"value":"你好"},"
 | `GET /tool-permissions/{session_id}` | 列出本地和 MCP 工具的稳定键、策略和可用状态。 |
 | `PUT /tool-permissions/{session_id}` | 请求体 `{"tool_permissions":{"local:screenshot":"ask","mcp:server:tool":"deny"}}`；一次保存当前会话的完整策略映射。 |
 
-ChatSettings 包含 `session_id`、`model_name`、`openai_api_key`、`openai_base_url`、`temperature`、`system_prompt`、`context_strategy`，以及 `tool_permissions`、`tool_permissions_schema_version`、`agent_plugins`、`skills`、`mcp.servers` 和可选角色资料。现行工具策略为稳定键映射，取值仅 `allow`、`ask`、`deny`；`mcp.servers[server_id]` 只保存 `enabled` 和可选 `identity_fingerprint`。请以 `/openapi.json` 中的 `ChatSettings` schema 获取全部约束，并参考 `config/chat_settings.sample.yaml` 的可运行示例。
+ChatSettings 包含 `session_id`、`model_name`、`openai_api_key`、`openai_base_url`、`temperature`、`system_prompt`、`context_strategy`，以及 `tool_permissions`、`tool_permissions_schema_version`、`agent_plugins`、`mcp.servers` 和可选角色资料。现行工具策略为稳定键映射，取值仅 `allow`、`ask`、`deny`；`mcp.servers[server_id]` 只保存 `enabled` 和可选 `identity_fingerprint`。请以 `/openapi.json` 中的 `ChatSettings` schema 获取全部约束，并参考 `config/chat_settings.sample.yaml` 的可运行示例。
 
 ## MCP Server 管理
 

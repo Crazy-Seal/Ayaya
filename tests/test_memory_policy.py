@@ -37,7 +37,6 @@ def _chat_settings(*, enable_diary=True, enable_episodic=True, enable_semantic=T
                 },
             )
         },
-        skills=[],
     )
 
 
