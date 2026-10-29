@@ -3,6 +3,7 @@ import functools
 import inspect
 import logging
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -58,16 +59,19 @@ def _ensure_tool_file_handler(logger: logging.Logger) -> None:
 
 
 def _sanitize_value(value: Any) -> Any:
-    """将参数/输出转换为可读且安全的日志片段。
+    """递归读取普通字典和只读映射，将参数及输出转换为脱敏、限长的日志片段。
 
     Args:
         value (Any): 当前需要校验或转换的值。
+
+    Returns:
+        Any: 日志使用的容器副本或标量，原工具参数保持不变。
     """
     if isinstance(value, str):
         return shorten_for_log(value, max_len=500)
     if isinstance(value, (int, float, bool)) or value is None:
         return value
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         safe: dict[str, Any] = {}
         for key, item in value.items():
             key_str = str(key)
@@ -102,20 +106,20 @@ def _sanitize_params(params: dict[str, Any]) -> dict[str, Any]:
 
 async def log_tool_call_result(
     tool_name: str,
-    params: dict[str, Any],
+    params: Mapping[str, Any],
     result: Any,
     *,
     logger_name: str = "app.agent.tools",
 ) -> Any:
     """记录一次工具调用的参数和输出。
 
-    适用于调用点已取得工具名、参数字典和结果的场景，写入前统一脱敏。
+    适用于调用点已取得工具名、普通或只读参数映射和结果的场景，写入前统一脱敏。
 
     返回原始 result，方便链式书写：return await log_tool_call_result(...)
 
     Args:
         tool_name (str): 注册表中使用的工具名称。
-        params (dict[str, Any]): 经过敏感字段过滤的调用参数。
+        params (Mapping[str, Any]): 工具实际使用的调用参数，日志会递归转换并脱敏。
         result (Any): 当前工具或被包装函数返回的结果。
         logger_name (str): 当前工具日志使用的 logger 名称。
     """
