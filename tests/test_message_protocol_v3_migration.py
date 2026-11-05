@@ -115,7 +115,6 @@ def test_summary_of_removed_image_maps_identity_without_restoring_messages(tmp_p
         restored = AgentState.from_checkpoint(json.loads(db.execute("SELECT state_json FROM checkpoints").fetchone()[0]))
     assert len(restored.messages) == 1
     assert restored.messages[0].covered_through_message_id == "tool"
-    assert str(restored.messages[0].covered_effective_date) == "2026-10-12"
 
 
 def test_deferred_image_with_wrong_call_aborts_migration(tmp_path: Path) -> None:

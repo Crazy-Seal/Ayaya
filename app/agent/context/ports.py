@@ -26,19 +26,4 @@ class SummaryClient(Protocol):
         ...
 
 
-class DiaryCoverage(Protocol):
-    """上下文摘要清理所需的日记覆盖查询端口。"""
-
-    async def has_diary_for_effective_date(self, effective_date: str) -> bool:
-        """由压缩协调器查询指定有效日期是否已有日记，决定能否移除对应旧摘要。
-
-        Args:
-            effective_date (str): 摘要覆盖的日记有效日期，格式为 YYYY-MM-DD。
-
-        Returns:
-            bool: 该日期已有日记时为 True。
-        """
-        ...
-
-
-__all__ = ["DiaryCoverage", "SummaryClient"]
+__all__ = ["SummaryClient"]

@@ -226,16 +226,6 @@ class MemoryManager:
         )
         return f"日记生成成功：{generation.target_date.isoformat()}，已保存 1 篇日记。"
 
-    async def has_diary_for_effective_date(self, effective_date: str) -> bool:
-        """供上下文压缩查询当前会话某有效日期是否已有日记，不生成新的日记。
-
-        Args:
-            effective_date (str): 按日记规则划分的有效日期，格式为 YYYY-MM-DD。
-        """
-        if self.diary_memory is None:
-            return False
-        return await self.diary_memory.has_diary(date.fromisoformat(effective_date))
-
     async def get_context(
         self,
         query: str = "",

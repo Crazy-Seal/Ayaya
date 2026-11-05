@@ -10,9 +10,7 @@ from app.agent.state.model import AgentState, TemporaryContextItem
 from app.agent.memory.manager import MemoryManager, get_memory_manager
 from app.agent.plugins.runtime import PluginRuntime
 from app.agent.utils.infra.owned_work import complete_owned_work
-from app.agent.state.messages import (
-    HumanMessage,
-)
+from app.agent.state.messages import HumanMessage
 from app.agent.plugins.memory.tasks.memory_tasks import DiaryTask, LongTermMemoryTask
 from app.schemas.runtime_types import TaskLifetime
 from .tools import search_diary, search_memory
@@ -44,7 +42,7 @@ MEMORY_PREAMBLE = (
 
 
 class MemoryPlugin(BasePlugin):
-    """在新输入提交前准备上一批记忆，提交后启动整理并检索本轮相关记忆。
+    """准备和整理长期记忆，并检索本轮相关记忆。
 
     真人或纯内部通知都能启动新激活；当前轮次中途交付通知不进入激活提交钩子。
 
@@ -68,10 +66,10 @@ class MemoryPlugin(BasePlugin):
 
     @property
     def hooks(self) -> list[PluginHook]:
-        """订阅新激活输入提交前和本轮执行开始的事件。
+        """订阅输入提交和执行开始的记忆处理时机。
 
         Returns:
-            list[PluginHook]: 准备、启动上一批派生任务及召回本轮记忆的钩子。
+            list[PluginHook]: 准备、启动记忆任务及召回记忆的钩子。
         """
         return [
             PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT,
@@ -105,7 +103,7 @@ class MemoryPlugin(BasePlugin):
             )
 
     async def execute(self, context: HookContext) -> None:
-        """按当前生命周期事件准备任务、启动已提交任务或召回记忆。
+        """按执行时机准备和启动记忆任务，并召回本轮相关记忆。
 
         Args:
             context (HookContext): Agent 提供的状态、提交上下文或本轮临时上下文。

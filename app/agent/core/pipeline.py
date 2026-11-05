@@ -416,7 +416,7 @@ class ExecutionPipeline:
         state: AgentState,
         session_state_manager: SessionStateManager | None,
     ) -> None:
-        """在启用持久化的执行入口中保存工具进度。
+        """在启用持久化的执行入口中保存对话消息和工具进度。
 
         Args:
             state (AgentState): 当前会话的内存 AgentState；保存由调用方负责。

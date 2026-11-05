@@ -8,7 +8,6 @@ from app.agent.models.contracts import InputMessage, ToolDefinition
 import json
 import logging
 from dataclasses import dataclass
-from datetime import timedelta
 from typing import Annotated, AsyncGenerator, Sequence, TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
@@ -20,7 +19,7 @@ from app.agent.context._compaction import (
 )
 from app.agent.context._projection import append_transient_context, build_model_window
 from app.agent.context.config import ContextStrategyConfig
-from app.agent.context.ports import DiaryCoverage, SummaryClient
+from app.agent.context.ports import SummaryClient
 from app.agent.context.runtime import RuntimeContext
 from app.agent.state.model import AgentState
 from app.agent.state.messages import (
@@ -221,7 +220,7 @@ class PreparedModelInput:
 
 
 class ContextCompactionCoordinator:
-    """在模型调用前缩短工具结果、清除已有日记覆盖的摘要，并生成新的历史摘要。
+    """在模型调用前缩短工具结果，并生成新的历史摘要。
 
     只更新或返回内存消息；checkpoint 由执行管道在调用模型前保存。
 
@@ -229,7 +228,6 @@ class ContextCompactionCoordinator:
         budget (ContextBudgetService): 输入大小估算器及压缩配置。
         policy (ContextCompressionPolicy): 消息选择和替换规则。
         summary_client (SummaryClient): 生成结构化历史摘要的模型客户端。
-        diary_coverage (DiaryCoverage | None): 查询有效日期是否已有日记的接口。
         chat_settings (ChatSettings | None): 构造摘要提示词时使用的会话角色设置。
     """
 
@@ -237,22 +235,19 @@ class ContextCompactionCoordinator:
         self,
         budget: ContextBudgetService,
         summary_client: SummaryClient,
-        diary_coverage: DiaryCoverage | None = None,
         *,
         chat_settings: "ChatSettings | None" = None,
     ) -> None:
-        """保存压缩依赖，此时不查询日记，也不调用模型。
+        """保存输入预算、摘要模型和角色配置，供后续压缩历史使用。
 
         Args:
             budget (ContextBudgetService): 估算消息大小的对象。
             summary_client (SummaryClient): 用于生成历史摘要的模型客户端。
-            diary_coverage (DiaryCoverage | None): 可选的日记覆盖查询接口。
             chat_settings (ChatSettings | None): 摘要使用的会话角色配置。
         """
         self.budget = budget
         self.policy = ContextCompressionPolicy()
         self.summary_client = summary_client
-        self.diary_coverage = diary_coverage
         self.chat_settings = chat_settings
 
     def _build_summary_system_prompt(self) -> str:
@@ -289,57 +284,20 @@ class ContextCompactionCoordinator:
             state.commit_compaction(candidate)
         return changed
 
-    async def drop_diary_covered_summaries(self, state: AgentState) -> int:
-        """逐项查询摘要覆盖日期，只从内存状态移除已经有日记的旧摘要。
-
-        Args:
-            state (AgentState): 当前会话状态，普通消息始终保留。
-
-        Returns:
-            int: 移除的摘要数量；未配置日记查询接口时为零。
-        """
-        if self.diary_coverage is None:
-            return 0
-        kept: list[BaseMessage] = []
-        removed = 0
-        # 1. 普通消息和没有覆盖日期的摘要保留；有覆盖日期的摘要才查询日记。
-        for message in state.messages:
-            effective_date = (
-                message.covered_effective_date
-                if isinstance(message, ContextSummaryMessage) else None
-            )
-            if not effective_date:
-                kept.append(message)
-                continue
-            covered = await self.diary_coverage.has_diary_for_effective_date(
-                str(effective_date)
-            )
-            if covered:
-                removed += 1
-            else:
-                kept.append(message)
-        # 2. 全部日期查询成功后才替换内存消息，查询异常不会留下部分删除结果。
-        if removed:
-            state.commit_compaction(kept)
-        return removed
-
     @staticmethod
-    def _coverage_marker(selected_messages: Sequence[BaseMessage]) -> tuple[str, str]:
-        """确定新摘要覆盖到哪条原消息，以及该消息归属的日记有效日期。
+    def _covered_message_id(selected_messages: Sequence[BaseMessage]) -> str:
+        """确定新摘要覆盖到的最后一条原消息，连续压缩时继续追溯原编号。
 
         Args:
             selected_messages (Sequence[BaseMessage]): 已选择且非空的待总结消息。
 
         Returns:
-            tuple[str, str]: 最后一条原消息编号和有效日期；末尾为旧摘要时复用其覆盖标记。
+            str: 最后一条原消息编号，末尾为旧摘要时复用其覆盖编号。
         """
         last = selected_messages[-1]
         if isinstance(last, ContextSummaryMessage):
-            return last.covered_through_message_id, last.covered_effective_date
-
-        local = last.created_at.astimezone()
-        effective_date = (local - timedelta(hours=4)).date().isoformat()
-        return last.message_id, effective_date
+            return last.covered_through_message_id
+        return last.message_id
 
     def _build_summary_extraction_prompt(self) -> str:
         """构造摘要提取规则，区分需要继续的工作任务和普通聊天信息。
@@ -417,18 +375,17 @@ class ContextCompactionCoordinator:
         )
         summary_tokens = max(self.budget.estimate_value(summary), 1)
         created_at = utc_now()
-        covered_message_id, effective_date = self._coverage_marker(selected_messages)
+        covered_message_id = self._covered_message_id(selected_messages)
         source_tokens = sum(
             self.budget.estimate_message(message)
             for message in selected_messages
         )
-        # 3. 记录原历史覆盖边界，让后续压缩和日记清理仍能追溯被摘要替换的内容。
+        # 3. 记录原历史覆盖编号，供后续压缩追踪被摘要替换的历史范围。
         summary_message = ContextSummaryMessage(
             content=f"{CONTEXT_SUMMARY_PREFIX}\n{summary}",
             created_at=created_at,
             summary_schema_version=CONTEXT_SUMMARY_SCHEMA_VERSION,
             covered_through_message_id=covered_message_id,
-            covered_effective_date=effective_date,
             compression_ratio=round(summary_tokens / max(source_tokens, 1), 4),
         )
         # 4. 在原历史位置放入摘要，保留未选消息顺序，最终再检查一次工具协议。
@@ -454,16 +411,14 @@ class ModelInputCoordinator:
         config: ContextStrategyConfig,
         summary_client: SummaryClient,
         *,
-        diary_coverage: DiaryCoverage | None = None,
         chat_settings: "ChatSettings | None" = None,
         accounting_key: str = "openai-chat-completions:default",
     ) -> None:
-        """装配模型输入所需的预算、压缩策略和日记查询依赖。
+        """装配模型输入所需的预算、压缩策略和摘要模型。
 
         Args:
             config (ContextStrategyConfig): 当前会话的上下文压缩配置。
             summary_client (SummaryClient): 生成结构化摘要的模型客户端。
-            diary_coverage (DiaryCoverage | None): 可选的日记覆盖查询接口。
             chat_settings (ChatSettings | None): 摘要模型的角色与称呼设置。
             accounting_key (str): 当前模型、协议和服务地址的计量配置标识。
         """
@@ -471,7 +426,6 @@ class ModelInputCoordinator:
         self.compaction = ContextCompactionCoordinator(
             self.budget,
             summary_client,
-            diary_coverage,
             chat_settings=chat_settings,
         )
         self.screenshot_policy = ContextCompressionPolicy()
@@ -564,20 +518,12 @@ class ModelInputCoordinator:
         if not self.budget.should_compact(assessment.estimated_prompt_tokens):
             return PreparedModelInput(messages, assessment, state_changed=changed)
 
-        # 3. 再移除已有日记覆盖的摘要，并按清理后的完整输入重新判断预算。
-        removed_summaries = await self.compaction.drop_diary_covered_summaries(state)
-        changed = changed or bool(removed_summaries)
-        if removed_summaries:
-            messages, assessment = self._view(state, system_prompt, tools, turn_context)
-            if not self.budget.should_compact(assessment.estimated_prompt_tokens):
-                return PreparedModelInput(messages, assessment, state_changed=True)
-
-        # 4. 两种压缩比例都从同一份历史生成，第二次不会在第一次摘要上再次丢失细节。
+        # 3. 两种压缩比例都从同一份历史生成，第二次不会在第一次摘要上再次丢失细节。
         frozen = state.messages
         for ratio in (0.60, 0.75):
             candidate = await self.compaction.summarize_candidate(frozen, ratio)
             candidate_state = AgentState.from_checkpoint(state.to_checkpoint())
-            # 4.1. 候选状态也恢复临时条目，完整估算环境背景后才更新当前历史。
+            # 3.1. 候选状态也恢复临时条目，完整估算环境背景后才更新当前历史。
             candidate_state.commit_compaction(candidate)
             candidate_messages, candidate_assessment = self._view(
                 candidate_state, system_prompt, tools, turn_context
@@ -591,7 +537,7 @@ class ModelInputCoordinator:
                     candidate_assessment,
                     state_changed=True,
                 )
-        # 5. 两次候选都过大则终止主模型调用，错误交由执行管道和会话调度器报告。
+        # 4. 两次候选都过大则终止主模型调用，错误交由执行管道和会话调度器报告。
         raise ContextOverflowError("上下文在扩大到75%摘要后仍达到配置的压缩触发阈值，已停止主模型调用")
 
     def observe_usage(
@@ -661,7 +607,6 @@ class ModelInputCoordinator:
         """
         # 1. 模型已经拒绝输入，先执行轻量清理，再捕获两次恢复共同使用的历史。
         self.compaction.compress_tool_results(state)
-        await self.compaction.drop_diary_covered_summaries(state)
         frozen = state.messages
         for ratio in (0.60, 0.75):
             # 2. 每次产出前更新内存消息；执行管道负责保存成功后重试，保存失败不会发送模型请求。

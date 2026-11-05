@@ -90,7 +90,6 @@ async def test_memory_queries_follow_plugin_switch_and_permissions(
         return memory
 
     monkeypatch.setattr(memory_manager_module, "get_memory_manager", get_memory)
-    monkeypatch.setattr(agent_factory, "get_memory_manager", lambda _: None)
     settings = ChatSettings(session_id="memory-tools", model_name="test", openai_api_key="test",
                             openai_base_url="http://localhost", temperature=0.7, system_prompt="test",
                             context_strategy={}, agent_plugins={MemoryPlugin.name: {

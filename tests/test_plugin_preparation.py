@@ -121,7 +121,6 @@ def test_preparation_reuses_validated_config_and_mcp_declarations(tmp_path, monk
         monkeypatch.setattr(dependencies, name, lambda value=value: value)
     monkeypatch.setattr(dependencies, "get_chat_settings_service", lambda **kwargs: service)
     monkeypatch.setattr(dependencies, "AgentRuntimeScheduler", lambda **kwargs: SimpleNamespace(**kwargs))
-    monkeypatch.setattr(agent_factory, "get_memory_manager", lambda _: None)
     monkeypatch.setattr(agent_factory, "Agent", lambda config, **kwargs: config)
     validations.clear()
     resolutions.clear()

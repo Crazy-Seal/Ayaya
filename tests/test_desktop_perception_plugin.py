@@ -273,7 +273,6 @@ async def test_plugin_switch_controls_capture(
         return Image.new("RGB", (80, 45))
 
     monkeypatch.setattr(ImageGrab, "grab", grab)
-    monkeypatch.setattr(agent_factory, "get_memory_manager", lambda _: None)
     settings = ChatSettings(session_id="desktop-switch", model_name="test", openai_api_key="test",
                             openai_base_url="http://localhost", temperature=0.7, system_prompt="test",
                             context_strategy={}, agent_plugins={"memory": {"enabled": False},

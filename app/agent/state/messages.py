@@ -611,29 +611,27 @@ class ContextSummaryMessage(BaseMessage):
         content (str): 带摘要前缀的结构化摘要文本。
         summary_schema_version (int): 摘要结构版本。
         covered_through_message_id (str): 被替换历史中最后一条原消息编号。
-        covered_effective_date (str): 覆盖边界对应的日记有效日期。
         compression_ratio (float): 摘要粗估 token 数与原内容粗估 token 数之比。
     """
     message_type: ClassVar[MessageType] = MessageType.CONTEXT_SUMMARY
     content: str
     summary_schema_version: int
     covered_through_message_id: str
-    covered_effective_date: str
     compression_ratio: float
 
     def __post_init__(self) -> None:
-        """校验摘要文本、结构版本和历史覆盖边界，避免产生无法清理的摘要。
+        """校验摘要文本、结构版本和历史覆盖边界，供后续压缩追踪原消息。
 
         Raises:
             TypeError: 摘要正文不是字符串。
-            ValueError: 结构版本非正数，或缺少消息覆盖边界和有效日期。
+            ValueError: 结构版本非正数，或缺少消息覆盖边界。
         """
         BaseMessage.__post_init__(self)
         if not isinstance(self.content, str):
             raise TypeError("ContextSummaryMessage.content 必须是字符串")
         if self.summary_schema_version <= 0:
             raise ValueError("摘要 schema_version 必须为正整数")
-        if not self.covered_through_message_id or not self.covered_effective_date:
+        if not self.covered_through_message_id:
             raise ValueError("摘要覆盖边界不能为空")
 
     @property

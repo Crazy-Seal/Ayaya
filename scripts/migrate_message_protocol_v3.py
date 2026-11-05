@@ -116,7 +116,7 @@ def convert_message(raw: dict, owner: dict | None = None) -> dict:
     elif kind == "context_summary":
         meta = raw.get("_context_summary") or {}
         result.update(content=content, summary_schema_version=meta.get("schema_version"),
-            covered_through_message_id=meta.get("covered_through_message_id"), covered_effective_date=meta.get("covered_effective_date"),
+            covered_through_message_id=meta.get("covered_through_message_id"),
             compression_ratio=meta.get("compression_ratio"))
     elif kind == "task_result":
         # 1.1. 旧后台通知把标签与正文拼在一起；必须匹配已保存的元数据再剥离标签。

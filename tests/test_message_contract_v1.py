@@ -218,7 +218,6 @@ def test_agent_state_rejects_system_messages_and_compaction_insertion_abuse() ->
         content="摘要",
         summary_schema_version=1,
         covered_through_message_id=human.message_id,
-        covered_effective_date="2026-09-20",
         compression_ratio=0.5,
     )
     state.commit_compaction((summary, human, replace(assistant, content=text_content("压缩后的回答"))))

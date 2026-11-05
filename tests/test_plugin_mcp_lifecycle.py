@@ -52,7 +52,6 @@ async def test_plugin_mcp_binds_permissions_and_disconnects_on_parameter_change(
             return (StdioMCPConnectionConfig(id="shared-name", name="插件服务", command=config["command"]),)
 
     monkeypatch.setitem(PluginRegistry._plugins, Plugin.name, Plugin)
-    monkeypatch.setattr(agent_factory, "get_memory_manager", lambda _: None)
     path = tmp_path / "settings.yaml"
     path.write_text("chat_models: []\n", encoding="utf-8")
     dao = ChatSettingsDao(path)

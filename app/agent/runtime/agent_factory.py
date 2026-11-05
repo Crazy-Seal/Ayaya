@@ -3,7 +3,6 @@
 from app.agent.agent import Agent, AgentConfig
 from app.agent.plugins.runtime import PluginRuntimeFactory
 from app.agent.state.manager import SessionStateManager
-from app.agent.memory.manager import get_memory_manager
 from app.schemas.chat_settings import ChatSettings
 from app.mcp.mcp_connection_manager import MCPConnectionManager
 from app.agent.tools.authorization.manager import ToolAuthorization
@@ -62,7 +61,6 @@ def build_agent(
     if mcp_connection_manager is None:
         return Agent(
             config,
-            diary_coverage=get_memory_manager(chat_settings.session_id),
             chat_settings=chat_settings,
             tool_authorization=tool_authorization,
             tool_runtime_factory=tool_runtime_factory,
@@ -74,7 +72,6 @@ def build_agent(
     return Agent(
         config,
         mcp_connection_manager=mcp_connection_manager,
-        diary_coverage=get_memory_manager(chat_settings.session_id),
         chat_settings=chat_settings,
         tool_authorization=tool_authorization,
         tool_runtime_factory=tool_runtime_factory,

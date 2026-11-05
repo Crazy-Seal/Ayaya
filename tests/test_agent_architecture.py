@@ -562,6 +562,5 @@ def test_pipeline_context_dependencies_are_provided_through_model_input() -> Non
     assert {
         "context_strategy",
         "accounting_key",
-        "diary_coverage",
         "chat_settings",
     }.isdisjoint(parameters)

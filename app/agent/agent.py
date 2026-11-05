@@ -17,7 +17,6 @@ from app.schemas.runtime_types import (
 )
 from app.agent.context import (
     ContextStrategyConfig,
-    DiaryCoverage,
     ModelInputCoordinator,
     RuntimeContext,
     build_token_accounting_key,
@@ -88,7 +87,6 @@ class Agent:
         mcp_connection_manager: "MCPConnectionManager | None" = None,
         *,
         llm_client: LLMClient | None = None,
-        diary_coverage: DiaryCoverage | None = None,
         chat_settings: "ChatSettings | None" = None,
         tool_authorization: ToolAuthorization | None = None,
         tool_runtime_factory: ToolRuntimeFactory | None = None,
@@ -104,7 +102,6 @@ class Agent:
             db_path (str | None): 共享 SQLite 路径，省略时使用当前环境的隔离存储。
             mcp_connection_manager (MCPConnectionManager | None): 共享 MCP 连接管理器。
             llm_client (LLMClient | None): 可替换的流式模型客户端。
-            diary_coverage (DiaryCoverage | None): 查询已生成日记覆盖范围的端口。
             chat_settings (ChatSettings | None): 会话模型和插件配置。
             tool_authorization (ToolAuthorization | None): 工具单次授权验证器。
             tool_runtime_factory (ToolRuntimeFactory | None): 按工具、轮次及调用编号创建运行时。
@@ -143,7 +140,6 @@ class Agent:
         model_input = ModelInputCoordinator(
             config.context_strategy,
             self.llm_client,
-            diary_coverage=diary_coverage,
             chat_settings=chat_settings,
             accounting_key=build_token_accounting_key(
                 protocol=config.api_format,

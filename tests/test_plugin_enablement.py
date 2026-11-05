@@ -74,7 +74,6 @@ def test_saved_plugin_switch_controls_registration_and_hooks(
             events.append("unregister")
 
     monkeypatch.setitem(PluginRegistry._plugins, SamplePlugin.name, SamplePlugin)
-    monkeypatch.setattr(agent_factory, "get_memory_manager", lambda session_id: None)
     config_file = tmp_path / "chat_settings.yaml"
     config_file.write_text("chat_models: []\n", encoding="utf-8")
     dao = ChatSettingsDao(config_file)

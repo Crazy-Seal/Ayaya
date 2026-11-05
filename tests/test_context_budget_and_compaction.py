@@ -173,58 +173,6 @@ def test_screen_tools_allow_old_results_to_be_compacted() -> None:
     assert screenshot().compressible and control_screen().compressible and control_screen_with_vlm().compressible
 
 
-def test_diary_coverage_port_removes_only_covered_context_summaries() -> None:
-    """验证只删除已被日记覆盖的上下文摘要。"""
-    class Coverage:
-        """提供当前用例所需的 Coverage 测试替身，执行记录仅供外层断言使用。
-
-        该定义仅用于外层用例：验证只删除已被日记覆盖的上下文摘要。
-        """
-        async def has_diary_for_effective_date(self, effective_date: str) -> bool:
-            """按用例指定的日期判断日记覆盖，不访问真实日记。
-
-            该定义仅用于外层用例：验证只删除已被日记覆盖的上下文摘要。
-
-            Args:
-                effective_date (str): 按日记规则划分的有效日期，格式为 YYYY-MM-DD。
-
-            Returns:
-                bool: 供外层用例断言使用的预设结果。
-            """
-            return effective_date == "2026-08-28"
-
-    async def scenario() -> tuple[int, list[str | None]]:
-        """由外层测试调用，完成“只删除已被日记覆盖的上下文摘要”的异步步骤。
-
-        Returns:
-            tuple[int, list[str | None]]: 供外层用例断言使用的预设结果。
-        """
-        budget = ContextBudgetService(ContextStrategyConfig(compression_trigger_tokens_k=10))
-        coordinator = ContextCompactionCoordinator(
-            budget,
-            SimpleNamespace(),
-            Coverage(),
-        )
-        state = AgentState.create_new("session")
-        state.commit_compaction((
-            ContextSummaryMessage(
-                content="旧摘要", summary_schema_version=1,
-                covered_through_message_id="old", covered_effective_date="2026-08-28",
-                compression_ratio=0.5,
-            ),
-            ContextSummaryMessage(
-                content="未覆盖摘要", summary_schema_version=1,
-                covered_through_message_id="new", covered_effective_date="2026-08-29",
-                compression_ratio=0.5,
-            ),
-        ))
-        state.add_user_message("当前消息")
-        removed = await coordinator.drop_diary_covered_summaries(state)
-        return removed, [message.text for message in state.messages]
-
-    assert asyncio.run(scenario()) == (1, ["未覆盖摘要", "当前消息"])
-
-
 def test_context_budget_uses_actual_prompt_as_baseline_for_net_rough_delta() -> None:
     """验证预算使用真实输入用量加粗估净变化。"""
     service = ContextBudgetService(ContextStrategyConfig(compression_trigger_tokens_k=10))
@@ -590,18 +538,6 @@ class _RatioCompaction:
         """
         return 0
 
-    @staticmethod
-    async def drop_diary_covered_summaries(_state: AgentState) -> int:
-        """记录日记覆盖清理调用，避免访问真实日记服务。
-
-        Args:
-            _state (AgentState): 当前会话的内存 AgentState；保存由调用方负责。
-
-        Returns:
-            int: 供外层用例断言使用的预设结果。
-        """
-        return 0
-
     async def summarize_candidate(self, frozen, ratio: float):
         """按用例要求构造摘要候选，记录原历史与比例供外层断言。
 
@@ -617,7 +553,6 @@ class _RatioCompaction:
                 created_at=datetime(2026, 8, 29, tzinfo=timezone.utc),
                 summary_schema_version=1,
                 covered_through_message_id=frozen[-2].message_id,
-                covered_effective_date="2026-08-29",
                 compression_ratio=ratio,
             ),
             frozen[-1],
@@ -693,7 +628,6 @@ def test_model_input_coordinator_replaces_old_turns_with_state_only_summary() ->
     assert json.loads(serialized_summary) == summary_client.result
     assert summaries[0].summary_schema_version == 1
     assert summaries[0].covered_through_message_id.startswith("assistant-")
-    assert summaries[0].covered_effective_date == "2026-08-29"
     assert any(message.message_id == "human-11" for message in state.messages)
     assert all("仅存在于本轮输入的召回记忆" not in message.text for message in state.messages)
     assert all(extraction_prompt not in message.text for message in state.messages)
@@ -744,7 +678,7 @@ def test_repeated_compaction_advances_coverage_from_old_summary_to_latest_raw_me
                 content="[系统提示：前情摘要]\n" + json.dumps(old_payload, ensure_ascii=False),
                 message_id="summary-old", summary_schema_version=1,
                 covered_through_message_id="assistant-original",
-                covered_effective_date="2026-08-28", compression_ratio=0.5,
+                compression_ratio=0.5,
                 created_at=datetime(2026, 8, 29, tzinfo=timezone.utc),
             ),
             HumanMessage(content=text_content("继续处理"), message_id="human-work", created_at=datetime(2026, 8, 29, 5, tzinfo=timezone.utc)),
@@ -763,7 +697,6 @@ def test_repeated_compaction_advances_coverage_from_old_summary_to_latest_raw_me
     summary = next(message for message in candidate if isinstance(message, ContextSummaryMessage))
 
     assert summary.covered_through_message_id == "assistant-work"
-    assert summary.covered_effective_date == "2026-08-29"
     assert "最新消息" not in str(client.calls[0]["messages"])
     assert len([message for message in candidate if isinstance(message, ContextSummaryMessage)]) == 1
 
@@ -776,7 +709,7 @@ def test_summary_coverage_reuses_existing_summary_cursor() -> None:
             ContextSummaryMessage(
                 content="旧的摘要", message_id="summary",
                 summary_schema_version=1, covered_through_message_id="legacy-summary",
-                covered_effective_date="2026-08-28", compression_ratio=0.5,
+                compression_ratio=0.5,
                 created_at=datetime(2026, 8, 29, tzinfo=timezone.utc),
             ),
             HumanMessage(content=text_content("最新消息"), message_id="human-latest", created_at=datetime(2026, 8, 29, 6, tzinfo=timezone.utc)),
@@ -792,7 +725,6 @@ def test_summary_coverage_reuses_existing_summary_cursor() -> None:
     summary = next(message for message in candidate if isinstance(message, ContextSummaryMessage))
 
     assert summary.covered_through_message_id == "legacy-summary"
-    assert summary.covered_effective_date == "2026-08-28"
 
 
 def test_context_summary_accepts_valid_structure_regardless_of_estimated_size() -> None:

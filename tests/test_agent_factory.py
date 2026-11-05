@@ -33,9 +33,7 @@ def test_memory_plugin_owns_image_processing(monkeypatch) -> None:
     Args:
         monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
     """
-    manager = object()
     captured = {}
-    monkeypatch.setattr(agent_factory, "get_memory_manager", lambda session_id: manager)
     monkeypatch.setattr(
         agent_factory,
         "Agent",
@@ -61,8 +59,6 @@ def test_agent_factory_uses_top_level_context_strategy(monkeypatch) -> None:
     Args:
         monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
     """
-    manager = object()
-    monkeypatch.setattr(agent_factory, "get_memory_manager", lambda session_id: manager)
     monkeypatch.setattr(agent_factory, "Agent", lambda config, **kwargs: config)
 
     settings = _settings(
@@ -97,8 +93,6 @@ def test_agent_factory_loads_enabled_memory_when_all_memory_types_are_disabled(m
     Args:
         monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
     """
-    manager = object()
-    monkeypatch.setattr(agent_factory, "get_memory_manager", lambda session_id: manager)
     monkeypatch.setattr(agent_factory, "Agent", lambda config, **kwargs: config)
 
     settings = _settings(

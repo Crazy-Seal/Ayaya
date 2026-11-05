@@ -7,13 +7,12 @@ from app.agent.context.coordinator import (
     ModelInputCoordinator,
     PreparedModelInput,
 )
-from app.agent.context.ports import DiaryCoverage, SummaryClient
+from app.agent.context.ports import SummaryClient
 from app.agent.context.runtime import RuntimeContext
 
 __all__ = [
     "ContextOverflowError",
     "ContextStrategyConfig",
-    "DiaryCoverage",
     "ModelInputCoordinator",
     "PreparedModelInput",
     "RuntimeContext",
