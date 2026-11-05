@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import AsyncIterator, TypeVar
 
 from app.schemas.runtime_types import TurnInterruptReason, TurnPhase
+from app.agent.runtime.agent_run_state_machine import AgentRunStateMachine
 
 
 T = TypeVar("T")
@@ -18,12 +19,13 @@ class TurnInterrupted(Exception):
 
 @dataclass
 class TurnControl:
-    """管理一个 run 的打断信号和可见片段，只取消模型读取任务而不取消会话 worker。
+    """管理一个 run 的停止、引导信号和可见片段，在安全点交还执行控制。
 
     Attributes:
         run_id (str): 当前运行轮次标识。
         reason (TurnInterruptReason | None): 已受理的首个停止或引导信号，未打断时为空。
-        phase (TurnPhase): 当前轮次内部执行阶段，提交后拒绝打断，不与会话阶段混用。
+        run_state (AgentRunStateMachine): 会话持有的共享运行状态机，独立调用时创建。
+        phase (TurnPhase): 共享状态机的只读阶段，最终提交及收尾时拒绝打断。
         partial (str): 本次模型步骤已向用户展示的文本。
         partial_persisted (bool): 该片段是否已记录到 Assistant 步骤。
         partial_message_id (str | None): 当前模型步骤的 Assistant 身份，落盘状态需核对 checkpoint。
@@ -31,23 +33,33 @@ class TurnControl:
     """
     run_id: str
     reason: TurnInterruptReason | None = None
-    phase: TurnPhase = TurnPhase.IDLE
+    run_state: AgentRunStateMachine = field(default_factory=AgentRunStateMachine, repr=False)
     partial: str = ""
     partial_persisted: bool = False
     partial_message_id: str | None = None
     _llm_task: asyncio.Task | None = field(default=None, repr=False)
 
+    def __post_init__(self) -> None:
+        """独立调用创建状态机；会话调用借用同一个上下文实例。"""
+        if self.run_state.run_id != self.run_id:
+            self.run_state.begin_run(self.run_id)
+
+    @property
+    def phase(self) -> TurnPhase:
+        """读取会话状态机保存的当前运行阶段。"""
+        return self.run_state.phase
+
     def request(self, reason: TurnInterruptReason) -> bool:
         """记录首个停止或引导原因，进入最终提交后拒绝新的打断。
 
         Args:
-            reason (TurnInterruptReason): 停止或引导原因，既有字符串调用按相同值还原。
+            reason (TurnInterruptReason): 本轮停止或引导的业务原因。
 
         Returns:
             bool: 本次操作是否满足条件并被受理。
         """
         # 1. 最终提交不可再打断，避免已提交事实与界面停止状态分离。
-        if self.phase == TurnPhase.COMMITTING:
+        if not self.run_state.accepts_interrupt(self.run_id):
             return False
         # 2. 保留首个原因，重复请求只确认已经受理。
         if self.reason is not None:
@@ -85,17 +97,13 @@ class TurnControl:
 
         task = asyncio.create_task(read_next())
         self._llm_task = task
-        if self.reason is not None:
-            task.cancel()
         try:
             return await task
         # 2. 用户停止转成 TurnInterrupted；worker 自身被应用关闭取消时继续传播取消。
         except asyncio.CancelledError:
             owner = asyncio.current_task()
             if self.reason is not None and (owner is None or not owner.cancelling()):
-                # 2.1. 旧调用可能以原字符串初始化，异常正文必须仍是 stop 或 steer。
-                reason = self.reason.value if isinstance(self.reason, TurnInterruptReason) else self.reason
-                raise TurnInterrupted(reason) from None
+                raise TurnInterrupted(self.reason.value) from None
             raise
         # 3. 清除本次分片任务引用，避免后续请求取消已结束的等待。
         finally:
@@ -109,9 +117,8 @@ class TurnControl:
             TurnInterrupted: 已受理的停止或引导信号要求结束当前轮。
         """
         if self.reason is not None:
-            # 1. 兼容既有字符串初始化；具名枚举不能以成员名称进入异常文案。
-            reason = self.reason.value if isinstance(self.reason, TurnInterruptReason) else self.reason
-            raise TurnInterrupted(reason)
+            # 1. 使用原因的协议值通知 Agent，供其选择停止或引导收尾。
+            raise TurnInterrupted(self.reason.value)
 
     def is_interrupted(self) -> bool:
         """向工具提供只读打断状态，线程不得取消 worker 或推进轮次阶段。
@@ -124,7 +131,7 @@ class TurnControl:
     def start_llm(self) -> None:
         """检查打断信号并重置当前模型步骤的可见片段。"""
         self.check()
-        self.phase = TurnPhase.LLM
+        self.run_state.start_llm(self.run_id)
         self.partial = ""
         self.partial_persisted = False
         self.partial_message_id = None
@@ -132,12 +139,12 @@ class TurnControl:
     def start_tool(self) -> None:
         """在工具产生副作用前检查打断并进入工具阶段。"""
         self.check()
-        self.phase = TurnPhase.TOOL
+        self.run_state.start_tool(self.run_id)
 
     def begin_commit(self) -> None:
         """检查最后一个打断安全点并封住最终提交阶段。"""
         self.check()
-        self.phase = TurnPhase.COMMITTING
+        self.run_state.begin_commit(self.run_id)
 
     def append(self, text: str) -> None:
         """累积已经向用户展示的模型文本，供停止后保存。

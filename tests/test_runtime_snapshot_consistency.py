@@ -1,7 +1,9 @@
 """用公开事件流验证状态查询和增量交付的并发顺序。"""
+from tests.runtime_support import RuntimeAgentStub
 
 import asyncio
 from functools import partial
+from tests.runtime_support import configured_settings
 from pathlib import Path
 
 import pytest
@@ -100,8 +102,16 @@ def test_event_during_inbox_query_reaches_old_and_new_connection(
                     await release_query.wait()
                 return await super().pending_humans(origin_channel=origin_channel)
 
-        class Agent:
+        class Agent(RuntimeAgentStub):
             """按测试控制的时机输出一条状态变化。"""
+
+            def __init__(self, manager: SessionStateManager) -> None:
+                """使用 worker 的状态对象，输出前通过真实事务确认输入交付。
+
+                Args:
+                    manager (SessionStateManager): worker 借给此轮执行的状态业务对象。
+                """
+                self.manager = manager
 
             async def run(self, message, **kwargs):
                 """先产生片段，再等待查询交错后继续。
@@ -114,13 +124,26 @@ def test_event_during_inbox_query_reaches_old_and_new_connection(
                     AgentEvent: 已知片段及指定的并发事件。
                 """
                 yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": kwargs.get("origin_channel", "desktop"), "resumed": False})
+                state = await self.manager.load()
+                await self.manager.commit_human_input(state, message, None, inputs=kwargs["inbox_inputs"])
                 yield AgentEvent(EventType.TEXT_CHUNK, "今天")
                 await release_agent.wait()
+                control = kwargs["turn_control"]
+                if event_type == EventType.INTERRUPT:
+                    from tests.runtime_support import pause_test_turn
+                    from app.agent.state.messages import ToolCall
+                    state.record_assistant_step("", (ToolCall("approval-call", "test_tool", {}),))
+                    state.clear_pending_tool_calls()
+                    state.set_interrupt({**data, "tool_call_id": "approval-call", "tool_name": "test_tool"})
+                    await self.manager.save_progress(state)
+                    pause_test_turn(control, data["request_id"])
+                elif event_type in {EventType.DONE, EventType.ERROR}:
+                    control.run_state.begin_finishing(control.run_id)
                 yield AgentEvent(event_type, data)
                 if event_type == EventType.TEXT_CHUNK:
                     await asyncio.Event().wait()
 
-            async def close(self):
+            async def close(self, *, raise_on_error: bool = False):
                 """测试执行对象没有外部资源。"""
 
         def factory(session_id, _manager):
@@ -133,10 +156,10 @@ def test_event_during_inbox_query_reaches_old_and_new_connection(
             Returns:
                 Agent: 本次 Agent 替身。
             """
-            return Agent()
+            return Agent(_manager)
 
         subscriptions = ChannelSubscriptionService(path)
-        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
+        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
             agent_factory=factory, subscriptions=subscriptions,
             session_state_manager_factory=partial(WaitingInbox, db_path=path),
         )

@@ -6,6 +6,7 @@ import threading
 import pytest
 
 from tests.terminal_harness import TerminalHarness
+from tests.runtime_support import configured_settings
 from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
 from app.schemas.runtime_types import TaskStatus
 
@@ -15,7 +16,7 @@ def test_tool_runtime_submits_and_observes_terminal_task(tmp_path):
     async def scenario():
         """通过两个公共入口观察同一个进程任务及其持久终态。"""
         queue = asyncio.Queue()
-        supervisor = TaskSupervisor(runtime_queue=queue, db_path=str(tmp_path / "state.sqlite3"))
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=queue, db_path=str(tmp_path / "state.sqlite3"))
         terminal = TerminalHarness(supervisor, spool_dir=tmp_path / "logs")
         try:
             result = await terminal.launch_terminal("s", "print('Hello, World!')",
@@ -28,7 +29,7 @@ def test_tool_runtime_submits_and_observes_terminal_task(tmp_path):
             assert "Hello, World!" in result.output
             page = await terminal.read_output(result.task_id, 0, 1024)
             assert "Hello, World!" in page["text"]
-            assert supervisor.active_count() == 0
+            assert supervisor.active_task_count() == 0
             assert await supervisor.list_tasks("s") == []
         finally:
             await supervisor.close()
@@ -47,7 +48,7 @@ def test_repeated_stop_keeps_process_creation_owned_until_cleanup(tmp_path, monk
     async def scenario():
         """替代操作系统创建入口，以线程门闩观察真实任务生命周期。"""
         queue = asyncio.Queue()
-        supervisor = TaskSupervisor(runtime_queue=queue, db_path=str(tmp_path / "state.sqlite3"))
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=queue, db_path=str(tmp_path / "state.sqlite3"))
         runtime = ToolRuntime("s", "run", "exec_command", "call", _supervisor=supervisor, _runtime_queue=queue)
         context = ToolContext("s", AgentState(session_id="s"), runtime=runtime)
         started, release = threading.Event(), threading.Event()
@@ -111,7 +112,7 @@ def test_repeated_stop_keeps_process_creation_owned_until_cleanup(tmp_path, monk
             await supervisor.stop_task(record.task_id)
             closing = asyncio.create_task(supervisor.close())
             await asyncio.sleep(0.05)
-            assert supervisor.active_count() == 1
+            assert supervisor.active_task_count() == 1
             assert not closing.done()
             assert (await supervisor.get_task_record(record.task_id)).status == TaskStatus.RUNNING
         finally:
@@ -122,5 +123,5 @@ def test_repeated_stop_keeps_process_creation_owned_until_cleanup(tmp_path, monk
             else:
                 await supervisor.close()
         assert process.closed
-        assert supervisor.active_count() == 0
+        assert supervisor.active_task_count() == 0
     asyncio.run(scenario())

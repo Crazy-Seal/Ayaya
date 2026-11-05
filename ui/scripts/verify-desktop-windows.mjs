@@ -15,7 +15,7 @@ const uiRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const output = path.join(uiRoot, ".test-dist", "desktop-smoke");
 const restoreCheck = process.argv.includes("--restore-check");
 const focusedCheck = process.argv.includes("--native-drag") || process.argv.includes("--composer-check")
-  || process.argv.includes("--message-paragraphs") || process.argv.includes("--plugin-capabilities");
+  || process.argv.includes("--message-paragraphs") || process.argv.includes("--plugin-capabilities") || process.argv.includes("--subagents");
 const previousRun = restoreCheck ? JSON.parse(fs.readFileSync(path.join(output, "results.json"), "utf8")) : null;
 const isolated = fs.mkdtempSync(path.join(os.tmpdir(), "ayaya-ui-windows-"));
 let originalSavedBounds = null;
@@ -53,6 +53,10 @@ let developmentServer = null;
 let demoTaskStatus = "running";
 let taskSummaryMode = "success";
 let taskSummaryAborted = false;
+const subagents = [
+  { subagent_id: "child-running", name: "代码探索助手", if_retain_context: true, status: "running", started_at: new Date().toISOString(), created_at: new Date().toISOString() },
+  { subagent_id: "child-idle", name: "空闲测试助手", if_retain_context: true, status: "idle", started_at: null, created_at: new Date().toISOString() },
+];
 
 const history = [
   { id: "human-1", role: "human", content: "把聊天记录和输入框放在一起，看起来像聊天软件。", timestamp: "2026-10-11T04:00:00Z" },
@@ -116,7 +120,8 @@ async (input, init = {}) => {
        */
       start(controller) {
         stream = controller;
-        emit(event("session_snapshot", { phase: "idle", queued_inputs: [], tasks: [], interrupt: null }));
+        emit(event("session_snapshot", { phase: "idle", queued_inputs: [], tasks: [], interrupt: null,
+          ...(process.argv.includes("--subagents") ? { subagents } : {}) }));
         init.signal?.addEventListener("abort", /** 取消订阅只关闭测试流，不访问任何后台进程。 */
         () => { try { controller.close(); } catch { /* 流可能已经关闭。 */ } }, { once: true });
       },
@@ -135,7 +140,14 @@ async (input, init = {}) => {
   if (route.startsWith("/chat_settings")) return json({ code: 200, data: settings });
   if (route === "/agent/commands") {
     const command = JSON.parse(init.body); commands.push(command);
+    if (command.kind === "interact_subagent") subagents.find(item => item.subagent_id === command.subagent_id).status = "idle";
     return json({ accepted: true, input_sequence: commands.length });
+  }
+  if (route.startsWith("/agent/subagents/")) {
+    const child = subagents.find(item => item.subagent_id === route.split("/").at(-1));
+    return json(child ? { ...child, system_prompt: "检查项目代码并提供结论", tool_whitelist: ["local:read_file"],
+      context_available: true, recent_interactions: [{ interaction_id: 1, kind: "task", text: "检查实现", created_at: child.created_at }], results: [] }
+      : { subagents });
   }
   if (route === "/internal/tasks/active-summary") {
     if (taskSummaryMode === "error") return new Response("查询失败", { status: 503 });
@@ -160,9 +172,10 @@ async (input, init = {}) => {
     const base = { session_id: currentSession, command: null, pid: null, exit_code: null, output_path: null,
       created_at: new Date().toISOString(), ended_at: null, origin_run_id: null, origin_tool_call_id: null,
       output_ref: null, background: true, tool_name: null, name: "terminal", title: "", result: null,
-      error: null, plugin_name: null, lifetime: "independent", notify_agent: true };
+      error: null, plugin_name: null, notify_agent: true };
     return json({ tasks: [
       { ...base, task_id: "task-demo", tool_name: "exec_command", command: "整理项目资料", title: "整理项目资料", pid: 123,
+        ...(process.argv.includes("--subagents") ? { subagent_id: "child-running" } : {}),
         output_path: "demo.log", output_ref: "task-output://task-demo", status: demoTaskStatus, recent_output: "正在读取资料…" },
       { ...base, task_id: "task-other", tool_name: "other_tool", command: "后台分析资料", title: "后台分析资料", pid: 124,
         output_path: "other.log", output_ref: "task-output://task-other", status: "completed", exit_code: 0, recent_output: "处理完成" },
@@ -318,6 +331,43 @@ try {
   const chat = windows.openChatWindow();
   await desktopWindowRegistry.connect();
   await waitFor(chat, "document.querySelectorAll('.message-item').length >= 2 && !document.getElementById('send-btn').disabled");
+  if (process.argv.includes("--subagents")) {
+    // 1. 经真实 preload 和 IPC 从聊天名单入口打开独立面板，空闲保留型仍可见。
+    await waitFor(chat, "!document.getElementById('subagent-entry').hidden");
+    await chat.webContents.executeJavaScript("document.getElementById('subagent-entry').click()");
+    const panel = windows.getSettingsWindow();
+    await waitFor(panel, "document.getElementById('subagents-list')?.textContent.includes('空闲测试助手')");
+    await panel.webContents.executeJavaScript("[...document.querySelectorAll('#subagents-list button')].find(item=>item.textContent==='详情').click()");
+    await waitFor(panel, "document.getElementById('subagents-list').textContent.includes('检查项目代码并提供结论')");
+    await pause(2400);
+    assert.ok(await panel.webContents.executeJavaScript("document.getElementById('subagents-list').textContent.includes('检查项目代码并提供结论')"));
+    await capture(panel, "subagent-panel");
+    await panel.webContents.executeJavaScript("[...document.querySelectorAll('#subagents-list button')].find(item=>item.textContent==='停止').click()");
+    await waitFor(panel, "![...document.querySelectorAll('#subagents-list button')].some(item=>item.textContent==='停止')");
+    assert.equal(commands.at(-1).subagent_id, "child-running");
+    // 2. 普通后台任务仍在任务页，显示所属子身份，并复用原输出和单任务停止入口。
+    await panel.webContents.executeJavaScript("document.querySelector('[data-page=tasks]').click()");
+    await waitFor(panel, "document.getElementById('background-tasks-list').textContent.includes('子 Agent child-running')");
+    await capture(panel, "subagent-background-tasks");
+    // 3. 子审批不改变父回答阶段；重连快照保持当前审批，再经统一命令入口提交实际子 ID。
+    const approval = { type: "authorization_request", request_id: "child-approval", message: "子工具请求批准" };
+    const prompt = { subagent_id: "child-running", request_id: approval.request_id, value: approval };
+    emit(event("run_started", {}, { run_id: "parent-run" }));
+    emit(event("subagent_interrupt", prompt, { request_id: approval.request_id }));
+    await waitFor(chat, "!document.getElementById('screenshot-confirm-dialog').hidden");
+    assert.equal(await chat.webContents.executeJavaScript("document.getElementById('send-btn').title"), "停止当前回答");
+    emit(event("session_snapshot", { phase: "running", run_id: "parent-run", queued_inputs: [], tasks: [], subagents, approval_prompt: prompt }));
+    await waitFor(chat, "document.getElementById('screenshot-confirm-dialog').textContent.includes('child-running')");
+    await capture(chat, "subagent-approval");
+    await chat.webContents.executeJavaScript("document.getElementById('screenshot-allow-btn').click()");
+    await waitFor(chat, "document.getElementById('screenshot-confirm-dialog').hidden");
+    await pause(100);
+    assert.equal(commands.at(-1).kind, "resolve_authorization");
+    assert.equal(commands.at(-1).subagent_id, "child-running");
+    fs.writeFileSync(path.join(output, "subagent-results.json"), JSON.stringify({ passed: true, isolated, requests, commands, errors }, null, 2));
+    console.log("子 Agent 面板、后台任务来源、审批和重连 Electron 验证通过");
+    return;
+  }
   if (process.argv.includes("--plugin-capabilities")) {
     windows.openSettingsWindow();
     const settingsWindow = windows.getSettingsWindow();

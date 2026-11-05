@@ -28,6 +28,7 @@ class ChannelCommand:
     target_run_id: str | None = None
     request_id: str | None = None
     task_id: str | None = None
+    subagent_id: str | None = None
 
     def __post_init__(self) -> None:
         """归一化已知命令，保留未知字符串的业务拒绝路径而不新增请求校验。"""

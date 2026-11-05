@@ -1,6 +1,32 @@
 """运行时各分类的稳定取值；只依赖标准库，不引用任何执行或持久化实现。"""
 
 from enum import Enum, StrEnum
+from dataclasses import dataclass
+
+
+class AgentRunOutcomeKind(StrEnum):
+    """标记本次执行正常完成、被引导打断、被停止、暂停等待或失败，供调度流程决定后续操作。"""
+    COMPLETED = "completed"
+    STEERED = "steered"
+    STOPPED = "stopped"
+    INTERRUPTED = "interrupted"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class AgentRunOutcome:
+    """交还本段 Agent 执行的正文或错误，由父子调度流程决定后续工作。
+
+    Attributes:
+        kind (AgentRunOutcomeKind): 完成、引导、停止、暂停等待或失败。
+        result (str): 已保存的执行结果正文，尚未产生正文时为空。
+        final_message_id (str | None): 正常完成时最终助手消息的编号。
+        error (str | None): 执行或装配失败的具体原因。
+    """
+    kind: AgentRunOutcomeKind
+    result: str = ""
+    final_message_id: str | None = None
+    error: str | None = None
 
 
 class CheckpointType(StrEnum):
@@ -38,7 +64,7 @@ class RuntimePhase(str, Enum):
 
 
 class SessionPhase(str, Enum):
-    """表示会话展示与调度阶段，与轮次内部执行阶段分别建模。
+    """表示现有界面展示阶段，由会话运行事实推导。
 
     Attributes:
         IDLE (SessionPhase): 空闲，协议值为 idle。
@@ -55,14 +81,20 @@ class TurnPhase(str, Enum):
 
     Attributes:
         IDLE (TurnPhase): 尚未开始执行，协议值为 idle。
+        PREPARING (TurnPhase): 正在准备输入、实例或恢复，协议值为 preparing。
         LLM (TurnPhase): 等待模型分片，协议值为 llm。
         TOOL (TurnPhase): 执行工具，协议值为 tool。
+        INTERRUPTED (TurnPhase): 已保存审批或父消息等待，协议值为 interrupted。
         COMMITTING (TurnPhase): 最终持久提交，协议值为 committing。
+        FINISHING (TurnPhase): 回答已保存或执行已交还，正在报告和释放资源，协议值为 finishing。
     """
     IDLE = "idle"
+    PREPARING = "preparing"
     LLM = "llm"
     TOOL = "tool"
+    INTERRUPTED = "interrupted"
     COMMITTING = "committing"
+    FINISHING = "finishing"
 
 
 class TurnInterruptReason(str, Enum):
@@ -95,6 +127,7 @@ class CommandKind(str, Enum):
     RESOLVE_AUTHORIZATION = "resolve_authorization"
     STOP_BACKGROUND_TASK = "stop_background_task"
     CANCEL_QUEUED = "cancel_queued"
+    INTERACT_SUBAGENT = "interact_subagent"
 
 
 class InteractionEventKind(str, Enum):
@@ -130,15 +163,19 @@ class InteractionEventKind(str, Enum):
     AUTHORIZATION_RESOLVED = "authorization_resolved"
     RUN_COMPLETED = "run_completed"
     ERROR = "error"
+    SUBAGENT_STATUS = "subagent_status"
+    SUBAGENT_INTERRUPT = "subagent_interrupt"
 
 
 class InterruptKind(str, Enum):
-    """区分人工授权请求与独立桌面执行 continuation。
+    """区分真人审批与子等待父指令，二者共用运行中断阶段。
 
     Attributes:
         AUTHORIZATION_REQUEST (InterruptKind): 人工审批，协议值为 authorization_request。
+        PARENT_MESSAGE (InterruptKind): 子等待父指令，协议值为 parent_message。
     """
     AUTHORIZATION_REQUEST = "authorization_request"
+    PARENT_MESSAGE = "parent_message"
 
 
 class ApprovalDecisionKind(str, Enum):
@@ -180,6 +217,10 @@ class InboxKind(str, Enum):
     HUMAN = "human"
     TASK_TERMINAL = "task_terminal"
     PLUGIN_NOTIFICATION = "plugin_notification"
+    AGENT_COMMAND = "agent_command"
+    SUBAGENT = "subagent"
+    # 兼容已有数据库中的父回复记录；新父回复按普通 AGENT_COMMAND 交付。
+    PARENT_REPLY = "parent_reply"
 
 
 class InboxStatus(str, Enum):
@@ -202,18 +243,6 @@ class InboxDeliveryMode(str, Enum):
     """
     IMMEDIATE = "immediate"
     QUEUED = "queued"
-
-
-class TaskLifetime(str, Enum):
-    """指定任务随来源轮次结束，或独立运行至完成、停止和应用退出。
-
-    Attributes:
-        TURN (TaskLifetime): 来源轮次结束时停止，审批暂停时保留。
-        INDEPENDENT (TaskLifetime): 来源轮次结束后继续运行。
-    """
-
-    TURN = "turn"
-    INDEPENDENT = "independent"
 
 
 class TaskStatus(str, Enum):

@@ -504,7 +504,7 @@ class BaseMessage(ABC):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class HumanMessage(BaseMessage):
-    """保存真人发送的完整有序正文和入口渠道。"""
+    """保存当前 Agent 接收的用户正文和入口渠道。"""
     message_type: ClassVar[MessageType] = MessageType.HUMAN
     content: tuple[ContentPart, ...]
     origin_channel: str = DESKTOP_CHANNEL
@@ -514,11 +514,11 @@ class HumanMessage(BaseMessage):
         BaseMessage.__post_init__(self)
         object.__setattr__(self, "content", validate_content(self.content))
         if not self.origin_channel:
-            raise ValueError("真人来源不能为空")
+            raise ValueError("用户输入来源不能为空")
 
     @property
     def text(self) -> str:
-        """供历史、召回和日志读取真人文字，忽略图片地址。
+        """供历史、召回和日志读取用户正文，图片地址由内容块保存。
 
         Returns:
             str: 按顺序拼接的可见文字，不包含图片和供应商材料。

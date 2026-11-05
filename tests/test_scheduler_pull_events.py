@@ -1,8 +1,9 @@
 """从公共输入输出接口验证单向事件读取与多连接分发。"""
+from tests.runtime_support import RuntimeAgentStub
 
 import asyncio
 from functools import partial
-from tests.runtime_support import finish_test_turn
+from tests.runtime_support import configured_settings, finish_test_turn
 import pytest
 
 from app.agent.core.events import AgentEvent, EventType
@@ -26,7 +27,7 @@ def test_receipt_does_not_reserve_run_and_hub_fans_out(tmp_path) -> None:
         path = str(tmp_path / "state.sqlite3")
         release = asyncio.Event()
 
-        class Agent:
+        class Agent(RuntimeAgentStub):
             """等待测试放行后结束的执行替身。"""
 
             async def run(self, message, **kwargs):
@@ -44,7 +45,7 @@ def test_receipt_does_not_reserve_run_and_hub_fans_out(tmp_path) -> None:
                 await release.wait()
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self):
+            async def close(self, *, raise_on_error: bool = False):
                 """释放测试执行对象，无外部资源。"""
 
         def factory(session_id, _manager):
@@ -60,7 +61,7 @@ def test_receipt_does_not_reserve_run_and_hub_fans_out(tmp_path) -> None:
             return Agent()
 
         subscriptions = ChannelSubscriptionService(path)
-        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
+        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
             agent_factory=factory, subscriptions=subscriptions,
             session_state_manager_factory=partial(SessionStateManager, db_path=path),
         )
@@ -112,7 +113,7 @@ def test_failed_turn_returns_idle_without_duplicate_errors(tmp_path, failure, ex
         path = str(tmp_path / "state.sqlite3")
         cleaned = asyncio.Event()
 
-        class Agent:
+        class Agent(RuntimeAgentStub):
             """产生已知输出，在指定阶段注入异常。"""
 
             async def run(self, message, **kwargs):
@@ -131,11 +132,13 @@ def test_failed_turn_returns_idle_without_duplicate_errors(tmp_path, failure, ex
                     yield AgentEvent(EventType.TEXT_CHUNK, "片段")
                     raise RuntimeError("输出失败")
                 if failure == "reported":
+                    kwargs["turn_control"].run_state.begin_finishing(kwargs["turn_control"].run_id)
                     yield AgentEvent(EventType.ERROR, "已报告错误")
                     raise RuntimeError("输出结束时又失败")
+                kwargs["turn_control"].run_state.begin_finishing(kwargs["turn_control"].run_id)
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self):
+            async def close(self, *, raise_on_error: bool = False):
                 """标记清理完成，按需模拟关闭失败。"""
                 cleaned.set()
                 if failure == "cleanup":
@@ -159,7 +162,7 @@ def test_failed_turn_returns_idle_without_duplicate_errors(tmp_path, failure, ex
                 raise RuntimeError("工厂失败")
             return Agent()
 
-        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
+        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
             agent_factory=factory, session_state_manager_factory=partial(SessionStateManager, db_path=path),
         )
         await scheduler.start()
@@ -219,7 +222,7 @@ def test_pending_approval_steer_or_decision_wakes_worker_immediately(tmp_path, a
                     await release_query.wait()
                 return result
 
-        class ApprovalAgent:
+        class ApprovalAgent(RuntimeAgentStub):
             """首次产生审批，后续交付新指令或恢复持久决定。"""
 
             async def run(self, message, *, inbox_input, **kwargs):
@@ -250,6 +253,8 @@ def test_pending_approval_steer_or_decision_wakes_worker_immediately(tmp_path, a
                         })
                         await manager.save(state, checkpoint_type="intermediate", inbox_inputs=(inbox_input,))
                         should_block = action == "approve"
+                        from tests.runtime_support import pause_test_turn
+                        pause_test_turn(kwargs["turn_control"], "request")
                         yield AgentEvent(EventType.INTERRUPT, state.interrupt_data)
                         # 1. 审批已经可见时，旧输出仍可能在异步释放资源；允许此时提交决定。
                         if action == "approve_before_cleanup":
@@ -285,7 +290,7 @@ def test_pending_approval_steer_or_decision_wakes_worker_immediately(tmp_path, a
                 processed.set()
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self):
+            async def close(self, *, raise_on_error: bool = False):
                 """本替身不拥有外部资源。"""
 
         def factory(session_id, _manager):
@@ -300,7 +305,7 @@ def test_pending_approval_steer_or_decision_wakes_worker_immediately(tmp_path, a
             """
             return ApprovalAgent()
 
-        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
+        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
             agent_factory=factory, session_state_manager_factory=partial(Inbox, db_path=path),
         )
         await scheduler.start()

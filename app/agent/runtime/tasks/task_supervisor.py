@@ -6,15 +6,23 @@ import asyncio
 import logging
 from uuid import uuid4
 
-from app.schemas.runtime_types import TaskStatus, TaskLifetime
-from app.schemas.task_types import TaskRecord, RuntimeRequest
+from app.schemas.runtime_types import TaskStatus
+from app.schemas.task_types import TaskRecord
+from app.agent.runtime.requests import RuntimeRequest
 from app.agent.runtime.tasks.base import BaseTask
 from app.agent.utils.infra.owned_work import complete_owned_work
 from app.agent.runtime.tasks.runtime import TaskRuntime
+from app.crud.chat_settings_dao import ChatSettingsDao
+from app.services.settings_mutation import SettingsMutationCoordinator
 from app.crud.task_record_dao import TaskRecordDao
+from app.schemas.agent_storage import AgentStorageScope
+from app.schemas.subagent_types import TaskRecordKind
+from app.crud.subagent_dao import SubagentDao
+from app.services.agent_identity_service import AgentIdentityService
 
 logger = logging.getLogger(__name__)
 TASK_SHUTDOWN_WAIT_SECONDS = 5
+TASK_TERMINAL_RETRY_SECONDS = 1
 
 class TaskSupervisor:
     """统一持有任务执行，安排停止、清理、终态事务及结果通知。
@@ -27,18 +35,26 @@ class TaskSupervisor:
         _executions (dict[str, asyncio.Task[None]]): 执行完整生命周期的协程。
         _stopping (set[str]): 已收到停止请求的任务编号，避免重复发出取消。
         _closing (bool): 应用已停止接收新任务。
-        _submission_lock (asyncio.Lock): 串行登记、来源轮次结束与关闭入口。
-        _finished_turns (set[tuple[str, str]]): 已结束的会话及轮次，拒绝迟到的随轮任务。
+        _submission_lock (asyncio.Lock): 串行任务登记与关闭入口。
     """
 
-    def __init__(self, *, runtime_queue: asyncio.Queue[RuntimeRequest], db_path: str | None = None) -> None:
+    def __init__(self, *, runtime_queue: asyncio.Queue[RuntimeRequest], db_path: str | None = None,
+                 chat_settings_dao: ChatSettingsDao | None = None,
+                 mutation_coordinator: SettingsMutationCoordinator | None = None,
+                 identity_service: AgentIdentityService | None = None) -> None:
         """准备持久化和记录队列，应用级共享，不随单轮 Agent 关闭。
 
         Args:
             db_path (str | None): 当前环境的 SQLite 路径。
             runtime_queue (asyncio.Queue[RuntimeRequest]): 应用创建、Scheduler 独占消费的共享请求队列。
+            chat_settings_dao (ChatSettingsDao | None): 提供父配置存在性，不保存额外可用状态。
+            mutation_coordinator (SettingsMutationCoordinator | None): 与配置删除、Scheduler 共用的受理短锁。
         """
+        self.settings_dao = chat_settings_dao or ChatSettingsDao()
+        self.mutation_coordinator = mutation_coordinator or SettingsMutationCoordinator()
         self.records = TaskRecordDao(db_path)
+        self.identity = identity_service or AgentIdentityService(self.settings_dao, SubagentDao(self.records.db_path))
+        self._owns_identity = identity_service is None
         self.runtime_queue = runtime_queue
         self._tasks: dict[str, BaseTask] = {}
         self._running: set[str] = set()
@@ -46,10 +62,10 @@ class TaskSupervisor:
         self._stopping: set[str] = set()
         self._closing = False
         self._submission_lock = asyncio.Lock()
-        self._finished_turns: set[tuple[str, str]] = set()
+        self._cleanup_pending: dict[str, BaseTask] = {}
 
     async def submit(self, task: BaseTask, *, runtime: TaskRuntime, name: str,
-                     title: str, lifetime: TaskLifetime, notify_agent: bool, background: bool = True,
+                     title: str, notify_agent: bool, background: bool = True,
                      tool_name: str | None = None, origin_tool_call_id: str | None = None) -> str:
         """保存通用任务登记后启动执行，返回可查询的执行编号。
 
@@ -58,7 +74,6 @@ class TaskSupervisor:
             runtime (TaskRuntime): 框架绑定插件、会话、来源轮次及任务编号的调用对象。
             name (str): 供查询或识别本次内容用途的稳定名称。
             title (str): 供用户阅读的任务说明。
-            lifetime (TaskLifetime): 任务随来源轮次结束或独立运行的配置。
             notify_agent (bool): 终态保存时是否生成给 Agent 的结果通知。
             background (bool): 是否立即显示在后台任务列表。
             tool_name (str | None): 来源工具名称，插件任务为空。
@@ -68,11 +83,11 @@ class TaskSupervisor:
             str: 已登记并启动的任务执行编号。
         """
         return await complete_owned_work(self._register(task, runtime=runtime, name=name,
-            title=title, lifetime=lifetime, notify_agent=notify_agent, background=background,
+            title=title, notify_agent=notify_agent, background=background,
             tool_name=tool_name, origin_tool_call_id=origin_tool_call_id))
 
     async def _register(self, task: BaseTask, *, runtime: TaskRuntime, name: str,
-                        title: str, lifetime: TaskLifetime, notify_agent: bool, background: bool = True,
+                        title: str, notify_agent: bool, background: bool = True,
                         tool_name: str | None = None, origin_tool_call_id: str | None = None) -> str:
         """在同一登记操作中提交记录、发布初态并取得执行所有权。
 
@@ -81,7 +96,6 @@ class TaskSupervisor:
             runtime (TaskRuntime): 固定插件及来源轮次的调用对象。
             name (str): 任务稳定名称。
             title (str): 用户可读标题。
-            lifetime (TaskLifetime): 随轮结束或独立运行。
             notify_agent (bool): 是否原子保存结果通知。
             background (bool): 是否立即显示在后台任务列表。
             tool_name (str | None): 来源工具名称，插件任务为空。
@@ -90,17 +104,18 @@ class TaskSupervisor:
         Returns:
             str: 已由 Supervisor 持有的任务编号。
         """
-        async with self._submission_lock:
+        async with self._submission_lock, self.mutation_coordinator.admission_lock:
             if self._closing:
                 raise RuntimeError("任务管理器正在关闭")
-            lifetime = TaskLifetime(lifetime)
-            if lifetime == TaskLifetime.TURN and (runtime.session_id, runtime.run_id) in self._finished_turns:
-                raise RuntimeError("来源轮次已结束，不能提交随轮任务")
+            await self.identity.require_available(runtime.session_id, runtime.subagent_id)
             task_id = uuid4().hex
             await self.records.insert_running(task_id, runtime.session_id,
                 name=name, title=title, plugin_name=runtime.plugin_name, origin_run_id=runtime.run_id,
-                lifetime=lifetime, notify_agent=notify_agent, background=background,
-                tool_name=tool_name, origin_tool_call_id=origin_tool_call_id)
+                notify_agent=notify_agent, background=background,
+                tool_name=tool_name, origin_tool_call_id=origin_tool_call_id,
+                subagent_id=runtime.subagent_id,
+                notification_context_id=runtime.subagent_id or runtime.session_id,
+                notification_scope=AgentStorageScope.SUBAGENT if runtime.subagent_id else AgentStorageScope.MAIN)
             # 1. 初始记录在执行开始前入队，快速任务不会把同一终态发布两次。
             await self._publish_background_record(task_id)
             self._schedule_execution(task_id, task, runtime.bind_task(task_id))
@@ -118,7 +133,7 @@ class TaskSupervisor:
         self._executions[task_id] = asyncio.create_task(self._run_task_lifecycle(task_id, task, runtime))
 
     async def _run_task_lifecycle(self, task_id: str, task: BaseTask, runtime: TaskRuntime) -> None:
-        """无论执行成功、失败或停止，先清理资源，再原子保存最终记录。
+        """业务结束后清理资源，持有原结果直到终态保存完成或应用结束等待。
 
         Args:
             task_id (str): 本次后台执行的稳定编号。
@@ -155,16 +170,23 @@ class TaskSupervisor:
             except Exception as exc:
                 status = TaskStatus.FAILED
                 error = f"{error}；清理失败：{exc}" if error else f"清理失败：{exc}"
+                self._cleanup_pending[task_id] = task
                 logger.exception("后台任务清理失败：%s", task_id)
-            # 3. 完整等待终态事务及发布；保存失败保留未完成身份，错误交给应用日志。
-            try:
-                await complete_owned_work(self.commit_terminal_state_once(task_id, status, result=result, error=error))
-                persisted = True
-            except asyncio.CancelledError:
-                # 3.1. 延期取消到达此处时，事务和已保存记录的发布均已完成。
-                persisted = True
-            except Exception:
-                logger.exception("任务终态保存失败，保留未完成记录：%s", task_id)
+            # 3. 原执行协程继续持有状态、结果和错误，保存失败后只重提终态事务。
+            while not persisted:
+                try:
+                    await complete_owned_work(self.commit_terminal_state_once(task_id, status, result=result, error=error))
+                    persisted = True
+                except asyncio.CancelledError:
+                    # 3.1. 延期取消到达此处时，事务和已保存记录的发布均已完成。
+                    persisted = True
+                except Exception:
+                    logger.exception("任务终态保存失败，保留原结果等待重试：%s", task_id)
+                    # 3.2. 应用关闭后结束失败保存，数据库仍为 running，重启按原规则整理。
+                    if self._closing:
+                        break
+                    # 3.3. 延时等待允许数据库恢复，也让关闭等待超时后能够取消该协程。
+                    await asyncio.sleep(TASK_TERMINAL_RETRY_SECONDS)
         finally:
             if persisted:
                 self._tasks.pop(task_id, None)
@@ -191,28 +213,13 @@ class TaskSupervisor:
                 pass
         return await self.get_task_record(task_id)
 
-    def active_count(self) -> int:
+    def active_task_count(self) -> int:
         """查询整个应用尚未完成执行、清理或终态保存的任务数。
 
         Returns:
             int: 执行、清理或终态保存尚未完成的任务数量。
         """
         return len(self._tasks)
-
-    async def stop_turn_tasks(self, session_id: str, run_id: str) -> None:
-        """来源轮次结束时请求停止随轮任务，独立任务继续执行。
-
-        Args:
-            session_id (str): 任务或请求所属的会话编号。
-            run_id (str): 创建任务或发出请求的来源轮次编号。
-        """
-        # 1. 与登记共用锁：先记下轮次结束，再停止所有已完成登记的随轮任务。
-        async with self._submission_lock:
-            self._finished_turns.add((session_id, run_id))
-            for task_id in tuple(self._tasks):
-                record = await self.get_task_record(task_id)
-                if record and record.session_id == session_id and record.origin_run_id == run_id and record.lifetime == TaskLifetime.TURN:
-                    await self.stop_task(task_id)
 
     async def recover_orphaned(self) -> None:
         """重启后将已失去执行实例的任务标记 orphaned，按配置保存唯一通知。"""
@@ -244,8 +251,11 @@ class TaskSupervisor:
             bool: 是否首次完成提交。
         """
         # 1. 数据库保证首次终态与唯一通知一起提交，重复提交不再产生记录事件。
-        if not await self.records.finish_once(task_id, status, result=result, error=error):
-            return False
+        async with self.mutation_coordinator.admission_lock:
+            previous = await self.records.get(task_id)
+            notify = previous is not None and await self.identity.read_availability(previous.session_id, previous.subagent_id)
+            if not await self.records.finish_once(task_id, status, result=result, error=error, notify=notify):
+                return False
         # 2. 事务成功后发布已保存记录，等待者在执行协程结束后读取终态。
         record = await self.get_task_record(task_id)
         if record is not None:
@@ -283,7 +293,8 @@ class TaskSupervisor:
         Returns:
             list[TaskRecord]: 后台任务记录。
         """
-        return [record for record in await self.records.list(session_id) if record.background]
+        return [record for record in await self.records.list(session_id)
+                if record.background and record.kind == TaskRecordKind.ORDINARY]
 
 
     async def stop_task(self, task_id: str) -> bool:
@@ -304,6 +315,44 @@ class TaskSupervisor:
                 execution.cancel()
         return True
 
+    async def ensure_available(self, session_id: str, subagent_id: str | None = None) -> None:
+        """模型工具执行前检查配置和子废弃记录，迟到的工具调用明确失败。
+
+        Args:
+            session_id (str): 工具所属父配置编号。
+            subagent_id (str | None): 子工具的身份，父工具为空。
+        """
+        async with self.mutation_coordinator.admission_lock:
+            await self.identity.require_available(session_id, subagent_id)
+
+    async def stop_subagent_tasks(self, session_id: str, subagent_id: str) -> None:
+        """停止并等待本子普通任务，实际清理失败由 Scheduler 自动重试。"""
+        await self._stop_tasks([record.task_id for record in await self.records.list(session_id)
+            if record.subagent_id == subagent_id and record.kind == TaskRecordKind.ORDINARY])
+
+    async def stop_session_tasks(self, session_id: str) -> None:
+        """父配置删除后停止全部所属普通任务，包括子任务。"""
+        await self._stop_tasks([record.task_id for record in await self.records.list(session_id)
+            if record.kind == TaskRecordKind.ORDINARY])
+
+    async def _stop_tasks(self, selected: list[str]) -> None:
+        """复用任务执行协程和清理句柄，等待终态保存后只重试未完成资源清理。"""
+        executions = []
+        for task_id in selected:
+            await self.stop_task(task_id)
+            execution = self._executions.get(task_id)
+            if execution is not None:
+                executions.append(execution)
+        if executions:
+            await asyncio.gather(*executions)
+        for task_id in selected:
+            task = self._cleanup_pending.get(task_id)
+            if task is not None:
+                await complete_owned_work(task.cleanup())
+                self._cleanup_pending.pop(task_id)
+            if task_id in self._tasks:
+                raise RuntimeError("后台任务的终态保存尚未完成")
+
     async def begin_shutdown(self) -> None:
         """关闭新任务提交入口，并等待已经开始登记的任务加入统一管理。"""
         async with self._submission_lock:
@@ -321,3 +370,5 @@ class TaskSupervisor:
                 task.cancel()
             await asyncio.gather(*executions, return_exceptions=True)
         await self.records.close()
+        if self._owns_identity:
+            await self.identity.subagents.close()

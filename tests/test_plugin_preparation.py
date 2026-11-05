@@ -107,11 +107,12 @@ def test_preparation_reuses_validated_config_and_mcp_declarations(tmp_path, monk
     import asyncio
     from app import dependencies
     from app.agent.runtime import agent_factory
+    from app.agent.core.tool_manager import ToolManager
 
     for name, value in {
         "get_chat_settings_dao": dao,
         "get_mcp_settings_dao": object(),
-        "get_mcp_connection_manager": object(),
+        "get_mcp_connection_manager": SimpleNamespace(disconnect_plugin=lambda session_id: None),
         "get_tool_authorization": object(),
         "get_desktop_controller": object(),
         "get_settings_mutation_coordinator": service.mutation_coordinator,
@@ -121,11 +122,12 @@ def test_preparation_reuses_validated_config_and_mcp_declarations(tmp_path, monk
         monkeypatch.setattr(dependencies, name, lambda value=value: value)
     monkeypatch.setattr(dependencies, "get_chat_settings_service", lambda **kwargs: service)
     monkeypatch.setattr(dependencies, "AgentRuntimeScheduler", lambda **kwargs: SimpleNamespace(**kwargs))
-    monkeypatch.setattr(agent_factory, "Agent", lambda config, **kwargs: config)
+    monkeypatch.setattr(agent_factory, "Agent", lambda config, **kwargs: SimpleNamespace(
+        config=config, tool_manager=ToolManager(), register_tool=lambda tool: None))
     validations.clear()
     resolutions.clear()
     scheduler = dependencies.create_runtime_scheduler(object(), asyncio.Queue())
-    agent_config = scheduler.agent_factory(settings.session_id, object())
+    agent_config = scheduler.agent_factory(settings.session_id, object()).config
     assert validations == [" game-server "]
     assert len(resolutions) == 1
     assert agent_config.plugins == [{"name": Plugin.name, "config": plugin.config}]

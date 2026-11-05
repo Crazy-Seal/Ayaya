@@ -19,18 +19,21 @@ logger = logging.getLogger(__name__)
 class PluginManager:
     """插件管理器 - 管理插件生命周期和钩子分发"""
 
-    def __init__(self, runtime_factory: Callable[[str, str], PluginRuntime] | None = None):
-        # 按钩子点组织的插件列表
+    def __init__(self, runtime_factory: Callable[[str, str], PluginRuntime] | None = None, *,
+                 enable_plugin_hooks: bool = True):
         """建立插件名称和执行时机的内存索引，注册插件时再填充。
 
         Args:
             runtime_factory (Callable[[str, str], PluginRuntime] | None): 按插件名称和来源轮次创建调用对象的注入工厂。
+            enable_plugin_hooks (bool): 是否运行自动业务钩子，注册与清理始终执行。
         """
+        # 按钩子点组织的插件列表
         self._hooks: dict[PluginHook, list[BasePlugin]] = defaultdict(list)
         # 所有已注册的插件
         self._plugins: dict[str, BasePlugin] = {}
         self._runtime_factory = runtime_factory
         self.run_id = ""
+        self.if_enable_plugin_hooks = enable_plugin_hooks
 
     async def register(self, plugin: BasePlugin) -> None:
         """注册插件
@@ -106,6 +109,8 @@ class PluginManager:
 
         插件异常会记录并继续执行；异常前的原地修改不会回滚。
         """
+        if not self.if_enable_plugin_hooks:
+            return
         plugins = self._hooks.get(hook, [])
         if not plugins:
             return
@@ -150,13 +155,24 @@ class PluginManager:
         self._plugins.clear()
         logger.info("已清空所有插件")
 
-    async def close(self) -> None:
-        """执行插件清理钩子，并移除所有已注册插件。"""
+    async def close(self, *, raise_on_error: bool = False) -> None:
+        """卸载插件，按调用方要求报告仍待清理的资源。
+
+        Args:
+            raise_on_error (bool): 子收尾要求清理成功才释放实例；主路径沿用记录错误的行为。
+
+        Raises:
+            ExceptionGroup: 严格关闭时至少一个插件清理失败，失败插件仍登记以便再次清理。
+        """
+        errors: list[Exception] = []
         for name in reversed(self.list_plugins()):
             try:
                 await self.unregister(name)
-            except Exception:
+            except Exception as exc:
+                errors.append(exc)
                 logger.exception("插件 '%s' 清理失败", name)
+        if raise_on_error and errors:
+            raise ExceptionGroup("插件资源尚未清理完成", errors)
 
     def __len__(self) -> int:
         """读取当前已注册的插件数量。

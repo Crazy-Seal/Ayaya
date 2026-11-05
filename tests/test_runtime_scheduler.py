@@ -1,4 +1,5 @@
-from tests.runtime_support import finish_test_turn
+from tests.runtime_support import RuntimeAgentStub
+from tests.runtime_support import configured_settings, finish_test_turn
 from app.services.channel_subscription_service import ChannelSubscriptionService
 from tests.model_capture import capture_input
 import asyncio
@@ -53,7 +54,7 @@ def test_message_arriving_before_wait_signal_is_cleared_is_processed_immediately
                     )))
                 return batch
 
-        class RecordingAgent:
+        class RecordingAgent(RuntimeAgentStub):
             """使用真实数据库保存输入，只替换模型回答。"""
             async def run(self, message, *, inbox_input=None, **kwargs):
                 """保存当前真人输入，记录执行顺序后正常结束。
@@ -79,10 +80,10 @@ def test_message_arriving_before_wait_signal_is_cleared_is_processed_immediately
                     processed.set()
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self) -> None:
+            async def close(self, *, raise_on_error: bool = False) -> None:
                 """测试 Agent 不持有外部资源。"""
 
-        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
+        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
            agent_factory=lambda _session, _manager: RecordingAgent(),
             session_state_manager_factory=lambda session: InterleavingInbox(session, path),
         )
@@ -154,7 +155,7 @@ def test_committed_human_is_visible_before_first_model_chunk(tmp_path: Path) -> 
             session_state_manager=_manager, )
 
         subscriptions = ChannelSubscriptionService()
-        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
+        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
             subscriptions=subscriptions, agent_factory=make_agent,
             session_state_manager_factory=lambda session: SessionStateManager(session, db_path),
         )
@@ -200,7 +201,7 @@ def test_subscriber_disconnect_does_not_cancel_run_and_origin_is_scoped(tmp_path
         completed = asyncio.Event()
         calls: list[tuple[str, str]] = []
 
-        class FakeAgent:
+        class FakeAgent(RuntimeAgentStub):
             """提供隔离测试替身，用于验证：订阅断开不取消运行，回复只向桌面及原来源投递。"""
             async def run(self, message, images=None, *, origin_channel="desktop", inbox_input=None, turn_control=None, receive_task_notifications=False, inbox_inputs=None):
                 """按场景屏障产生 Agent 事件并提交测试输入。
@@ -237,7 +238,7 @@ def test_subscriber_disconnect_does_not_cancel_run_and_origin_is_scoped(tmp_path
                 yield AgentEvent(EventType.TEXT_CHUNK, "完成")
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self):
+            async def close(self, *, raise_on_error: bool = False):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
@@ -246,7 +247,7 @@ def test_subscriber_disconnect_does_not_cancel_run_and_origin_is_scoped(tmp_path
         subscriptions.set_default_enabled("qq", True)
         subscriptions.register_channel("telegram")
         subscriptions.set_default_enabled("telegram", True)
-        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
+        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
             subscriptions=subscriptions,
            agent_factory=lambda _session, _manager: FakeAgent(),
             session_state_manager_factory=lambda session: SessionStateManager(session, str(tmp_path / "runtime.sqlite3")),
@@ -296,7 +297,7 @@ def test_snapshot_excludes_reply_text_before_and_after_tool_call(tmp_path) -> No
         tool_started = asyncio.Event()
         release = asyncio.Event()
 
-        class FakeAgent:
+        class FakeAgent(RuntimeAgentStub):
             """提供隔离测试替身，用于验证：快照不携带回答正文，工具前后的文字仅通过增量转发。"""
             async def run(self, message, images=None, *, origin_channel="desktop", inbox_input=None, turn_control=None, receive_task_notifications=False, inbox_inputs=None):
                 """按场景屏障产生 Agent 事件并提交测试输入。
@@ -323,11 +324,11 @@ def test_snapshot_excludes_reply_text_before_and_after_tool_call(tmp_path) -> No
                 await finish_test_turn(db_path, (inbox_input,), message=message, origin=origin_channel, release_queued=turn_control.reason is None)
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self):
+            async def close(self, *, raise_on_error: bool = False):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
-        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
+        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
            agent_factory=lambda _session, _manager: FakeAgent(),
             session_state_manager_factory=lambda session: SessionStateManager(session, str(tmp_path / "state.sqlite3")),
         )
@@ -425,7 +426,7 @@ def test_stop_while_publishing_chunk_still_saves_interrupted_response(tmp_path) 
                 db_path=db_path, llm_client=WaitingLLM(),
             )
 
-        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
+        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
            agent_factory=make_agent,
             session_state_manager_factory=lambda session: SessionStateManager(session, db_path),
         )
@@ -551,7 +552,7 @@ def test_stop_after_tool_notice_prevents_unstarted_tool_side_effect(tmp_path) ->
             agent.tool_manager.register(RecordingTool())
             return agent
 
-        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
+        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
            agent_factory=make_agent,
             session_state_manager_factory=lambda session: SessionStateManager(session, db_path),
         )
@@ -595,7 +596,7 @@ def test_new_message_from_other_channel_steers_active_run(tmp_path) -> None:
         finished = asyncio.Event()
         calls: list[tuple[str, str]] = []
 
-        class FakeAgent:
+        class FakeAgent(RuntimeAgentStub):
             """提供隔离测试替身，用于验证：其他渠道的新输入能引导共享会话的活动轮次。"""
             async def run(self, message, images=None, *, origin_channel="desktop", inbox_input=None, turn_control=None, receive_task_notifications=False, inbox_inputs=None):
                 """按场景屏障产生 Agent 事件并提交测试输入。
@@ -624,14 +625,14 @@ def test_new_message_from_other_channel_steers_active_run(tmp_path) -> None:
                 await finish_test_turn(db_path, (inbox_input,), message=message, origin=origin_channel, release_queued=turn_control.reason is None)
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self):
+            async def close(self, *, raise_on_error: bool = False):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
         subscriptions = ChannelSubscriptionService()
         subscriptions.register_channel("qq")
         subscriptions.set_default_enabled("qq", True)
-        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
+        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
             subscriptions=subscriptions, agent_factory=lambda _session, _manager: FakeAgent(),
             session_state_manager_factory=lambda session: SessionStateManager(session, str(tmp_path / "state.sqlite3")),
         )
@@ -667,7 +668,7 @@ def test_queued_turn_receives_new_run_id(tmp_path) -> None:
         second_done = asyncio.Event()
         ids: list[str] = []
 
-        class FakeAgent:
+        class FakeAgent(RuntimeAgentStub):
             """提供隔离测试替身，用于验证：排队输入放行后取得独立运行标识。"""
             async def run(self, message, images=None, *, origin_channel="desktop", inbox_input=None, turn_control=None, receive_task_notifications=False, inbox_inputs=None):
                 """按场景屏障产生 Agent 事件并提交测试输入。
@@ -693,12 +694,12 @@ def test_queued_turn_receives_new_run_id(tmp_path) -> None:
                 await finish_test_turn(db_path, (inbox_input,), message=message, origin=origin_channel, release_queued=turn_control.reason is None)
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self):
+            async def close(self, *, raise_on_error: bool = False):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
         subscriptions = ChannelSubscriptionService()
-        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
+        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
             subscriptions=subscriptions, agent_factory=lambda _session, _manager: FakeAgent(),
             session_state_manager_factory=lambda session: SessionStateManager(session, str(tmp_path / "state.sqlite3")),
         )
@@ -746,7 +747,7 @@ def test_interrupted_turn_applies_steer_before_older_queued_message(tmp_path) ->
         all_done = asyncio.Event()
         calls: list[str] = []
 
-        class FakeAgent:
+        class FakeAgent(RuntimeAgentStub):
             """提供隔离测试替身，用于验证：打断后先处理引导，再放行较早的排队输入。"""
             async def run(self, message, images=None, *, origin_channel="desktop", inbox_input=None, turn_control=None, receive_task_notifications=False, inbox_inputs=None):
                 """按场景屏障产生 Agent 事件并提交测试输入。
@@ -775,11 +776,11 @@ def test_interrupted_turn_applies_steer_before_older_queued_message(tmp_path) ->
                 await finish_test_turn(db_path, (inbox_input,), message=message, origin=origin_channel, release_queued=turn_control.reason is None)
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self):
+            async def close(self, *, raise_on_error: bool = False):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
-        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
+        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
            agent_factory=lambda _session, _manager: FakeAgent(),
             session_state_manager_factory=lambda session: SessionStateManager(session, str(tmp_path / "state.sqlite3")),
         )
@@ -818,7 +819,7 @@ def test_task_only_wakeup_does_not_release_queue_left_by_stopped_turn(tmp_path) 
         queue_done = asyncio.Event()
         calls: list[str] = []
 
-        class FakeAgent:
+        class FakeAgent(RuntimeAgentStub):
             """提供隔离测试替身，用于验证：后台通知唤醒不放行停止轮次遗留的排队消息。"""
             async def run(self, message, images=None, *, origin_channel="desktop", inbox_input=None, turn_control=None, receive_task_notifications=False, inbox_inputs=None):
                 """按场景屏障产生 Agent 事件并提交测试输入。
@@ -865,11 +866,11 @@ def test_task_only_wakeup_does_not_release_queue_left_by_stopped_turn(tmp_path) 
                 await finish_test_turn(db_path, inbox_inputs, runtime_inputs=messages)
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self):
+            async def close(self, *, raise_on_error: bool = False):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
-        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=db_path)
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=db_path)
         scheduler = AgentRuntimeScheduler(runtime_queue=supervisor.runtime_queue,
             task_supervisor=supervisor,
             agent_factory=lambda _session, _manager: FakeAgent(),
@@ -905,8 +906,8 @@ def test_task_only_wakeup_does_not_release_queue_left_by_stopped_turn(tmp_path) 
             await asyncio.wait_for(queue_done.wait(), 1)
             assert calls == ["旧轮次", "新轮次", "排队消息"]
         finally:
-            await supervisor.close()
             await scheduler.close()
+            await supervisor.close()
 
     asyncio.run(scenario())
 
@@ -931,7 +932,7 @@ def test_after_restart_abandoned_queue_is_discarded(tmp_path) -> None:
         calls: list[str] = []
         queue_done = asyncio.Event()
 
-        class FakeAgent:
+        class FakeAgent(RuntimeAgentStub):
             """提供隔离测试替身，用于验证：异常重启后排队输入作废，不能由新轮次重新放行。"""
             async def run(self, message, images=None, *, origin_channel="desktop", inbox_input=None, turn_control=None, receive_task_notifications=False, inbox_inputs=None):
                 """按场景屏障产生 Agent 事件并提交测试输入。
@@ -956,11 +957,11 @@ def test_after_restart_abandoned_queue_is_discarded(tmp_path) -> None:
                 await finish_test_turn(db_path, (inbox_input,), message=message, origin=origin_channel, release_queued=turn_control.reason is None)
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self):
+            async def close(self, *, raise_on_error: bool = False):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
-        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
+        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
            agent_factory=lambda _session, _manager: FakeAgent(),
             session_state_manager_factory=lambda session: SessionStateManager(session, db_path),
         )
@@ -1001,7 +1002,7 @@ def test_stale_steer_cannot_cancel_current_run(tmp_path) -> None:
         messages = []
         second_done = asyncio.Event()
 
-        class FakeAgent:
+        class FakeAgent(RuntimeAgentStub):
             """提供隔离测试替身，用于验证：过期引导不能停止当前不同轮次。"""
             async def run(self, message, images=None, *, origin_channel="desktop", inbox_input=None, turn_control=None, receive_task_notifications=False, inbox_inputs=None):
                 """按场景屏障产生 Agent 事件并提交测试输入。
@@ -1030,11 +1031,11 @@ def test_stale_steer_cannot_cancel_current_run(tmp_path) -> None:
                 await finish_test_turn(db_path, (inbox_input,), message=message, origin=origin_channel, release_queued=turn_control.reason is None)
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self):
+            async def close(self, *, raise_on_error: bool = False):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
-        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
+        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
            agent_factory=lambda _session, _manager: FakeAgent(),
             session_state_manager_factory=lambda session: SessionStateManager(session, str(tmp_path / "state.sqlite3")),
         )
@@ -1092,7 +1093,7 @@ def test_run_completion_waits_for_steer_inbox_commit(tmp_path) -> None:
                     await finish_write.wait()
                 return await super().submit_human(origin_channel, message, **kwargs)
 
-        class FakeAgent:
+        class FakeAgent(RuntimeAgentStub):
             """提供隔离测试替身，用于验证：轮次结束与引导持久受理的竞争不会丢失输入。"""
             async def run(self, message, images=None, *, origin_channel="desktop", inbox_input=None, turn_control=None, receive_task_notifications=False, inbox_inputs=None):
                 """按场景屏障产生 Agent 事件并提交测试输入。
@@ -1120,11 +1121,11 @@ def test_run_completion_waits_for_steer_inbox_commit(tmp_path) -> None:
                 await finish_test_turn(db_path, (inbox_input,), message=message, origin=origin_channel, release_queued=turn_control.reason is None)
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self):
+            async def close(self, *, raise_on_error: bool = False):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
-        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
+        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
            agent_factory=lambda _session, _manager: FakeAgent(),
             session_state_manager_factory=lambda session: SlowInbox(session, str(tmp_path / "state.sqlite3")),
         )
@@ -1164,7 +1165,7 @@ def test_failed_input_commit_never_publishes_human_message(tmp_path) -> None:
         """在隔离异步环境中安排并验证：输入 checkpoint 失败时不会发布真人消息。"""
         db_path = str(tmp_path / "state.sqlite3")
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
-        class FakeAgent:
+        class FakeAgent(RuntimeAgentStub):
             """提供隔离测试替身，用于验证：输入 checkpoint 失败时不会发布真人消息。"""
             async def run(self, message, images=None, *, origin_channel="desktop", inbox_input=None, turn_control=None, receive_task_notifications=False, inbox_inputs=None):
                 """按场景屏障产生 Agent 事件并提交测试输入。
@@ -1187,12 +1188,12 @@ def test_failed_input_commit_never_publishes_human_message(tmp_path) -> None:
                 await finish_test_turn(db_path, (inbox_input,), message=message, origin=origin_channel, release_queued=turn_control.reason is None)
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self):
+            async def close(self, *, raise_on_error: bool = False):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
         subscriptions = ChannelSubscriptionService()
-        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
+        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
             subscriptions=subscriptions, agent_factory=lambda _session, _manager: FakeAgent(),
             session_state_manager_factory=lambda session: SessionStateManager(session, str(tmp_path / "state.sqlite3")),
         )
@@ -1237,7 +1238,7 @@ def test_queued_message_waits_during_approval_and_can_be_cancelled(tmp_path, mon
         manager = SessionStateManager("s", db_path)
         await manager.save(state, checkpoint_type="intermediate")
         await manager.close()
-        class ApprovalAgent:
+        class ApprovalAgent(RuntimeAgentStub):
             """保存真实审批，供公开排队命令使用。"""
 
             async def run(self, message, *, inbox_input, **kwargs):
@@ -1257,15 +1258,17 @@ def test_queued_message_waits_during_approval_and_can_be_cancelled(tmp_path, mon
                     await manager.save(state, checkpoint_type="intermediate", inbox_inputs=(inbox_input,))
                 finally:
                     await manager.close()
+                from tests.runtime_support import pause_test_turn
+                pause_test_turn(kwargs["turn_control"], "approval-1")
                 yield AgentEvent(EventType.INTERRUPT, state.interrupt_data)
 
-            async def close(self):
+            async def close(self, *, raise_on_error: bool = False):
                 """测试对象无外部资源。"""
 
         subscriptions = ChannelSubscriptionService()
         subscriptions.register_channel("qq")
         subscriptions.set_default_enabled("qq", True)
-        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
+        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
             subscriptions=subscriptions, agent_factory=lambda _session, _manager: ApprovalAgent(),
             session_state_manager_factory=lambda session: SessionStateManager(session, db_path),
         )
@@ -1317,7 +1320,7 @@ def test_authorization_is_first_wins_across_channels(tmp_path) -> None:
         db_path = str(tmp_path / "runtime.sqlite3")
         decisions: list[dict] = []
 
-        class FakeAgent:
+        class FakeAgent(RuntimeAgentStub):
             """提供隔离测试替身，用于验证：多端审批只接受第一个有效决定。"""
             async def run(self, message, images=None, *, origin_channel="desktop", inbox_input=None, turn_control=None, receive_task_notifications=False, inbox_inputs=None):
                 """按场景屏障产生 Agent 事件并提交测试输入。
@@ -1354,6 +1357,8 @@ def test_authorization_is_first_wins_across_channels(tmp_path) -> None:
                     yield AgentEvent(EventType.HUMAN_INPUT_COMMITTED, {"message": human_message, "input_sequence": inbox_input.id})
                 finally:
                     await manager.close()
+                from tests.runtime_support import pause_test_turn
+                pause_test_turn(turn_control, "approval-1")
                 yield AgentEvent(EventType.INTERRUPT, {
                     "type": "authorization_request", "request_id": "approval-1", "message": "批准?",
                 })
@@ -1380,14 +1385,14 @@ def test_authorization_is_first_wins_across_channels(tmp_path) -> None:
                     await manager.close()
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self):
+            async def close(self, *, raise_on_error: bool = False):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
         subscriptions = ChannelSubscriptionService()
         subscriptions.register_channel("qq")
         subscriptions.set_default_enabled("qq", True)
-        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
+        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
             subscriptions=subscriptions, agent_factory=lambda _session, _manager: FakeAgent(),
             session_state_manager_factory=lambda session: SessionStateManager(session, db_path),
         )

@@ -13,11 +13,14 @@ from app.agent.runtime.session_inbox import InboxEnvelope
 from app.agent.state.model import AgentState
 from app.agent.state.messages import (
     AssistantMessage, HumanMessage, ImageContent, RuntimeInputMessage, ToolMessage,
-    TaskResultMessage, PluginNotificationMessage, text_content, with_text,
+    TaskResultMessage, PluginNotificationMessage, SubagentMessage, text_content, with_text,
 )
 from app.agent.utils.domain.images import save_multiple_images
 from app.crud.agent_state_dao import AgentStateDao
 from app.crud.session_inbox_dao import SessionInboxDao
+from app.schemas.agent_storage import AgentStorageScope
+from app.services.agent_identity_service import AgentIdentityService
+from app.services.settings_mutation import SettingsMutationCoordinator
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +29,7 @@ USER_REJECTED_INTERRUPTED_TOOL_RESULT = "用户发送了新的消息，待批准
 USER_CANCELLED_PENDING_TOOL_RESULT = "用户发送了新的消息，本批后续工具调用已取消。"
 APPLICATION_EXIT_RESULT = "应用退出，本轮已终止；本次工具调用已取消。"
 APPLICATION_EXIT_UNKNOWN_RESULT = "应用退出，本轮已终止；工具执行结果未知，本次不会自动重试。"
+PARENT_MESSAGE_DELIVERED = "消息已投递。"
 
 TASK_NOTICE_BATCH_MAX_CHARS = 8192
 
@@ -124,17 +128,18 @@ def task_result_messages(inputs: tuple[InboxEnvelope, ...]) -> tuple[TaskResultM
     return tuple(batches)
 
 
-def runtime_input_messages(inputs: tuple[InboxEnvelope, ...]) -> tuple[RuntimeInputMessage, ...]:
-    """把同批输入中的任务结果和插件通知转换为加入 Agent 对话的消息。
+def runtime_input_messages(inputs: tuple[InboxEnvelope, ...]) -> tuple[HumanMessage | RuntimeInputMessage, ...]:
+    """把同批父指令、任务结果和插件通知转换为加入 Agent 对话的消息。
 
     commit_human_input 和 commit_runtime_inputs 在保存输入时调用。
-    真人消息由对应输入方法另行创建；这里保持内部通知之间的先后顺序。
+    父指令使用用户消息，来源和交互信息由 Inbox 保存。真人入口另行创建
+    用户消息；这里保持同批父指令和通知的先后顺序。
 
     Args:
         inputs (tuple[InboxEnvelope, ...]): 本次准备加入对话的 Inbox 记录，可以同时包含真人输入。
 
     Returns:
-        tuple[RuntimeInputMessage, ...]: 由任务结果和插件通知生成的对话消息。
+        tuple[HumanMessage | RuntimeInputMessage, ...]: 父指令及内部通知生成的对话消息。
     """
     messages = []
     tasks = []
@@ -146,6 +151,16 @@ def runtime_input_messages(inputs: tuple[InboxEnvelope, ...]) -> tuple[RuntimeIn
             messages.extend(task_result_messages(tuple(tasks)))
             tasks.clear()
             messages.append(PluginNotificationMessage(**item.payload))
+        elif item.kind in {InboxKind.AGENT_COMMAND, InboxKind.SUBAGENT}:
+            messages.extend(task_result_messages(tuple(tasks)))
+            tasks.clear()
+            if item.kind == InboxKind.AGENT_COMMAND:
+                messages.append(HumanMessage(content=text_content(str(item.payload["text"])),
+                                             origin_channel=item.origin_channel))
+            else:
+                messages.append(SubagentMessage(subagent_id=str(item.payload["subagent_id"]),
+                                                 subagent_name=str(item.payload["subagent_name"]),
+                                                 result=str(item.payload["text"])))
     # 2. 追加尚未转换的最后一组任务结果。
     messages.extend(task_result_messages(tuple(tasks)))
     return tuple(messages)
@@ -169,19 +184,36 @@ class SessionStateManager:
     """
 
     def __init__(self, session_id: str, db_path: str | None = None, *,
-                 state_dao: AgentStateDao | None = None, inbox_dao: SessionInboxDao | None = None) -> None:
+                 state_dao: AgentStateDao | None = None, inbox_dao: SessionInboxDao | None = None,
+                 storage_scope: AgentStorageScope = AgentStorageScope.MAIN) -> None:
         """为当前会话准备快照和输入存储，数据库连接在实际读写时打开。
 
         Args:
             session_id (str): 当前会话编号。
             db_path (str | None): 当前环境的数据库路径，省略时使用应用数据目录。
-            state_dao (AgentStateDao | None): 已创建的会话快照存储，省略时创建；由本对象关闭。
+            state_dao (AgentStateDao | None): 状态与协议历史存储，省略时创建；由本对象关闭。
             inbox_dao (SessionInboxDao | None): 已创建的输入存储，省略时创建；由本对象关闭。
+            storage_scope (AgentStorageScope): 固定主表或子表范围，与实际快照存储保持一致。
         """
         self.session_id = session_id
-        self._state_dao = state_dao or AgentStateDao(session_id, db_path)
+        self.storage_scope = AgentStorageScope(storage_scope)
+        self._state_dao = state_dao or AgentStateDao(session_id, db_path, storage_scope=self.storage_scope)
         self.db_path = self._state_dao.db_path
-        self._inbox_dao = inbox_dao or SessionInboxDao(session_id, self.db_path)
+        self._inbox_dao = inbox_dao or SessionInboxDao(session_id, self.db_path, storage_scope=self.storage_scope)
+        self._identity: AgentIdentityService | None = None
+        self._mutations: SettingsMutationCoordinator | None = None
+        self._parent_session_id: str | None = None
+
+    def bind_runtime(self, identity: AgentIdentityService, mutations: SettingsMutationCoordinator, parent_session_id: str) -> None:
+        """会话建立 Manager 时注入运行时资格规则，独立 Agent 保留普通保存能力。"""
+        self._identity, self._mutations, self._parent_session_id = identity, mutations, parent_session_id
+
+    async def ensure_execution_available(self) -> None:
+        """真正开始模型步骤前复核运行时身份，保存历史不经过此检查。"""
+        if self._identity is not None:
+            async with self._mutations.admission_lock:
+                await self._identity.require_available(self._parent_session_id,
+                    self.session_id if self.storage_scope == AgentStorageScope.SUBAGENT else None)
 
     #=====================接收消息和管理排队输入======================
 
@@ -324,7 +356,9 @@ class SessionStateManager:
             state (AgentState): 新用户消息加入前加载的会话状态，可能包含上轮遗留的工具调用。
         """
         # 1. 根据旧轮工具的执行情况补齐结果；确有修改时保存旧轮结束状态。
-        if state.close_unfinished_tools(USER_REJECTED_INTERRUPTED_TOOL_RESULT,
+        interrupted_result = (PARENT_MESSAGE_DELIVERED if (state.interrupt_data or {}).get("type") == InterruptKind.PARENT_MESSAGE
+                              else USER_REJECTED_INTERRUPTED_TOOL_RESULT)
+        if state.close_unfinished_tools(interrupted_result,
                 USER_CANCELLED_PENDING_TOOL_RESULT, INTERRUPTED_TOOL_RESULT):
             await self.complete_turn(state)
 
@@ -367,16 +401,16 @@ class SessionStateManager:
         await self.save(state, checkpoint_type=CheckpointType.INTERMEDIATE, inbox_inputs=inputs)
         return human
 
-    async def commit_runtime_inputs(self, state: AgentState, messages: tuple[RuntimeInputMessage, ...] | None,
+    async def commit_runtime_inputs(self, state: AgentState, messages: tuple[HumanMessage | RuntimeInputMessage, ...] | None,
                                     inputs: tuple[InboxEnvelope, ...]) -> None:
-        """将任务结果或插件通知加入当前对话，并保存通知已经交给 Agent 的记录。
+        """将父指令或内部通知加入当前对话，并保存输入已经交给 Agent 的记录。
 
-        Agent 由内部通知启动新轮次时，以及 Pipeline 在下一次模型请求前追加
-        通知时，都会使用此方法。内部消息保存执行进度，但不增加真人消息计数。
+        Agent 由父指令或内部通知启动新轮次时，以及 Pipeline 在下一次模型请求前
+        追加通知时，都会使用此方法。输入保存执行进度，真人计数由真人入口维护。
 
         Args:
-            state (AgentState): 需要加入内部消息的当前会话状态。
-            messages (tuple[RuntimeInputMessage, ...] | None): 调用方已构造的消息；为 None 时从 inputs 转换。
+            state (AgentState): 需要加入父指令或内部通知的当前会话状态。
+            messages (tuple[HumanMessage | RuntimeInputMessage, ...] | None): 调用方已构造的消息；为 None 时从 inputs 转换。
             inputs (tuple[InboxEnvelope, ...]): 需要随本次对话保存标记为已交付的 Inbox 记录。
         """
         # 1. 使用调用方传入的消息，或将 Inbox 通知转换成消息，再按顺序加入对话。
@@ -426,32 +460,24 @@ class SessionStateManager:
 
     #=====================等待工具审批和恢复执行======================
 
-    async def save_interrupt_origin(self, state: AgentState, origin_channel: str) -> None:
-        """Agent 准备报告工具暂停时，补齐恢复来源并保存当前会话进度。
-
-        Pipeline 已保存等待审批或桌面执行回报所需的请求和工具信息；Agent 在
-        向界面转发等待事件前调用这里。来源尚未记录时，将来源与当前完整状态
-        一起保存，让后续审批、重连和恢复能继续处理原调用并使用正确的回答渠道。
-
-        Args:
-            state (AgentState): Pipeline 刚写入等待请求、工具参数和本批后续调用的会话状态。
-            origin_channel (str): 本轮回答所属的界面或渠道，写入等待信息供恢复时使用。
-
-        Raises:
-            Exception: 保存进度失败，Agent 随后不会继续转发这次等待事件。
-        """
-        # 1. 等待信息缺少来源时，保留原请求和待执行工具，补上本轮回答渠道。
-        if state.interrupt_data and "origin_channel" not in state.interrupt_data:
-            state.set_interrupt({**state.interrupt_data, "origin_channel": origin_channel}, state.pending_actions)
-            # 2. 保存整个会话进度，调用成功后 Agent 才向界面转发等待事件。
-            await self.save_progress(state)
+    async def commit_parent_interrupt(self, state: AgentState) -> bool:
+        """保存子暂停及父问题；运行时装配后在共享受理锁内复核身份。"""
+        await asyncio.to_thread(self._externalize_images, state)
+        if self._identity is None:
+            return await self._state_dao.commit_parent_interrupt(state)
+        async with self._mutations.admission_lock:
+            await self._identity.require_available(self._parent_session_id, self.session_id)
+            record = await self._identity.subagents.get(self._parent_session_id, self.session_id)
+            interrupt = state.interrupt_data
+            state.set_interrupt({**interrupt, "data": {**interrupt["data"], "subagent_name": record.definition.name}}, state.pending_actions)
+            return await self._state_dao.commit_parent_interrupt(state)
 
     async def record_authorization_decision(self, request_id: str | None, decision: dict,
                                             actor_channel: str = DESKTOP_CHANNEL) -> str | None:
         """保存用户的工具审批决定，供 Scheduler 恢复原调用或开始引导消息的新轮次。
 
-        Scheduler 已检查命令内容并串行处理当前会话的决定。这里加载等待状态，
-        核对请求编号；引导决定先将新正文存入 Inbox，再把决定写入执行快照。
+        AgentSession 已检查命令内容并串行处理当前会话的决定。这里加载等待状态，
+        核对请求编号；引导正文与首次决定使用同一事务写入 Inbox 和执行快照。
         返回来源后，Scheduler 通知界面：批准、拒绝由 Agent 恢复原调用并处理决定，
         引导则结束旧轮次，再安排新消息开始执行。
 
@@ -468,13 +494,15 @@ class SessionStateManager:
         interrupt = state.get_pending_authorization(request_id)
         if interrupt is None:
             return None
-        # 2. 引导决定先保存新消息；写入失败时让错误返回，当前审批仍保持等待。
-        if decision.get("kind") == ApprovalDecisionKind.STEER:
-            await self.submit_human(actor_channel, decision["message"])
-        # 3. 保存审批决定，返回原回答渠道供 Scheduler 通知界面并安排恢复或新轮次。
+        # 2. 准备首次决定，引导正文和决定在同一事务保存。
         if not state.record_authorization_decision(request_id, decision):
             return None
-        await self.save_progress(state)
+        if decision.get("kind") == ApprovalDecisionKind.STEER:
+            await self._state_dao.commit_authorization_steer(state, origin_channel=actor_channel,
+                text=decision["message"], parent_session_id=self._parent_session_id
+                if self.storage_scope == AgentStorageScope.SUBAGENT else None)
+        else:
+            await self.save_progress(state)
         return str(interrupt.get("origin_channel") or DESKTOP_CHANNEL)
 
     async def load_for_resume(self, request_id: str) -> AgentState | None:
@@ -502,8 +530,8 @@ class SessionStateManager:
     async def cancel_pending_interrupt(self) -> tuple[str, str] | None:
         """新用户消息已经保存时，取消当前仍在等待处理的旧工具请求。
 
-        Scheduler 在安排新消息之前调用。这里保存取消决定；返回旧请求编号和
-        原回答渠道后，Scheduler 通知界面结束等待，并安排旧轮的结束处理。
+        AgentSession 在新输入替代审批或用户停止等待时调用。这里保存取消决定；
+        返回旧请求编号和原回答渠道后，Session 发布已提交事件，再整理旧轮。
 
         Returns:
             tuple[str, str] | None: 已取消的请求编号和原回答渠道；没有等待请求或已有决定时为空。
@@ -513,7 +541,7 @@ class SessionStateManager:
         interrupt = state.interrupt_data or {}
         if not state.cancel_pending_interrupt():
             return None
-        # 2. 保存取消后的执行进度，再返回编号和渠道供 Scheduler 更新界面。
+        # 2. 保存取消后的执行进度，再返回编号和渠道供 Session 发布取消结果。
         await self.save_progress(state)
         return str(interrupt.get("request_id") or ""), str(interrupt.get("origin_channel") or DESKTOP_CHANNEL)
 
@@ -555,7 +583,8 @@ class SessionStateManager:
         """
         # 1. 为当前尚未结束的工具调用追加取消结果，保留前面已经完成的工具结果。
         cancelled = "用户打断，本次工具调用已取消。"
-        state.close_unfinished_tools(cancelled, cancelled, cancelled)
+        interrupted_result = (PARENT_MESSAGE_DELIVERED if (state.interrupt_data or {}).get("type") == InterruptKind.PARENT_MESSAGE else cancelled)
+        state.close_unfinished_tools(interrupted_result, cancelled, cancelled)
         rewritten_message_id = None
         # 2. 片段尚未加入会话时新增消息；已经加入时替换原消息并保留其编号。
         if partial.strip() and not partial_persisted:
@@ -627,6 +656,8 @@ class SessionStateManager:
         elif (interrupt.get("resume_state") or {}).get("continuation_claimed"):
             # 2.2. 桌面动作已开始但未保存回报时，保留结果未知的说明。
             content = APPLICATION_EXIT_UNKNOWN_RESULT
+        if interrupt.get("type") == InterruptKind.PARENT_MESSAGE:
+            content = PARENT_MESSAGE_DELIVERED
         state.close_unfinished_tools(content, APPLICATION_EXIT_RESULT, APPLICATION_EXIT_UNKNOWN_RESULT,
                                      interrupted_images=images)
         # 3. 保存退出前已显示的回答；数据库中已有同一步骤时修改原消息，否则新增消息。
@@ -661,7 +692,7 @@ class SessionStateManager:
         Scheduler 调用此方法作废上次运行遗留的用户请求。已加入对话的输入记录、
         待处理任务结果和插件通知继续保留；之后的新用户消息由正常入口接收。
         """
-        await self._inbox_dao.reset_after_restart(self.db_path)
+        await self._inbox_dao.reset_after_restart(self.db_path, storage_scope=self._state_dao.storage_scope)
 
     #=====================统一保存状态和图片======================
 
@@ -730,6 +761,18 @@ class SessionStateManager:
                 state.replace_message(replace(message, content=tuple(parts)))
 
     #=====================清除执行快照和释放资源======================
+
+    async def pending_sessions(self) -> tuple[str, ...]:
+        """启动整理时提供待交付输入所属会话，让 Scheduler 核对父配置。"""
+        return await self._inbox_dao.pending_sessions()
+
+    async def discard_pending_inputs(self) -> None:
+        """父配置删除后清除待交付输入，已保存执行和已交付输入继续留档。"""
+        await self._inbox_dao.discard_pending()
+
+    async def discard_pending_commands(self) -> None:
+        """丢弃旧子任务指令和回复，后台通知留给下次明确唤醒。"""
+        await self._inbox_dao.discard_pending_commands()
 
     async def clear_session(self) -> int:
         """删除当前会话的执行快照，让后续 load 从新的空状态开始。

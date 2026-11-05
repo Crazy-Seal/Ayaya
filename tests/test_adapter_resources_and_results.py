@@ -160,6 +160,7 @@ def test_pipeline_close_immediately_closes_inner_model_stream() -> None:
         pipeline._prompt_source = SimpleNamespace(system_prompt="系统提示")
         pipeline._llm_client = SimpleNamespace(astream=start_stream)
         pipeline._model_input = SimpleNamespace(prepare=prepare)
+        pipeline._environment_provider = None
         outer = pipeline._call_llm(AgentState(session_id="isolated"), RuntimeContext.capture())
         assert (await anext(outer)).content == "正文"
         await outer.aclose()

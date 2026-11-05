@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 from app.agent.agent import Agent, AgentConfig
+from tests.runtime_support import configured_settings
 from app.agent.context import ContextStrategyConfig
 from app.agent.models.llm_client import StreamChunk
 from app.agent.plugins.runtime import PluginRuntime
@@ -15,7 +16,7 @@ from app.agent.tools.core.base import BaseTool, ToolContext, ToolResult
 from app.interaction.interaction_contract import ChannelCommand
 from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
-from app.schemas.runtime_types import TaskLifetime, TaskStatus
+from app.schemas.runtime_types import TaskStatus
 
 
 async def next_event_kind(scheduler: AgentRuntimeScheduler, kind: str):
@@ -34,17 +35,24 @@ async def next_event_kind(scheduler: AgentRuntimeScheduler, kind: str):
             return event
 
 
-@pytest.mark.parametrize("decision", ["human", "steer", "approve"])
-def test_approval_preserves_turn_tasks_until_source_turn_really_ends(tmp_path, decision):
-    """审批暂停保留随轮任务，新输入或审批引导结束旧轮时停止任务。"""
+@pytest.mark.parametrize("decision", ["human", "steer", "approve", "stop"])
+def test_background_task_survives_approval_and_turn_end_until_explicit_stop(tmp_path, decision):
+    """审批、停止和引导均保留后台任务，显式停止时才执行任务清理。
+
+    Args:
+        tmp_path (Path): 本场景独占的任务和会话数据库目录。
+        decision (str): 审批批准、普通引导、审批引导或停止当前回答。
+    """
     async def scenario():
-        """以真实工具审批保存及恢复检查轮次和任务的共同生命周期。"""
+        """通过真实审批和执行流程，确认后台任务独立运行并可显式清理。"""
         path = str(tmp_path / "state.sqlite3")
         queue = asyncio.Queue()
-        supervisor = TaskSupervisor(runtime_queue=queue, db_path=path)
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=queue, db_path=path)
         model_waiting, release_model = asyncio.Event(), asyncio.Event()
         task_started, release_task = asyncio.Event(), asyncio.Event()
         calls = []
+        task_cleaned, model_closed = asyncio.Event(), asyncio.Event()
+        task_id = None
 
         class Model:
             """先请求外部工具，后续模型请求保持等待。"""
@@ -68,6 +76,8 @@ def test_approval_preserves_turn_tasks_until_source_turn_really_ends(tmp_path, d
 
             async def close(self):
                 """测试模型没有外部连接。"""
+                if task_id is not None and len(calls) > 1:
+                    model_closed.set()
 
         class GameConnectionTool(BaseTool):
             """替代外部游戏接入，按现有工具协议要求一次审批。"""
@@ -90,7 +100,7 @@ def test_approval_preserves_turn_tasks_until_source_turn_really_ends(tmp_path, d
                 return ToolResult.success("游戏已连接")
 
         class GameWatchTask(BaseTask):
-            """保持游戏观察，供审批前后检查随轮运行期限。"""
+            """保持游戏观察，供审批及回答结束后检查后台执行。"""
             async def run(self, runtime):
                 """等待游戏连接事件。
 
@@ -99,6 +109,10 @@ def test_approval_preserves_turn_tasks_until_source_turn_really_ends(tmp_path, d
                 """
                 task_started.set()
                 await release_task.wait()
+
+            async def cleanup(self):
+                """记录显式停止后的资源释放。"""
+                task_cleaned.set()
 
         def create_agent(session, manager):
             """创建持有真实执行管道的 Agent，仅替代模型及游戏工具。
@@ -125,7 +139,7 @@ def test_approval_preserves_turn_tasks_until_source_turn_really_ends(tmp_path, d
             await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "连接游戏"}))
             pending = await next_event_kind(scheduler, "interrupt")
             runtime = PluginRuntime("game", "s", pending.run_id, _supervisor=supervisor, _runtime_queue=queue)
-            task_id = await runtime.submit_task(GameWatchTask(), name="watch", title="游戏观察", lifetime=TaskLifetime.TURN, notify_agent=False)
+            task_id = await runtime.submit_task(GameWatchTask(), name="watch", title="游戏观察", notify_agent=False)
             await asyncio.wait_for(task_started.wait(), 1)
             await runtime.notify(name="battle_started", text="审批期间发现敌人")
             await asyncio.wait_for(queue.join(), 1)
@@ -136,23 +150,29 @@ def test_approval_preserves_turn_tasks_until_source_turn_really_ends(tmp_path, d
 
             if decision == "human":
                 command = ChannelCommand("s", "desktop", "human_turn", {"message": "改做其他事情"})
+            elif decision == "stop":
+                command = ChannelCommand("s", "desktop", "stop_turn", target_run_id=pending.run_id)
             else:
                 payload = {"kind": decision}
                 if decision == "steer":
                     payload["message"] = "改做其他事情"
                 command = ChannelCommand("s", "desktop", "resolve_authorization", payload, request_id=pending.request_id)
             assert (await scheduler.submit(command)).accepted
-            await asyncio.wait_for(model_waiting.wait(), 2)
-            current = (await scheduler.snapshot("s")).payload["run_id"]
-            if decision == "approve":
-                assert current == pending.run_id
-                assert (await runtime.get_task(task_id)).status == TaskStatus.RUNNING
+            if decision == "stop":
+                assert (await scheduler.snapshot("s")).payload["phase"] == "idle"
+                assert len(calls) == 1
             else:
-                assert current != pending.run_id
-                assert (await runtime.wait_task(task_id, timeout_ms=1000)).status == TaskStatus.STOPPED
-            release_model.set()
-            await next_event_kind(scheduler, "run_completed")
-            assert (await runtime.wait_task(task_id, timeout_ms=1000)).status == TaskStatus.STOPPED
+                await asyncio.wait_for(model_waiting.wait(), 2)
+                current = (await scheduler.snapshot("s")).payload["run_id"]
+                assert (current == pending.run_id) == (decision == "approve")
+                release_model.set()
+                await next_event_kind(scheduler, "run_completed")
+                await asyncio.wait_for(model_closed.wait(), 3)
+            assert (await runtime.get_task(task_id)).status == TaskStatus.RUNNING
+            assert not task_cleaned.is_set()
+            await runtime.stop_task(task_id)
+            assert (await runtime.wait_task(task_id, timeout_ms=2000)).status == TaskStatus.STOPPED
+            assert task_cleaned.is_set()
         finally:
             release_model.set()
             release_task.set()
@@ -171,7 +191,7 @@ def test_steer_storage_failure_keeps_current_model_waiting(tmp_path):
         """只用 SQLite 触发器制造写入错误，观察公开轮次和最终模型输入。"""
         path = str(tmp_path / "state.sqlite3")
         queue = asyncio.Queue()
-        supervisor = TaskSupervisor(runtime_queue=queue, db_path=path)
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=queue, db_path=path)
         entered, replaced, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
         calls = []
 
@@ -236,7 +256,7 @@ def test_game_watch_reports_changes_controls_source_and_cleans_connection(tmp_pa
         """通过连接事件驱动具体任务，观察真实调度和最终模型请求。"""
         path = str(tmp_path / "state.sqlite3")
         queue = asyncio.Queue()
-        supervisor = TaskSupervisor(runtime_queue=queue, db_path=path)
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=queue, db_path=path)
         waiting, replaced, release, result_seen = (asyncio.Event() for _ in range(4))
         calls = []
 
@@ -322,7 +342,7 @@ def test_game_watch_reports_changes_controls_source_and_cleans_connection(tmp_pa
             await asyncio.wait_for(waiting.wait(), 2)
             source = (await scheduler.snapshot("s")).payload["run_id"]
             runtime = PluginRuntime("game", "s", source, _supervisor=supervisor, _runtime_queue=queue)
-            task_id = await runtime.submit_task(GameWatchTask(), name="game_watch", title="游戏观察", lifetime=TaskLifetime.INDEPENDENT, notify_agent=True)
+            task_id = await runtime.submit_task(GameWatchTask(), name="game_watch", title="游戏观察", notify_agent=True)
             await connection.incoming.put(("battle_started", "发现两名敌人"))
             assert await asyncio.wait_for(connection.processed.get(), 1) == "battle_started"
             await asyncio.wait_for(queue.join(), 1)
@@ -359,7 +379,7 @@ def test_after_response_commit_notifications_start_followup_turns(tmp_path):
         """执行两个后续通知后结束测试，验证无额外真人计数和无相互等待。"""
         path = str(tmp_path / "state.sqlite3")
         queue = asyncio.Queue()
-        supervisor = TaskSupervisor(runtime_queue=queue, db_path=path)
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=queue, db_path=path)
         committed = []
         requests = []
 

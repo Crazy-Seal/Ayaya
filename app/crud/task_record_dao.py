@@ -9,9 +9,14 @@ import os
 import aiosqlite
 
 from app.schemas.tool_types import TASK_OUTPUT_URI_PREFIX
+from app.schemas.agent_storage import AgentStorageScope
+from app.schemas.subagent_types import TaskRecordKind, SubagentInteractionKind
+from app.schemas.subagent_types import SubagentDefinition
+from app.crud.subagent_sql import ensure_subagent_schema, append_interaction_in_transaction
+from app.crud.subagent_sql import require_subagent_in_transaction, subagent_available_in_transaction
 from app.crud.session_inbox_dao import append_task_terminal_in_transaction, ensure_inbox_schema
 from app.environment import get_checkpoint_db
-from app.schemas.runtime_types import TaskStatus, TaskLifetime
+from app.schemas.runtime_types import TaskStatus, TurnInterruptReason
 from app.schemas.task_types import TaskRecord, TERMINAL_TASK_NAME
 
 
@@ -36,8 +41,10 @@ CREATE TABLE IF NOT EXISTS task_records (
     result TEXT,
     error TEXT,
     plugin_name TEXT,
-    lifetime TEXT NOT NULL,
-    notify_agent INTEGER NOT NULL
+    notify_agent INTEGER NOT NULL,
+    subagent_id TEXT, notification_context_id TEXT,
+    notification_scope TEXT NOT NULL DEFAULT 'main' CHECK(notification_scope IN ('main','subagent')),
+    kind TEXT NOT NULL DEFAULT 'ordinary' CHECK(kind IN ('ordinary','subagent')), end_reason TEXT
 )
 """
 
@@ -86,18 +93,36 @@ class TaskRecordDao:
             if self._db is None:
                 os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
                 db = await aiosqlite.connect(self.db_path)
-                await db.execute(TASK_SCHEMA_SQL)
-                # 3. 任务表与 Inbox 共用连接和数据库，为终态通知原子事务做准备。
-                await ensure_inbox_schema(db)
-                await db.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_task_records_session_created "
-                    "ON task_records(session_id, created_at DESC)"
-                )
-                await db.commit()
+                try:
+                    # 2. 已有表必须先显式迁移，在创建新表或查询新字段前给出可操作的错误。
+                    columns = {str(row[1]) for row in await db.execute_fetchall("PRAGMA table_info(task_records)")}
+                    if columns and not {"subagent_id", "notification_context_id", "notification_scope", "kind", "end_reason"} <= columns:
+                        raise RuntimeError("task_records 需要先执行 scripts/migrate_subagents.py 离线迁移")
+                    if "lifetime" in columns:
+                        raise RuntimeError("task_records 需要先执行 scripts/migrate_subagents.py 离线迁移以删除 lifetime 列")
+                    await db.execute(TASK_SCHEMA_SQL)
+                    # 3. 任务表与 Inbox 共用连接和数据库，为终态通知原子事务做准备。
+                    await ensure_inbox_schema(db)
+                    await ensure_inbox_schema(db, storage_scope=AgentStorageScope.SUBAGENT)
+                    await ensure_subagent_schema(db)
+                    await db.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_task_records_session_created "
+                        "ON task_records(session_id, created_at DESC)"
+                    )
+                    await db.commit()
+                except BaseException:
+                    await db.close()
+                    raise
                 self._db = db
             return self._db
 
-    async def running_ids(self) -> list[str]:
+    async def subagent_available(self, session_id: str, subagent_id: str) -> bool:
+        """按父子归属和废弃时间读取子身份资格，不推断执行状态。"""
+        db = await self._get_db()
+        async with self._write_lock:
+            return await subagent_available_in_transaction(db, session_id, subagent_id)
+
+    async def running_ids(self, kind: TaskRecordKind = TaskRecordKind.ORDINARY) -> list[str]:
         """列出仍标记运行中的任务，以便启动时确认其已失去进程所有权。
 
         Returns:
@@ -105,7 +130,7 @@ class TaskRecordDao:
         """
         db = await self._get_db()
         rows = await db.execute_fetchall(
-            "SELECT task_id FROM task_records WHERE status = ?", (TaskStatus.RUNNING.value,),
+            "SELECT task_id FROM task_records WHERE status = ? AND kind = ?", (TaskStatus.RUNNING.value, kind.value),
         )
         return [str(row[0]) for row in rows]
 
@@ -118,8 +143,10 @@ class TaskRecordDao:
         tool_name: str | None = None,
         name: str = TERMINAL_TASK_NAME, title: str | None = None,
         plugin_name: str | None = None,
-        lifetime: TaskLifetime = TaskLifetime.INDEPENDENT,
         notify_agent: bool = True,
+        subagent_id: str | None = None, notification_context_id: str | None = None,
+        notification_scope: AgentStorageScope = AgentStorageScope.MAIN,
+        kind: TaskRecordKind = TaskRecordKind.ORDINARY,
     ) -> None:
         """保存任务初始记录及来源，具体资源由任务开始执行后创建。
 
@@ -136,26 +163,65 @@ class TaskRecordDao:
             name (str): 供查询或识别本次内容用途的稳定名称。
             title (str | None): 供用户阅读的任务说明。
             plugin_name (str | None): 发出内容或创建任务的插件稳定名称。
-            lifetime (TaskLifetime): 任务随来源轮次结束或独立运行的配置。
             notify_agent (bool): 终态保存时是否生成给 Agent 的结果通知。
         """
         db = await self._get_db()
         # 1. 同一 DAO 写锁覆盖插入与提交，避免和终态通知事务交错。
         async with self._write_lock:
             try:
+                # 1. 子普通任务登记与废弃使用数据库写事务串行，历史补记仍可写入。
+                await db.execute("BEGIN IMMEDIATE")
+                if subagent_id is not None and kind == TaskRecordKind.ORDINARY:
+                    await require_subagent_in_transaction(db, session_id, subagent_id)
                 await db.execute(
                     "INSERT INTO task_records "
                     "(task_id, session_id, command, status, pid, output_path, created_at, "
                     "origin_run_id, origin_tool_call_id, output_ref, background, tool_name, "
-                    "name, title, plugin_name, lifetime, notify_agent) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "name, title, plugin_name, notify_agent, subagent_id, notification_context_id, notification_scope, kind) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (task_id, session_id, command, TaskStatus.RUNNING.value, pid, output_path, self._now(),
                      origin_run_id, origin_tool_call_id, task_id if output_path else None, int(background), tool_name,
-                     name, title if title is not None else command, plugin_name, lifetime, int(notify_agent)),
+                     name, title if title is not None else command, plugin_name, int(notify_agent), subagent_id, notification_context_id, notification_scope.value, kind.value),
                 )
                 await db.commit()
             except BaseException:
                 # 1. 取消或写入失败时回滚，后续查询不能读到半笔登记或后台移交。
+                await db.rollback()
+                raise
+
+    async def start_subagent_run(self, definition: SubagentDefinition, run_id: str, previous_run_id: str | None) -> None:
+        """原子结束被引导的旧段并建立新段，重试沿用同一个新轮次编号。
+
+        Args:
+            definition (SubagentDefinition): 固定子身份和父归属。
+            run_id (str): 本次准备开始的新段编号。
+            previous_run_id (str | None): 同一委派上一段，首次运行为空。
+        """
+        db = await self._get_db()
+        async with self._write_lock:
+            try:
+                await db.execute("BEGIN IMMEDIATE")
+                existing = await db.execute_fetchall("SELECT session_id,subagent_id FROM task_records WHERE task_id=?", (run_id,))
+                if existing:
+                    if existing[0] != (definition.session_id, definition.subagent_id):
+                        raise ValueError("运行编号已属于其他上下文")
+                    await db.commit()
+                    return
+                if previous_run_id is not None:
+                    cursor = await db.execute(
+                        "UPDATE task_records SET status=?,ended_at=?,end_reason=? WHERE task_id=? AND session_id=? AND subagent_id=? AND kind=? AND status=?",
+                        (TaskStatus.STOPPED.value, self._now(), TurnInterruptReason.STEER.value, previous_run_id,
+                         definition.session_id, definition.subagent_id, TaskRecordKind.SUBAGENT.value, TaskStatus.RUNNING.value))
+                    if cursor.rowcount != 1:
+                        raise ValueError("原子执行段已经结束，不能改写为引导")
+                await db.execute(
+                    "INSERT INTO task_records(task_id,session_id,status,created_at,background,name,title,notify_agent,subagent_id,notification_context_id,notification_scope,kind) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (run_id, definition.session_id, TaskStatus.RUNNING.value, self._now(), 0, "subagent",
+                     f"{definition.name} ({definition.subagent_id})", 1,
+                     definition.subagent_id, definition.session_id, AgentStorageScope.MAIN.value, TaskRecordKind.SUBAGENT.value))
+                await db.commit()
+            except BaseException:
                 await db.rollback()
                 raise
 
@@ -227,6 +293,7 @@ class TaskRecordDao:
     async def finish_once(
         self, task_id: str, status: TaskStatus, exit_code: int | None = None, *,
         result: str | None = None, error: str | None = None,
+        notify: bool = True, end_reason: str | None = None,
     ) -> bool:
         """条件更新首次任务终态，并在同一事务插入唯一终态通知。
 
@@ -255,27 +322,33 @@ class TaskRecordDao:
                 await db.execute("BEGIN IMMEDIATE")
                 # 2. 仅 running 记录可迁移，重复终态回调不产生第二条通知。
                 cursor = await db.execute(
-                    "UPDATE task_records SET status = ?, exit_code = COALESCE(?, exit_code), ended_at = ?, result = ?, error = ? "
+                    "UPDATE task_records SET status = ?, exit_code = COALESCE(?, exit_code), ended_at = ?, result = ?, error = ?, end_reason = ? "
                     "WHERE task_id = ? AND status = ?",
                     (status.value if isinstance(status, TaskStatus) else status,
-                     exit_code, self._now(), result, error, task_id, TaskStatus.RUNNING.value),
+                     exit_code, self._now(), result, error, end_reason, task_id, TaskStatus.RUNNING.value),
                 )
                 if cursor.rowcount != 1:
                     await db.commit()
                     return False
                 row = (await db.execute_fetchall(
-                    "SELECT session_id, title, tool_name, output_ref, notify_agent, exit_code FROM task_records WHERE task_id = ?",
+                    "SELECT session_id, title, tool_name, output_ref, notify_agent, exit_code, subagent_id, notification_context_id, notification_scope, kind FROM task_records WHERE task_id = ?",
                     (task_id,),
                 ))[0]
-                session_id, title, tool_name, output_ref, notify_agent, saved_exit_code = row
+                session_id, title, tool_name, output_ref, notify_agent, saved_exit_code, subagent_id, recipient, scope, kind = row
+                scope = AgentStorageScope(scope)
+                if scope == AgentStorageScope.SUBAGENT:
+                    notify = notify and await subagent_available_in_transaction(db, session_id, recipient)
                 # 3. 静默任务只保存终态；需要通知时使用同一事务写入唯一结果。
-                if notify_agent:
+                if notify_agent and notify:
                     await append_task_terminal_in_transaction(
-                        db, session_id=session_id, task_id=task_id, task_name=title,
+                        db, session_id=recipient or session_id, task_id=task_id, task_name=title,
                         status=status.value if isinstance(status, TaskStatus) else status, result=result or "", error=error,
                         tool_name=tool_name, exit_code=saved_exit_code,
                         output_ref=f"{TASK_OUTPUT_URI_PREFIX}{output_ref}" if output_ref else None,
+                        storage_scope=scope,
                     )
+                if kind == TaskRecordKind.SUBAGENT and end_reason != TurnInterruptReason.STEER:
+                    await append_interaction_in_transaction(db, subagent_id, SubagentInteractionKind.FINAL, result or error or "", task_id)
                 await db.commit()
                 return True
             # 4. 任一数据库操作失败或任务取消都回滚整笔交付。
@@ -294,15 +367,15 @@ class TaskRecordDao:
         """
         db = await self._get_db()
         # 1. 查询与写事务串行，终态和通知提交前不向外暴露中间状态。
+        # 1.1. 在线程内一次取完结果，父 worker 取消时也不会遗留占读锁的游标。
         async with self._write_lock:
-            async with db.execute(
+            rows = await db.execute_fetchall(
                 "SELECT task_id, session_id, command, status, pid, exit_code, "
                 "output_path, created_at, ended_at, origin_run_id, origin_tool_call_id, "
-                "output_ref, background, tool_name, name, title, result, error, plugin_name, lifetime, notify_agent FROM task_records WHERE task_id = ?",
+                "output_ref, background, tool_name, name, title, result, error, plugin_name, notify_agent, subagent_id, notification_context_id, notification_scope, kind, end_reason FROM task_records WHERE task_id = ?",
                 (task_id,),
-            ) as cursor:
-                row = await cursor.fetchone()
-            return self._from_row(row) if row else None
+            )
+            return self._from_row(rows[0]) if rows else None
 
     async def list(self, session_id: str) -> list[TaskRecord]:
         """按创建时间倒序查询会话任务记录。
@@ -319,7 +392,7 @@ class TaskRecordDao:
             rows = await db.execute_fetchall(
                 "SELECT task_id, session_id, command, status, pid, exit_code, "
                 "output_path, created_at, ended_at, origin_run_id, origin_tool_call_id, "
-                "output_ref, background, tool_name, name, title, result, error, plugin_name, lifetime, notify_agent FROM task_records "
+                "output_ref, background, tool_name, name, title, result, error, plugin_name, notify_agent, subagent_id, notification_context_id, notification_scope, kind, end_reason FROM task_records "
                 "WHERE session_id = ? ORDER BY created_at DESC",
                 (session_id,),
             )
@@ -338,8 +411,9 @@ class TaskRecordDao:
         values = list(row)
         values[3] = TaskStatus(values[3])
         values[12] = bool(values[12])
-        values[19] = TaskLifetime(values[19])
-        values[20] = bool(values[20])
+        values[19] = bool(values[19])
+        values[22] = AgentStorageScope(values[22])
+        values[23] = TaskRecordKind(values[23])
         return TaskRecord(*values)
 
     async def close(self) -> None:

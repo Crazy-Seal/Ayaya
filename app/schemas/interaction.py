@@ -22,6 +22,7 @@ class ChannelCommandRequest(BaseModel):
     target_run_id: str | None = None
     request_id: str | None = None
     task_id: str | None = None
+    subagent_id: str | None = None
     payload: dict = Field(default_factory=dict)
 
 

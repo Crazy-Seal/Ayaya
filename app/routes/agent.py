@@ -129,6 +129,26 @@ async def update_channel_subscription(
 
 
 
+@router.get("/agent/subagents/{session_id}")
+async def list_subagents(
+    session_id: str, scheduler: AgentRuntimeScheduler = Depends(get_runtime_scheduler),
+) -> dict:
+    """读取当前父会话子摘要，前端使用此查询，模型没有 list 工具。"""
+    return {"subagents": [asdict(item) for item in await scheduler.snapshot_subagents(session_id)]}
+
+
+@router.get("/agent/subagents/{session_id}/{subagent_id}")
+async def subagent_details(
+    session_id: str, subagent_id: str, interaction_limit: int = 10,
+    scheduler: AgentRuntimeScheduler = Depends(get_runtime_scheduler),
+) -> dict:
+    """读取一个子身份详情，查询不恢复已释放上下文。"""
+    try:
+        return await scheduler.get_subagent_details(session_id, subagent_id, interaction_limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.get("/tasks/{session_id}/records")
 async def list_background_tasks(
     session_id: str,

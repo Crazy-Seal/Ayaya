@@ -9,6 +9,8 @@ export type {
   ChannelSubscription,
   BackgroundTaskRecord,
   BackgroundTaskOutput,
+  SubagentSummary,
+  SubagentDetail,
   CommandReceipt,
   InteractionEvent,
   ChatSettingsData,

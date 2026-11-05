@@ -136,7 +136,7 @@ flowchart TD
 
 | 调用 | 返回值 | 用途 |
 | --- | --- | --- |
-| `await runtime.submit_task(task, name=..., title=..., lifetime=..., notify_agent=...)` | `str`，新任务的 `task_id` | 提交后台任务 |
+| `await runtime.submit_task(task, name=..., title=..., notify_agent=...)` | `str`，新任务的 `task_id` | 提交后台任务 |
 | `await runtime.get_task(task_id)` | `TaskRecord` 或 `None` | 查询当时的任务记录 |
 | `await runtime.wait_task(task_id, timeout_ms=...)` | `TaskRecord` 或 `None` | 等到终态或本次等待超时，返回当时的任务记录 |
 | `await runtime.stop_task(task_id)` | `None` | 投递停止后台任务的请求 |
@@ -502,7 +502,7 @@ flowchart TD
 - `BEFORE_TOOL` 按具体 `tool_call_id` 计算，同一工具名的两次调用分别处理。执行前审批尚未通过时该钩子尚未触发；直接拒绝的调用可以一次也不触发。只读准备后才需要审批的调用，钩子在准备前已触发，恢复后沿用记录。
 - `ON_INTERRUPT` 对应工具等待审批或桌面回报的暂停。停止、引导使用各自的结束处理；工具执行错误通常包装成工具结果，交给后续模型请求读取。
 
-`BEFORE_LLM` 会随模型请求重复触发。一轮可以调用模型多次。响应提交钩子只在执行到对应保存步骤时运行；Supervisor 负责随轮次结束的任务清理，包括停止和错误等情况。
+`BEFORE_LLM` 会随模型请求重复触发。一轮可以调用模型多次。响应提交钩子只在执行到对应保存步骤时运行；Supervisor 持有后台任务，任务完成或收到停止请求后由其统一清理。
 
 ### 3.3 一个插件订阅多个钩子时怎样分发
 
@@ -625,11 +625,10 @@ Supervisor 调用 `run()`，结束时调用任务提供的 `cleanup()`，保存�
 
 本例只分析新收到的真人输入。`ON_INVOKE` 提供的现有 `RuntimeContext.latest_human_message_id` 用于找到这条输入，纯通知启动的执行会跳过分析，避免任务结果再次触发同类任务。
 
-以下片段放在插件的 `execute()` 中，`TaskLifetime` 从 `app.schemas.runtime_types` 导入：
+以下片段放在插件的 `execute()` 中：
 
 ```python
 from app.agent.state.messages import HumanMessage
-from app.schemas.runtime_types import TaskLifetime
 
 if context.hook == PluginHook.ON_INVOKE:
     current_input = context.data["runtime_context"].latest_human_message_id
@@ -644,7 +643,6 @@ if context.hook == PluginHook.ON_INVOKE:
             TextStatsTask(human.text),
             name="input_stats",
             title="统计本轮输入规模",
-            lifetime=TaskLifetime.INDEPENDENT,
             notify_agent=True,
         )
 ```
@@ -654,21 +652,15 @@ if context.hook == PluginHook.ON_INVOKE:
 | `task` | 这次运行的任务对象，已经保存所需输入资料 |
 | `name` | 开发者定义的稳定任务名，可复用为插件内常量 |
 | `title` | 这次工作给用户看的说明 |
-| `lifetime` | 任务是否随来源轮次结束，见下一节 |
 | `notify_agent` | 是否在任务终态保存时生成结果通知 |
 
 框架从 `context.runtime` 绑定插件、会话和来源轮次。返回 `task_id` 表示任务提交成功。提交失败抛出异常，由调用处或现有钩子异常处理记录；原任务若已返回编号，后续查询和等待始终使用这个编号。
 
-### 4.3 选择任务运行多久
+### 4.3 后台任务的结束方式
 
-| 枚举值 | 行为 | 适用场景 |
-| --- | --- | --- |
-| `TaskLifetime.TURN` | 来源轮次结束时由 Supervisor 请求停止并收尾；审批暂停期间继续保留 | 只观察这次游戏操作的监视任务 |
-| `TaskLifetime.INDEPENDENT` | 来源轮次结束后继续运行，由显式停止或应用退出安排收尾 | 记忆整理、较长的独立分析 |
+后台任务跨回答轮次独立运行，直到任务自行完成、收到显式停止请求，或所属身份删除及应用退出时被清理。Agent 正常完成、停止、引导和审批等待均保留正在运行的后台任务。
 
-已结束来源轮次的旧 runtime 再提交 TURN 任务会抛出 RuntimeError；仍可提交 INDEPENDENT 任务。
-
-任务的运行期限与结果是否通知 Agent 分开填写。一个独立任务可以静默运行；一个随轮次结束的任务也可以产生结果通知。
+任务通过 `cleanup()` 释放自己持有的资源，Supervisor 负责等待执行结束、调用清理及保存终态。`notify_agent` 单独控制终态是否写入结果通知，静默任务同样由 Supervisor 持有和清理。
 
 ### 4.4 查询、等待和停止
 
@@ -684,7 +676,7 @@ else:
     result_text = record.result
 ```
 
-`TaskRecord` 从 `app.schemas.task_types` 导入，现有任务表已增加 `name`、`title`、`result`、`error`、来源、运行期限及通知配置。非终端任务的命令、PID 和输出路径为空。
+`TaskRecord` 从 `app.schemas.task_types` 导入，任务记录包含 `name`、`title`、`result`、`error`、来源及通知配置。非终端任务的命令、PID 和输出路径为空。
 
 上例使用本插件刚提交得到的编号。这里 `PluginRuntime.get_task()` 返回的是持久任务记录；工具的 `ToolRuntime.get_task()` 和框架的 `Supervisor.get_task()` 返回尚未释放的具体任务对象，二者用途不同。插件通过记录读取状态和结果。
 
@@ -980,7 +972,7 @@ class GameWatchTask(BaseTask):
             await self.connection.close()
 ```
 
-示例在发送停止请求后 `return`，表示观察任务自己也完成了。长期观察任务可以继续读取后续事件。任务被主动停止或随轮次结束时，Supervisor 负责调用 `cleanup()`。
+示例在发送停止请求后 `return`，表示观察任务自己也完成了。长期观察任务可以继续读取后续事件。任务完成、被主动停止或应用退出时，Supervisor 负责调用 `cleanup()`。
 
 ### 9.3 从插件钩子启动观察并刷新临时状态
 
@@ -988,7 +980,6 @@ class GameWatchTask(BaseTask):
 
 ```python
 from app.agent.state import TemporaryContextItem  # 临时背景条目的数据类型，详情见第8章
-from app.schemas.runtime_types import TaskLifetime
 
 GAME_STATUS_CONTEXT_KEY = "game_helper.status"
 ```
@@ -1017,8 +1008,7 @@ async def execute(self, context: HookContext) -> None:  # 框架调用的插件�
             await context.runtime.submit_task(  # 将观察任务交给 Supervisor 管理，详情见第4章
                 GameWatchTask(self.config.endpoint),  # 使用插件参数中的连接地址，详情见第2章
                 name="game_helper.watch",
-                title="持续监视本轮游戏状态",
-                lifetime=TaskLifetime.TURN,  # 来源轮次结束时停止并清理任务，详情见第4章
+                title="持续监视游戏状态",
                 notify_agent=False,  # 任务结束时保持静默，详情见第4章
             )
     elif context.hook == PluginHook.BEFORE_LLM:  # 每次请求模型前刷新状态，详情见第3章
@@ -1036,7 +1026,7 @@ async def execute(self, context: HookContext) -> None:  # 框架调用的插件�
             context.agent_state.remove_temporary_context(GAME_STATUS_CONTEXT_KEY)  # 删除失效背景，详情见第8章
 ```
 
-这里任务终态保持静默，任务运行中通过 `runtime.notify()` 报告战斗等持久事件。游戏关闭时发出停止请求，模型和工具按现有打断流程收尾；审批暂停期间保留观察任务，轮次结束时统一清理。
+这里每次真人输入启动一项独立观察，任务终态保持静默，运行中通过 `runtime.notify()` 报告战斗等持久事件。审批暂停和回答结束后观察继续运行，直到游戏关闭、显式停止或应用退出。游戏关闭时发出的停止请求仍只针对该任务的来源轮次，过期请求沿现有规则拒绝。
 
 本例每次读取临时状态时建立并释放一条短期状态连接。每次请求的状态由 `temporary_context` 提供，工具和 MCP 的发现、用户权限及连接配置继续使用第2章设置流程。
 
@@ -1080,8 +1070,7 @@ async def execute(self, context: HookContext) -> None:  # 框架调用的插件�
 | 后台任务 | `BaseTask`、`TaskRuntime` | 定义任务执行和清理，以及 Supervisor 使用的运行时来源契约；插件任务实际收到 `PluginRuntime` | [第1章](#1-规约)、[第4章](#4-后台任务) |
 | 后台任务 | `task.run(runtime)` | 执行任务，返回 `str` 记录结果正文，或返回 `None` 表示无正文 | [第4章](#4-后台任务) |
 | 后台任务 | `task.cleanup()` | 由 Supervisor 在收尾时调用，释放任务资源 | [第4章](#4-后台任务) |
-| 后台任务 | `await runtime.submit_task(task, name=..., title=..., lifetime=..., notify_agent=...)` | 提交任务并取得本次执行的 `task_id` | [第4章](#4-后台任务) |
-| 后台任务 | `TaskLifetime.TURN`、`TaskLifetime.INDEPENDENT` | 选择任务随来源轮次结束，或跨轮次独立运行 | [第4章](#4-后台任务) |
+| 后台任务 | `await runtime.submit_task(task, name=..., title=..., notify_agent=...)` | 提交任务并取得本次执行的 `task_id` | [第4章](#4-后台任务) |
 | 后台任务 | `submit_task(..., notify_agent=True/False)` | 决定任务终态是否生成给 Agent 的结果通知 | [第4章](#4-后台任务) |
 | 后台任务 | `await runtime.get_task(task_id)` | 查询本插件在当前会话内创建的任务，找不到时返回 `None` | [第4章](#4-后台任务) |
 | 后台任务 | `await runtime.wait_task(task_id, timeout_ms=...)` | 有限等待任务结束，超时返回当时记录，任务继续执行 | [第4章](#4-后台任务) |

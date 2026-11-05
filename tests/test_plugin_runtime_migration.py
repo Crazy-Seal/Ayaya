@@ -31,7 +31,7 @@ def test_offline_upgrade_preserves_records_and_rolls_back_all_tables(tmp_path, i
         return
     assert migrate(path, apply=True)["applied"]
     with sqlite3.connect(path) as db:
-        assert db.execute("SELECT task_id,command,title,name,lifetime,notify_agent FROM task_records").fetchone() == ("old", "echo hello", "echo hello", "terminal", "independent", 1)
+        assert db.execute("SELECT task_id,command,title,name,notify_agent FROM task_records").fetchone() == ("old", "echo hello", "echo hello", "terminal", 1)
         assert db.execute("SELECT id FROM session_inbox").fetchall() == [(42,)]
         assert db.execute("SELECT id FROM conversation_messages").fetchall() == [(19,)]
         assert db.execute("SELECT name FROM sqlite_master WHERE name='history_type'").fetchone()

@@ -8,10 +8,12 @@ tool_call_id/tool_args/resume_state）写入 state.interrupt_data，使恢复能
 在另一个请求（甚至进程重启后）重入同一工具——无需依赖存活的协程。
 """
 from contextlib import aclosing
+from app.agent.utils.infra.owned_work import complete_owned_work
+from app.schemas.subagent_types import SUBAGENT_ROSTER_CONTEXT_KEY
 from app.agent.models.contracts import ModelFinishReason, StreamChunk
 
 import logging
-from typing import Any, AsyncIterator, Protocol
+from typing import Any, AsyncIterator, Protocol, Awaitable, Callable
 from app.schemas.desktop import DesktopOperations, StopRequested
 
 from app.schemas.runtime_types import (
@@ -74,6 +76,8 @@ class ExecutionPipeline:
         tool_authorization: ToolAuthorization | None = None,
         tool_runtime_factory: ToolRuntimeFactory | None = None,
         desktop: DesktopOperations | None = None,
+        permission_session_id: str | None = None,
+        environment_provider: Callable[[], Awaitable[str]] | None = None,
     ) -> None:
         """装配模型输入、授权和任务启动端口，管道不持有渠道连接。
 
@@ -94,6 +98,8 @@ class ExecutionPipeline:
         self._tool_result_normalizer = ToolResultNormalizer()
         self._model_input = model_input
         self._tool_authorization = tool_authorization
+        self._permission_session_id = permission_session_id
+        self._environment_provider = environment_provider
         self._tool_runtime_factory = tool_runtime_factory
         self._desktop = desktop
 
@@ -191,7 +197,7 @@ class ExecutionPipeline:
             if result.interrupt:
                 yield await self._commit_interrupt(
                     state, interrupted_call, result.interrupt,
-                    result.resume_state, pending_actions, session_state_manager,
+                    result.resume_state, pending_actions, session_state_manager, runtime_context,
                 )
                 return
 
@@ -222,7 +228,7 @@ class ExecutionPipeline:
             if result.interrupt:
                 yield await self._commit_interrupt(
                     state, tool_call, result.interrupt,
-                    result.resume_state, pending_actions[i + 1:], session_state_manager,
+                    result.resume_state, pending_actions[i + 1:], session_state_manager, runtime_context,
                 )
                 return
 
@@ -398,7 +404,7 @@ class ExecutionPipeline:
                     remaining = tool_calls[i + 1:]
                     yield await self._commit_interrupt(
                         state, tool_call, result.interrupt,
-                        result.resume_state, remaining, session_state_manager,
+                        result.resume_state, remaining, session_state_manager, runtime_context,
                     )
                     return
 
@@ -446,6 +452,10 @@ class ExecutionPipeline:
         state.set_temporary_context("core.current_time", TemporaryContextItem(
             title="当前日期时间", text=format_local_time(utc_now()),
         ))
+        if self._environment_provider is not None:
+            state.set_temporary_context(SUBAGENT_ROSTER_CONTEXT_KEY, TemporaryContextItem(
+                title="子 Agent 状态", text=await self._environment_provider(),
+            ))
         prepared = await self._model_input.prepare(
             state=state,
             system_prompt=self._prompt_source.system_prompt,
@@ -460,6 +470,8 @@ class ExecutionPipeline:
                 if prepared.state_changed:
                     await self._checkpoint(state, session_state_manager)
                 try:
+                    if session_state_manager is not None:
+                        await session_state_manager.ensure_execution_available()
                     stream = self._llm_client.astream(prepared.messages, tools=tools or None)
                     try:
                         async for chunk in stream:
@@ -538,12 +550,12 @@ class ExecutionPipeline:
         hooks_started = False
 
         # 2. 使用既有统一授权：首次调用按配置决定，审批恢复核对已保存的动作快照。
-        if self._tool_authorization is not None:
+        if self._tool_authorization is not None and not self._tool_manager.is_framework_tool(tool_call.name):
             envelope = resume_state or {}
             hooks_started = bool(envelope.get("hooks_started"))
             prepared_action = envelope.get("prepared_action")
             invocation = ToolInvocation(
-                session_id=state.session_id,
+                session_id=self._permission_session_id or state.session_id,
                 tool_call_id=tool_call.id,
                 descriptor=descriptor,
                 arguments=tool_call.args,
@@ -591,7 +603,7 @@ class ExecutionPipeline:
 
         # 4. 注入状态与任务端口，工具运行时按本次来源创建，任务由共享 Supervisor 持有，并记录来源 run 和工具调用。
         context = ToolContext(
-            session_id=state.session_id,
+            session_id=self._permission_session_id or state.session_id,
             state=state,
             resume_data=effective_resume_data,
             resume_state=tool_resume_state,
@@ -607,6 +619,8 @@ class ExecutionPipeline:
 
         # 5. 执行工具并把普通异常转换为 ToolResult，再统一规范化过长输出与媒体。
         try:
+            if context.runtime is not None:
+                await context.runtime.ensure_available()
             result = await tool.execute(tool_call.args, context)
         except Exception as e:
             logger.error("工具 '%s' 执行失败: %s", tool_call.name, e)
@@ -614,14 +628,14 @@ class ExecutionPipeline:
 
         result = self._tool_result_normalizer.normalize(
             result,
-            session_id=state.session_id,
+            session_id=self._permission_session_id or state.session_id,
             persist_overflow=tool.persist_oversized_result,
         )
 
         # 6. 只读准备得到具体动作后重新授权，获准后才重入准备完毕的工具。
         if self._tool_authorization is not None and result.prepared_action is not None:
             prepared_invocation = ToolInvocation(
-                session_id=state.session_id,
+                session_id=self._permission_session_id or state.session_id,
                 tool_call_id=tool_call.id,
                 descriptor=descriptor,
                 arguments=tool_call.args,
@@ -650,7 +664,7 @@ class ExecutionPipeline:
             prepared_action = prepared_invocation.prepared_action
 
         # 7. 已退役的执行中断不能重新进入等待；当前公开协议只支持统一审批。
-        if result.interrupt and result.interrupt.type != InterruptKind.AUTHORIZATION_REQUEST:
+        if result.interrupt and result.interrupt.type not in {InterruptKind.AUTHORIZATION_REQUEST, InterruptKind.PARENT_MESSAGE}:
             return ToolResult(content="错误: 工具返回不支持的中断；准备阶段只能请求只读准备数据")
 
         # 8. 只有工具实际完成才运行 AFTER_TOOL，等待中断不提前触发完成钩子。
@@ -716,7 +730,7 @@ class ExecutionPipeline:
         """
         # 1. 使用已获准的具体动作和中间态重入工具，仍传入共享任务端口。
         context = ToolContext(
-            session_id=state.session_id,
+            session_id=self._permission_session_id or state.session_id,
             state=state,
             resume_data={"kind": AUTHORIZATION_GRANTED_KIND},
             resume_state=resume_state,
@@ -731,13 +745,15 @@ class ExecutionPipeline:
         )
         # 2. 普通工具异常转换为可展示结果，随后执行统一结果规范化。
         try:
+            if context.runtime is not None:
+                await context.runtime.ensure_available()
             result = await tool.execute(tool_call.args, context)
         except Exception as exc:
             logger.error("工具 '%s' 执行失败: %s", tool_call.name, exc)
             result = ToolResult(content=f"错误: {exc}")
         return self._tool_result_normalizer.normalize(
             result,
-            session_id=state.session_id,
+            session_id=self._permission_session_id or state.session_id,
             persist_overflow=tool.persist_oversized_result,
         )
 
@@ -802,6 +818,7 @@ class ExecutionPipeline:
         resume_state: dict,
         pending_actions: list[ToolCall],
         session_state_manager: SessionStateManager | None,
+        runtime_context: RuntimeContext | None = None,
     ) -> AgentEvent:
         """统一中断迁移：写入路由、执行钩子、保存，再构造客户端事件。
 
@@ -816,19 +833,34 @@ class ExecutionPipeline:
             pending_actions (list[ToolCall]): 当前中断之后尚未执行的同批工具调用。
             session_state_manager (SessionStateManager | None): 执行管道借用的会话状态业务对象。
         """
+        # 1. 在候选状态准备暂停，钩子或提交失败时原执行仍保留可靠进度。
+        candidate = state.model_copy(deep=True)
         interrupt.tool_name = tool_call.name
         interrupt.tool_call_id = tool_call.id
         interrupt.tool_args = tool_call.args
         interrupt.resume_state = resume_state
-        state.set_interrupt(
-            interrupt_data=interrupt.to_state(),
-            pending_actions=pending_actions,
-        )
-        state.clear_pending_tool_calls()
-        await self._plugin_manager.run_hooks(
-            PluginHook.ON_INTERRUPT, state, data={"interrupt": interrupt},
-        )
-        await self._checkpoint(state, session_state_manager)
+        candidate.set_interrupt(
+            {**interrupt.to_state(), "origin_channel": runtime_context.origin_channel if runtime_context else DESKTOP_CHANNEL},
+            pending_actions)
+        candidate.clear_pending_tool_calls()
+        await self._plugin_manager.run_hooks(PluginHook.ON_INTERRUPT, candidate, data={"interrupt": interrupt})
+
+        async def save_interrupt() -> None:
+            """提交完整暂停后确认状态与阶段，取消等待也先完成已取得所有权的提交。"""
+            if interrupt.type == InterruptKind.PARENT_MESSAGE:
+                if session_state_manager is None:
+                    raise RuntimeError("父消息等待需要运行时状态存储")
+                if not await session_state_manager.commit_parent_interrupt(candidate):
+                    raise RuntimeError("原父消息等待已结束")
+            else:
+                await self._checkpoint(candidate, session_state_manager)
+            # 2. 提交成功到确认运行阶段之间不等待，快速父指令仍使用普通引导。
+            state.adopt_saved_state(candidate)
+            if runtime_context and runtime_context.turn_control:
+                control = runtime_context.turn_control
+                control.run_state.interrupt_saved(control.run_id, InterruptKind(interrupt.type), interrupt.request_id)
+
+        await complete_owned_work(save_interrupt())
         return AgentEvent(EventType.INTERRUPT, interrupt.to_client())
 
     # ==================== 助手消息 ====================

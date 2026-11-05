@@ -13,7 +13,6 @@ from app.crud.task_record_dao import TASK_SCHEMA_SQL
 from app.crud.session_inbox_dao import INBOX_SCHEMA_SQL
 from app.agent.state.messages import PROTOCOL_MESSAGE_TYPES
 from app.schemas.task_types import TERMINAL_TASK_NAME
-from app.schemas.runtime_types import TaskLifetime
 
 
 def migrate(path: Path, *, apply: bool = False) -> dict:
@@ -65,10 +64,11 @@ def migrate(path: Path, *, apply: bool = False) -> dict:
                 objects = db.execute("SELECT sql FROM sqlite_master WHERE tbl_name=? AND type IN ('index','trigger') AND sql IS NOT NULL", (table,)).fetchall()
                 sequence = db.execute("SELECT seq FROM sqlite_sequence WHERE name=?", (table,)).fetchone() if db.execute("SELECT 1 FROM sqlite_master WHERE name='sqlite_sequence'").fetchone() else None
                 # 2.6. 创建目标结构的临时表，旧列原样复制；新增字段按旧终端任务的业务含义补值。
-                # 标题沿用命令，任务保持独立运行并发送结果通知，输出引用继续使用原任务编号。
+                # 标题沿用命令，任务发送结果通知，输出引用继续使用原任务编号。
                 db.execute(declaration)
                 new_columns = [item[1] for item in db.execute(f'PRAGMA table_info("{temporary}")')]
-                defaults = {"name": f"'{TERMINAL_TASK_NAME}'", "title": '"command"', "lifetime": f"'{TaskLifetime.INDEPENDENT.value}'", "notify_agent": "1", "background": "1", "output_ref": '"task_id"'}
+                defaults = {"name": f"'{TERMINAL_TASK_NAME}'", "title": '"command"', "notify_agent": "1", "background": "1", "output_ref": '"task_id"'}
+                defaults.update({"notification_scope": "'main'", "kind": "'ordinary'"})
                 select = [f'"{name}"' if name in columns else defaults.get(name, "NULL") for name in new_columns]
                 names = ",".join(f'"{name}"' for name in new_columns)
                 # 2.7. 先复制完整数据，确认新约束接受已有记录后再删除旧表；复制失败会整体回滚。

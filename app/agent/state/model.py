@@ -92,6 +92,22 @@ class AgentState(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
 
+    def adopt_saved_state(self, saved: "AgentState") -> None:
+        """暂停事务提交后接收候选状态，失败候选不会污染当前执行。
+
+        Args:
+            saved (AgentState): 同一上下文已经提交并通过协议校验的状态。
+
+        Raises:
+            ValueError: 候选属于其他上下文或工具协议不完整。
+        """
+        if saved.session_id != self.session_id:
+            raise ValueError("不能替换其他上下文的状态")
+        saved.to_checkpoint()
+        for name in type(self).model_fields:
+            setattr(self, name, deepcopy(getattr(saved, name)))
+        self._messages = list(saved.messages)
+
     @property
     def messages(self) -> tuple[BaseMessage, ...]:
         """提供不可变消息序列快照，外部代码不能直接增删内部消息列表。"""

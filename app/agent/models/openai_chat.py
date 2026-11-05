@@ -12,7 +12,7 @@ from openai.types.chat.chat_completion_chunk import ChoiceDeltaToolCall
 from app.agent.models.contracts import ModelFinishReason, InputMessage, LLMConfig, LLMResponse, StreamChunk, TokenUsage, ToolDefinition, ModelContextOverflowError, ProjectedMessage
 from app.schemas.message_types import COMPRESSED_SCREENSHOT_PLACEHOLDER, MediaKind, ImageContextState
 from app.agent.state.messages import (BaseMessage, HumanMessage, AssistantMessage, ToolMessage, SystemMessage,
-    ContextSummaryMessage, PluginNotificationMessage, TaskResultMessage, EnvironmentPerceptionMessage, SubagentMessage,
+    ContextSummaryMessage, PluginNotificationMessage, TaskResultMessage, EnvironmentPerceptionMessage, SubagentMessage, RuntimeInputMessage,
     ImageContent, TextContent, ToolCall, ProviderData, text_content, notification_text, to_json_value)
 from app.agent.models.openai_message_names import (SCREENSHOT_MESSAGE_NAME, TOOL_IMAGE_MESSAGE_NAME, MCP_TOOL_IMAGE_MESSAGE_NAME,
     SCREENSHOT_COMPRESSED_NAME, CONTEXT_SUMMARY_MESSAGE_NAME)
@@ -584,7 +584,7 @@ class OpenAIChatCompletionsAdapter:
                         TextContent("[环境感知]\n"), *message.content,
                     ))
                 result.append({"role": "user", "name": "runtime_environment_perception", "content": content})
-            elif isinstance(message, (TaskResultMessage, PluginNotificationMessage, SubagentMessage)):
+            elif isinstance(message, RuntimeInputMessage):
                 names = {"plugin_notification": "runtime_plugin_notification", "task_result": "runtime_task_result", "subagent": "runtime_subagent"}
                 result.append({"role": "user", "name": names[message.message_type], "content": notification_text(message)})
             else:

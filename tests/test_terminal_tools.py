@@ -1,5 +1,6 @@
 """通过工具和终端服务验证真实进程、增量输出及持久通知。"""
 from tests.terminal_harness import TerminalHarness
+from tests.runtime_support import configured_settings
 
 import asyncio
 import json
@@ -69,7 +70,7 @@ def test_duplex_terminal_input_completion_and_full_log(tmp_path: Path, tty: bool
     async def scenario() -> None:
         """以等待输入的真实 Python 程序验证两种 Adapter。"""
         path = str(tmp_path / "db.sqlite3")
-        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=path)
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=path)
         terminal_for_supervisor = TerminalHarness(supervisor, spool_dir=tmp_path / "logs")
         inbox = SessionStateManager("chat", path)
         try:
@@ -121,7 +122,7 @@ def test_pipe_reads_only_increment_and_does_not_add_newline(tmp_path: Path) -> N
     """
     async def scenario() -> None:
         """让真实子进程每读取一个字节才输出下一段。"""
-        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "db"))
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "db"))
         terminal_for_supervisor = TerminalHarness(supervisor, spool_dir=tmp_path / "logs")
         try:
             command = (
@@ -166,7 +167,7 @@ def test_stdin_errors_explain_input_in_plain_text(tmp_path: Path, monkeypatch, f
 
     async def scenario() -> None:
         """使用真实管道进程确认输入已产生作用，并检查模型收到的错误说明。"""
-        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "db"))
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "db"))
         terminal_for_supervisor = TerminalHarness(supervisor, spool_dir=tmp_path / "logs")
         original_write = PipeProcess.write
 
@@ -244,7 +245,7 @@ def test_tool_defaults_dynamic_shell_and_short_and_long_results(tmp_path: Path, 
 
     async def scenario() -> None:
         """通过工具执行真实短命令，再经统一处理器验证长结果。"""
-        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "db"))
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "db"))
         terminal_for_supervisor = TerminalHarness(supervisor, spool_dir=tmp_path / "logs")
         try:
             context = context_for(terminal_for_supervisor)
@@ -272,7 +273,7 @@ def test_task_log_pages_are_bounded_and_preserve_character_offsets(tmp_path: Pat
     """
     async def scenario() -> None:
         """在真实任务记录引用下读取包含中文和换行的长日志。"""
-        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "db"))
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "db"))
         terminal_for_supervisor = TerminalHarness(supervisor, spool_dir=tmp_path / "logs")
         text = "中文\n" * 10000
         path = tmp_path / "large.log"
@@ -420,7 +421,7 @@ def test_registration_failure_prevents_process_creation(tmp_path: Path, monkeypa
     """
     async def scenario() -> None:
         """从终端公共入口提交，验证登记失败不会留下任务。"""
-        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "db"))
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "db"))
         terminal_for_supervisor = TerminalHarness(supervisor, spool_dir=tmp_path / "logs")
 
         async def reject_record(*args, **kwargs) -> None:
@@ -457,7 +458,7 @@ def test_terminal_metadata_failure_reclaims_created_process(tmp_path: Path, monk
     """
     async def scenario() -> None:
         """使用实际进程及临时 SQLite，观察保存失败后的公开任务状态。"""
-        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "db"))
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "db"))
         terminal = TerminalHarness(supervisor, spool_dir=tmp_path / "logs")
         created_pids = []
 
@@ -502,7 +503,7 @@ def test_terminal_metadata_failure_reclaims_created_process(tmp_path: Path, monk
                 else:
                     with pytest.raises(ProcessLookupError):
                         os.kill(pid, 0)
-            assert supervisor.active_count() == 0
+            assert supervisor.active_task_count() == 0
         finally:
             await supervisor.close()
 
@@ -523,7 +524,7 @@ def test_powershell_pty_keeps_variables_across_commands(tmp_path: Path) -> None:
         shell = detect_shell()
         if shell.kind not in {"pwsh", "powershell"}:
             pytest.skip("当前主机没有 PowerShell")
-        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "db"))
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "db"))
         terminal_for_supervisor = TerminalHarness(supervisor, spool_dir=tmp_path / "logs")
 
         async def until(task_id: str, marker: str, initial: str = "") -> str:
@@ -574,7 +575,7 @@ def test_short_command_exit_does_not_preserve_terminal(tmp_path: Path, tty: bool
     """
     async def scenario() -> None:
         """等待真实短命令退出后，检查工具初次和后续查询的区别。"""
-        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "db"))
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "db"))
         terminal_for_supervisor = TerminalHarness(supervisor, spool_dir=tmp_path / "logs")
         try:
             result = await terminal_for_supervisor.launch_terminal(
@@ -601,7 +602,7 @@ def test_task_list_exposes_persisted_creator_names_and_legacy_unknown(tmp_path: 
     async def scenario() -> None:
         """直接穿过真实任务查询入口及 DAO，不以 UI 假数据替代后端字段验证。"""
         path = str(tmp_path / "db")
-        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=path)
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=path)
         log = tmp_path / "log"
         log.write_text("output", encoding="utf-8")
         names = {"one": "exec_command", "two": "other_tool", "old": None}
@@ -611,7 +612,7 @@ def test_task_list_exposes_persisted_creator_names_and_legacy_unknown(tmp_path: 
                 await supervisor.commit_terminal_state_once(task_id, TaskStatus.COMPLETED)
         finally:
             await supervisor.close()
-        restored = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=path)
+        restored = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=path)
         try:
             response = await list_background_tasks("chat", restored)
             assert {row["task_id"]: row["tool_name"] for row in response["tasks"]} == names

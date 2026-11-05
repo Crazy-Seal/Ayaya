@@ -2,6 +2,7 @@
 
 import asyncio
 from pathlib import Path
+from tests.runtime_support import configured_settings
 
 import pytest
 
@@ -133,7 +134,7 @@ def test_scheduler_forwards_tool_completed_before_following_reply(tmp_path: Path
             [StreamChunk(tool_call=ToolCall("call", "image_step", {}))],
             [StreamChunk(content="后续回答")],
         ], ImageStepTool(), session_id="s")
-        scheduler = AgentRuntimeScheduler(
+        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(),
             runtime_queue=asyncio.Queue(), agent_factory=lambda _session, _manager: agent,
             session_state_manager_factory=lambda session: SessionStateManager(session, str(path)),
         )

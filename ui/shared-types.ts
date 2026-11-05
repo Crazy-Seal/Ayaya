@@ -41,6 +41,7 @@ export const CommandKind = {
   RESOLVE_AUTHORIZATION: "resolve_authorization",
   STOP_BACKGROUND_TASK: "stop_background_task",
   CANCEL_QUEUED: "cancel_queued",
+  INTERACT_SUBAGENT: "interact_subagent",
 } as const;
 export type CommandKind = typeof CommandKind[keyof typeof CommandKind];
 
@@ -76,6 +77,8 @@ export const InteractionEventKind = {
   AUTHORIZATION_RESOLVED: "authorization_resolved",
   RUN_COMPLETED: "run_completed",
   ERROR: "error",
+  SUBAGENT_STATUS: "subagent_status",
+  SUBAGENT_INTERRUPT: "subagent_interrupt",
 } as const;
 export type InteractionEventKind = typeof InteractionEventKind[keyof typeof InteractionEventKind];
 
@@ -385,6 +388,7 @@ export type ChannelCommand = {
   target_run_id?: string;
   request_id?: string;
   task_id?: string;
+  subagent_id?: string;
   payload?: Record<string, unknown>;
 };
 
@@ -441,7 +445,6 @@ export type BackgroundTaskRecord = {
   error: string | null;
   plugin_name: string | null;
   output_ref: string | null;
-  lifetime: "turn" | "independent";
   notify_agent: boolean;
   status: TaskStatus;
   pid: number | null;
@@ -450,6 +453,37 @@ export type BackgroundTaskRecord = {
   ended_at: string | null;
   recent_output?: string;
   background: boolean;
+  subagent_id?: string | null;
+};
+
+/** 子 Agent 的可见状态，与真人审批展示状态分别管理。 */
+export const SubagentStatus = { IDLE: "idle", RUNNING: "running", WAITING_PARENT: "waiting_parent" } as const;
+export type SubagentStatus = typeof SubagentStatus[keyof typeof SubagentStatus];
+
+/** 父会话当前可用子身份及其实际运行摘要。 */
+export type SubagentSummary = {
+  subagent_id: string;
+  name: string;
+  if_retain_context: boolean;
+  status: SubagentStatus;
+  started_at: string | null;
+  created_at: string;
+  error?: string | null;
+  waiting_for_approval?: boolean;
+};
+
+/** 按 ID 查询的定义、最近显式交互及已保存最终报告。 */
+export type SubagentDetail = {
+  subagent_id: string;
+  name: string;
+  system_prompt: string;
+  if_retain_context: boolean;
+  context_available: boolean;
+  created_at: string;
+  tool_whitelist: string[];
+  status: SubagentStatus | null;
+  recent_interactions: Array<{ interaction_id: number; kind: string; text: string; created_at: string }>;
+  results: Array<{ task_id: string; status: TaskStatus; result: string | null; error: string | null; created_at: string; ended_at: string | null }>;
 };
 
 /**
@@ -606,6 +640,8 @@ export interface DesktopPetApi {
    *     Promise<BackgroundTaskRecord[]>: 后端返回的持久任务列表。
    */
   getBackgroundTasks: (sessionId: string) => Promise<BackgroundTaskRecord[]>;
+  getSubagents: (sessionId: string) => Promise<SubagentSummary[]>;
+  getSubagentDetails: (sessionId: string, subagentId: string) => Promise<SubagentDetail>;
   /**
    * 按字节游标读取任务输出。
    *
@@ -684,17 +720,17 @@ export interface DesktopPetApi {
    * Args:
    *     page ("tasks" | undefined): 指定任务页；省略时保留普通设置入口行为。
    */
-  openSettingsWindow: (page?: "tasks") => void;
+  openSettingsWindow: (page?: "tasks" | "subagents") => void;
   /**
    * 监听已打开设置窗口的任务页导航，返回监听清理函数。
    *
    * Args:
-   *     callback ((page: "tasks") => void): 导航事件处理函数。
+   *     callback ((page: "tasks" | "subagents") => void): 导航事件处理函数。
    *
    * Returns:
    *     () => void: 移除当前窗口监听的函数。
    */
-  onOpenSettingsPage: (callback: (page: "tasks") => void) => () => void;
+  onOpenSettingsPage: (callback: (page: "tasks" | "subagents") => void) => () => void;
   openLogWindow: () => void;
   minimizeCurrentWindow: () => void;
   closeCurrentWindow: () => void;

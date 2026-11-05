@@ -1,3 +1,5 @@
+from app.schemas.subagent_types import SubagentDefinition
+from app.agent.agent import Agent
 from fastapi import Depends, Request
 import asyncio
 
@@ -248,13 +250,33 @@ def create_runtime_scheduler(supervisor: TaskSupervisor, runtime_queue: asyncio.
             bind_plugin_mcp=get_plugin_service().bind_mcp,
             plugin_mcp={name: plugin.mcp_servers for name, plugin in prepared.plugins.items()
                         if prepared.settings.agent_plugins[name].enabled},
+            runtime_queue=runtime_queue,
+        )
+
+    def create_subagent(definition: SubagentDefinition, session_state_manager: SessionStateManager) -> Agent:
+        """读取父最新配置创建子执行，权限与共享连接仍属于父会话。"""
+        prepared = settings_service.prepare(settings_dao.get_chat_settings(definition.session_id))
+        return build_agent(
+            prepared.settings, mcp_manager, authorization,
+            lambda tool_name, run_id, tool_call_id: ToolRuntime(
+                definition.session_id, run_id, tool_name, tool_call_id,
+                _supervisor=supervisor, _runtime_queue=runtime_queue, subagent_id=definition.subagent_id),
+            desktop, session_state_manager=session_state_manager,
+            bind_plugin_mcp=get_plugin_service().bind_mcp,
+            plugin_mcp={name: plugin.mcp_servers for name, plugin in prepared.plugins.items()
+                        if prepared.settings.agent_plugins[name].enabled},
+            subagent=definition, runtime_queue=runtime_queue,
         )
 
     scheduler = AgentRuntimeScheduler(
         runtime_queue=runtime_queue,
         agent_factory=create_agent,
+        subagent_factory=create_subagent,
         subscriptions=get_channel_subscription_service(),
         task_supervisor=supervisor,
+        chat_settings_dao=settings_dao,
+        mutation_coordinator=get_settings_mutation_coordinator(),
+        cleanup_session_connections=mcp_manager.disconnect_plugin,
     )
     return scheduler
 

@@ -1,5 +1,6 @@
 """通过真实激活入口与临时 SQLite 验证记忆批次和内部通知的提交时机。"""
 from tests.model_capture import capture_input
+from tests.runtime_support import configured_settings
 
 import asyncio
 from collections.abc import AsyncIterator
@@ -188,9 +189,9 @@ class RuntimeTestAgent(Agent):
         super().__init__(*args, plugin_runtime_factory=lambda name, run_id: PluginRuntime(
             name, session_id, run_id, _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue), **kwargs)
 
-    async def close(self):
+    async def close(self, *, raise_on_error: bool = False):
         """测试应用结束时先关闭 Agent，再关闭应用持有的任务资源。"""
-        await super().close()
+        await super().close(raise_on_error=raise_on_error)
         await self.test_supervisor.close()
 
 
@@ -206,7 +207,7 @@ async def make_agent(db_path: Path, model: QueuedModel, hooks: list[PluginHook])
         Agent: 保留真实状态、插件和执行管道的 Agent。
     """
     from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
-    supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=str(db_path))
+    supervisor = TaskSupervisor(chat_settings_dao=configured_settings(SESSION_ID), runtime_queue=asyncio.Queue(), db_path=str(db_path))
     agent = RuntimeTestAgent(
         AgentConfig(
             session_id=SESSION_ID, model_name="test", api_key="test",
@@ -388,7 +389,7 @@ def test_mid_turn_notification_preserves_batch_until_next_activation(tmp_path: P
         inbox = create_inbox(SESSION_ID)
         records = TaskRecordDao(str(db_path))
         subscriptions = ChannelSubscriptionService()
-        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
+        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(SESSION_ID), runtime_queue=asyncio.Queue(),
             subscriptions=subscriptions, agent_factory=create_agent, session_state_manager_factory=create_inbox,
         )
         hub = InteractionEventHub(scheduler, subscriptions=subscriptions)

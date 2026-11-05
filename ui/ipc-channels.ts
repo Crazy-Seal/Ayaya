@@ -21,6 +21,8 @@ export const IpcChannel = {
   GET_AVAILABLE_TOOLS: "desktop-pet:get-available-tools",
   GET_BACKGROUND_TASK_OUTPUT: "desktop-pet:get-background-task-output",
   GET_BACKGROUND_TASKS: "desktop-pet:get-background-tasks",
+  GET_SUBAGENTS: "desktop-pet:get-subagents",
+  GET_SUBAGENT_DETAILS: "desktop-pet:get-subagent-details",
   GET_CHANNEL_SUBSCRIPTIONS: "desktop-pet:get-channel-subscriptions",
   GET_CHAT_HISTORY: "desktop-pet:get-chat-history",
   GET_CHAT_HISTORY_LAST_N: "desktop-pet:get-chat-history-last-n",

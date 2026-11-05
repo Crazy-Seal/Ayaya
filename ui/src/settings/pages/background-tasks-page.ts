@@ -172,7 +172,9 @@ export class BackgroundTasksPage {
       };
       const seconds = Math.max(0, Math.floor((Date.parse(record.ended_at || new Date().toISOString())
         - Date.parse(record.created_at)) / 1000));
-      title.textContent = `[${record.plugin_name || record.tool_name}] ${record.title} · ${labels[record.status]} · ${Math.floor(seconds / 60)}分${seconds % 60}秒`;
+      title.textContent = `[${record.plugin_name || record.tool_name}] ${record.title}`
+        + (record.subagent_id ? ` · 子 Agent ${record.subagent_id}` : "")
+        + ` · ${labels[record.status]} · ${Math.floor(seconds / 60)}分${seconds % 60}秒`;
       const details = document.createElement("button");
       details.type = "button";
       details.className = "ui-button ui-button--secondary ui-button--small";

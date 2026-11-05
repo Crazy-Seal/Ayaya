@@ -2,12 +2,13 @@
 
 import asyncio
 from datetime import date
+from tests.runtime_support import configured_settings
 
 from app.agent.memory.memories.diary import DiaryGeneration
 from app.agent.plugins.runtime import PluginRuntime
 from app.agent.plugins.memory.tasks.memory_tasks import DiaryTask
 from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
-from app.schemas.runtime_types import TaskLifetime, TaskStatus
+from app.schemas.runtime_types import TaskStatus
 
 
 def test_diary_async_work_is_cancelled_without_waiting_for_unrelated_completion(tmp_path):
@@ -18,7 +19,7 @@ def test_diary_async_work_is_cancelled_without_waiting_for_unrelated_completion(
     """
     async def scenario():
         """通过正式提交、停止和等待观察异步业务的取消。"""
-        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=str(tmp_path / 'state.db'))
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / 'state.db'))
         runtime = PluginRuntime('memory', 's', 'run', _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue)
         started, cancelled = asyncio.Event(), asyncio.Event()
 
@@ -39,11 +40,11 @@ def test_diary_async_work_is_cancelled_without_waiting_for_unrelated_completion(
 
         try:
             generation = DiaryGeneration("s", date(2026, 10, 25), [], 1)
-            task_id = await runtime.submit_task(DiaryTask(Memory(), generation), name='diary', title='日记', lifetime=TaskLifetime.INDEPENDENT, notify_agent=False)
+            task_id = await runtime.submit_task(DiaryTask(Memory(), generation), name='diary', title='日记', notify_agent=False)
             await started.wait()
             await supervisor.stop_task(task_id)
             assert (await runtime.wait_task(task_id, timeout_ms=1000)).status == TaskStatus.STOPPED
-            assert cancelled.is_set() and supervisor.active_count() == 0
+            assert cancelled.is_set() and supervisor.active_task_count() == 0
         finally:
             await supervisor.close()
     asyncio.run(scenario())

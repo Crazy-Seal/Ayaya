@@ -19,6 +19,7 @@ class TaskRuntime(Protocol):
     run_id: str
     plugin_name: str | None
     task_id: str | None
+    subagent_id: str | None
 
     def bind_task(self, task_id: str) -> Self:
         """创建绑定本次编号的运行时，保留原调用来源。

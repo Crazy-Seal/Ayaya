@@ -1,5 +1,6 @@
 """验证任务记录的单向传递、持久事实和消费者生命周期。"""
 from tests.terminal_harness import TerminalHarness
+from tests.runtime_support import configured_settings
 
 import asyncio
 from contextlib import closing
@@ -70,7 +71,7 @@ def test_supervisor_finishes_without_consumer_and_preserves_buffer(tmp_path) -> 
     async def scenario():
         """启动后台命令，先验证持久终态和资源收尾，再读取记录来源。"""
         path = str(tmp_path / "state.sqlite3")
-        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=path)
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=path)
         terminal_for_supervisor = TerminalHarness(supervisor, spool_dir=tmp_path / "tasks")
 
         async def wait_terminal(task_id):
@@ -123,7 +124,7 @@ def test_terminal_event_follows_atomic_commit_and_is_not_repeated(tmp_path) -> N
     async def scenario():
         """用真实 SQLite 触发器拒绝通知插入，并核对事件和持久事实。"""
         path = str(tmp_path / "state.sqlite3")
-        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=path)
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=path)
         inbox = SessionStateManager("s", path)
         try:
             await insert_task(supervisor)
@@ -159,7 +160,7 @@ def test_hub_receives_background_status_but_not_foreground_status(tmp_path) -> N
     """
     async def scenario():
         """先订阅会话，再分别完成前台和后台记录。"""
-        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "state.sqlite3"))
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "state.sqlite3"))
         scheduler = create_scheduler(tmp_path, supervisor)
         hub = InteractionEventHub(scheduler, subscriptions=scheduler.subscriptions)
         await scheduler.start()
@@ -198,7 +199,7 @@ def test_session_lock_does_not_block_process_cleanup_or_scheduler_close(tmp_path
     """
     async def scenario():
         """用会话锁制造原回调的阻塞位置，验证公开启动与关闭均可结束。"""
-        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "state.sqlite3"))
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "state.sqlite3"))
         terminal_for_supervisor = TerminalHarness(supervisor, spool_dir=tmp_path / "tasks")
         scheduler = create_scheduler(tmp_path, supervisor)
         await scheduler.start()
@@ -244,7 +245,7 @@ def test_repeated_start_has_one_reader_and_source_close_ends_it(tmp_path) -> Non
     """
     async def scenario():
         """保留消费任务身份，观察真实队列结束而非取消测试替身。"""
-        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "state.sqlite3"))
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "state.sqlite3"))
         scheduler = create_scheduler(tmp_path, supervisor)
         try:
             await scheduler.start()
@@ -272,7 +273,7 @@ def test_scheduler_close_does_not_wait_for_open_source(tmp_path) -> None:
     """
     async def scenario():
         """先关闭消费者，再向仍开放的真实来源保存一条终态记录。"""
-        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "state.sqlite3"))
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "state.sqlite3"))
         scheduler = create_scheduler(tmp_path, supervisor)
         try:
             await scheduler.start()

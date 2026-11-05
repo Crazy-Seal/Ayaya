@@ -1,4 +1,5 @@
 """验证用户停止后的通知保存与真人输入恢复执行。"""
+from tests.runtime_support import RuntimeAgentStub
 
 import asyncio
 from pathlib import Path
@@ -12,7 +13,7 @@ from app.interaction.interaction_contract import ChannelCommand
 from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
 from app.schemas.runtime_types import InteractionEventKind, SessionPhase
-from tests.runtime_support import finish_test_turn
+from tests.runtime_support import configured_settings, finish_test_turn
 
 
 @pytest.mark.parametrize("arrival", ["before_cleanup", "idle", "reactivate_during_cleanup"])
@@ -33,7 +34,7 @@ def test_stop_preserves_notifications_until_human_input(tmp_path: Path, arrival:
         resumed = asyncio.Event()
         calls: list[str] = []
 
-        class RecordingAgent:
+        class RecordingAgent(RuntimeAgentStub):
             """保存真实输入，并允许测试暂停第一轮清理。"""
 
             def __init__(self) -> None:
@@ -92,13 +93,13 @@ def test_stop_preserves_notifications_until_human_input(tmp_path: Path, arrival:
                 await finish_test_turn(path, inbox_inputs)
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self) -> None:
+            async def close(self, *, raise_on_error: bool = False) -> None:
                 """暂停旧轮清理，使通知和新输入能够确定性交错。"""
                 if self.old_turn:
                     cleaning.set()
                     await release_cleanup.wait()
 
-        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=path)
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=path)
         scheduler = AgentRuntimeScheduler(runtime_queue=supervisor.runtime_queue,
             agent_factory=lambda _session, _manager: RecordingAgent(),
             session_state_manager_factory=lambda session: SessionStateManager(session, path),
@@ -155,8 +156,8 @@ def test_stop_preserves_notifications_until_human_input(tmp_path: Path, arrival:
             assert scheduler._session("s").activated
         finally:
             release_cleanup.set()
-            await supervisor.close()
             await scheduler.close()
+            await supervisor.close()
             await manager.close()
 
     asyncio.run(scenario())
@@ -178,7 +179,7 @@ def test_stop_during_delivery_retry_completes_current_turn(tmp_path: Path, repor
         resumed = asyncio.Event()
         calls: list[str] = []
 
-        class FailingOnceAgent:
+        class FailingOnceAgent(RuntimeAgentStub):
             """第一次交付前失败并等待清理，后续实例使用真实事务保存输入。
 
             Attributes:
@@ -214,13 +215,13 @@ def test_stop_during_delivery_retry_completes_current_turn(tmp_path: Path, repor
                 if message == "恢复":
                     resumed.set()
 
-            async def close(self) -> None:
+            async def close(self, *, raise_on_error: bool = False) -> None:
                 """暂停失败尝试的清理，让用户停止发生在下一次重试之前。"""
                 if self.failed:
                     cleaning.set()
                     await release_cleanup.wait()
 
-        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
+        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
             agent_factory=lambda _session, _manager: FailingOnceAgent(),
             session_state_manager_factory=lambda session: SessionStateManager(session, path),
         )

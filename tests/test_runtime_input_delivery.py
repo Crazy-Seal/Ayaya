@@ -2,6 +2,7 @@
 
 import asyncio
 from base64 import b64encode
+from tests.runtime_support import configured_settings
 from contextlib import closing
 from functools import partial
 from io import BytesIO
@@ -339,7 +340,7 @@ def test_hub_preserves_human_payload_before_blocked_on_invoke(tmp_path, with_ima
             return agent
 
         subscriptions = ChannelSubscriptionService(path)
-        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
+        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
             agent_factory=factory, subscriptions=subscriptions,
             session_state_manager_factory=partial(SessionStateManager, db_path=path),
         )

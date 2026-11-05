@@ -1,4 +1,5 @@
 from tests.model_capture import image_urls, image_kind, encoded_tool
+from tests.runtime_support import configured_settings
 from app.agent.models.openai_message_names import TOOL_IMAGE_MESSAGE_NAME
 import asyncio
 from pathlib import Path
@@ -199,7 +200,7 @@ def test_exec_command_preserves_output_for_unified_normalization(tmp_path: Path,
 
     async def scenario():
         """真实执行长输出命令，验证工具没有自行截断结果。"""
-        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "state.db"))
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "state.db"))
         runtime = ToolRuntime("s", "run", "exec_command", "call",
             _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue)
         context = ToolContext(session_id="s", state=None, runtime=runtime)

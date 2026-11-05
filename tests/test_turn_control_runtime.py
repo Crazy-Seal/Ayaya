@@ -10,12 +10,12 @@ from app.agent.state import AgentState, TemporaryContextItem
 from app.agent.state.manager import SessionStateManager
 from app.agent.state.messages import AssistantMessage, ToolCall, ToolMessage
 from app.crud.chat_history_dao import ChatHistoryDao
+from app.schemas.runtime_types import TurnInterruptReason
 
 
-def test_string_turn_reason_keeps_original_interrupt_text() -> None:
-    """验证既有字符串初始化仍能打断，异常不泄漏枚举名称或属性错误。"""
-    # 保留原始字符串作为旧调用样例，不让测试随实现一起改成枚举。
-    control = TurnControl("run", reason="stop")
+def test_turn_reason_uses_protocol_value_in_interrupt_text() -> None:
+    """已受理的停止原因在安全点以协议值传递给回答收尾。"""
+    control = TurnControl("run", reason=TurnInterruptReason.STOP)
     with pytest.raises(TurnInterrupted, match="^stop$"):
         control.check()
 

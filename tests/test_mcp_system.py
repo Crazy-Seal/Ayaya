@@ -223,14 +223,12 @@ def test_chat_settings_round_trips_stable_key_mcp_policies() -> None:
 
 
 def test_mcp_tool_alias_is_namespaced_stable_and_model_safe() -> None:
-    """验证MCP 工具别名稳定且符合模型命名规则。"""
+    """合法公开名称保留服务与工具名，不合法或过长名称在装配时明确拒绝。"""
     short = build_exposed_tool_name("filesystem", "read_file")
-    long = build_exposed_tool_name("remote", "包含空格/" + "x" * 100)
-
     assert short == "mcp__filesystem__read_file"
-    assert len(long) <= 64
-    assert long == build_exposed_tool_name("remote", "包含空格/" + "x" * 100)
-    assert all(character.isalnum() or character in "_-" for character in long)
+    for remote_name in ("包含空格/工具", "x" * 64):
+        with pytest.raises(ValueError, match="工具公开名称"):
+            build_exposed_tool_name("remote", remote_name)
 
 
 class _FakeSession:

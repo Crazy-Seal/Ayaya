@@ -14,7 +14,6 @@ from app.agent.tools.terminal.service import TerminalService
 from app.agent.tools.terminal.task import TerminalTask
 from app.agent.utils.infra.owned_work import complete_owned_work
 from app.environment import get_data_dir
-from app.schemas.runtime_types import TaskLifetime
 from app.schemas.task_types import TERMINAL_TASK_NAME
 
 
@@ -89,7 +88,7 @@ class ExecCommandTool(BaseTool):
             """
             nonlocal task_id
             task_id = await runtime.submit_task(task, name=TERMINAL_TASK_NAME, title=options.cmd,
-                lifetime=TaskLifetime.INDEPENDENT, notify_agent=True, background=options.yield_time_ms == 0)
+                notify_agent=True, background=options.yield_time_ms == 0)
             return task_id
 
         try:

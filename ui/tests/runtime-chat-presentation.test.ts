@@ -532,7 +532,7 @@ async (t) => {
     return [{ task_id: "t", session_id: "s", tool_name: "exec_command", command: "echo test", status, background: true,
       pid: 1, exit_code: null, created_at: "2026-10-09T00:00:00Z", ended_at: null,
       recent_output: "最新输出", name: "terminal", title: "echo test", result: null, error: null,
-      plugin_name: null, output_ref: "task-output://t", lifetime: "independent", notify_agent: true,
+      plugin_name: null, output_ref: "task-output://t", notify_agent: true,
     }];
   };
   try {
@@ -580,7 +580,7 @@ function backgroundTask(taskId: string, outputRef: string | null): BackgroundTas
     created_at: "2026-10-26T00:00:00Z", ended_at: "2026-10-26T00:00:12Z",
     recent_output: "最近输出", name: taskId, title: taskId, result: `${taskId}结果`, error: null,
     plugin_name: outputRef ? null : "memory", output_ref: outputRef,
-    lifetime: "independent", notify_agent: true,
+    notify_agent: true,
   };
 }
 

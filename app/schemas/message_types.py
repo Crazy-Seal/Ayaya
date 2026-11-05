@@ -7,7 +7,7 @@ class MessageType(StrEnum):
     """区分持久会话中的业务消息类别。
 
     Attributes:
-        HUMAN (MessageType): 真人输入。
+        HUMAN (MessageType): 当前 Agent 接收的用户输入。
         SYSTEM (MessageType): 系统指令。
         ASSISTANT (MessageType): Agent 回复。
         TOOL (MessageType): 工具执行结果。

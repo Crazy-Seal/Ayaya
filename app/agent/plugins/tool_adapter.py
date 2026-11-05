@@ -3,7 +3,7 @@
 from app.agent.tools.core.base import BaseTool, ToolContext, ToolResult
 from app.agent.tools.core.naming import exposed_tool_name
 from app.agent.tools.authorization.models import ToolIdentity
-from app.schemas.tool_types import PLUGIN_TOOL_NAMESPACE, ToolSource
+from app.schemas.tool_types import PLUGIN_TOOL_NAMESPACE
 
 
 class PluginToolAdapter(BaseTool):
@@ -18,7 +18,7 @@ class PluginToolAdapter(BaseTool):
         """
         self._tool = tool
         self.identity = ToolIdentity.local(tool.name, plugin_name=plugin_name)
-        self.name = exposed_tool_name(PLUGIN_TOOL_NAMESPACE, plugin_name, ToolSource.LOCAL, tool.name)
+        self.name = exposed_tool_name(PLUGIN_TOOL_NAMESPACE, plugin_name, tool.name)
         self.display_name = getattr(tool, "display_name", tool.name)
         self.description = tool.description
         self.parameters_schema = tool.parameters_schema

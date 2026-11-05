@@ -6,8 +6,8 @@ import asyncio
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Callable, ClassVar
 
-from app.schemas.runtime_types import TaskLifetime
-from app.schemas.task_types import RuntimeRequest, TaskRecord, TaskStopRequest
+from app.schemas.task_types import TaskRecord, TaskStopRequest
+from app.agent.runtime.requests import RuntimeRequest
 
 if TYPE_CHECKING:
     from app.agent.runtime.tasks.base import BaseTask
@@ -37,7 +37,13 @@ class ToolRuntime:
     _supervisor: TaskSupervisor = field(repr=False)
     _runtime_queue: asyncio.Queue[RuntimeRequest] = field(repr=False)
     task_id: str | None = None
+    subagent_id: str | None = None
     plugin_name: ClassVar[None] = None
+
+    @property
+    def runtime_queue(self) -> asyncio.Queue[RuntimeRequest]:
+        """提供专用 Agent 请求的共享投递入口，不暴露 Scheduler。"""
+        return self._runtime_queue
 
     @property
     def records(self) -> TaskRecordDao:
@@ -47,6 +53,10 @@ class ToolRuntime:
             TaskRecordDao: 与 Supervisor 相同的记录事务入口。
         """
         return self._supervisor.records
+
+    async def ensure_available(self) -> None:
+        """工具真正开始前核对父配置和子废弃时间，拒绝旧执行对象的迟到调用。"""
+        await self._supervisor.ensure_available(self.session_id, self.subagent_id)
 
     def bind_task(self, task_id: str) -> ToolRuntime:
         """绑定任务编号，保留工具、会话及轮次来源。
@@ -60,14 +70,13 @@ class ToolRuntime:
         return replace(self, task_id=task_id)
 
     async def submit_task(self, task: BaseTask, *, name: str, title: str,
-                          lifetime: TaskLifetime, notify_agent: bool, background: bool = True) -> str:
+                          notify_agent: bool, background: bool = True) -> str:
         """统一提交具体任务，返回已经登记的编号。
 
         Args:
             task (BaseTask): 实际执行业务及释放资源的任务。
             name (str): 稳定任务名称。
             title (str): 用户可读标题。
-            lifetime (TaskLifetime): 随轮结束或独立运行。
             notify_agent (bool): 是否保存结果通知。
             background (bool): 是否立即在后台列表显示。
 
@@ -75,7 +84,7 @@ class ToolRuntime:
             str: 已登记并启动的编号。
         """
         return await self._supervisor.submit(task, runtime=self, name=name, title=title,
-            lifetime=lifetime, notify_agent=notify_agent, background=background,
+            notify_agent=notify_agent, background=background,
             tool_name=self.tool_name, origin_tool_call_id=self.tool_call_id)
 
     async def get_task_record(self, task_id: str) -> TaskRecord | None:
@@ -88,7 +97,8 @@ class ToolRuntime:
             TaskRecord | None: 会话内记录，未知或其他会话编号为空。
         """
         record = await self._supervisor.get_task_record(task_id)
-        return record if record and record.session_id == self.session_id else None
+        return record if record and record.session_id == self.session_id and (
+            self.subagent_id is None or record.subagent_id == self.subagent_id) else None
 
     async def get_task(self, task_id: str) -> BaseTask | None:
         """取得会话内尚未释放的具体任务，供工具使用其业务交互方法。
@@ -149,7 +159,7 @@ class ToolRuntime:
             task_id (str): 目标任务编号。
         """
         await self._runtime_queue.put(TaskStopRequest(self.session_id, self.run_id,
-            self.tool_name, self.tool_call_id, task_id))
+            self.tool_name, self.tool_call_id, task_id, self.subagent_id))
 
 
 ToolRuntimeFactory = Callable[[str, str, str], ToolRuntime]

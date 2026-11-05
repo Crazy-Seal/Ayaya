@@ -7,7 +7,7 @@ from app.agent.tools.terminal.service import TerminalService
 from app.agent.tools.terminal.task import TerminalTask, read_terminal_output, read_terminal_tail
 from app.agent.tools.terminal.models import TaskLaunchResult
 from app.environment import get_data_dir
-from app.schemas.runtime_types import TaskLifetime, TaskStatus
+from app.schemas.runtime_types import TaskStatus
 from app.schemas.task_types import TERMINAL_TASK_NAME
 
 
@@ -68,7 +68,7 @@ class TerminalHarness:
         runtime = self.runtime(session_id, origin_run_id or '', tool_name, origin_tool_call_id or '')
         task = TerminalTask(command, argv, cwd, tty, self.spool_dir, runtime.records, TerminalService())
         task_id = await runtime.submit_task(task, name=TERMINAL_TASK_NAME, title=command,
-            lifetime=TaskLifetime.INDEPENDENT, notify_agent=True, background=yield_time_ms == 0)
+            notify_agent=True, background=yield_time_ms == 0)
         result = await task.interact(runtime, yield_time_ms=yield_time_ms, initial=True)
         if result.background:
             await runtime.mark_background(task_id)

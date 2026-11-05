@@ -1,5 +1,6 @@
 import asyncio
 from functools import lru_cache
+from tests.runtime_support import configured_settings
 from types import SimpleNamespace
 
 import pytest
@@ -30,7 +31,7 @@ def test_shutdown_request_ends_existing_sse_before_lifespan_cleanup(tmp_path):
         """从真实 SSE 响应读取快照和结束，保持运行时消费者到最终清理。"""
         queue = asyncio.Queue()
         subscriptions = ChannelSubscriptionService()
-        supervisor = TaskSupervisor(runtime_queue=queue, db_path=str(tmp_path / "state.sqlite3"))
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=queue, db_path=str(tmp_path / "state.sqlite3"))
         scheduler = AgentRuntimeScheduler(runtime_queue=queue, task_supervisor=supervisor,
             subscriptions=subscriptions, agent_factory=lambda session, manager: None,
             session_state_manager_factory=lambda session: SessionStateManager(session, str(tmp_path / "state.sqlite3")))
@@ -58,8 +59,8 @@ def test_shutdown_request_ends_existing_sse_before_lifespan_cleanup(tmp_path):
         finally:
             if stream is not None:
                 await stream.aclose()
-            await supervisor.close()
             await scheduler.close()
+            await supervisor.close()
             await hub.close()
     asyncio.run(scenario())
 

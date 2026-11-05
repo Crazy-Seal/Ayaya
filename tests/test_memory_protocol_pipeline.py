@@ -1,4 +1,5 @@
 from tests.model_capture import result_parts
+from tests.runtime_support import configured_settings
 from tests.model_capture import capture_input
 from app.agent.state.messages import text_content
 import asyncio
@@ -338,7 +339,7 @@ def test_memory_jobs_start_only_after_input_commit_with_frozen_history(tmp_path,
 
     async def scenario():
         """通过钩子提交任务，再通过正式记录和等待接口验证。"""
-        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "state.sqlite3"))
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "state.sqlite3"))
         runtime = PluginRuntime("memory", "session", "r", _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue)
         plugin = MemoryPlugin()
         state = AgentState.create_new("session")
@@ -355,7 +356,7 @@ def test_memory_jobs_start_only_after_input_commit_with_frozen_history(tmp_path,
             for record in records:
                 done = await runtime.wait_task(record.task_id, timeout_ms=1000)
                 assert done.status == "completed"
-                assert not done.notify_agent and done.lifetime == "independent"
+                assert not done.notify_agent
             assert calls == [84]
         finally:
             await supervisor.close()
@@ -430,12 +431,12 @@ def test_long_term_memory_uses_frozen_protocol_cutoff(tmp_path) -> None:
         from app.agent.plugins.memory.tasks.memory_tasks import LongTermMemoryTask
         from app.agent.plugins.runtime import PluginRuntime
         from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
-        from app.schemas.runtime_types import TaskLifetime, TaskStatus
-        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "state.sqlite3"))
+        from app.schemas.runtime_types import TaskStatus
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "state.sqlite3"))
         runtime = PluginRuntime("memory", "session", "r", _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue)
         try:
             task_id = await runtime.submit_task(LongTermMemoryTask(MemoryManager(), "session", 42, 12, True, True),
-                name="memory.persist_long_term", title="提取长期记忆", lifetime=TaskLifetime.INDEPENDENT, notify_agent=False)
+                name="memory.persist_long_term", title="提取长期记忆", notify_agent=False)
             assert (await runtime.wait_task(task_id, timeout_ms=1000)).status == TaskStatus.COMPLETED
         finally:
             await supervisor.close()

@@ -1,4 +1,4 @@
-from tests.runtime_support import checkpoint_probe
+from tests.runtime_support import configured_settings, checkpoint_probe
 from app.agent.models.openai_message_names import MCP_TOOL_IMAGE_MESSAGE_NAME, TOOL_IMAGE_MESSAGE_NAME
 from tests.model_capture import result_parts
 from tests.model_capture import capture_input
@@ -921,7 +921,7 @@ def test_failed_user_input_commit_keeps_pending_long_term_memory_batch(
         nonlocal supervisor
         from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
         db_path = tmp_path / "checkpoints.sqlite3"
-        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=str(db_path))
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=str(db_path))
         seed = SessionStateManager("checkpoint-test", db_path=str(db_path))
         try:
             state = AgentState.create_new("checkpoint-test")

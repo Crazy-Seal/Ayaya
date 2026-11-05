@@ -6,8 +6,8 @@ import asyncio
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Callable
 
-from app.schemas.runtime_types import TaskLifetime
-from app.schemas.task_types import PluginRequest, PluginRequestKind, RuntimeRequest, TaskRecord
+from app.schemas.task_types import PluginRequest, PluginRequestKind, TaskRecord
+from app.agent.runtime.requests import RuntimeRequest
 
 if TYPE_CHECKING:
     from app.agent.runtime.tasks.base import BaseTask
@@ -33,6 +33,7 @@ class PluginRuntime:
     _supervisor: TaskSupervisor = field(repr=False)
     _runtime_queue: asyncio.Queue[RuntimeRequest] = field(repr=False)
     task_id: str | None = None
+    subagent_id: str | None = None
 
     def bind_task(self, task_id: str) -> PluginRuntime:
         """为具体任务绑定编号，保留原插件和调用轮次。
@@ -46,21 +47,20 @@ class PluginRuntime:
         return replace(self, task_id=task_id)
 
     async def submit_task(self, task: BaseTask, *, name: str, title: str,
-                          lifetime: TaskLifetime, notify_agent: bool) -> str:
+                          notify_agent: bool) -> str:
         """提交任务，登记成功后取得编号，执行和收尾交给 Supervisor。
 
         Args:
             task (BaseTask): 提供业务执行和资源清理的具体任务。
             name (str): 供查询或识别本次内容用途的稳定名称。
             title (str): 供用户阅读的任务说明。
-            lifetime (TaskLifetime): 任务随来源轮次结束或独立运行的配置。
             notify_agent (bool): 终态保存时是否生成给 Agent 的结果通知。
 
         Returns:
             str: 已登记并启动的任务执行编号。
         """
         return await self._supervisor.submit(task, runtime=self, name=name, title=title,
-                                            lifetime=lifetime, notify_agent=notify_agent)
+                                            notify_agent=notify_agent)
 
     async def get_task(self, task_id: str) -> TaskRecord | None:
         """查询本插件在当前会话中的任务，不存在或超出范围时返回 None。

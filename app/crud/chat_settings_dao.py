@@ -119,6 +119,23 @@ class ChatSettingsDao:
         self._clear_cache()
         return chat_settings
 
+    def exists(self, session_id: str) -> bool:
+        """直接按配置文件判断父身份是否存在，供执行受理和迟到通知检查。
+
+        Args:
+            session_id (str): 父 Agent 的配置编号。
+
+        Returns:
+            bool: 当前文件中包含该身份时为真，文件尚未创建时为假。
+        """
+        if not self.config_file.exists():
+            return False
+        # 1. Agent 装配已读入的配置沿用现有缓存；共享 DAO 删除成功后统一清空。
+        # 每个流式分片只检查同一缓存，避免反复同步解析整份 YAML。
+        if session_id in self._cache:
+            return True
+        return any(item["session_id"] == session_id for item in self._load_chat_settings_file()["chat_models"])
+
     def get_chat_settings(self, session_id: str) -> ChatSettings:
         """优先读取缓存；未缓存时从 YAML 查找并校验会话设置。
 

@@ -23,6 +23,7 @@ import { MotionPage } from "./pages/motion-page.js";
 import { McpPage } from "./pages/mcp-page.js";
 import { ChannelSubscriptionsPage } from "./pages/channel-subscriptions-page.js";
 import { BackgroundTasksPage } from "./pages/background-tasks-page.js";
+import { SubagentPanel } from "./pages/subagent-panel.js";
 import { InteractionEventKind } from "../../shared-types.js";
 import type {
   ChatSettingsState,
@@ -57,10 +58,12 @@ class SettingsApp {
   private mcpPage: ISettingsPage;
   private channelsPage: ChannelSubscriptionsPage;
   private tasksPage: BackgroundTasksPage;
+  private subagentPanel: SubagentPanel;
   private confirmDialog: ConfirmDialog;
   private toast: SettingsToast;
 
-  private currentPage = new URL(window.location.href).searchParams.get("page") === "tasks" ? "tasks" : "model";
+  private currentPage = ["tasks", "subagents"].find(/** 只接受已有独立页面导航值。 */
+    (page) => page === new URL(window.location.href).searchParams.get("page")) ?? "model";
 
   /** 已保存状态（来自后端，不可变） */
   private savedState: ChatSettingsState | null = null;
@@ -170,6 +173,9 @@ class SettingsApp {
       this.toast,
     );
 
+    this.subagentPanel = new SubagentPanel(this.getElement("#subagents-list"),
+      this.getElement("#refresh-subagents"), this.toast);
+
     // 注册页面到映射
     this.pages.set("llm", this.llmPage);
     this.pages.set("tools", this.toolsPage);
@@ -233,6 +239,10 @@ class SettingsApp {
       if (this.currentPage === "tasks" && event.session_id === this.savedState?.session_id
           && (event.kind === InteractionEventKind.TASK_STATUS || event.kind === InteractionEventKind.SESSION_SNAPSHOT)) {
         void this.tasksPage.render(event.session_id);
+      }
+      if (this.currentPage === "subagents" && event.session_id === this.savedState?.session_id
+          && (event.kind === InteractionEventKind.SUBAGENT_STATUS || event.kind === InteractionEventKind.SESSION_SNAPSHOT)) {
+        void this.subagentPanel.render(event.session_id);
       }
     });
     // 侧边栏导航
@@ -313,6 +323,7 @@ class SettingsApp {
       unsubscribeSettingsPage();
       unsubscribeTasks();
       this.tasksPage.setActive(false);
+      this.subagentPanel.dispose();
       if (typeof unsubscribeTransformChanged === "function") {
         unsubscribeTransformChanged();
       }
@@ -333,6 +344,7 @@ class SettingsApp {
     // 更新当前页面
     this.currentPage = newPage;
     this.tasksPage.setActive(newPage === "tasks");
+    this.subagentPanel.setActive(newPage === "subagents");
 
     // 更新 UI
     document.querySelectorAll<HTMLButtonElement>(".settings-tab").forEach(/**
@@ -385,6 +397,8 @@ class SettingsApp {
         await this.channelsPage.render(this.savedState.session_id);
       } else if (pageName === "tasks") {
         await this.tasksPage.render(this.savedState.session_id);
+      } else if (pageName === "subagents") {
+        await this.subagentPanel.render(this.savedState.session_id);
       }
       return;
     }

@@ -1,4 +1,6 @@
+from tests.runtime_support import RuntimeAgentStub
 from app.agent.state.manager import task_result_messages
+from tests.runtime_support import configured_settings
 from app.agent.core.events import AgentEvent, EventType
 from app.services.channel_subscription_service import ChannelSubscriptionService
 from tests.model_capture import result_parts
@@ -19,6 +21,56 @@ from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
 from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.interaction.interaction_contract import ChannelCommand
 from app.interaction.interaction_event_hub import InteractionEventHub
+
+
+def test_shutdown_retries_parent_resource_still_owned_by_session(tmp_path) -> None:
+    """退出首次关闭父资源失败时，会话保留句柄并在共享存储关闭前继续释放。"""
+    async def scenario() -> None:
+        """通过退出后的资源释放结果检查所有权交接。"""
+        path = str(tmp_path / "state.sqlite3")
+        entered, released = asyncio.Event(), asyncio.Event()
+        failure_injected = False
+
+        class TestAgent(RuntimeAgentStub):
+            """执行保持等待，关闭资源在退出期间暂时失败一次。"""
+
+            def __init__(self, manager: SessionStateManager) -> None:
+                """借用原 worker 的状态对象。
+
+                Args:
+                    manager (SessionStateManager): 当前上下文的持久状态业务对象。
+                """
+                self.manager = manager
+
+            async def run(self, message, **kwargs):
+                """交付输入后等待应用退出取消执行。"""
+                state = await self.manager.load()
+                await self.manager.commit_human_input(state, message, None, inputs=kwargs["inbox_inputs"])
+                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False})
+                entered.set()
+                await asyncio.Event().wait()
+
+            async def close(self, *, raise_on_error: bool = False) -> None:
+                """首次失败后保留实际资源，下次关闭完成资源交还。"""
+                nonlocal failure_injected
+                if not failure_injected:
+                    failure_injected = True
+                    raise OSError("暂时无法关闭父资源")
+                released.set()
+
+        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
+            agent_factory=lambda _session, manager: TestAgent(manager),
+            session_state_manager_factory=lambda context: SessionStateManager(context, path))
+        try:
+            await scheduler.start()
+            await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "执行任务"}))
+            await asyncio.wait_for(entered.wait(), 2)
+            await scheduler.close()
+            assert released.is_set()
+        finally:
+            await scheduler.close()
+
+    asyncio.run(scenario())
 
 
 def test_restart_discards_humans_and_preserves_pending_notices(tmp_path) -> None:
@@ -228,7 +280,7 @@ def test_start_finalizes_abandoned_checkpoint_without_execution(tmp_path, case) 
             """
             raise AssertionError("启动和快照不能构造可执行 Agent")
 
-        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
+        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
            agent_factory=unexpected_agent,
             session_state_manager_factory=lambda session: SessionStateManager(session, path),
         )
@@ -267,14 +319,14 @@ def test_terminal_waits_for_new_human_and_shutdown_cannot_reactivate(tmp_path) -
     async def scenario() -> None:
         """使用真实 Inbox 交付和隔离执行替身验证生命周期规则。"""
         path = str(tmp_path / "state.sqlite3")
-        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=path)
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=path)
         records = supervisor.records
         await records.insert_running("old", "s", "旧任务", 1, str(tmp_path / "out"))
         await supervisor.commit_terminal_state_once("old", "completed")
         calls = []
         executed = asyncio.Event()
 
-        class RecordingAgent:
+        class RecordingAgent(RuntimeAgentStub):
             """通过真实持久交付记录激活时的输入顺序。"""
             async def run(self, message, *, inbox_input=None, inbox_inputs=None, runtime_inputs=(), **kwargs):
                 """保存通知和真人消息，并结束测试轮次。
@@ -325,7 +377,7 @@ def test_terminal_waits_for_new_human_and_shutdown_cannot_reactivate(tmp_path) -
                 executed.set()
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self):
+            async def close(self, *, raise_on_error: bool = False):
                 """替身不拥有外部资源。"""
 
         scheduler = AgentRuntimeScheduler(runtime_queue=supervisor.runtime_queue,
@@ -407,7 +459,7 @@ def test_start_failure_keeps_execution_closed_and_retry_finishes_cleanup(tmp_pat
             """
             raise AssertionError("启动不能执行")
 
-        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=path)
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=path)
         scheduler = AgentRuntimeScheduler(runtime_queue=supervisor.runtime_queue,
             task_supervisor=supervisor,
             agent_factory=unexpected_agent,
@@ -449,6 +501,7 @@ def test_shutdown_captures_real_agent_partial_and_closes_subscription(tmp_path, 
         from app.agent.models.llm_client import StreamChunk
         path = str(tmp_path / "state.sqlite3")
         commit_entered = asyncio.Event()
+        commit_released = asyncio.Event()
 
 
         class WaitingLLM:
@@ -497,14 +550,14 @@ def test_shutdown_captures_real_agent_partial_and_closes_subscription(tmp_path, 
                     """
                     if kwargs.get("checkpoint_type") == "completed":
                         commit_entered.set()
-                        await asyncio.Event().wait()
+                        await commit_released.wait()
                     return await original_save(state, **kwargs)
 
                 _manager.save = delayed_save
             return agent
 
         subscriptions = ChannelSubscriptionService()
-        scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
+        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
             subscriptions=subscriptions, agent_factory=make_agent,
             session_state_manager_factory=lambda session: SessionStateManager(session, path),
         )
@@ -519,20 +572,27 @@ def test_shutdown_captures_real_agent_partial_and_closes_subscription(tmp_path, 
                 pass
             if committing:
                 await asyncio.wait_for(commit_entered.wait(), 2)
-            await scheduler.begin_shutdown()
+            await asyncio.wait_for(scheduler.begin_shutdown(), 2)
             await hub.close()
             with pytest.raises(StopAsyncIteration):
                 await anext(stream)
             await hub.close()
+            if committing:
+                # 最终提交已经开始，退出仍先关闭订阅，再等待原保存完成。
+                assert scheduler._sessions["s"].worker is not None
+                assert not scheduler._sessions["s"].worker.done()
+            commit_released.set()
             await scheduler.close()
             manager = SessionStateManager("s", path)
             try:
                 state = await manager.load()
-                assert state.messages[-1].text == "真实片段……（应用退出，本轮已终止）"
+                expected = "真实片段" if committing else "真实片段……（应用退出，本轮已终止）"
+                assert state.messages[-1].text == expected
                 assert manager.last_loaded_checkpoint_type == "completed"
             finally:
                 await manager.close()
         finally:
+            commit_released.set()
             await hub.close()
             await scheduler.close()
             await stream.aclose()

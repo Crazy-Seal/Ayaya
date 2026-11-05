@@ -36,6 +36,9 @@ def build_exposed_tool_name(server_id: str, remote_tool_name: str) -> str:
 
     Returns:
         str: 带 Server 命名空间、最长 64 字符的模型可见名称。
+
+    Raises:
+        ValueError: 拼接后的公开名称包含不支持的字符或超过长度限制。
     """
     return exposed_tool_name("mcp", server_id, remote_tool_name)
 

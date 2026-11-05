@@ -1,6 +1,8 @@
+from tests.runtime_support import RuntimeAgentStub
 import asyncio
 import json
 from concurrent.futures import ThreadPoolExecutor
+from tests.runtime_support import configured_settings
 from contextlib import asynccontextmanager
 from functools import partial
 from threading import Event
@@ -39,7 +41,7 @@ def test_http_command_reaches_real_scheduler_and_sse_subscriber(tmp_path, delive
     snapshot_sent = Event()
     completed_sent = Event()
 
-    class Agent:
+    class Agent(RuntimeAgentStub):
         """只替代模型执行，保留真人输入的真实保存和交付通知。"""
 
         async def run(self, message, *, origin_channel, inbox_input, **kwargs):
@@ -71,7 +73,7 @@ def test_http_command_reaches_real_scheduler_and_sse_subscriber(tmp_path, delive
             finally:
                 await manager.close()
 
-        async def close(self):
+        async def close(self, *, raise_on_error: bool = False):
             """替身无额外资源，存储连接由 run 清理。"""
 
     def create_agent(session_id, _manager):
@@ -88,7 +90,7 @@ def test_http_command_reaches_real_scheduler_and_sse_subscriber(tmp_path, delive
         return Agent()
 
     subscriptions = ChannelSubscriptionService(path)
-    scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
+    scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
         agent_factory=create_agent, subscriptions=subscriptions,
         session_state_manager_factory=partial(SessionStateManager, db_path=path),
     )
@@ -229,9 +231,18 @@ def test_unknown_command_keeps_http_200_business_rejection() -> None:
         """
         raise AssertionError("未知命令不能启动 Agent")
 
-    scheduler = AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),  agent_factory=unexpected_agent)
-    asyncio.run(scheduler.start())
-    app = FastAPI()
+    scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),  agent_factory=unexpected_agent)
+
+    @asynccontextmanager
+    async def lifespan(_app):
+        """同一事件循环启动并关闭 Scheduler，释放其持有的状态及结果查询连接。"""
+        await scheduler.start()
+        try:
+            yield
+        finally:
+            await scheduler.close()
+
+    app = FastAPI(lifespan=lifespan)
     app.include_router(agent_router)
 
     def runtime_override():

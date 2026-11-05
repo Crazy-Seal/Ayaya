@@ -47,6 +47,10 @@ const desktopPetApi: DesktopPetApi = {
    */
   getBackgroundTasks: (sessionId) =>
     ipcRenderer.invoke(IpcChannel.GET_BACKGROUND_TASKS, sessionId),
+  /** 按父会话读取当前子 Agent 摘要，不触发执行。 */
+  getSubagents: (sessionId) => ipcRenderer.invoke(IpcChannel.GET_SUBAGENTS, sessionId),
+  /** 按父子归属读取定义、交互及最终报告。 */
+  getSubagentDetails: (sessionId, subagentId) => ipcRenderer.invoke(IpcChannel.GET_SUBAGENT_DETAILS, sessionId, subagentId),
   /**
    * 通过主进程按字节游标查询任务输出页。
    *
@@ -156,7 +160,7 @@ const desktopPetApi: DesktopPetApi = {
    * 监听已打开窗口的任务页导航。
    *
    * Args:
-   *     listener ((page: "tasks") => void): 页面导航回调。
+   *     listener ((page: "tasks" | "subagents") => void): 页面导航回调。
    *
    * Returns:
    *     () => void: 移除当前监听的清理函数。

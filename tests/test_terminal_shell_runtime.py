@@ -1,5 +1,6 @@
 """检查默认 Shell 启动和隔离后台任务的实时输出。"""
 from tests.terminal_harness import TerminalHarness
+from tests.runtime_support import configured_settings
 
 import asyncio
 import os
@@ -36,7 +37,7 @@ def test_direct_power_shell_output_is_visible_before_exit_and_survives_stop(
     """
     async def scenario() -> None:
         """运行无外部副作用的输出和等待命令，最后停止受管进程树。"""
-        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(),
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
             db_path=str(tmp_path / "state.sqlite3"),
         )
         terminal_for_supervisor = TerminalHarness(supervisor, spool_dir=tmp_path / "tasks")

@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 
-from app.dependencies import get_chat_settings_service
+from app.dependencies import get_chat_settings_service, get_runtime_scheduler
+from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.schemas.chat_settings import ChatSettings
 from app.schemas.result import Result
 from app.services.chat_settings_service import ChatSettingsService
@@ -41,6 +42,7 @@ async def add_chat_settings(
 async def delete_chat_settings(
     session_id: str,
     chat_settings_service: ChatSettingsService = Depends(get_chat_settings_service),
+    scheduler: AgentRuntimeScheduler = Depends(get_runtime_scheduler),
 ) -> Result:
     """删除指定会话的模型配置。
 
@@ -56,6 +58,7 @@ async def delete_chat_settings(
     """
     try:
         await chat_settings_service.delete_chat_settings(session_id)
+        scheduler.schedule_parent_cleanup(session_id)
         return Result(data=None, msg="success", code=200)
     except PluginConfigurationError as exc:
         raise HTTPException(status_code=422, detail=exc.errors) from exc

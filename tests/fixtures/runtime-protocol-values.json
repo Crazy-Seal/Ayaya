@@ -6,9 +6,12 @@
   ],
   "TurnPhase": [
     "idle",
+    "preparing",
     "llm",
     "tool",
-    "committing"
+    "interrupted",
+    "committing",
+    "finishing"
   ],
   "TurnInterruptReason": [
     "stop",
@@ -21,7 +24,8 @@
     "stop_turn",
     "resolve_authorization",
     "stop_background_task",
-    "cancel_queued"
+    "cancel_queued",
+    "interact_subagent"
   ],
   "InteractionEventKind": [
     "session_snapshot",
@@ -37,10 +41,13 @@
     "interrupt",
     "authorization_resolved",
     "run_completed",
-    "error"
+    "error",
+    "subagent_status",
+    "subagent_interrupt"
   ],
   "InterruptKind": [
-    "authorization_request"
+    "authorization_request",
+    "parent_message"
   ],
   "ApprovalDecisionKind": [
     "approve",
@@ -56,7 +63,10 @@
   "InboxKind": [
     "human",
     "task_terminal",
-    "plugin_notification"
+    "plugin_notification",
+    "agent_command",
+    "subagent",
+    "parent_reply"
   ],
   "InboxStatus": [
     "pending",

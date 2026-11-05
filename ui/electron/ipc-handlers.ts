@@ -679,6 +679,26 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
     }
   );
 
+  /**
+   * 角色移除及窗口通知完成后异步删除目录，失败只记录日志。
+   *
+   * Args:
+   *     rootDir (string | undefined): 已废弃角色的资源目录。
+   */
+  function removeRetiredModelDirectory(rootDir: string | undefined): void {
+    if (rootDir) {
+      void fs.promises.rm(resolveRootDirAbsolute(rootDir), { recursive: true, force: true }).catch(
+        /**
+         * 目录清理失败时保留已保存的角色删除结果。
+         *
+         * Args:
+         *     error (unknown): 文件系统清理异常。
+         */
+        (error: unknown) => { console.error("清理已删除角色目录失败", error); },
+      );
+    }
+  }
+
   // 删除模型
   trustedIpc.handle(IpcChannel.DELETE_MODEL, /**
    * 页面删除模型时拒绝内置模型，删除自定义资源并在必要时切回内置模型。
@@ -713,10 +733,6 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
     await deleteChatSettingsBySessionId(target.sessionId);
     forgetAiName(target.sessionId);
 
-    if (target.rootDir) {
-      fs.rmSync(resolveRootDirAbsolute(target.rootDir), { recursive: true, force: true });
-    }
-
     config.models = config.models.filter(/**
      * 生成删除后的模型列表，排除目标编号。
      *
@@ -733,6 +749,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
       saveModelConfig(fallback);
       clearChatSettingsCache();
       notifyModelChanged();
+      removeRetiredModelDirectory(target.rootDir);
       return {
         activeModelId: fallback.activeModelId,
       };
@@ -767,6 +784,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
     saveModelConfig(config);
     clearChatSettingsCache();
     notifyModelChanged();
+    removeRetiredModelDirectory(target.rootDir);
 
     return {
       activeModelId: config.activeModelId,
@@ -818,7 +836,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
    *     page (unknown): 需要打开的设置页面名称。
    */
   (_event, page: unknown) => {
-    openSettingsWindow(page === "tasks" ? "tasks" : undefined);
+    openSettingsWindow(page === "tasks" || page === "subagents" ? page : undefined);
   });
 
   // 最小化当前窗口
@@ -974,6 +992,20 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
     }
 
     return images;
+  });
+
+  /** 按父会话查询子状态，HTTP 失败明确返回给页面。 */
+  trustedIpc.handle(IpcChannel.GET_SUBAGENTS, async (_event, sessionId: string) => {
+    const response = await backendFetch(`/agent/subagents/${encodeURIComponent(sessionId)}`);
+    if (!response.ok) throw new Error(`读取子 Agent 失败: ${response.status}`);
+    const data = await response.json() as { subagents: unknown[] };
+    return data.subagents;
+  });
+  /** 按父子归属读取单体详情，已释放身份也可查看报告。 */
+  trustedIpc.handle(IpcChannel.GET_SUBAGENT_DETAILS, async (_event, sessionId: string, subagentId: string) => {
+    const response = await backendFetch(`/agent/subagents/${encodeURIComponent(sessionId)}/${encodeURIComponent(subagentId)}`);
+    if (!response.ok) throw new Error(`读取子 Agent 详情失败: ${response.status}`);
+    return response.json();
   });
 
   // 聊天请求

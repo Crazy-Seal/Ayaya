@@ -1,5 +1,5 @@
 /** 桌面交互 Adapter 的 Renderer 视图；Agent 生命周期由后端管理。 */
-import { HistoryRole } from "../../shared-types.js";
+import { HistoryRole, SubagentStatus, type SubagentSummary } from "../../shared-types.js";
 import { iconMarkup } from "../ui/icons.js";
 import { ToolApprovalDialog } from "./tool-approval-dialog.js";
 import { BackgroundTaskEntry } from "./background-task-entry.js";
@@ -118,6 +118,8 @@ export class RuntimeChatClient {
   private pendingSteerMessage: string | null = null;
   private queuedInputs = new Map<number, string>();
   private readonly taskEntry: BackgroundTaskEntry | null;
+  private readonly subagents = new Map<string, SubagentSummary>();
+  private approvalSubagentId: string | null = null;
   private eventTail: Promise<void> = Promise.resolve();
   private initialized = false;
   private sessionRevision = 0;
@@ -139,6 +141,8 @@ export class RuntimeChatClient {
     this.dialog = options.confirmDialog ?? new ToolApprovalDialog();
     this.originalSendIcon = options.sendBtn.innerHTML;
     this.sessionId = options.sessionId;
+    document.getElementById("subagent-entry")?.addEventListener("click", /** 打开独立子 Agent 面板。 */
+      () => window.desktopPetApi.openSettingsWindow("subagents"));
     const taskRoot = document.getElementById("chat-history-toolbar");
     const taskButton = document.getElementById("background-task-entry") as HTMLButtonElement | null;
     const taskNotice = document.getElementById("background-task-notice");
@@ -218,6 +222,9 @@ export class RuntimeChatClient {
     this.sessionId = sessionId;
     this.options.chatHistory.setSessionId?.(sessionId);
     this.taskEntry?.setSessionId(sessionId);
+    this.subagents.clear();
+    this.updateSubagentEntry();
+    this.approvalSubagentId = null;
     this.updateSendButton();
     const revision = this.sessionRevision;
     void this.bridge.subscribeDesktopSession(sessionId, { refreshSnapshot: true }).catch(/**
@@ -429,16 +436,17 @@ export class RuntimeChatClient {
    * Returns:
    *     Promise<void>: 当前异步处理完成的等待结果。
    */
-  private async showApproval(value: Record<string, unknown>): Promise<void> {
+  private async showApproval(value: Record<string, unknown>, subagentId: string | null = null): Promise<void> {
     // 1. 只打开有效审批且同 request_id 不重复创建模态框。
     if (value.type !== InterruptKind.AUTHORIZATION_REQUEST || typeof value.request_id !== "string") return;
     if (this.approvalId === value.request_id) return;
     const requestId = value.request_id;
     const sessionId = this.sessionId;
     this.approvalId = requestId;
+    this.approvalSubagentId = subagentId;
     const data = value.data as Record<string, unknown> | undefined;
     const decision = await this.dialog.open({
-      title: "工具调用确认",
+      title: subagentId ? `子 Agent ${subagentId} 工具调用确认` : "工具调用确认",
       message: String(value.message || "是否允许此工具操作？"),
       details: JSON.stringify(data?.prepared_action ?? data?.arguments ?? {}, null, 2),
       allowSteer: true,
@@ -446,7 +454,8 @@ export class RuntimeChatClient {
     // 2. 对话框等待期间请求可能被跨端处理或切换会话，提交前必须再次核对。
     if (this.approvalId !== requestId || this.sessionId !== sessionId) return;
     this.approvalId = null;
-    await this.submitApproval(requestId, decision);
+    this.approvalSubagentId = null;
+    await this.submitApproval(requestId, decision, subagentId);
   }
 
   /**
@@ -459,13 +468,14 @@ export class RuntimeChatClient {
    * Returns:
    *     Promise<void>: 当前异步处理完成的等待结果。
    */
-  private async submitApproval(requestId: string, decision: ApprovalDecision): Promise<void> {
+  private async submitApproval(requestId: string, decision: ApprovalDecision, subagentId: string | null = null): Promise<void> {
     try {
       const receipt = await this.bridge.submitInteractionCommand({
         session_id: this.sessionId,
         origin_channel: DESKTOP_CHANNEL,
         kind: CommandKind.RESOLVE_AUTHORIZATION,
         request_id: requestId,
+        ...(subagentId ? { subagent_id: subagentId } : {}),
         payload: decision,
       });
       if (!receipt.accepted) this.options.chatHistory.showErrorMessage(receipt.reason || "审批已由其他入口处理");
@@ -662,6 +672,16 @@ export class RuntimeChatClient {
     }
   }
 
+  /** 按实际子摘要更新独立入口，空闲可复用身份也计入总数。 */
+  private updateSubagentEntry(): void {
+    const button = document.getElementById("subagent-entry");
+    if (!button) return;
+    const running = [...this.subagents.values()].filter(/** 等待父回复仍属于活动任务。 */
+      (item) => item.status !== SubagentStatus.IDLE).length;
+    button.textContent = `子 Agent · ${running}/${this.subagents.size}`;
+    button.hidden = this.subagents.size === 0;
+  }
+
   /**
    * 串行应用会话快照及增量，按 epoch 和序号过滤重复或过期事件。
    *
@@ -711,8 +731,17 @@ export class RuntimeChatClient {
       }
       this.renderQueuedInputs();
       this.taskEntry?.setSnapshot(snapshot.tasks);
-      const pendingInterrupt = snapshot.interrupt && typeof snapshot.interrupt === "object"
-        ? snapshot.interrupt as Record<string, unknown> : null;
+      this.subagents.clear();
+      if (Array.isArray(snapshot.subagents)) {
+        for (const item of snapshot.subagents as SubagentSummary[]) this.subagents.set(item.subagent_id, item);
+      }
+      this.updateSubagentEntry();
+      const prompt = snapshot.approval_prompt && typeof snapshot.approval_prompt === "object"
+        ? snapshot.approval_prompt as Record<string, unknown> : null;
+      const pendingInterrupt = prompt?.value && typeof prompt.value === "object"
+        ? prompt.value as Record<string, unknown>
+        : snapshot.interrupt && typeof snapshot.interrupt === "object"
+          ? snapshot.interrupt as Record<string, unknown> : null;
       if (this.approvalId && pendingInterrupt?.request_id !== this.approvalId) {
         this.approvalId = null;
         this.dialog.dismiss();
@@ -727,7 +756,7 @@ export class RuntimeChatClient {
         if (historyLoaded && pendingInterrupt.type === InterruptKind.AUTHORIZATION_REQUEST) {
           this.refreshedApprovals.add(`${this.epoch}:${String(pendingInterrupt.request_id || "")}`);
         }
-        void this.showApproval(pendingInterrupt);
+        void this.showApproval(pendingInterrupt, typeof prompt?.subagent_id === "string" ? prompt.subagent_id : null);
       }
       // 2.2. 主进程收到快照不等于页面已初始化；此处历史查询和当前状态应用都已结束。
       this.initialized = true;
@@ -738,6 +767,20 @@ export class RuntimeChatClient {
     if (event.stream_epoch !== this.epoch || event.event_sequence <= this.sequence) return;
     this.sequence = event.event_sequence;
     // 4. 真人事件已随 checkpoint 交付，用 message_id 与刚载入历史去重。
+    if (event.kind === InteractionEventKind.SUBAGENT_STATUS) {
+      const identifier = String(event.payload.subagent_id);
+      if (event.payload.removed) this.subagents.delete(identifier);
+      else this.subagents.set(identifier, event.payload as unknown as SubagentSummary);
+      this.updateSubagentEntry();
+      return;
+    }
+    if (event.kind === InteractionEventKind.SUBAGENT_INTERRUPT) {
+      const value = event.payload.value as Record<string, unknown>;
+      this.attentionApprovalId = String(value.request_id);
+      this.options.onAttention?.({ approvalId: this.attentionApprovalId });
+      void this.showApproval(value, String(event.payload.subagent_id));
+      return;
+    }
     if (event.kind === InteractionEventKind.HUMAN_MESSAGE) {
       if (event.origin_channel === DESKTOP_CHANNEL
           && String(event.payload.message || "") === this.pendingSteerMessage) {
@@ -844,8 +887,10 @@ export class RuntimeChatClient {
       }
     // 8. 完成含用户停止：收到保存后的事件才刷新；错误只恢复此前保存，最后展示错误。
     } else if (event.kind === InteractionEventKind.RUN_COMPLETED) {
-      this.attentionApprovalId = null;
-      this.options.onAttention?.({ approvalId: null });
+      if (!this.approvalSubagentId) {
+        this.attentionApprovalId = null;
+        this.options.onAttention?.({ approvalId: null });
+      }
       const completedKey = this.replyKey(event.run_id || this.runId);
       this.phase = SessionPhase.IDLE;
       this.runId = null;
@@ -854,8 +899,10 @@ export class RuntimeChatClient {
       this.deferredRuns.delete(completedKey);
       this.options.chatHistory.hideTypingIndicator();
     } else if (event.kind === InteractionEventKind.ERROR) {
-      this.attentionApprovalId = null;
-      this.options.onAttention?.({ approvalId: null });
+      if (!this.approvalSubagentId) {
+        this.attentionApprovalId = null;
+        this.options.onAttention?.({ approvalId: null });
+      }
       const failedKey = this.replyKey(event.run_id || this.runId);
       this.pendingSteerMessage = null;
       this.options.chatHistory.clearPendingSteer?.();

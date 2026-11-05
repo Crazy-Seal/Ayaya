@@ -3,6 +3,7 @@
 import asyncio
 
 from app.agent.state.manager import SessionStateManager
+from tests.runtime_support import configured_settings
 from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
 
@@ -16,7 +17,7 @@ def test_restart_preserves_orphan_notice_without_activating_agent(tmp_path) -> N
     async def scenario() -> None:
         """保存遗留进程记录并通过正式启动检查通知内容。"""
         path = str(tmp_path / "checkpoint.sqlite3")
-        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=path)
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=path)
         await supervisor.records.insert_running("old-task", "s", "旧进程", 1, str(tmp_path / "out"))
 
         def unexpected_agent(_session, _manager):
@@ -48,6 +49,6 @@ def test_restart_preserves_orphan_notice_without_activating_agent(tmp_path) -> N
             finally:
                 await inbox.close()
         finally:
-            await supervisor.close()
             await scheduler.close()
+            await supervisor.close()
     asyncio.run(scenario())

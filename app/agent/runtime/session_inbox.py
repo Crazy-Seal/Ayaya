@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.schemas.runtime_types import InboxDeliveryMode, InboxKind, InboxStatus
+from app.schemas.agent_storage import AgentStorageScope
 
 
 class InputNoLongerPending(RuntimeError):
@@ -31,3 +32,4 @@ class InboxEnvelope:
     payload: dict[str, Any]
     status: InboxStatus
     delivery_mode: InboxDeliveryMode = InboxDeliveryMode.IMMEDIATE
+    storage_scope: AgentStorageScope = AgentStorageScope.MAIN

@@ -3,9 +3,9 @@
 import asyncio
 
 from app.agent.runtime.tasks.base import BaseTask
+from tests.runtime_support import configured_settings
 from app.agent.tools.core.runtime import ToolRuntime
 from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
-from app.schemas.runtime_types import TaskLifetime
 
 
 def test_tools_share_session_task_but_other_sessions_cannot_access(tmp_path):
@@ -17,7 +17,7 @@ def test_tools_share_session_task_but_other_sessions_cannot_access(tmp_path):
     async def scenario():
         """提交一个有明确结束时机的任务，观察运行和完成后的公开查询。"""
         queue = asyncio.Queue()
-        supervisor = TaskSupervisor(runtime_queue=queue, db_path=str(tmp_path / 'state.db'))
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=queue, db_path=str(tmp_path / 'state.db'))
         release = asyncio.Event()
 
         class Job(BaseTask):
@@ -36,7 +36,7 @@ def test_tools_share_session_task_but_other_sessions_cannot_access(tmp_path):
         outsider = ToolRuntime('other', 'run', 'write_stdin', 'write', _supervisor=supervisor, _runtime_queue=queue)
         job = Job()
         try:
-            task_id = await owner.submit_task(job, name='test', title='测试', lifetime=TaskLifetime.INDEPENDENT, notify_agent=False)
+            task_id = await owner.submit_task(job, name='test', title='测试', notify_agent=False)
             assert supervisor.get_task(task_id) is job
             assert await writer.get_task(task_id) is job
             assert await outsider.get_task(task_id) is None
@@ -70,7 +70,7 @@ def test_terminal_can_finish_between_record_and_object_lookup(tmp_path, monkeypa
 
     async def scenario():
         """真实进程等待文件，再在工具查询对象前完成并提交终态。"""
-        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=str(tmp_path / 'state.db'))
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / 'state.db'))
         runtime = ToolRuntime('s', 'run', 'exec_command', 'call', _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue)
         gate = tmp_path / 'release'
         script = 'import os,time\nwhile not os.path.exists(' + repr(str(gate)) + '): time.sleep(0.01)'
@@ -93,7 +93,7 @@ def test_terminal_can_finish_between_record_and_object_lookup(tmp_path, monkeypa
             return await original_get(caller, task_id)
 
         try:
-            task_id = await runtime.submit_task(task, name='terminal', title='等待', lifetime=TaskLifetime.INDEPENDENT, notify_agent=False)
+            task_id = await runtime.submit_task(task, name='terminal', title='等待', notify_agent=False)
             await task.ready.wait()
             monkeypatch.setattr(ToolRuntime, 'get_task', finish_before_lookup)
             context = ToolContext('s', AgentState(session_id='s'), runtime=runtime)
@@ -118,7 +118,7 @@ def test_stop_request_is_one_way_and_checked_by_scheduler(tmp_path):
     async def scenario():
         """真实消费请求队列，使用持久状态观察停止结果。"""
         queue = asyncio.Queue()
-        supervisor = TaskSupervisor(runtime_queue=queue, db_path=str(tmp_path / 'state.db'))
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=queue, db_path=str(tmp_path / 'state.db'))
         scheduler = AgentRuntimeScheduler(runtime_queue=queue, task_supervisor=supervisor,
             agent_factory=lambda session_id, manager: None)
         owner = ToolRuntime('s', 'run', 'exec_command', 'call', _supervisor=supervisor, _runtime_queue=queue)
@@ -139,7 +139,7 @@ def test_stop_request_is_one_way_and_checked_by_scheduler(tmp_path):
 
         await scheduler.start()
         try:
-            task_id = await owner.submit_task(Job(), name='test', title='等待', lifetime=TaskLifetime.INDEPENDENT, notify_agent=False)
+            task_id = await owner.submit_task(Job(), name='test', title='等待', notify_agent=False)
             await started.wait()
             assert await outsider.stop_task(task_id) is None
             await asyncio.wait_for(queue.join(), 1)
@@ -148,8 +148,8 @@ def test_stop_request_is_one_way_and_checked_by_scheduler(tmp_path):
             await asyncio.wait_for(queue.join(), 1)
             assert (await owner.wait_task(task_id, timeout_ms=1000)).status == TaskStatus.STOPPED
         finally:
-            await supervisor.close()
             await scheduler.close()
+            await supervisor.close()
     asyncio.run(scenario())
 
 
@@ -168,7 +168,7 @@ def test_agent_injects_tool_runtime_and_runs_background_terminal(tmp_path, monke
 
     async def scenario():
         """只替代模型，真实执行终端和任务存储。"""
-        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=str(tmp_path / 'state.db'))
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / 'state.db'))
         calls = []
 
         class Model:

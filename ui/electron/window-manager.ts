@@ -472,7 +472,7 @@ export const createMainWindow = (): BrowserWindow => {
  * Args:
  *     page ("tasks"): 指定任务页；省略时保持当前页或默认模型页。
  */
-export const openSettingsWindow = (page?: "tasks"): void => {
+export const openSettingsWindow = (page?: "tasks" | "subagents"): void => {
   if (settingsWindow && !settingsWindow.isDestroyed()) {
     // 1. 已有窗口使用 IPC 导航，避免重新加载丢失其他设置页的状态。
     if (page) {

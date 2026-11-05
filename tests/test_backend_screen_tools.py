@@ -227,6 +227,7 @@ def test_pipeline_screen_permissions_and_first_call_stop_port(policy, tool_name,
             events = await consume(pipeline.execute(state, runtime_context=runtime))
         if policy == "ask":
             assert not desktop.actions and events[-1].data["type"] == "authorization_request"
+            assert control.run_state.prepare_resume(control.run_id, events[-1].data["request_id"])
             with pytest.raises(TurnInterrupted):
                 await consume(pipeline.resume_tools(state, {"kind": "approve"}, runtime_context=runtime))
         assert len(desktop.actions) == (0 if policy == "deny" else 2)

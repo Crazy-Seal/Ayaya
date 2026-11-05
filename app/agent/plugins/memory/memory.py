@@ -12,7 +12,6 @@ from app.agent.plugins.runtime import PluginRuntime
 from app.agent.utils.infra.owned_work import complete_owned_work
 from app.agent.state.messages import HumanMessage
 from app.agent.plugins.memory.tasks.memory_tasks import DiaryTask, LongTermMemoryTask
-from app.schemas.runtime_types import TaskLifetime
 from .tools import search_diary, search_memory
 
 logger = logging.getLogger(__name__)
@@ -128,7 +127,7 @@ class MemoryPlugin(BasePlugin):
                     await context.runtime.submit_task(LongTermMemoryTask(manager, memory_job["session_id"], cutoff,
                         memory_job["long_term_memory_turns"], self.config.enable_episodic, self.config.enable_semantic),
                         name="memory.persist_long_term", title="提取长期记忆",
-                        lifetime=TaskLifetime.INDEPENDENT, notify_agent=False)
+                        notify_agent=False)
             # 2. 用本轮真人输入检索记忆，写入后续模型请求共用的临时背景。
             runtime_context = (context.data or {}).get("runtime_context") if isinstance(context.data, dict) else None
             if runtime_context is not None:
@@ -149,7 +148,7 @@ class MemoryPlugin(BasePlugin):
             await runtime.submit_task(
                 DiaryTask(manager, generation), name="memory.check_diary",
                 title=f"生成 {generation.target_date.isoformat()} 日记",
-                lifetime=TaskLifetime.INDEPENDENT, notify_agent=False,
+                notify_agent=False,
             )
         except BaseException:
             # 1. 外层保护确保取消不打断任务交接；实际登记失败时由此释放未交付的材料。

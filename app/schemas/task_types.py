@@ -4,7 +4,9 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
-from app.schemas.runtime_types import TaskLifetime, TaskStatus
+from app.schemas.runtime_types import TaskStatus
+from app.schemas.agent_storage import AgentStorageScope
+from app.schemas.subagent_types import TaskRecordKind
 
 TERMINAL_TASK_NAME = "terminal"
 
@@ -33,7 +35,6 @@ class TaskRecord:
         result (str | None): run 返回的结果正文，清理失败也保留已取得结果。
         error (str | None): 执行或清理失败的错误摘要。
         plugin_name (str | None): 提交任务的插件名称，内置终端为空。
-        lifetime (TaskLifetime): 随来源轮次结束或独立运行。
         notify_agent (bool): 终态保存时是否原子写入唯一结果通知。
     """
 
@@ -56,8 +57,12 @@ class TaskRecord:
     result: str | None = None
     error: str | None = None
     plugin_name: str | None = None
-    lifetime: TaskLifetime = TaskLifetime.INDEPENDENT
     notify_agent: bool = True
+    subagent_id: str | None = None
+    notification_context_id: str | None = None
+    notification_scope: AgentStorageScope = AgentStorageScope.MAIN
+    kind: TaskRecordKind = TaskRecordKind.ORDINARY
+    end_reason: str | None = None
 
 
 class PluginRequestKind(StrEnum):
@@ -114,6 +119,4 @@ class TaskStopRequest:
     tool_name: str
     tool_call_id: str
     task_id: str
-
-
-RuntimeRequest = TaskRecord | PluginRequest | TaskStopRequest | None
+    subagent_id: str | None = None

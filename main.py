@@ -21,7 +21,7 @@ from app.routes.tools import router as tools_router
 from app.routes.plugins import router as plugins_router
 from app.routes.mcp import router as mcp_router
 from app.routes.desktop import router as desktop_router
-from app.dependencies import get_mcp_connection_manager, create_runtime_scheduler
+from app.dependencies import get_mcp_connection_manager, create_runtime_scheduler, get_chat_settings_dao, get_settings_mutation_coordinator
 from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
 from app.services.desktop_settings_service import DesktopSettingsService
 from app.schemas.runtime_types import RuntimePhase
@@ -74,7 +74,8 @@ async def lifespan(application: FastAPI):
     async with AsyncExitStack() as cleanup:
         cleanup.push_async_callback(mcp_manager.close)
         cleanup.callback(clear_runtime_dependencies)
-        supervisor = TaskSupervisor(runtime_queue=runtime_queue)
+        supervisor = TaskSupervisor(runtime_queue=runtime_queue, chat_settings_dao=get_chat_settings_dao(),
+                                    mutation_coordinator=get_settings_mutation_coordinator())
         application.state.task_supervisor = supervisor
         scheduler = create_runtime_scheduler(supervisor, runtime_queue)
         application.state.runtime_scheduler = scheduler

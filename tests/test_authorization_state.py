@@ -1,7 +1,9 @@
 """验证审批状态归属及 Scheduler 保存成功后才发布决定的顺序。"""
+from tests.runtime_support import RuntimeAgentStub
 
 import asyncio
 from copy import deepcopy
+from tests.runtime_support import configured_settings
 from pathlib import Path
 import sqlite3
 
@@ -100,7 +102,7 @@ def test_system_cancellation_preserves_resume_material_and_first_decision() -> N
     assert not state.cancel_pending_interrupt()
 
 
-class WaitingAgent:
+class WaitingAgent(RuntimeAgentStub):
     """阻塞后续回答，只替换与本测试无关的 Agent 执行，不触发模型或工具。
 
     Attributes:
@@ -134,12 +136,14 @@ class WaitingAgent:
                 await manager.save(state, checkpoint_type="intermediate", inbox_inputs=(kwargs["inbox_input"],))
             finally:
                 await manager.close()
+            from tests.runtime_support import pause_test_turn
+            pause_test_turn(kwargs["turn_control"], state.interrupt_data["request_id"])
             yield AgentEvent(EventType.INTERRUPT, state.interrupt_data)
             return
         await self.waiting.wait()
         yield AgentEvent(EventType.DONE, None)
 
-    async def close(self) -> None:
+    async def close(self, *, raise_on_error: bool = False) -> None:
         """替身不持有外部资源，worker 取消后无需额外清理。"""
         pass
 
@@ -187,9 +191,44 @@ def make_scheduler(path: str) -> AgentRuntimeScheduler:
         """
         return WaitingAgent(path)
 
-    return AgentRuntimeScheduler(runtime_queue=asyncio.Queue(),
+    return AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
         agent_factory=agent_factory,
     session_state_manager_factory=state_factory, )
+
+
+def test_stop_pending_parent_approval_cancels_decision_and_ignores_stale_target(tmp_path: Path) -> None:
+    """停止当前审批等待保存取消决定，过期停止不能影响当前审批。
+
+    Args:
+        tmp_path (Path): 隔离数据库目录。
+    """
+    async def scenario() -> None:
+        """从公开命令、审批事件和快照核对停止后的结果。"""
+        path = str(tmp_path / "state.sqlite3")
+        scheduler, manager = make_scheduler(path), SessionStateManager("s", path)
+        try:
+            await scheduler.start()
+            await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "建立本次审批"}))
+            while (event := await asyncio.wait_for(scheduler.next_event(), 2)).kind != "interrupt":
+                pass
+            assert not (await scheduler.submit(ChannelCommand("s", "desktop", "stop_turn",
+                target_run_id="old-run"))).accepted
+            assert (await manager.load()).get_pending_authorization("approval") is not None
+            receipt = await scheduler.submit(ChannelCommand("s", "desktop", "stop_turn", target_run_id=event.run_id))
+            assert receipt.accepted
+            resolved = await asyncio.wait_for(scheduler.next_event(), 2)
+            assert resolved.kind == "authorization_resolved" and resolved.payload["outcome"] == "cancelled"
+            assert (await asyncio.wait_for(scheduler.next_event(), 2)).kind == "run_completed"
+            snapshot = (await scheduler.snapshot("s")).payload
+            assert snapshot["phase"] == "idle"
+            assert (await manager.load()).interrupt_data["runtime_decision"]["kind"] == "cancelled"
+            assert not (await scheduler.submit(ChannelCommand("s", "desktop", "resolve_authorization",
+                {"kind": "approve"}, request_id="approval"))).accepted
+        finally:
+            await manager.close()
+            await scheduler.close()
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("operation", ["approve", "cancel"])

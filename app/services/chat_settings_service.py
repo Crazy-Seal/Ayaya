@@ -122,16 +122,16 @@ class ChatSettingsService:
             return saved
 
     async def delete_chat_settings(self, session_id: str) -> None:
-        """删除指定会话配置，成功后清除记忆工厂中的旧配置实例。
+        """删除配置并使缓存失效，文件替换成功后由 Scheduler 异步释放资源。
 
         Args:
-            session_id (str): 待删除配置的会话 ID。
+            session_id (str): 待删除配置的父身份。
         """
+        # 1. 配置写锁在外、执行受理短锁在内；文件替换失败时仍保留原身份。
         async with self.mutation_coordinator.lock:
-            self.chat_settings_dao.delete_chat_settings(session_id)
-            if self.connection_manager is not None:
-                await self.connection_manager.disconnect_plugin(session_id)
-            get_memory_manager.cache_clear()
+            async with self.mutation_coordinator.admission_lock:
+                self.chat_settings_dao.delete_chat_settings(session_id)
+                get_memory_manager.cache_clear()
 
     def get_chat_settings_by_session(self, session_id: str) -> ChatSettings:
         """读取会话设置并在内存副本中整理参数与工具权限，保留待修正参数。

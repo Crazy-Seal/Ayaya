@@ -43,6 +43,7 @@
           <button class="settings-tab ui-nav-item" type="button" data-page="multimodal">多模态</button>
           <button class="settings-tab ui-nav-item" type="button" data-page="channels">交互方式</button>
           <button class="settings-tab ui-nav-item" type="button" data-page="tasks">后台任务</button>
+          <button class="settings-tab ui-nav-item" type="button" data-page="subagents">子 Agent</button>
           </nav>
           <div class="settings-utility-section">
             <button
@@ -309,6 +310,16 @@
                 <button id="refresh-background-tasks" type="button" class="ui-button ui-button--secondary ui-button--small">刷新</button>
               </div>
               <div id="background-tasks-list"></div>
+            </div>
+          </div>
+          <div class="settings-page" data-page="subagents">
+            <div class="settings-page-layout">
+              <div class="settings-page-toolbar">
+                <h2>子 Agent</h2>
+                <button id="refresh-subagents" type="button" class="ui-button ui-button--secondary ui-button--small">刷新</button>
+              </div>
+              <p>显示正在执行和空闲可复用的子 Agent。它们创建的终端等进程在“后台任务”页面查看。</p>
+              <div id="subagents-list"></div>
             </div>
           </div>
         </section>

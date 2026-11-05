@@ -1,4 +1,5 @@
 """从输入查询和保存接口验证两阶段交付及排队撤销。"""
+from tests.runtime_support import RuntimeAgentStub
 
 import asyncio
 from functools import partial
@@ -13,7 +14,7 @@ from app.agent.core.events import AgentEvent, EventType
 from app.interaction.interaction_contract import ChannelCommand
 from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
-from tests.runtime_support import finish_test_turn
+from tests.runtime_support import configured_settings, finish_test_turn
 
 
 def test_read_does_not_claim_and_cancelled_input_rolls_back(tmp_path) -> None:
@@ -58,7 +59,7 @@ def test_task_notice_failure_stops_until_human_reactivates(tmp_path) -> None:
         path = str(tmp_path / "state.sqlite3")
         attempts = 0
 
-        class NoticeAgent:
+        class NoticeAgent(RuntimeAgentStub):
             """真人轮次正常保存，纯通知轮次总在保存之前失败。"""
 
             async def run(self, message, *, inbox_input, **kwargs):
@@ -93,7 +94,7 @@ def test_task_notice_failure_stops_until_human_reactivates(tmp_path) -> None:
                 raise RuntimeError("通知保存失败")
                 yield
 
-            async def close(self):
+            async def close(self, *, raise_on_error: bool = False):
                 """当前替身没有额外资源。"""
 
         def factory(session_id, _manager):
@@ -122,7 +123,7 @@ def test_task_notice_failure_stops_until_human_reactivates(tmp_path) -> None:
                 if event.kind == kind:
                     return event
 
-        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=path)
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=path)
         scheduler = AgentRuntimeScheduler(runtime_queue=supervisor.runtime_queue, agent_factory=factory, task_supervisor=supervisor,
             session_state_manager_factory=partial(SessionStateManager, db_path=path),
         )
@@ -241,7 +242,7 @@ def test_delivery_retries_then_succeeds_or_returns_failed_input(tmp_path, failur
         attempts = 0
         agents, controls, closed = [], [], []
 
-        class TestAgent:
+        class TestAgent(RuntimeAgentStub):
             """按次数失败，成功时执行真实输入保存事务。"""
 
             async def run(self, message, *, inbox_input, **kwargs):
@@ -270,9 +271,10 @@ def test_delivery_retries_then_succeeds_or_returns_failed_input(tmp_path, failur
                     await manager.save(state, checkpoint_type="completed", release_queued=True)
                 finally:
                     await manager.close()
+                kwargs["turn_control"].run_state.begin_finishing(kwargs["turn_control"].run_id)
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self):
+            async def close(self, *, raise_on_error: bool = False):
                 """每次尝试都关闭，没有额外资源。"""
                 closed.append(self)
 
@@ -290,7 +292,7 @@ def test_delivery_retries_then_succeeds_or_returns_failed_input(tmp_path, failur
             agents.append(agent)
             return agent
 
-        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), db_path=path)
+        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=path)
         scheduler = AgentRuntimeScheduler(runtime_queue=supervisor.runtime_queue, agent_factory=factory, task_supervisor=supervisor,
             session_state_manager_factory=partial(SessionStateManager, db_path=path),
         )
