@@ -58,7 +58,7 @@ class ExecutionPipeline:
         _prompt_source (SystemPromptSource): 当前模型循环使用的系统提示来源。
         _llm_client (LLMClient): 统一模型调用客户端。
         _tool_manager (ToolManager): 本地及 MCP 工具注册管理器。
-        _plugin_manager (PluginManager): 插件生命周期与执行钩子的分发器。
+        _plugin_manager (PluginManager): 当前插件的名称索引和业务钩子分发器。
         _tool_result_normalizer (ToolResultNormalizer): 工具输出与媒体的统一规范化器。
         _model_input (ModelInputCoordinator): 模型消息投影、上下文压缩和溢出恢复协调器。
         _tool_authorization (ToolAuthorization | None): 工具单次授权验证器。
@@ -85,7 +85,7 @@ class ExecutionPipeline:
             prompt_source (SystemPromptSource): 当前模型循环使用的系统提示来源。
             llm_client (LLMClient): 统一模型调用客户端。
             tool_manager (ToolManager): 本地及 MCP 工具注册管理器。
-            plugin_manager (PluginManager): 插件生命周期与执行钩子的分发器。
+            plugin_manager (PluginManager): 当前插件的名称索引和业务钩子分发器。
             model_input (ModelInputCoordinator): 模型消息投影、上下文压缩和溢出恢复协调器。
             tool_authorization (ToolAuthorization | None): 工具单次授权验证器。
             tool_runtime_factory (ToolRuntimeFactory | None): 按工具、轮次及调用编号创建运行时。

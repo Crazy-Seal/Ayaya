@@ -86,21 +86,6 @@ class MemoryPlugin(BasePlugin):
         """
         return get_memory_manager(state.session_id)
 
-    async def on_register(self) -> None:
-        """注册插件时验证长期记忆提取的模型输入预算配置。
-
-        Raises:
-            ValueError: 已启用长期记忆但没有配置正整数提取预算。
-        """
-        if not (self.config.enable_episodic or self.config.enable_semantic):
-            return
-        from app.agent.memory.config import MemoryConfig
-        limit = MemoryConfig.from_env().extraction_max_context_tokens
-        if not limit or limit <= 0:
-            raise ValueError(
-                "启用情景或语义记忆时必须配置正整数 MEMORY_EXTRACTION_MAX_CONTEXT_TOKENS"
-            )
-
     async def execute(self, context: HookContext) -> None:
         """按执行时机准备和启动记忆任务，并召回本轮相关记忆。
 

@@ -429,7 +429,7 @@ def test_after_response_commit_notifications_start_followup_turns(tmp_path):
             async def initialize(self):
                 """装配真实依赖和提交后钩子。"""
                 await super().initialize()
-                await self.register_plugin(FollowupPlugin())
+                self.register_plugin(FollowupPlugin())
 
         scheduler = AgentRuntimeScheduler(runtime_queue=queue, task_supervisor=supervisor,
             agent_factory=lambda session, manager: AgentWithFollowups(AgentConfig(session_id=session, model_name="test", api_key="test",

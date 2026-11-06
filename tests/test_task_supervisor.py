@@ -560,7 +560,7 @@ def test_terminal_notification_wakes_idle_agent_on_desktop_channel(tmp_path, mon
                 delivered.set()
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self, *, raise_on_error: bool = False):
+            async def close(self):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
@@ -720,7 +720,7 @@ def test_active_turn_receives_multiple_task_terminals_at_next_model_boundary(tmp
                     await manager.close()
 
 
-            async def close(self, *, raise_on_error: bool = False):
+            async def close(self):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
@@ -851,7 +851,7 @@ def test_idle_task_notification_is_committed_before_pending_human_turn(tmp_path)
                 raise AssertionError("任务通知不应单独激活")
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self, *, raise_on_error: bool = False):
+            async def close(self):
                 """完成替身清理而不访问真实服务。"""
                 pass
 

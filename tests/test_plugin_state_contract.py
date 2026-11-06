@@ -94,6 +94,58 @@ class _MutatingPlugin(BasePlugin):
             context.data[self.name] = True
 
 
+def test_replacing_and_unregistering_plugins_updates_hook_order() -> None:
+    """同步登记保留优先级，同名替换与注销会移除旧实例的所有钩子。"""
+    async def scenario() -> None:
+        """执行真实钩子，核对替换、注销和清空后的调用顺序。"""
+        events: list[str] = []
+
+        class RecordingPlugin(_MutatingPlugin):
+            """在各个业务时机记录当前实例的调用。"""
+
+            async def execute(self, context: HookContext) -> None:
+                """将本次执行的插件名称写入记录。
+
+                Args:
+                    context (HookContext): 本次触发的业务钩子上下文。
+                """
+                events.append(self.name)
+
+        manager = PluginManager()
+        old = RecordingPlugin("replace")
+        old.priority = 1
+        first = RecordingPlugin("first")
+        first.priority = 10
+        replacement = RecordingPlugin("replace")
+        replacement.priority = 20
+        last = RecordingPlugin("last")
+        last.priority = 30
+        for plugin in (old, last, first, replacement):
+            manager.register(plugin)
+        assert manager.get_plugin("replace") is replacement
+        state = AgentState.create_new("plugin-order")
+        for hook in PluginHook:
+            await manager.run_hooks(hook, state)
+        assert events == ["first", "replace", "last"] * len(PluginHook)
+
+        assert manager.unregister("replace") is True
+        assert manager.unregister("replace") is False
+        assert manager.get_plugin("replace") is None
+        events.clear()
+        for hook in PluginHook:
+            await manager.run_hooks(hook, state)
+        assert events == ["first", "last"] * len(PluginHook)
+
+        manager.clear()
+        events.clear()
+        assert manager.list_plugins() == []
+        for hook in PluginHook:
+            await manager.run_hooks(hook, state)
+        assert events == []
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("provide_metadata", [False, True])
 def test_plugins_receive_separate_contexts_with_shared_hook_data(provide_metadata: bool) -> None:
     """每个插件取得独立上下文，同时保留同次钩子的状态和准备数据共享。
@@ -110,7 +162,7 @@ def test_plugins_receive_separate_contexts_with_shared_hook_data(provide_metadat
         first = _MutatingPlugin("first")
         last = _MutatingPlugin("last")
         for plugin in (first, last):
-            await manager.register(plugin)
+            manager.register(plugin)
         try:
             # 1. 分发同次钩子，两个插件仍按顺序原地补充同一份准备数据。
             await manager.run_hooks(PluginHook.BEFORE_LLM, state, data, metadata)
@@ -128,7 +180,7 @@ def test_plugins_receive_separate_contexts_with_shared_hook_data(provide_metadat
                 assert first_context.metadata is metadata
                 assert metadata == {"prepared": True}
         finally:
-            await manager.close()
+            manager.clear()
 
     asyncio.run(scenario())
 
@@ -149,7 +201,7 @@ def test_hooks_continue_on_original_state_after_rejected_replacement(hook, caplo
         first = _MutatingPlugin("first")
         last = _MutatingPlugin("last")
         for plugin in (first, _ReplacingPlugin(), last):
-            await manager.register(plugin)
+            manager.register(plugin)
         try:
             result = await manager.run_hooks(hook, state, data)
             assert first.seen_states[0] is state
@@ -158,7 +210,7 @@ def test_hooks_continue_on_original_state_after_rejected_replacement(hook, caplo
             assert data == {"first": True, "last": True}
             assert result is None
         finally:
-            await manager.close()
+            manager.clear()
 
     asyncio.run(scenario())
     assert "replacing" in caplog.text
@@ -206,8 +258,8 @@ def test_agent_commits_response_and_in_place_changes_after_rejected_replacement(
             llm_client=ScriptedLLM(),
         )
         plugin = _MutatingPlugin("updated")
-        await agent.register_plugin(_ReplacingPlugin())
-        await agent.register_plugin(plugin)
+        agent.register_plugin(_ReplacingPlugin())
+        agent.register_plugin(plugin)
         try:
             events = [event async for event in agent.run("开始")]
             saved = await agent.session_state_manager.load()

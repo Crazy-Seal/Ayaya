@@ -112,7 +112,7 @@ class SubagentHarness:
                 await harness.received.put(inbox_inputs)
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self, *, raise_on_error: bool = False) -> None:
+            async def close(self) -> None:
                 """Manager 生命周期属于 worker。"""
 
         self.scheduler = AgentRuntimeScheduler(runtime_queue=self.queue,

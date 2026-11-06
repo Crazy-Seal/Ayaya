@@ -143,7 +143,7 @@ class WaitingAgent(RuntimeAgentStub):
         await self.waiting.wait()
         yield AgentEvent(EventType.DONE, None)
 
-    async def close(self, *, raise_on_error: bool = False) -> None:
+    async def close(self) -> None:
         """替身不持有外部资源，worker 取消后无需额外清理。"""
         pass
 

@@ -272,8 +272,8 @@ def test_all_interrupt_paths_save_hook_updates_before_emitting(
         agent = await make_agent(db_path, [calls], PhasedInterruptTool())
         plugin = InterruptRecordingPlugin()
         if plugin_fails:
-            await agent.register_plugin(FailingInterruptPlugin())
-        await agent.register_plugin(plugin)
+            agent.register_plugin(FailingInterruptPlugin())
+        agent.register_plugin(plugin)
         reader = SessionStateManager("checkpoint-test", db_path=str(db_path))
 
         async def observe(stream, expected_call: str, expected_count: int) -> None:
@@ -357,7 +357,7 @@ def test_interrupt_paths_respect_checkpoint_failure_and_optional_storage(
         ))]
         agent = await make_agent(tmp_path / "unused.sqlite3", [calls], PhasedInterruptTool())
         plugin = InterruptRecordingPlugin()
-        await agent.register_plugin(plugin)
+        agent.register_plugin(plugin)
         state = AgentState.create_new("checkpoint-test")
         state.add_user_message("开始")
         fail = path == "normal"
@@ -729,7 +729,7 @@ def test_response_commit_hooks_wrap_completed_checkpoint(tmp_path: Path) -> None
             [[StreamChunk(content="完成")]],
             StepTool(),
         )
-        await agent.plugin_manager.register(CommitOrderPlugin(order))
+        agent.plugin_manager.register(CommitOrderPlugin(order))
         original_save = agent.session_state_manager.save
 
         async def tracked_save(state, *, checkpoint_type, **kwargs):
@@ -781,7 +781,7 @@ def test_on_invoke_receives_prepared_data_after_input_checkpoint(tmp_path: Path)
             [[StreamChunk(content="完成")]],
             StepTool(),
         )
-        await agent.plugin_manager.register(ActivationInputCommitOrderPlugin(order))
+        agent.plugin_manager.register(ActivationInputCommitOrderPlugin(order))
         original_save = agent.session_state_manager.save
 
         async def tracked_save(state, *, checkpoint_type, **kwargs):
@@ -833,7 +833,7 @@ def test_intermediate_checkpoint_failure_skips_on_invoke(
             [[StreamChunk(content="不应执行")]],
             StepTool(),
         )
-        await agent.plugin_manager.register(ActivationInputCommitOrderPlugin(order))
+        agent.plugin_manager.register(ActivationInputCommitOrderPlugin(order))
 
         async def failing_save(state, *, checkpoint_type, **kwargs):
             """模拟输入事务失败，让激活入口停止后续处理。
@@ -907,7 +907,7 @@ def test_failed_user_input_commit_keeps_pending_long_term_memory_batch(
         """
         plugin = MemoryPlugin(enable_diary=False)
         monkeypatch.setattr(plugin, "_mm", lambda state: MemoryManager())
-        await agent.plugin_manager.register(plugin)
+        agent.plugin_manager.register(plugin)
 
     supervisor = None
 
@@ -1011,7 +1011,7 @@ def test_completed_checkpoint_failure_skips_after_commit_hook(tmp_path: Path) ->
             [[StreamChunk(content="完成")]],
             StepTool(),
         )
-        await agent.plugin_manager.register(CommitOrderPlugin(order))
+        agent.plugin_manager.register(CommitOrderPlugin(order))
         original_save = agent.session_state_manager.save
 
         async def failing_save(state, *, checkpoint_type, **kwargs):

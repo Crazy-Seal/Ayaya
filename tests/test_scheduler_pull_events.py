@@ -45,7 +45,7 @@ def test_receipt_does_not_reserve_run_and_hub_fans_out(tmp_path) -> None:
                 await release.wait()
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self, *, raise_on_error: bool = False):
+            async def close(self):
                 """释放测试执行对象，无外部资源。"""
 
         def factory(session_id, _manager):
@@ -138,7 +138,7 @@ def test_failed_turn_returns_idle_without_duplicate_errors(tmp_path, failure, ex
                 kwargs["turn_control"].run_state.begin_finishing(kwargs["turn_control"].run_id)
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self, *, raise_on_error: bool = False):
+            async def close(self):
                 """标记清理完成，按需模拟关闭失败。"""
                 cleaned.set()
                 if failure == "cleanup":
@@ -290,7 +290,7 @@ def test_pending_approval_steer_or_decision_wakes_worker_immediately(tmp_path, a
                 processed.set()
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self, *, raise_on_error: bool = False):
+            async def close(self):
                 """本替身不拥有外部资源。"""
 
         def factory(session_id, _manager):

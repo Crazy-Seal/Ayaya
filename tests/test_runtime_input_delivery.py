@@ -121,7 +121,7 @@ def test_human_commit_event_precedes_on_invoke_and_model(tmp_path) -> None:
         model = ProbeModel()
         agent = make_agent(tmp_path, model)
         hooks = BlockingInputHooks()
-        await agent.register_plugin(hooks)
+        agent.register_plugin(hooks)
         inbox = SessionStateManager("s", str(tmp_path / "state.sqlite3"))
         human = await inbox.submit_human("desktop", "你好")
         stream = agent.run("你好", inbox_input=human, receive_task_notifications=True)
@@ -171,7 +171,7 @@ def test_commit_stream_close_or_cancel_preserves_saved_fact(tmp_path, cancel_dur
         model = ProbeModel()
         agent = make_agent(tmp_path, model)
         hooks = BlockingInputHooks()
-        await agent.register_plugin(hooks)
+        agent.register_plugin(hooks)
         inbox = SessionStateManager("s", str(tmp_path / "state.sqlite3"))
         human = await inbox.submit_human("desktop", "保存后停止")
         stream = agent.run(human.payload["message"], inbox_input=human, receive_task_notifications=True)
@@ -319,7 +319,7 @@ def test_hub_preserves_human_payload_before_blocked_on_invoke(tmp_path, with_ima
         model = ProbeModel()
         agent = make_agent(tmp_path, model)
         hooks = BlockingInputHooks()
-        await agent.register_plugin(hooks)
+        agent.register_plugin(hooks)
         images = []
         if with_image:
             with BytesIO() as buffer:

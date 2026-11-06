@@ -128,7 +128,7 @@ def test_diary_preserves_summary_and_tasks_during_model_preparation(
                         context_strategy=settings.context_strategy),
             llm_client=Model(), session_state_manager=manager, chat_settings=settings,
         )
-        await agent.register_plugin(MemoryPlugin(enable_diary=True, enable_episodic=False, enable_semantic=False))
+        agent.register_plugin(MemoryPlugin(enable_diary=True, enable_episodic=False, enable_semantic=False))
         try:
             # 1. 保存真实原消息，再以一条摘要替换，使已有日记能对应到被压缩的历史。
             state = AgentState.create_new("session")

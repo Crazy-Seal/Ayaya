@@ -189,9 +189,9 @@ class RuntimeTestAgent(Agent):
         super().__init__(*args, plugin_runtime_factory=lambda name, run_id: PluginRuntime(
             name, session_id, run_id, _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue), **kwargs)
 
-    async def close(self, *, raise_on_error: bool = False):
+    async def close(self):
         """测试应用结束时先关闭 Agent，再关闭应用持有的任务资源。"""
-        await super().close(raise_on_error=raise_on_error)
+        await super().close()
         await self.test_supervisor.close()
 
 
@@ -216,8 +216,8 @@ async def make_agent(db_path: Path, model: QueuedModel, hooks: list[PluginHook])
         db_path=str(db_path), llm_client=model, supervisor=supervisor,
     )
     agent.register_tool(StepTool())
-    await agent.register_plugin(MemoryPlugin(enable_diary=False, enable_semantic=False))
-    await agent.register_plugin(RecordingHooks(hooks))
+    agent.register_plugin(MemoryPlugin(enable_diary=False, enable_semantic=False))
+    agent.register_plugin(RecordingHooks(hooks))
     return agent
 
 

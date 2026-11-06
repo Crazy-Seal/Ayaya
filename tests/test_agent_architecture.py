@@ -8,6 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 import weakref
 
+import pytest
+
 from app.agent.agent import Agent, AgentConfig
 from app.agent.context import (
     ContextStrategyConfig,
@@ -315,20 +317,61 @@ def test_retained_pipeline_does_not_keep_agent_alive() -> None:
 
 def test_plugin_registration_does_not_require_or_retain_agent() -> None:
     """验证注册插件不要求或保留 Agent 引用。"""
-    async def scenario() -> PluginManager:
-        """由外层测试调用，完成“注册插件不要求或保留 Agent 引用”的异步步骤。
-
-        Returns:
-            PluginManager: 供外层用例断言使用的预设结果。
-        """
-        manager = PluginManager()
-        await manager.register(_NoopPlugin())
-        return manager
-
-    manager = asyncio.run(scenario())
+    manager = PluginManager()
+    manager.register(_NoopPlugin())
 
     assert manager.list_plugins() == ["noop"]
     assert "_agent" not in vars(manager)
+
+
+@pytest.mark.parametrize("owns_state_manager", [False, True])
+def test_model_close_failure_respects_state_connection_ownership(
+    tmp_path: Path, owns_state_manager: bool,
+) -> None:
+    """模型关闭失败仍清空插件，并按所有权释放状态连接。
+
+    Args:
+        tmp_path (Path): 当前测试的独立数据库目录。
+        owns_state_manager (bool): Agent 是否自行创建并负责关闭状态连接。
+    """
+    from app.agent.state.manager import SessionStateManager
+
+    async def scenario() -> None:
+        """通过关闭失败观察插件索引、连接释放和异常传播。"""
+        manager = None if owns_state_manager else SessionStateManager(
+            "architecture-test", str(tmp_path / "borrowed.sqlite3"),
+        )
+        llm = _ScriptedLLM()
+        agent = Agent(
+            _config(), db_path=str(tmp_path / "owned.sqlite3"),
+            llm_client=llm, session_state_manager=manager,
+        )
+        agent.register_plugin(_NoopPlugin())
+        closed = False
+        original_close = agent.session_state_manager.close
+
+        async def close_state() -> None:
+            """记录状态连接释放，并调用真实关闭逻辑。"""
+            nonlocal closed
+            closed = True
+            await original_close()
+
+        async def fail_model_close() -> None:
+            """模拟模型客户端暂时无法关闭。"""
+            raise RuntimeError("模型关闭失败")
+
+        agent.session_state_manager.close = close_state
+        llm.close = fail_model_close
+        try:
+            await agent.session_state_manager.load()
+            with pytest.raises(RuntimeError, match="模型关闭失败"):
+                await agent.close()
+            assert agent.get_plugins() == []
+            assert closed is owns_state_manager
+        finally:
+            await original_close()
+
+    asyncio.run(scenario())
 
 
 def test_runtime_registrations_remain_visible_to_constructed_pipeline(tmp_path) -> None:
@@ -351,7 +394,7 @@ def test_runtime_registrations_remain_visible_to_constructed_pipeline(tmp_path) 
         tool = _DynamicTool()
         plugin = _RecordingPlugin()
         agent.register_tool(tool)
-        await agent.register_plugin(plugin)
+        agent.register_plugin(plugin)
         try:
             events = [event async for event in agent.run("开始")]
             return events, tool, plugin

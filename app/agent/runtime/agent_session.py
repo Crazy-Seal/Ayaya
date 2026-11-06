@@ -719,7 +719,7 @@ class AgentSession:
         """
         while True:
             try:
-                await complete_owned_work(agent.close(raise_on_error=True))
+                await complete_owned_work(agent.close())
                 return
             except asyncio.CancelledError:
                 if self._closing:
@@ -1065,8 +1065,8 @@ class AgentSession:
                 if record.retired_at is not None and self.task_supervisor is not None:
                     await self.task_supervisor.stop_subagent_tasks(definition.session_id, subagent_id)
                 if execution.agent is not None:
-                    await execution.agent.close(raise_on_error=True)
-                # 2.1. destroy 可能在插件关闭期间到达，结束前再清理其独立任务。
+                    await execution.agent.close()
+                # 2.1. destroy 可能在模型客户端关闭期间到达，结束前再清理其独立任务。
                 async with session.lock:
                     record = await self.subagents.definitions.get(definition.session_id, subagent_id)
                 if record.retired_at is not None and self.task_supervisor is not None:
@@ -1111,7 +1111,7 @@ class AgentSession:
                     finally:
                         try:
                             if execution.agent is not None:
-                                await execution.agent.close(raise_on_error=True)
+                                await execution.agent.close()
                         finally:
                             await execution.manager.close()
                     return
@@ -1165,7 +1165,7 @@ class AgentSession:
                     raise result
         for agent in tuple(self.cleanup_agents):
             await agent.finish_pending_response()
-            await agent.close(raise_on_error=True)
+            await agent.close()
             self.cleanup_agents.remove(agent)
         self._idle()
         self.resume_request_id = None

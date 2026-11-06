@@ -80,7 +80,7 @@ def test_message_arriving_before_wait_signal_is_cleared_is_processed_immediately
                     processed.set()
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self, *, raise_on_error: bool = False) -> None:
+            async def close(self) -> None:
                 """测试 Agent 不持有外部资源。"""
 
         scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
@@ -238,7 +238,7 @@ def test_subscriber_disconnect_does_not_cancel_run_and_origin_is_scoped(tmp_path
                 yield AgentEvent(EventType.TEXT_CHUNK, "完成")
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self, *, raise_on_error: bool = False):
+            async def close(self):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
@@ -324,7 +324,7 @@ def test_snapshot_excludes_reply_text_before_and_after_tool_call(tmp_path) -> No
                 await finish_test_turn(db_path, (inbox_input,), message=message, origin=origin_channel, release_queued=turn_control.reason is None)
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self, *, raise_on_error: bool = False):
+            async def close(self):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
@@ -625,7 +625,7 @@ def test_new_message_from_other_channel_steers_active_run(tmp_path) -> None:
                 await finish_test_turn(db_path, (inbox_input,), message=message, origin=origin_channel, release_queued=turn_control.reason is None)
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self, *, raise_on_error: bool = False):
+            async def close(self):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
@@ -694,7 +694,7 @@ def test_queued_turn_receives_new_run_id(tmp_path) -> None:
                 await finish_test_turn(db_path, (inbox_input,), message=message, origin=origin_channel, release_queued=turn_control.reason is None)
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self, *, raise_on_error: bool = False):
+            async def close(self):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
@@ -776,7 +776,7 @@ def test_interrupted_turn_applies_steer_before_older_queued_message(tmp_path) ->
                 await finish_test_turn(db_path, (inbox_input,), message=message, origin=origin_channel, release_queued=turn_control.reason is None)
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self, *, raise_on_error: bool = False):
+            async def close(self):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
@@ -866,7 +866,7 @@ def test_task_only_wakeup_does_not_release_queue_left_by_stopped_turn(tmp_path) 
                 await finish_test_turn(db_path, inbox_inputs, runtime_inputs=messages)
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self, *, raise_on_error: bool = False):
+            async def close(self):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
@@ -957,7 +957,7 @@ def test_after_restart_abandoned_queue_is_discarded(tmp_path) -> None:
                 await finish_test_turn(db_path, (inbox_input,), message=message, origin=origin_channel, release_queued=turn_control.reason is None)
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self, *, raise_on_error: bool = False):
+            async def close(self):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
@@ -1031,7 +1031,7 @@ def test_stale_steer_cannot_cancel_current_run(tmp_path) -> None:
                 await finish_test_turn(db_path, (inbox_input,), message=message, origin=origin_channel, release_queued=turn_control.reason is None)
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self, *, raise_on_error: bool = False):
+            async def close(self):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
@@ -1121,7 +1121,7 @@ def test_run_completion_waits_for_steer_inbox_commit(tmp_path) -> None:
                 await finish_test_turn(db_path, (inbox_input,), message=message, origin=origin_channel, release_queued=turn_control.reason is None)
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self, *, raise_on_error: bool = False):
+            async def close(self):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
@@ -1188,7 +1188,7 @@ def test_failed_input_commit_never_publishes_human_message(tmp_path) -> None:
                 await finish_test_turn(db_path, (inbox_input,), message=message, origin=origin_channel, release_queued=turn_control.reason is None)
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self, *, raise_on_error: bool = False):
+            async def close(self):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
@@ -1262,7 +1262,7 @@ def test_queued_message_waits_during_approval_and_can_be_cancelled(tmp_path, mon
                 pause_test_turn(kwargs["turn_control"], "approval-1")
                 yield AgentEvent(EventType.INTERRUPT, state.interrupt_data)
 
-            async def close(self, *, raise_on_error: bool = False):
+            async def close(self):
                 """测试对象无外部资源。"""
 
         subscriptions = ChannelSubscriptionService()
@@ -1385,7 +1385,7 @@ def test_authorization_is_first_wins_across_channels(tmp_path) -> None:
                     await manager.close()
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self, *, raise_on_error: bool = False):
+            async def close(self):
                 """完成替身清理而不访问真实服务。"""
                 pass
 

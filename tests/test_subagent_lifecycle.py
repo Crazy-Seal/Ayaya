@@ -140,72 +140,54 @@ def test_stop_before_first_input_load_still_commits_one_final_report(tmp_path: P
         (False, SubagentAction.DESTROY, SubagentAction.DESTROY, True),
     ],
 )
-def test_plugin_cleanup_retries_share_active_cleanup(
-    tmp_path: Path, monkeypatch, retain: bool, first_action: SubagentAction,
+def test_model_client_cleanup_retries_share_active_cleanup(
+    tmp_path: Path, retain: bool, first_action: SubagentAction,
     repeated_action: SubagentAction, fail_retry: bool,
 ) -> None:
     """清理失败后自动重试，重复停止或销毁不启动第二个资源释放。
 
     Args:
         tmp_path (Path): 当前用例独占的数据库目录。
-        monkeypatch (pytest.MonkeyPatch): 临时注册用于验证资源清理的插件。
         retain (bool): 普通停止后是否保留子上下文。
         first_action (SubagentAction): 首次清理失败后发起重试的操作。
         repeated_action (SubagentAction): 重试等待期间再次受理的操作。
         fail_retry (bool): 第一次重试是否再次失败，以验证后续仍可重试。
     """
     async def scenario() -> None:
-        """通过真实插件、命令和最终结果观察清理并发及销毁升级。"""
-        from app.agent.plugins.base import BasePlugin
-        from app.agent.plugins.registry import PluginRegistry
+        """通过模型客户端关闭、命令和最终结果观察清理并发及销毁升级。"""
         attempts = 0
         active = 0
         maximum_active = 0
         retry_entered, retry_released, concurrent_cleanup = asyncio.Event(), asyncio.Event(), asyncio.Event()
         failed = asyncio.Event()
 
-        class Plugin(BasePlugin):
-            """首次关闭失败，重试时等待测试允许释放的独占资源。"""
-            name = "fail-once"
-
-            @property
-            def hooks(self):
-                """该插件只需要生命周期。"""
-                return []
-
-            async def execute(self, context) -> None:
-                """该插件无自动业务。"""
-
-            async def on_unregister(self) -> None:
-                """记录实际资源清理的并发数，按事件控制重试完成及再次失败。"""
-                nonlocal attempts, active, maximum_active
-                attempts += 1
-                if attempts == 1:
-                    failed.set()
-                    raise RuntimeError("测试资源暂时无法关闭")
-                active += 1
-                maximum_active = max(maximum_active, active)
-                if active > 1:
-                    concurrent_cleanup.set()
-                current_attempt = attempts
-                retry_entered.set()
-                try:
-                    await retry_released.wait()
-                    if fail_retry and current_attempt == 2:
-                        raise RuntimeError("测试资源重试关闭仍失败")
-                finally:
-                    active -= 1
+        async def close_model_client() -> None:
+            """记录模型客户端关闭的并发数，按事件控制重试完成及再次失败。"""
+            nonlocal attempts, active, maximum_active
+            attempts += 1
+            if attempts == 1:
+                failed.set()
+                raise RuntimeError("测试模型客户端暂时无法关闭")
+            active += 1
+            maximum_active = max(maximum_active, active)
+            if active > 1:
+                concurrent_cleanup.set()
+            current_attempt = attempts
+            retry_entered.set()
+            try:
+                await retry_released.wait()
+                if fail_retry and current_attempt == 2:
+                    raise RuntimeError("测试模型客户端重试关闭仍失败")
+            finally:
+                active -= 1
 
         class Harness(SubagentHarness):
-            """在真实子工厂配置中加入测试插件。"""
+            """在真实子工厂中替换模型客户端的关闭方法。"""
             def _child(self, definition, manager):
-                """保留全部生产执行，只增加插件配置。"""
+                """让模型正常执行，在关闭模型客户端时注入可重试的异常。"""
                 agent = super()._child(definition, manager)
-                agent.config.plugins = ["fail-once"]
+                agent.llm_client.close = close_model_client
                 return agent
-
-        previous = PluginRegistry.get
-        monkeypatch.setattr(PluginRegistry, "get", lambda name: Plugin if name == "fail-once" else previous(name))
 
         async def script(messages, tools):
             """正常完成，资源错误发生在最终收尾。"""
@@ -216,7 +198,7 @@ def test_plugin_cleanup_retries_share_active_cleanup(
             await asyncio.wait_for(failed.wait(), 3)
             assert subagent_worker_running(harness.scheduler, receipt.subagent_id)
 
-            # 1. 让第一次重试停在真实插件卸载中，再受理重复停止或销毁。
+            # 1. 让第一次重试停在模型客户端关闭中，再受理重复停止或销毁。
             try:
                 first = await harness.scheduler.interact_subagent("parent", receipt.subagent_id, first_action)
                 assert first.accepted == (retain or first_action == SubagentAction.DESTROY)
@@ -224,7 +206,7 @@ def test_plugin_cleanup_retries_share_active_cleanup(
                 repeated = await harness.scheduler.interact_subagent("parent", receipt.subagent_id, repeated_action)
                 assert repeated.accepted == (retain and first_action != SubagentAction.DESTROY or repeated_action == SubagentAction.DESTROY)
                 assert subagent_worker_running(harness.scheduler, receipt.subagent_id)
-                # 1.1. 给错误启动的第二个清理机会进入插件，正确实现保持原重试等待。
+                # 1.1. 等待可能出现的并发关闭，确认当前只有一个重试在执行。
                 try:
                     await asyncio.wait_for(concurrent_cleanup.wait(), 0.1)
                 except asyncio.TimeoutError:

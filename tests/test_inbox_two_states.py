@@ -94,7 +94,7 @@ def test_task_notice_failure_stops_until_human_reactivates(tmp_path) -> None:
                 raise RuntimeError("通知保存失败")
                 yield
 
-            async def close(self, *, raise_on_error: bool = False):
+            async def close(self):
                 """当前替身没有额外资源。"""
 
         def factory(session_id, _manager):
@@ -274,7 +274,7 @@ def test_delivery_retries_then_succeeds_or_returns_failed_input(tmp_path, failur
                 kwargs["turn_control"].run_state.begin_finishing(kwargs["turn_control"].run_id)
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self, *, raise_on_error: bool = False):
+            async def close(self):
                 """每次尝试都关闭，没有额外资源。"""
                 closed.append(self)
 

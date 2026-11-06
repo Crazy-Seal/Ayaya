@@ -3,7 +3,7 @@
 
 包含:
 - ToolManager: 工具注册、查找、热插拔
-- PluginManager: 插件生命周期管理、钩子分发
+- PluginManager: 插件索引管理、业务钩子分发
 - SessionStateManager: 状态持久化、checkpoint 管理
 - AgentEvent / EventType: 交给会话调度器的执行事件
 - ExecutionPipeline: 执行管道

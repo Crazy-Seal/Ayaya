@@ -334,7 +334,7 @@ class GameHelperPlugin(BasePlugin):
 | `hooks` / `execute()` | 抽象属性和抽象方法 | 订阅的钩子列表及对应代码 |
 | `priority` | 默认 `100` | 需要调整同一钩子内顺序时覆盖 |
 
-父类还提供 `version="1.0.0"`、`on_register()` 和 `on_unregister()`。子类里写 `description=...`、`tools=(game_help,)` 表示填写或覆盖这些公共成员。`hooks` 当前带有 `@property`，框架读取 `plugin.hooks` 取得列表，再在对应时机调用 `execute(context)`。
+父类还提供 `version="1.0.0"`。子类里写 `description=...`、`tools=(game_help,)` 表示填写或覆盖这些公共成员。`hooks` 当前带有 `@property`，框架读取 `plugin.hooks` 取得列表，再在对应时机调用 `execute(context)`。
 
 `mcp_servers` 列出插件自己的服务连接参数。各会话分别连接，服务可以同名。需要用户修改的连接参数放入 `config_model`，覆盖 `resolve_mcp_servers(config)` 生成最终连接声明；该类方法只计算参数，不建立连接，也不创建插件实例。`game-mcp-server` 是示例程序名，实际插件需说明如何安装对应服务。
 
@@ -395,7 +395,7 @@ agent_plugins:
 
 ### 2.6 验证插件发现与运行装配
 
-已有 `PluginRegistry.list_plugins()`、`PluginRegistry.get(name)` 和 `GET /plugins` 可以查询框架已经发现的插件及其配置元数据。已有 `await agent.register_plugin(plugin)` 可在开发或测试中向一个 Agent 注册实例。
+已有 `PluginRegistry.list_plugins()`、`PluginRegistry.get(name)` 和 `GET /plugins` 可以查询框架已经发现的插件及其配置元数据。已有 `agent.register_plugin(plugin)` 可在开发或测试中向一个 Agent 同步登记实例及其业务钩子；`agent.unregister_plugin(name)` 同步移除登记，返回是否找到并移除了插件。
 
 内置目录仍扫描直接子模块和普通包，跳过框架辅助模块。独立目录由启动流程扫描 `plugins/<包>/__init__.py`，入口导出唯一插件类后登记其稳定名称。重复名称和无效声明报告错误，不覆盖已有插件。也可以在开发和测试中使用 `PluginRegistry.register_lazy(name, "模块路径:类名")`。
 
@@ -570,11 +570,11 @@ plugin_data["model_request_count"] = plugin_data.get("model_request_count", 0) +
 
 `HookContext` 固定各字段所指的对象，状态和字典通过原地操作修改。提交后台任务时，由插件把这次工作需要的文本、历史截止位置等资料传给任务；框架直接执行传入的任务对象。独立任务需要持续使用的资源由任务或应用对象持有，消息交付通过第5章的方法完成。
 
-### 3.5 初始化、清理和普通异常
+### 3.5 资源管理和普通异常
 
-`on_register()` 在实例登记时执行，`on_unregister()` 在实例注销时执行。Agent 按执行创建和关闭，插件实例也可能随之重新创建。
+插件登记、注销只更新名称索引和业务钩子列表。同名登记会替换旧实例；Agent 关闭时清空插件索引。插件实例随 Agent 装配创建，实例成员适合保存本次执行使用的参数和数据。
 
-实例自己的短期资源可在这两个方法中准备和释放。希望跨轮运行的后台工作交给 Supervisor；应用共享连接由拥有该连接的应用对象管理。保存配置由设置功能完成。
+一次工具或钩子调用使用的资源，在调用内部通过 `with`、`async with` 或 `try/finally` 管理。跨轮运行的后台工作交给 Supervisor，资源由具体任务持有，在 `run()` 内或 `cleanup()` 中释放。应用共享连接由已有的共享模块管理，插件声明的 MCP 连接沿用 MCP 连接管理器。保存配置由设置功能完成。
 
 `execute()` 抛出的普通异常由 PluginManager 记录，随后继续调用其他插件。异常发生前已做的原地修改会保留。希望请求停止或引导时，调用第6章的方法。
 
@@ -1055,12 +1055,10 @@ async def execute(self, context: HookContext) -> None:  # 框架调用的插件�
 | 发现与注册 | `PluginRegistry.get(name)` | 按名称取得插件类，必要时加载延迟注册的模块；找不到时返回 `None` | [第2章](#2-配置工具与mcp) |
 | 发现与注册 | `PluginRegistry.register_lazy(name, "模块路径:类名")` | 登记可导入的插件类，供之后创建实例 | [第2章](#2-配置工具与mcp) |
 | 发现与注册 | `GET /plugins` | 通过 HTTP 查询插件及配置元数据 | [第2章](#2-配置工具与mcp) |
-| 发现与注册 | `await agent.register_plugin(plugin)` | 在开发或测试中向 Agent 注册插件实例 | [第2章](#2-配置工具与mcp) |
+| 发现与注册 | `agent.register_plugin(plugin)` | 在开发或测试中向 Agent 同步登记插件实例 | [第2章](#2-配置工具与mcp) |
 | 插件钩子 | `BasePlugin.hooks` | 返回希望订阅的 `PluginHook` 列表 | [第3章](#3-插件钩子) |
 | 插件钩子 | `BasePlugin.execute(context)` | 根据当前钩子执行对应逻辑 | [第3章](#3-插件钩子) |
 | 插件钩子 | `PluginHook` | 选择输入提交、模型请求、工具执行、响应保存、审批和错误等时机；完整列表见3.2节 | [第3章](#3-插件钩子) |
-| 插件钩子 | `BasePlugin.on_register()` | 插件实例登记时准备自己的资源 | [第3章](#3-插件钩子) |
-| 插件钩子 | `BasePlugin.on_unregister()` | 插件实例注销时释放自己的资源 | [第3章](#3-插件钩子) |
 | 钩子数据 | `HookContext.hook`、`data`、`metadata` | 判断触发时机，读取或原地补充本次调用的数据 | [第1章](#1-规约)、[第3章](#3-插件钩子) |
 | 钩子数据 | `HookContext.agent_state` | 取得当前会话状态 | [第1章](#1-规约)、[第3章](#3-插件钩子) |
 | 钩子数据 | `agent_state.messages`、`agent_state.extra` | 读取当前消息，保存插件自己的少量会话数据 | [第3章](#3-插件钩子) |

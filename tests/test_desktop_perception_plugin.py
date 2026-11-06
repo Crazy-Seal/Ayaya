@@ -118,7 +118,7 @@ async def test_each_model_request_refreshes_desktop_and_compacts_tool_screenshot
                 yield StreamChunk(content="已看到桌面", finish_reason="stop")
 
     plugins = PluginManager()
-    await plugins.register(desktop_plugin())
+    plugins.register(desktop_plugin())
     tools = ToolManager()
     tools.register(ScreenshotTool())
     config = AgentConfig(session_id="desktop-perception", model_name="test", api_key="test",
@@ -156,7 +156,7 @@ async def test_each_model_request_refreshes_desktop_and_compacts_tool_screenshot
             history = connection.execute("SELECT message_json FROM conversation_messages").fetchall()
         assert all(url not in str(history) for url in urls)
     finally:
-        await plugins.close()
+        plugins.clear()
         await manager.close()
 
 

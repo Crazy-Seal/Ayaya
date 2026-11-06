@@ -93,7 +93,7 @@ def test_stop_preserves_notifications_until_human_input(tmp_path: Path, arrival:
                 await finish_test_turn(path, inbox_inputs)
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self, *, raise_on_error: bool = False) -> None:
+            async def close(self) -> None:
                 """暂停旧轮清理，使通知和新输入能够确定性交错。"""
                 if self.old_turn:
                     cleaning.set()
@@ -215,7 +215,7 @@ def test_stop_during_delivery_retry_completes_current_turn(tmp_path: Path, repor
                 if message == "恢复":
                     resumed.set()
 
-            async def close(self, *, raise_on_error: bool = False) -> None:
+            async def close(self) -> None:
                 """暂停失败尝试的清理，让用户停止发生在下一次重试之前。"""
                 if self.failed:
                     cleaning.set()

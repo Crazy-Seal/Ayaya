@@ -97,7 +97,7 @@ class Agent:
         mcp_connection_manager ('MCPConnectionManager | None'): 共享 MCP 连接管理器。
         tool_authorization (ToolAuthorization | None): 工具单次授权验证器。
         tool_manager (ToolManager): 本地及 MCP 工具注册管理器。
-        plugin_manager (PluginManager): 插件生命周期与执行钩子的分发器。
+        plugin_manager (PluginManager): 当前插件的名称索引和业务钩子分发器。
         llm_client (LLMClient | None): 可替换的流式模型客户端。
         pipeline (ExecutionPipeline): 模型工具执行管道。
         _initialized (bool): 工具和插件是否已经完成初始化。
@@ -141,7 +141,7 @@ class Agent:
             bind_plugin_mcp (PluginMCPBinder | None): 连接成功后由应用层保存身份与工具默认权限。
             permission_session_id (str | None): 子执行使用父会话的实时授权和共享连接身份。
             tool_whitelist (frozenset[ToolIdentity] | None): 子普通工具可见范围；空集合表示无普通工具。
-            enable_plugin_hooks (bool): 是否执行自动业务钩子，插件注册及资源初始化照常进行。
+            enable_plugin_hooks (bool): 是否执行已登记插件的自动业务钩子。
             environment_provider (Callable | None): 每次模型请求前异步读取当前子名单的入口。
         """
         self.config = config
@@ -211,7 +211,7 @@ class Agent:
         await self._setup_tools()
 
         # 加载插件
-        await self._setup_plugins()
+        self._setup_plugins()
 
         # 初始化 MCP
         await self._setup_mcp()
@@ -241,7 +241,7 @@ class Agent:
             else:
                 logger.warning(f"工具 '{tool_name}' 不存在于注册表中")
 
-    async def _setup_plugins(self) -> None:
+    def _setup_plugins(self) -> None:
         """按会话配置创建插件并向管理器登记执行钩子。"""
         # 从插件注册表加载
         from app.agent.plugins.registry import PluginRegistry
@@ -258,7 +258,7 @@ class Agent:
             if plugin_class:
                 try:
                     plugin = plugin_class(**plugin_params)
-                    await self.plugin_manager.register(plugin)
+                    self.plugin_manager.register(plugin)
                     from app.agent.plugins.tool_adapter import PluginToolAdapter
                     for tool_class in plugin_class.tools:
                         adapter = PluginToolAdapter(plugin_name, tool_class())
@@ -783,21 +783,21 @@ class Agent:
         """
         return self.tool_manager.unregister(name)
 
-    async def register_plugin(self, plugin: BasePlugin) -> None:
+    def register_plugin(self, plugin: BasePlugin) -> None:
         """登记插件实例及其执行时机，让后续输入、模型或工具步骤调用对应钩子。
 
         Args:
             plugin (BasePlugin): 需要注册或调用的插件对象。
         """
-        await self.plugin_manager.register(plugin)
+        self.plugin_manager.register(plugin)
 
-    async def unregister_plugin(self, name: str) -> bool:
+    def unregister_plugin(self, name: str) -> bool:
         """移除插件及其钩子登记，避免后续步骤继续调用已卸载插件。
 
         Args:
             name (str): 当前对象的名称。
         """
-        return await self.plugin_manager.unregister(name)
+        return self.plugin_manager.unregister(name)
 
     def get_tools(self) -> list[str]:
         """读取当前 Agent 已注册的工具名称，实际向模型公开时仍需检查权限。"""
@@ -820,24 +820,19 @@ class Agent:
 
     # ==================== 生命周期 ====================
 
-    async def close(self, *, raise_on_error: bool = False) -> None:
-        """卸载插件、关闭模型客户端和状态连接。
-
-        Args:
-            raise_on_error (bool): 调度收尾时报告插件清理失败，保留失败实例供重试。
+    async def close(self) -> None:
+        """清空插件索引，关闭模型客户端和本实例拥有的状态连接。
 
         Raises:
-            Exception: 严格关闭时的插件错误，或客户端、状态连接关闭失败。
+            Exception: 模型客户端或状态连接关闭失败。
         """
-        # 1. 各资源按原顺序清理；前一个失败仍释放本实例拥有的后续资源。
+        self.plugin_manager.clear()
+        # 1. 关闭模型客户端；失败时仍释放本实例拥有的状态连接。
         try:
-            await self.plugin_manager.close(raise_on_error=raise_on_error)
+            await self.llm_client.close()
         finally:
-            try:
-                await self.llm_client.close()
-            finally:
-                if self._owns_state_manager:
-                    await self.session_state_manager.close()
+            if self._owns_state_manager:
+                await self.session_state_manager.close()
         logger.info(f"Agent 已关闭: {self.config.session_id}")
 
     async def __aenter__(self) -> "Agent":

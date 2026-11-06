@@ -1,4 +1,4 @@
-"""子工具白名单、动态父授权和插件初始化的公开接口回归。"""
+"""子工具白名单、动态父授权和插件钩子开关的公开接口回归。"""
 
 import asyncio
 from datetime import datetime, timezone
@@ -89,14 +89,14 @@ def test_parent_permission_changes_are_read_for_child_tool_visibility() -> None:
     assert manager.get_tools() == []
 
 
-def test_disabling_automatic_hooks_keeps_plugin_registration_resources_available() -> None:
-    """关闭自动业务钩子仍正常执行初始化与清理，工具可以使用初始化资源。"""
+def test_disabling_automatic_hooks_keeps_plugin_registered() -> None:
+    """关闭自动业务钩子时仍可登记插件，重新开启后执行已登记的钩子。"""
     async def scenario() -> None:
-        """通过 PluginManager 的生命周期接口观察资源和钩子调用。"""
+        """通过实际钩子调用验证登记、开关和清空操作。"""
         events: list[str] = []
 
         class Plugin(BasePlugin):
-            """初始化一个供工具读取的资源。"""
+            """记录模型请求前的业务钩子调用。"""
             name = "test"
 
             @property
@@ -104,25 +104,22 @@ def test_disabling_automatic_hooks_keeps_plugin_registration_resources_available
                 """订阅常规模型前钩子。"""
                 return [PluginHook.BEFORE_LLM]
 
-            async def on_register(self) -> None:
-                """创建初始化资源。"""
-                events.append("resource-ready")
-
             async def execute(self, context) -> None:
-                """子场景不应执行自动钩子。"""
+                """记录自动业务钩子执行。"""
                 events.append("hook")
 
-            async def on_unregister(self) -> None:
-                """释放初始化资源。"""
-                events.append("resource-closed")
-
         manager = PluginManager(enable_plugin_hooks=False)
-        await manager.register(Plugin())
+        manager.register(Plugin())
         await manager.run_hooks(PluginHook.BEFORE_LLM, AgentState.create_new("child"))
         assert manager.get_plugin("test") is not None
-        assert events == ["resource-ready"]
-        await manager.close()
-        assert events == ["resource-ready", "resource-closed"]
+        assert events == []
+        manager.if_enable_plugin_hooks = True
+        await manager.run_hooks(PluginHook.BEFORE_LLM, AgentState.create_new("child"))
+        assert events == ["hook"]
+        manager.clear()
+        assert manager.list_plugins() == []
+        await manager.run_hooks(PluginHook.BEFORE_LLM, AgentState.create_new("child"))
+        assert events == ["hook"]
     asyncio.run(scenario())
 
 

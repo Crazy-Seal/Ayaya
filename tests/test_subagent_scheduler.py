@@ -82,7 +82,7 @@ def test_child_final_report_and_context_retention(tmp_path: Path, retain: bool) 
                 await self.manager.commit_runtime_inputs(state, None, inbox_inputs)
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self, *, raise_on_error: bool = False) -> None:
+            async def close(self) -> None:
                 """父 worker 在执行结束后统一关闭借出的 Manager。"""
 
         def child_factory(definition, manager) -> Agent:

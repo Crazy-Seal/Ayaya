@@ -143,7 +143,7 @@ def test_event_during_inbox_query_reaches_old_and_new_connection(
                 if event_type == EventType.TEXT_CHUNK:
                     await asyncio.Event().wait()
 
-            async def close(self, *, raise_on_error: bool = False):
+            async def close(self):
                 """测试执行对象没有外部资源。"""
 
         def factory(session_id, _manager):

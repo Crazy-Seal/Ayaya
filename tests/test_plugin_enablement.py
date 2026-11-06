@@ -34,7 +34,7 @@ def test_saved_plugin_switch_controls_registration_and_hooks(
         interval: int = 3
 
     class SamplePlugin(BasePlugin):
-        """记录真实插件装配、执行和注销过程，不访问外部程序。"""
+        """记录真实插件装配和业务钩子执行。"""
 
         name = "sample_enablement"
         config_model = SampleConfig
@@ -56,10 +56,6 @@ def test_saved_plugin_switch_controls_registration_and_hooks(
             """
             return [PluginHook.BEFORE_LLM]
 
-        async def on_register(self) -> None:
-            """登记装配事件，确认禁用插件没有产生初始化行为。"""
-            events.append("register")
-
         async def execute(self, context: HookContext) -> None:
             """将真实装配参数写入临时背景，供外层确认钩子确实执行。
 
@@ -68,10 +64,6 @@ def test_saved_plugin_switch_controls_registration_and_hooks(
             """
             events.append(self.config.label)
             context.agent_state.set_extra("sample.interval", self.config.interval)
-
-        async def on_unregister(self) -> None:
-            """记录 Agent 关闭时调用的插件清理。"""
-            events.append("unregister")
 
     monkeypatch.setitem(PluginRegistry._plugins, SamplePlugin.name, SamplePlugin)
     config_file = tmp_path / "chat_settings.yaml"
@@ -105,4 +97,32 @@ def test_saved_plugin_switch_controls_registration_and_hooks(
             await agent.close()
 
     asyncio.run(scenario())
-    assert events == (["register", "用户参数", "unregister"] if enabled else [])
+    assert events == (["用户参数"] if enabled else [])
+
+
+def test_memory_plugin_can_be_assembled_without_extraction_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """未设置提取预算时，Agent 仍可完成记忆插件装配。
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): 移除测试环境默认提供的记忆提取预算。
+    """
+    monkeypatch.delenv("MEMORY_EXTRACTION_MAX_CONTEXT_TOKENS", raising=False)
+    settings = ChatSettings(
+        session_id="memory-without-budget", model_name="test", openai_api_key="test",
+        openai_base_url="http://127.0.0.1:1/v1", temperature=0.1,
+        system_prompt="测试", context_strategy={},
+        agent_plugins={"memory": {"enabled": True}},
+    )
+
+    async def scenario() -> None:
+        """通过生产工厂装配启用情景记忆和语义记忆的插件。"""
+        agent = agent_factory.build_agent(settings)
+        try:
+            await agent.initialize()
+            assert agent.get_plugins() == ["memory"]
+        finally:
+            await agent.close()
+
+    asyncio.run(scenario())

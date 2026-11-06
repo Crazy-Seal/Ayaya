@@ -112,13 +112,5 @@ class BasePlugin(ABC):
         """
         pass
 
-    async def on_register(self) -> None:
-        """注册时的初始化。"""
-        pass
-
-    async def on_unregister(self) -> None:
-        """注销时的清理。"""
-        pass
-
 
 __all__ = ["BasePlugin", "HookContext", "PluginHook"]

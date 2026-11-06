@@ -73,7 +73,7 @@ def test_http_command_reaches_real_scheduler_and_sse_subscriber(tmp_path, delive
             finally:
                 await manager.close()
 
-        async def close(self, *, raise_on_error: bool = False):
+        async def close(self):
             """替身无额外资源，存储连接由 run 清理。"""
 
     def create_agent(session_id, _manager):

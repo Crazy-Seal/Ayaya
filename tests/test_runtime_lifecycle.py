@@ -50,7 +50,7 @@ def test_shutdown_retries_parent_resource_still_owned_by_session(tmp_path) -> No
                 entered.set()
                 await asyncio.Event().wait()
 
-            async def close(self, *, raise_on_error: bool = False) -> None:
+            async def close(self) -> None:
                 """首次失败后保留实际资源，下次关闭完成资源交还。"""
                 nonlocal failure_injected
                 if not failure_injected:
@@ -377,7 +377,7 @@ def test_terminal_waits_for_new_human_and_shutdown_cannot_reactivate(tmp_path) -
                 executed.set()
                 yield AgentEvent(EventType.DONE, None)
 
-            async def close(self, *, raise_on_error: bool = False):
+            async def close(self):
                 """替身不拥有外部资源。"""
 
         scheduler = AgentRuntimeScheduler(runtime_queue=supervisor.runtime_queue,

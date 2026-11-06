@@ -1,7 +1,7 @@
 """
 插件管理器
 
-负责插件的生命周期管理和钩子分发。
+负责插件管理和钩子分发。
 """
 
 import logging
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 class PluginManager:
-    """插件管理器 - 管理插件生命周期和钩子分发"""
+    """登记当前 Agent 使用的插件，并按执行时机分发业务钩子。"""
 
     def __init__(self, runtime_factory: Callable[[str, str], PluginRuntime] | None = None, *,
                  enable_plugin_hooks: bool = True):
@@ -25,7 +25,7 @@ class PluginManager:
 
         Args:
             runtime_factory (Callable[[str, str], PluginRuntime] | None): 按插件名称和来源轮次创建调用对象的注入工厂。
-            enable_plugin_hooks (bool): 是否运行自动业务钩子，注册与清理始终执行。
+            enable_plugin_hooks (bool): 是否执行已登记插件的自动业务钩子。
         """
         # 按钩子点组织的插件列表
         self._hooks: dict[PluginHook, list[BasePlugin]] = defaultdict(list)
@@ -35,19 +35,16 @@ class PluginManager:
         self.run_id = ""
         self.if_enable_plugin_hooks = enable_plugin_hooks
 
-    async def register(self, plugin: BasePlugin) -> None:
-        """注册插件
+    def register(self, plugin: BasePlugin) -> None:
+        """登记插件实例，并按优先级加入对应的业务钩子列表。
 
         Args:
-            plugin (BasePlugin): 插件实例
+            plugin (BasePlugin): 当前 Agent 使用的插件实例。
         """
         if plugin.name in self._plugins:
             logger.warning(f"插件 '{plugin.name}' 已存在，将被覆盖")
             # 先注销旧插件
-            await self.unregister(plugin.name)
-
-        # 调用插件的初始化方法
-        await plugin.on_register()
+            self.unregister(plugin.name)
 
         # 注册到钩子列表
         for hook in plugin.hooks:
@@ -65,23 +62,20 @@ class PluginManager:
         self._plugins[plugin.name] = plugin
         logger.info(f"注册插件: {plugin.name} (v{plugin.version}, priority={plugin.priority})")
 
-    async def unregister(self, name: str) -> bool:
-        """注销插件
+    def unregister(self, name: str) -> bool:
+        """移除插件索引及其业务钩子登记。
 
         Args:
-            name (str): 当前对象的名称。
+            name (str): 要移除的插件名称。
 
         Returns:
-            bool: 是否成功注销
+            bool: 找到并移除对应插件时为 True。
         """
         if name not in self._plugins:
             logger.warning(f"插件 '{name}' 不存在，无法注销")
             return False
 
         plugin = self._plugins[name]
-
-        # 调用插件的清理方法
-        await plugin.on_unregister()
 
         # 从钩子列表中移除
         for hook in plugin.hooks:
@@ -150,29 +144,10 @@ class PluginManager:
         return []
 
     def clear(self) -> None:
-        """卸载已登记插件，并清空名称与执行时机索引。"""
+        """清空当前 Agent 的插件名称索引和业务钩子列表。"""
         self._hooks.clear()
         self._plugins.clear()
         logger.info("已清空所有插件")
-
-    async def close(self, *, raise_on_error: bool = False) -> None:
-        """卸载插件，按调用方要求报告仍待清理的资源。
-
-        Args:
-            raise_on_error (bool): 子收尾要求清理成功才释放实例；主路径沿用记录错误的行为。
-
-        Raises:
-            ExceptionGroup: 严格关闭时至少一个插件清理失败，失败插件仍登记以便再次清理。
-        """
-        errors: list[Exception] = []
-        for name in reversed(self.list_plugins()):
-            try:
-                await self.unregister(name)
-            except Exception as exc:
-                errors.append(exc)
-                logger.exception("插件 '%s' 清理失败", name)
-        if raise_on_error and errors:
-            raise ExceptionGroup("插件资源尚未清理完成", errors)
 
     def __len__(self) -> int:
         """读取当前已注册的插件数量。
