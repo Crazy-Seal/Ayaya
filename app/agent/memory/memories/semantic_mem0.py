@@ -80,6 +80,8 @@ def _get_cached_mem0(
                 "openai_base_url": os.getenv("MEM0_EXTRACTION_BASE_URL", ""),
                 "api_key": os.getenv("MEM0_EXTRACTION_API_KEY", ""),
                 "temperature": 0.0,
+                # 为事实提取和更新动作预留完整 JSON 的输出空间。
+                "max_tokens": 8192,
             }
         },
         "custom_fact_extraction_prompt": MEM0_CUSTOM_INSTRUCTIONS,
