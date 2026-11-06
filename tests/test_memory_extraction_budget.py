@@ -6,6 +6,7 @@ import asyncio
 from copy import deepcopy
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -84,7 +85,10 @@ def make_extractors(limit: int | None) -> tuple[EpisodicMemory, Mem0SemanticMemo
     semantic = object.__new__(Mem0SemanticMemory)
     semantic.session_id = "s"
     semantic.config = config
+    semantic.chat_settings = episodic.chat_settings
     semantic._memory = RecordingMem0()
+    semantic._memory.llm = Mock()
+    semantic._memory.config = SimpleNamespace()
     return episodic, semantic
 
 
@@ -222,5 +226,26 @@ def test_episodic_budget_includes_prompt_instructions_not_only_dialogue() -> Non
         prompt = episodic.llm.requests[0][0]["content"]
         assert episodic.chat_settings.characteristic in prompt
         assert content not in prompt and "中" * 100 not in prompt
+
+    asyncio.run(scenario())
+
+
+def test_semantic_budget_uses_rendered_role_settings() -> None:
+    """验证角色描述变长后，语义提取按实际提示词触发工具结果压缩。"""
+    async def scenario() -> None:
+        """对同一材料先使用短角色描述，再使用超出预算的角色描述。"""
+        _episodic, semantic = make_extractors(5_000)
+        content = "头" * 800 + "中" * 100 + "尾" * 200
+        messages = [ToolMessage(content=text_content(content), tool_name="read_file", tool_call_id="call")]
+
+        await semantic.add(messages)
+        semantic.chat_settings.feature = "角色" * 8_000
+        await semantic.add(messages)
+
+        first, second = semantic._memory.requests
+        assert first[0]["content"] == f"工具结果：{content}"
+        assert "中" * 100 not in second[0]["content"]
+        assert "头" * 800 in second[0]["content"] and "尾" * 200 in second[0]["content"]
+        assert messages[0].text == content
 
     asyncio.run(scenario())

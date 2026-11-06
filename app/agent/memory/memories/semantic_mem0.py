@@ -5,6 +5,7 @@ from app.agent.utils.infra.owned_work import complete_owned_work
 import asyncio
 import logging
 import os
+from copy import copy
 from datetime import datetime
 from functools import lru_cache
 from typing import Any
@@ -16,13 +17,10 @@ from app.schemas.runtime_types import (
 )
 from app.agent.memory.base import MemoryItem
 from app.agent.memory.config import MemoryConfig
-from app.agent.memory.materials import compress_tool_results
-from app.agent.memory.memories.mem0_llm_compat import (
-    MEM0_FACT_EXTRACTION_MARKER,
-    Mem0FactExtractionLLMAdapter,
-)
+from app.agent.memory.materials import compress_tool_results, format_memory_notification
+from app.agent.memory.memories.mem0_llm_compat import Mem0FactExtractionLLMAdapter
 from app.agent.state.messages import (
-    notification_text, text_content, format_tool_arguments,
+    text_content, format_tool_arguments,
     AssistantMessage,
     BaseMessage,
     HumanMessage,
@@ -32,6 +30,7 @@ from app.agent.state.messages import (
 from app.agent.state.time import render_timed_text
 from app.agent.utils.domain.token_estimation import RoughTokenEstimator
 from app.schemas.chat_settings import ChatSettings
+from app.schemas.message_types import MessageType
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +44,7 @@ def _get_cached_mem0(
     embedding_base_url: str,
     embedding_api_key: str,
 ) -> Memory:
-    """按模型、向量及存储配置复用 Mem0 实例，初始化后接入事实提取响应兼容层。
+    """按模型、向量及存储配置复用 Mem0 客户端，供各次提取共享底层连接。
 
     Args:
         collection_name (str): 当前会话独立使用的 Chroma 集合名称。
@@ -84,54 +83,10 @@ def _get_cached_mem0(
                 "max_tokens": 8192,
             }
         },
-        "custom_fact_extraction_prompt": MEM0_CUSTOM_INSTRUCTIONS,
         "version": "v1.1",
     }
 
-    memory = Memory.from_config(mem0_config)
-    memory.llm = Mem0FactExtractionLLMAdapter(memory.llm)
-    return memory
-
-
-# Mem0 自定义提示词
-MEM0_CUSTOM_INSTRUCTIONS = MEM0_FACT_EXTRACTION_MARKER + """
-请根据给定的对话历史记录和对话内容，以**AI助手的第一人称视角**，仅提取**语义记忆**。
-
-**语义记忆**是指**关于用户或AI助手的**既定事实、偏好、属性、重要经历等信息。包括：
-- 性别、生日、居住地等基本信息
-- 职业、爱好、性格特点
-- 社交关系、生活习惯、长期状态
-- 重要经历、带来长期影响或留下难忘回忆的重大事件
-- 长期约定
-你只需要提取以上信息。
-
-## 命名规范：使用AI助手视角的**第一人称**
-- 提到用户时，统一使用"用户"
-- 提到AI助手时，统一使用"我"
-
-## 提取要求
-- **语言表达**：使用流畅、简练的中文，不要添加"我知道""我推断"等前缀，要像写笔记一样记录记忆条目内容。不同内容需要分成不同的记忆条目。
-- **实事求是**：没有能提取的记忆就是没有，有几条就返回几条。
-- **长期有效**：你提取的信息必须是长期有效的信息，仅短期内有效的信息无需提取
-
-## 禁止事项
-- 禁止提取工作过程中的细节，如代码逻辑、统计数据、文献列表、游戏操作过程、屏幕点击坐标等；
-- 禁止提取问候语、日常情绪表达、无意义信息、短期事件；
-- 禁止提取非长期有效的信息，如短期状态等；
-- 禁止提取对未来事件的预估；
-- 禁止强行推断，禁止歪曲意思。
-- 描述事件时禁止使用"最近""今天""下个月""今年"等模糊时间表达，如有需要，请使用具体时间。
-- 工具调用参数与结果只用于理解对话上下文，不是用户陈述，禁止单独提取为记忆。
-
-## 前情提要
-- **注意**：标有[前情提要]的对话是之前的对话，仅作为上下文补充使用，无需提取其中的信息
-
-## 输出格式
-- 只返回合法 JSON 对象，不要添加解释、Markdown 或代码块。
-- 顶层字段必须命名为 `facts`，其值必须是字符串数组，不得使用 `memories` 等其他字段名。
-- 有记忆时严格返回：{"facts": ["记忆1", "记忆2"]}
-- 没有可提取记忆时严格返回：{"facts": []}
-"""
+    return Memory.from_config(mem0_config)
 
 
 class Mem0SemanticMemory:
@@ -150,7 +105,7 @@ class Mem0SemanticMemory:
         config: MemoryConfig,
         chat_settings: ChatSettings,
     ):
-        """绑定会话和角色设置，初始化 Mem0 的语义记忆存储及兼容的事实提取客户端。
+        """绑定会话和角色设置，初始化 Mem0 的语义记忆存储和模型客户端。
 
         Args:
             session_id (str): 当前操作所属的会话编号。
@@ -184,6 +139,7 @@ class Mem0SemanticMemory:
 
         使用自身配置粗估自定义提示词和已转换材料；超限时只复制并压缩当前
         工具结果，历史和共享原始消息保持不变，沿用一次压缩的现有策略。
+        发送时按角色设置标注发言称呼，并为本次调用单独绑定提取正文。
 
         Args:
             messages (list[BaseMessage]): 当前批次的领域消息。
@@ -207,22 +163,37 @@ class Mem0SemanticMemory:
         if not mem0_messages:
             return []
 
-        # 2. 沿用自定义提示词加转换材料的粗估口径，不模拟 Mem0 内部额外请求。
+        # 2. 按当前会话设置构造提示词，再与转换后的材料一起粗估预算。
+        extraction_prompt = self._build_extraction_prompt()
         limit = self.config.extraction_max_context_tokens
         if limit:
             raw = RoughTokenEstimator().estimate_value(
-                MEM0_CUSTOM_INSTRUCTIONS + str(mem0_messages) + str(mem0_history)
+                extraction_prompt + str(mem0_messages) + str(mem0_history)
             )
             if raw > limit:
                 # 2.1. 只重新转换压缩后的当前工具结果，历史仍使用刚构造的原材料。
                 mem0_messages = self._convert_messages(compress_tool_results(messages))
                 logger.warning("[Mem0SemanticMemory] 语义记忆粗略估算超限，工具结果改为800+200权重")
-        # 3. 将实际构造的材料按历史在前的顺序交给 Mem0，不再由上层重建输入。
+        # 3. 按历史在前的顺序标注真人和助手称呼，工具结果及运行时通知沿用各自的来源标签。
         combined_messages = mem0_history + mem0_messages
+        user_name = (self.chat_settings.address or "").strip() or "用户"
+        ai_name = (self.chat_settings.name or "").strip() or "AI助手"
+        role_names = {"user": user_name, "assistant": ai_name}
+        fact_input = "Input:\n" + "".join(
+            f"{role_names[message['role']]}: {message['content']}\n"
+            if message["message_type"] in (MessageType.HUMAN, MessageType.ASSISTANT)
+            else f"{message['content']}\n"
+            for message in combined_messages
+        )
 
         try:
+            # 3.1. 为本次调用复制配置并绑定角色提示词及正文，底层存储和模型连接继续复用。
+            memory = copy(self._memory)
+            memory.config = copy(self._memory.config)
+            memory.config.custom_fact_extraction_prompt = extraction_prompt
+            memory.llm = Mem0FactExtractionLLMAdapter(self._memory.llm, fact_input)
             result = await complete_owned_work(asyncio.to_thread(
-                self._memory.add, combined_messages, agent_id=self.session_id
+                memory.add, combined_messages, agent_id=self.session_id
             ))
 
             # 4. 沿用 Mem0 返回的结果编号，供协调者汇总本项提取数量。
@@ -320,19 +291,69 @@ class Mem0SemanticMemory:
 
     # ==================== 工具方法 ====================
 
+    def _build_extraction_prompt(self) -> str:
+        """使用当前会话角色设置生成语义记忆提示词。
+
+        Returns:
+            str: 已填入角色名称、特点、身份及用户称呼的完整提示词。
+        """
+        name = (self.chat_settings.name or "").strip() or "AI助手"
+        feature = (self.chat_settings.feature or "").strip()
+        character = (self.chat_settings.character or "").strip() or "AI助手"
+        address = (self.chat_settings.address or "").strip() or "用户"
+        return f"""你是{name}，一个{feature + "的" if feature else ""}{character}，称呼用户为{address}。
+
+请根据给定的对话历史记录和对话内容，以你的**第一人称视角**提取你的**语义记忆**。
+**第一人称**：将{address}记录为"用户"，将你自己记录为"我"。不要使用第三人称描述事件。
+**语义记忆**是指**关于你或用户的**既定事实、偏好、属性、重要经历等信息。包括：
+- 性别、生日、居住地等基本信息
+- 职业、爱好、性格特点
+- 社交关系、生活习惯、长期状态
+- 重要经历、带来长期影响或留下难忘回忆的重大事件
+- 长期约定
+你只需要提取以上信息。
+
+## 命名规范：使用你自己视角的**第一人称**
+- 提到{address}时，统一使用"用户"
+- 提到{name}时，统一使用"我"
+
+## 提取要求
+- **语言表达**：使用流畅、简练、无歧义的中文，不要添加"我知道""我推断"等前缀，要像写笔记一样记录记忆条目内容。不同内容需要分成不同的记忆条目。
+- **实事求是**：没有能提取的记忆就是没有，有几条就返回几条。
+- **长期有效**：你提取的信息必须是长期有效的信息，仅短期内有效的信息无需提取
+
+## 禁止事项
+- 禁止提取工作过程中的细节，如代码逻辑、统计数据、文件地址、文献列表、游戏操作过程、屏幕点击坐标等；
+- 禁止提取问候语、日常情绪表达、无意义信息、短期事件；
+- 禁止提取非长期有效的信息，如短期状态等；
+- 禁止提取对未来事件的预估；
+- 禁止强行推断，禁止歪曲意思。
+- 描述事件时禁止使用"最近""今天""下个月""今年"等模糊时间表达，如有需要，请使用具体时间。
+- 工具调用参数与结果只用于理解对话上下文，不是用户陈述，禁止单独提取为记忆。
+
+## 前情提要
+- **注意**：标有[前情提要]的对话是之前的对话，仅作为上下文补充使用，无需提取其中的信息
+
+## 输出格式
+- 只返回合法 JSON 对象，不要添加解释、Markdown 或代码块。
+- 顶层字段必须命名为 `facts`，其值必须是字符串数组，不得使用 `memories` 等其他字段名。
+- 有记忆时严格返回：{{"facts": ["记忆1", "记忆2"]}}
+- 没有可提取记忆时严格返回：{{"facts": []}}
+"""
+
     def _convert_messages(
         self,
         messages: list[BaseMessage],
         mark_as_history: bool = False,
-    ) -> list[dict]:
-        """将领域消息转换为 Mem0 输入，在正文中保留非桌面渠道来源。
+    ) -> list[dict[str, str]]:
+        """将发言正文和工具调用逐项交给 Mem0，保留时间及非桌面渠道来源。
 
         Args:
             messages (list[BaseMessage]): 需要转换或交付的领域消息集合。
             mark_as_history (bool): 是否将材料标记为历史回忆而非当前对话。
 
         Returns:
-            list[dict]: 按角色、来源和工具事实整理的语义记忆提取材料。
+            list[dict[str, str]]: 带原始消息类型的提取材料，发送时按类型标注发言和通知来源。
         """
         mem0_messages = []
 
@@ -345,10 +366,12 @@ class Mem0SemanticMemory:
                 text = msg.text if msg.origin_channel == DESKTOP_CHANNEL else f"[来自 {msg.origin_channel}] {msg.text}"
             elif isinstance(msg, AssistantMessage):
                 role = "assistant"
-                text = msg.text if msg.origin_channel == DESKTOP_CHANNEL else f"[回复 {msg.origin_channel}] {msg.text}"
+                text = msg.text
+                if text.strip() and msg.origin_channel != DESKTOP_CHANNEL:
+                    text = f"[回复 {msg.origin_channel}] {text}"
             elif isinstance(msg, RuntimeInputMessage):
                 role = "assistant"
-                text = f"运行时输入：{notification_text(msg)}"
+                text = msg.text
             elif isinstance(msg, ToolMessage):
                 if mark_as_history:
                     continue
@@ -357,23 +380,28 @@ class Mem0SemanticMemory:
             else:
                 continue
 
-            if text.strip() or isinstance(msg, AssistantMessage) and msg.tool_calls:
-                tool_calls = list(msg.tool_calls) if isinstance(msg, AssistantMessage) else []
-                if tool_calls:
-                    if mark_as_history:
-                        text = "\n".join(f"AI：调用了工具 {call.name}" for call in tool_calls)
-                    else:
-                        text = "\n".join(
-                            f"AI：调用工具 {call.name}，参数："
-                            f"{format_tool_arguments(call)}"
-                            for call in tool_calls
-                        )
-                elif isinstance(msg, ToolMessage):
-                    text = f"工具结果：{text.strip()}"
-                else:
-                    text = render_timed_text(text.strip(), msg.created_at)
+            # 2. 分别保留发言和调用，附上原始消息类型供最终正文区分助手、工具及运行时通知。
+            contents: list[str] = []
+            if isinstance(msg, ToolMessage):
+                contents.append(f"工具结果：{text.strip()}")
+            elif isinstance(msg, RuntimeInputMessage):
+                contents.append(format_memory_notification(msg))
+            elif text.strip():
+                contents.append(render_timed_text(text.strip(), msg.created_at))
+            if isinstance(msg, AssistantMessage):
                 if mark_as_history:
-                    text = f"[前情提要] {text}"
-                mem0_messages.append({"role": role, "content": text})
+                    contents.extend(f"调用了工具 {call.name}" for call in msg.tool_calls)
+                else:
+                    contents.extend(
+                        f"调用工具 {call.name}，参数：{format_tool_arguments(call)}"
+                        for call in msg.tool_calls
+                    )
+            for content in contents:
+                if mark_as_history:
+                    content = f"[前情提要] {content}"
+                converted = {"role": role, "content": content, "message_type": msg.message_type}
+                if isinstance(msg, ToolMessage):
+                    converted["tool_call_id"] = msg.tool_call_id
+                mem0_messages.append(converted)
 
         return mem0_messages

@@ -9,16 +9,18 @@ from app.schemas.runtime_types import (
     DESKTOP_CHANNEL,
 )
 from app.agent.memory.config import MemoryConfig
+from app.agent.memory.materials import format_memory_notification
 from app.agent.memory.store.chat_history_store import ChatHistoryStore
 from app.agent.memory.store.diary_sqlite_store import DiarySqliteStore
 from app.agent.state.messages import (
-    notification_text, text_content, format_tool_arguments,
+    text_content, format_tool_arguments,
     AssistantMessage,
     BaseMessage,
     HumanMessage,
     RuntimeInputMessage,
     ToolMessage,
 )
+from app.agent.state.time import render_timed_text
 from app.agent.models.llm_client import LLMClient, LLMConfig
 from app.schemas.chat_settings import ChatSettings
 
@@ -330,16 +332,17 @@ xxxxxxxxx，xxxxxxxxxxxxx......
             for day, content in sorted(diaries, key=lambda item: item[0])
         )
 
-    @staticmethod
-    def _format_messages(messages: list[BaseMessage]) -> str:
-        """给日记模型整理正文、渠道及工具调用事实，跳过图片媒体正文。
+    def _format_messages(self, messages: list[BaseMessage]) -> str:
+        """按角色设置给日记对话标注称呼和时间，并保留渠道、工具及运行时来源。
 
         Args:
             messages (list[BaseMessage]): 按对话顺序排列的消息集合。
 
         Returns:
-            str: 按对话顺序排列并注明真人、AI、工具及运行时来源的文本。
+            str: 按对话顺序排列，注明发言称呼、发送时间及工具活动的文本。
         """
+        user_name = (self.chat_settings.address or "").strip() or "用户"
+        ai_name = (self.chat_settings.name or "").strip() or "AI助手"
         lines: list[str] = []
         # 1. 将来源纳入日记材料，运行时通知保持独立标签，避免当成真人发言。
         for message in messages:
@@ -347,18 +350,18 @@ xxxxxxxxx，xxxxxxxxxxxxx......
                 continue
             if isinstance(message, HumanMessage):
                 source = "" if message.origin_channel == DESKTOP_CHANNEL else f"（来自 {message.origin_channel}）"
-                lines.append(f"用户{source}：{message.text}")
+                lines.append(f"{user_name}{source}：{render_timed_text(message.text, message.created_at)}")
             elif isinstance(message, RuntimeInputMessage):
-                lines.append(f"运行时输入：{notification_text(message)}")
+                lines.append(format_memory_notification(message))
             elif isinstance(message, AssistantMessage):
                 if message.text:
                     source = "" if message.origin_channel == DESKTOP_CHANNEL else f"（回复 {message.origin_channel}）"
-                    lines.append(f"AI{source}：{message.text}")
+                    lines.append(f"{ai_name}{source}：{render_timed_text(message.text, message.created_at)}")
                 for call in message.tool_calls:
+                    call_text = f"调用工具 {call.name}，参数：{format_tool_arguments(call)}"
                     lines.append(
-                        f"AI：调用工具 {call.name}，参数："
-                        f"{format_tool_arguments(call)}"
+                        f"{ai_name}：{render_timed_text(call_text, message.created_at)}"
                     )
             elif isinstance(message, ToolMessage):
-                lines.append(f"工具结果：{message.text}")
+                lines.append(f"工具结果：{render_timed_text(message.text, message.created_at)}")
         return "\n".join(lines)

@@ -64,7 +64,10 @@ def test_shutdown_repeated_cancellation_keeps_memory_work_active(tmp_path, monke
         semantic = object.__new__(Mem0SemanticMemory)
         semantic.session_id = "s"
         semantic.config = SimpleNamespace(extraction_max_context_tokens=0)
+        semantic.chat_settings = SimpleNamespace(name="Ayaya", address="主人", feature="本地", character="助手")
         semantic._memory = SyncMemory()
+        semantic._memory.llm = SimpleNamespace()
+        semantic._memory.config = SimpleNamespace()
         manager = object.__new__(MemoryManager)
         manager.chat_history_store = History()
         manager.episodic_memory = None

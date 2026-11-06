@@ -230,8 +230,13 @@ def test_extractor_errors_are_not_reported_as_empty_success() -> None:
         semantic = object.__new__(Mem0SemanticMemory)
         semantic.config = MemoryConfig()
         semantic.session_id = "s"
-        semantic._convert_messages = Mock(return_value=[{"role": "user", "content": "聊天"}])
-        semantic._memory = SimpleNamespace(add=Mock(side_effect=RuntimeError("语义服务不可用")))
+        semantic.chat_settings = SimpleNamespace(name="Ayaya", address="主人", feature="本地", character="助手")
+        semantic._convert_messages = Mock(return_value=[{
+            "role": "user", "content": "聊天", "message_type": HumanMessage.message_type,
+        }])
+        semantic._memory = SimpleNamespace(
+            llm=Mock(), config=SimpleNamespace(), add=Mock(side_effect=RuntimeError("语义服务不可用")),
+        )
         with pytest.raises(RuntimeError, match="语义服务不可用"):
             await semantic.add([HumanMessage(content=text_content("聊天"))])
     asyncio.run(scenario())

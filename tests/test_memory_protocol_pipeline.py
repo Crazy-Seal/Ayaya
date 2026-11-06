@@ -3,7 +3,8 @@ from tests.runtime_support import configured_settings
 from tests.model_capture import capture_input
 from app.agent.state.messages import text_content
 import asyncio
-from datetime import date
+import pytest
+from datetime import date, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,15 +12,22 @@ from app.agent.plugins.base import HookContext, PluginHook
 from app.agent.state.manager import SessionStateManager
 from app.agent.memory.memories.diary import DiaryGeneration, DiaryMemory
 from app.agent.memory.memories.episodic import EpisodicMemory
+from app.agent.memory.memories.semantic_mem0 import Mem0SemanticMemory
 from app.agent.memory.store.chat_history_store import ChatHistoryStore
 from app.agent.state.messages import (
     AssistantMessage,
     HumanMessage,
+    PluginNotificationMessage,
+    RuntimeInputMessage,
+    SubagentMessage,
+    TaskResultMessage,
     ToolCall,
     ImageContent,
     ToolMessage,
 )
 from app.agent.plugins.memory.memory import MemoryPlugin
+from app.agent.state.time import render_timed_text
+from app.schemas.runtime_types import TaskResultStatus
 from app.agent.state import AgentState
 import app.agent.plugins.memory.memory as memory_plugin_module
 
@@ -100,7 +108,7 @@ def test_completed_turn_query_does_not_accept_a_chunk_head_fragment(tmp_path: Pa
 def test_long_term_memory_format_has_full_current_tools_and_light_history_tools() -> None:
     """验证情景提取器对当前和历史工具上下文沿用原有格式。"""
     memory = EpisodicMemory.__new__(EpisodicMemory)
-    memory.chat_settings = SimpleNamespace(address="用户", name="AI")
+    memory.chat_settings = SimpleNamespace(address="主人", name="Ayaya")
     messages = [
         AssistantMessage(
             content=text_content(""),
@@ -112,22 +120,130 @@ def test_long_term_memory_format_has_full_current_tools_and_light_history_tools(
     current = memory._format_messages(messages)
     history = memory._format_messages(messages, mark_as_history=True)
 
-    assert 'AI：调用工具 read_file，参数：{"path":"a.py"}' in current
+    assert 'Ayaya：调用工具 read_file，参数：{"path":"a.py"}' in current
     assert "工具结果：result" in current
-    assert history == "AI：调用了工具 read_file"
+    assert history == "Ayaya：调用了工具 read_file"
+
+@pytest.mark.parametrize("mark_as_history", [False, True])
+def test_episodic_preserves_text_with_multiple_tool_calls(mark_as_history: bool) -> None:
+    """验证助手同条消息中的说明和多个工具调用按顺序保留。
+
+    Args:
+        mark_as_history (bool): 是否使用历史材料的工具参数省略规则。
+    """
+    memory = EpisodicMemory.__new__(EpisodicMemory)
+    memory.chat_settings = SimpleNamespace(address="主人", name="Ayaya")
+    message = AssistantMessage(
+        content=text_content("我先看两个文件。\n然后比较内容。"), origin_channel="qq",
+        created_at=datetime(2026, 11, 6, 2, tzinfo=timezone.utc),
+        tool_calls=(
+            ToolCall(id="a", name="read_file", args={"path": "a.py"}),
+            ToolCall(id="b", name="read_file", args={"path": "b.py"}),
+        ),
+    )
+    expected = [f"Ayaya（回复 qq）: {render_timed_text(message.text, message.created_at)}"]
+    if mark_as_history:
+        expected.extend(["Ayaya（回复 qq）：调用了工具 read_file"] * 2)
+    else:
+        expected.extend([
+            'Ayaya（回复 qq）：调用工具 read_file，参数：{"path":"a.py"}',
+            'Ayaya（回复 qq）：调用工具 read_file，参数：{"path":"b.py"}',
+        ])
+
+    assert memory._format_messages([message], mark_as_history=mark_as_history) == "\n".join(expected)
+
 
 def test_diary_format_skips_system_injected_tool_images() -> None:
     """验证日记格式化跳过内部工具图片。"""
-    formatted = DiaryMemory._format_messages([
+    memory = DiaryMemory.__new__(DiaryMemory)
+    memory.chat_settings = SimpleNamespace(address="主人", name="Ayaya")
+    messages = [
         HumanMessage(content=text_content("请看一下屏幕")),
         ToolMessage(content=text_content("截屏成功"), tool_name="screenshot", tool_call_id="call-shot"),
         ToolMessage(tool_name="screenshot", tool_call_id="image-screenshot", content=(ImageContent("data:image/png;base64,QUFB", media_kind="screenshot"),)),
         ToolMessage(tool_name="draw", tool_call_id="image-mcp", content=(ImageContent("data:image/png;base64,QkJC", media_kind="mcp"),)),
         ToolMessage(tool_name="draw", tool_call_id="image-tool", content=(ImageContent("data:image/png;base64,Q0ND", media_kind="tool"),)),
-    ])
-    assert "用户：请看一下屏幕" in formatted
-    assert "工具结果：截屏成功" in formatted
+    ]
+    formatted = memory._format_messages(messages)
+    assert f"主人：{render_timed_text(messages[0].text, messages[0].created_at)}" in formatted
+    assert f"工具结果：{render_timed_text(messages[1].text, messages[1].created_at)}" in formatted
     assert "[系统消息]工具" not in formatted
+
+
+@pytest.mark.parametrize(
+    ("name", "address", "ai_label", "user_label"),
+    [(" Ayaya ", " 主人 ", "Ayaya", "主人"), (None, None, "AI助手", "用户"), (" ", " ", "AI助手", "用户")],
+)
+def test_diary_uses_configured_speakers_and_preserves_message_sources(
+    name: str | None, address: str | None, ai_label: str, user_label: str,
+) -> None:
+    """验证发言、工具及通知带原消息时间，角色称呼和渠道来源保持可辨认。
+
+    Args:
+        name (str | None): 角色名称设置。
+        address (str | None): 用户称呼设置。
+        ai_label (str): 助手发言应使用的名称。
+        user_label (str): 用户发言应使用的称呼。
+    """
+    memory = DiaryMemory.__new__(DiaryMemory)
+    memory.chat_settings = SimpleNamespace(name=name, address=address)
+    messages = [
+        HumanMessage(content=text_content("第一行\nuser: 原文")),
+        AssistantMessage(content=text_content("桌面回复")),
+        HumanMessage(content=text_content("渠道消息"), origin_channel="qq"),
+        AssistantMessage(
+            content=text_content("渠道回复"), origin_channel="qq",
+            tool_calls=(ToolCall(id="call", name="read_file", args={"path": "a.py"}),),
+        ),
+        ToolMessage(content=text_content("文件正文"), tool_name="read_file", tool_call_id="call"),
+        PluginNotificationMessage(plugin_name="test", name="notice", text="提醒内容"),
+    ]
+
+    assert memory._format_messages(messages) == "\n".join([
+        f"{user_label}：{render_timed_text(messages[0].text, messages[0].created_at)}",
+        f"{ai_label}：{render_timed_text(messages[1].text, messages[1].created_at)}",
+        f"{user_label}（来自 qq）：{render_timed_text(messages[2].text, messages[2].created_at)}",
+        f"{ai_label}（回复 qq）：{render_timed_text(messages[3].text, messages[3].created_at)}",
+        f"{ai_label}：" + render_timed_text('调用工具 read_file，参数：{"path":"a.py"}', messages[3].created_at),
+        f"工具结果：{render_timed_text(messages[4].text, messages[4].created_at)}",
+        "[插件通知：test/notice]：" + render_timed_text("提醒内容", messages[5].created_at),
+    ])
+
+
+@pytest.mark.parametrize(
+    ("message", "label"),
+    [
+        (TaskResultMessage(task_id="t", task_name="研究资料", status=TaskResultStatus.COMPLETED,
+                           result="第一篇资料\n第二篇资料"), "[后台任务完成：研究资料]"),
+        (TaskResultMessage(task_id="t", task_name="研究资料", status=TaskResultStatus.FAILED,
+                           result="读取失败"), "[后台任务失败：研究资料]"),
+        (PluginNotificationMessage(plugin_name="reminder", name="due", text="该给团团喂食了。"),
+         "[插件通知：reminder/due]"),
+        (SubagentMessage(subagent_id="s", subagent_name="资料助手", result="养猫注意事项\n每天换水"),
+         "[子 Agent 返回：资料助手]"),
+    ],
+)
+def test_memory_notifications_put_source_before_time_and_preserve_body(
+    message: RuntimeInputMessage, label: str,
+) -> None:
+    """验证三种记忆统一按通知来源、时间和正文排序，并保留多行正文。
+
+    Args:
+        message (RuntimeInputMessage): 不同来源和状态的通知消息。
+        label (str): 与通知来源和状态对应的显示标签。
+    """
+    settings = SimpleNamespace(name="Ayaya", address="主人")
+    diary = object.__new__(DiaryMemory)
+    diary.chat_settings = settings
+    episodic = object.__new__(EpisodicMemory)
+    episodic.chat_settings = settings
+    semantic = object.__new__(Mem0SemanticMemory)
+    expected = f"{label}：{render_timed_text(message.text, message.created_at)}"
+
+    assert diary._format_messages([message]) == expected
+    assert episodic._format_messages([message]) == expected
+    assert semantic._convert_messages([message])[0]["content"] == expected
+    assert semantic._convert_messages([message], mark_as_history=True)[0]["content"] == f"[前情提要] {expected}"
 
 def test_diary_generation_restores_previous_diaries_and_conversation_context() -> None:
     """验证生成日记时恢复旧日记和更早对话前情。"""

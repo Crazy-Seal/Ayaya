@@ -8,9 +8,9 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from app.agent.memory.base import MemoryExtractionError, MemoryItem
-from app.agent.memory.materials import compress_tool_results
+from app.agent.memory.materials import compress_tool_results, format_memory_notification
 from app.agent.state.messages import (
-    notification_text, text_content, format_tool_arguments,
+    text_content, format_tool_arguments,
     AssistantMessage, BaseMessage, HumanMessage, RuntimeInputMessage, ToolMessage,
 )
 from app.agent.state.time import render_timed_text
@@ -420,7 +420,7 @@ class EpisodicMemory:
             raise
 
     def _format_messages(self, messages: list[BaseMessage], *, mark_as_history: bool = False) -> str:
-        """构造情景提取文本，保留消息时间、渠道来源和既有工具上下文规则。
+        """按角色称呼构造情景提取文本，保留发言正文、工具调用及渠道时间。
 
         Args:
             messages (list[BaseMessage]): 当前批次或前情提要的领域消息。
@@ -442,25 +442,22 @@ class EpisodicMemory:
                 role = user_name if msg.origin_channel == DESKTOP_CHANNEL else f"{user_name}（来自 {msg.origin_channel}）"
                 content = msg.text
             elif isinstance(msg, RuntimeInputMessage):
-                lines.append(
-                    f"运行时输入: {render_timed_text(notification_text(msg), msg.created_at)}"
-                )
+                lines.append(format_memory_notification(msg))
                 continue
             elif isinstance(msg, AssistantMessage):
                 role = ai_name if msg.origin_channel == DESKTOP_CHANNEL else f"{ai_name}（回复 {msg.origin_channel}）"
+                if msg.text:
+                    lines.append(f"{role}: {render_timed_text(msg.text, msg.created_at)}")
                 # 1.1. 当前调用保留参数，历史调用只保留名称，沿用原有证据解释方式。
-                if msg.tool_calls:
-                    if mark_as_history:
-                        lines.extend(f"AI：调用了工具 {tc.name}" for tc in msg.tool_calls)
-                    else:
-                        lines.extend(
-                            f"AI：调用工具 {tc.name}，参数："
-                            f"{format_tool_arguments(tc)}"
-                            for tc in msg.tool_calls
-                        )
-                    continue
+                if mark_as_history:
+                    lines.extend(f"{role}：调用了工具 {tc.name}" for tc in msg.tool_calls)
                 else:
-                    content = msg.text
+                    lines.extend(
+                        f"{role}：调用工具 {tc.name}，参数："
+                        f"{format_tool_arguments(tc)}"
+                        for tc in msg.tool_calls
+                    )
+                continue
             elif isinstance(msg, ToolMessage):
                 # 1.2. 工具结果只作为当前提取上下文，历史结果不进入提示词。
                 if not mark_as_history:
@@ -491,7 +488,7 @@ class EpisodicMemory:
 **情景记忆**的含义为：从对话中提取到的事件或关键互动，可以是关于你的，也可以是关于用户的，也可以是你们之间发生的。
 
 ## 要求
-- 1. 用自然的中文记录记忆条目，像写日记一样记录要点，不相关的事件需要分成不同的条目，每个条目只能记录一个事件
+- 1. 用自然、无歧义的中文记录记忆条目，像写日记一样记录要点，不相关的事件需要分成不同的条目，每个条目只能记录一个事件
 - 2. 识别事件发生的日期（若无法识别，则使用事件相关片段的对话日期），对于凌晨4:00之前的事件和消息，请按照前一天日期记录（如2026-03-20 01:15:00记录成2026-03-19）
 - 3. 评估记忆重要性（保留一位小数，0.0-1.0）：
   - 0.8-1.0：重大事件（表白、重要决定、约定等）

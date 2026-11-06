@@ -1,9 +1,23 @@
-"""为记忆提取复制并压缩工具结果，不改变共享的原始对话。"""
+"""整理记忆提取的通知文本，并复制压缩工具结果。"""
 
 from dataclasses import replace
 
-from app.agent.state.messages import BaseMessage, ToolMessage, with_text
+from app.agent.state.messages import BaseMessage, RuntimeInputMessage, ToolMessage, notification_text, with_text
+from app.agent.state.time import render_timed_text
 from app.agent.utils.domain.weighted_text import truncate_weighted_text
+
+
+def format_memory_notification(message: RuntimeInputMessage) -> str:
+    """按通知来源、发送时间和正文的顺序整理记忆提取材料。
+
+    Args:
+        message (RuntimeInputMessage): 后台任务结果、插件通知或子 Agent 返回。
+
+    Returns:
+        str: 通知标签、发送时间及原始正文组成的文本，保留正文内部换行。
+    """
+    label, _, content = notification_text(message).partition("\n")
+    return f"{label}：{render_timed_text(content, message.created_at)}"
 
 
 def compress_tool_results(messages: list[BaseMessage]) -> list[BaseMessage]:
