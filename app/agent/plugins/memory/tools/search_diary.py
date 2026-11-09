@@ -10,7 +10,7 @@ from app.agent.tools.core.decorator import tool
 @tool(
     description=(
         "搜索指定日期范围的日记。返回[start, end]范围内的日记内容(包括end那天的)，"
-        "按日期排序。两个日期参数之间最多间隔5天。"
+        "按日期排序，最多显示前5篇日记，超出数量的会提示未显示的篇数。"
     ),
     compressible=True,
 )
@@ -19,7 +19,7 @@ async def search_diary(
     end: Annotated[str, "结束日期，格式 YYYY-MM-DD"],
     context: ToolContext,
 ) -> str:
-    """搜索指定日期范围的日记。返回[start, end]范围内的日记内容(包括end那天的)，按日期排序。两个日期参数之间最多间隔5天。
+    """搜索指定日期范围的日记。返回[start, end]范围内的日记内容(包括end那天的)，按日期排序，最多显示前5篇日记，超出数量的会提示未显示的篇数。
 
     Args:
         start (str): 开始日期，格式 YYYY-MM-DD
@@ -27,7 +27,7 @@ async def search_diary(
         context (ToolContext): 执行管道提供的工具运行上下文。
 
     Returns:
-        str: 指定日期范围的日记、未找到日记的说明或查询错误。
+        str: 指定日期范围的日记及未显示篇数、未找到日记的说明或查询错误。
     """
     session_id = context.session_id
     try:

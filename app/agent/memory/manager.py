@@ -354,32 +354,29 @@ class MemoryManager:
         return "\n".join(results) if results else "未找到相关记忆"
 
     async def search_diary(self, start: date, end: date) -> str:
-        """搜索时间范围内的日记
+        """查询包含起止日期的日记，按日期从早到晚返回前五篇并提示剩余篇数。
 
         Args:
-            start (date): 开始日期
-            end (date): 结束日期（最多间隔5天）
+            start (date): 查询范围的开始日期。
+            end (date): 查询范围的结束日期，包含当天。
 
         Returns:
-            str: 日记内容
-
-        Raises:
-            ValueError: 时间范围超过5天
+            str: 最多五篇带日期的日记及剩余篇数，或日记未启用、范围内没有日记的说明。
         """
         if self.diary_memory is None:
             return "日记记忆未启用"
-
-        if (end - start).days > 5:
-            raise ValueError("时间范围不能超过5天")
 
         diaries = await self.diary_memory.search_diary(start, end)
         if not diaries:
             return "该时间范围内没有日记"
 
-        return "\n\n".join(
+        result = "\n\n".join(
             f"【{d}】\n{content}"
-            for d, content in diaries
+            for d, content in diaries[:5]
         )
+        if len(diaries) > 5:
+            result += f"\n\n【后面还有 {len(diaries) - 5} 篇日记未显示】"
+        return result
 
     # ==================== 日期相关方法 ====================
 
