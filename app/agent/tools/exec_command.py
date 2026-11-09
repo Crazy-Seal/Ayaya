@@ -23,7 +23,7 @@ class ExecCommandArguments(BaseModel):
     model_config = ConfigDict(extra="forbid")
     cmd: StrictStr = Field(min_length=1, description="使用当前 Shell 语法编写的命令。")
     workdir: StrictStr | None = Field(default=None, description="工作区内的工作目录，省略时默认使用工作区根目录。")
-    tty: StrictBool = Field(default=False, description="是否使用 PTY 虚拟终端")
+    tty: StrictBool = Field(default=False, description="是否使用 PTY 虚拟终端，运行交互式命令时应启用。")
     yield_time_ms: int = Field(default=10000, ge=0, le=30000, strict=True, description="等待命令执行的毫秒数；默认10000表示10秒，超时不终止命令，转为后台运行。该值为0时表示不等待，直接使用后台运行")
 
 

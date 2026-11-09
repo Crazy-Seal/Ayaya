@@ -28,7 +28,7 @@ class WriteStdinTool(BaseTool):
         "无论是否启用 PTY ，均可与任务交互。"
         "任务后台运行时，你可以重复调用本工具读取命令的输出增量或继续向其发送输入。"
         "任务运行结束时，会将完成状态和完整输出日志位置主动通知你。"
-        "不要因等待超时而随便重发输入。PTY 中可发送 \\u0003 中断命令执行。"
+        "不要因等待太久而随便重发输入。PTY 中可发送 \\u0003 中断命令执行。"
         "Windows PTY 中使用 \\r 换行，普通管道和 Unix 通常使用 \\n；本工具不会帮你转换。"
     )
     parameters_schema = tool_parameters_schema(WriteStdinArguments)
