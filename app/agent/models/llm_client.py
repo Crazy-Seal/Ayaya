@@ -140,17 +140,3 @@ class LLMClient:
             traceback (TracebackType | None): 当前异常的调用记录。
         """
         await self.close()
-
-
-def create_llm_client(model: str, api_key: str, base_url: str = "https://api.openai.com/v1", temperature: float = 0.7, timeout: float = 120.0, *, api_format: str = OPENAI_CHAT_COMPLETIONS) -> LLMClient:
-    """将调用方参数组合为配置，不读取或改写持久设置。
-
-    Args:
-        model (str): 请求使用的模型标识。
-        api_key (str): 调用模型使用的凭据；不写入消息。
-        base_url (str): 模型服务地址。
-        temperature (float): 生成温度。
-        timeout (float): 模型请求超时时间，单位为秒。
-        api_format (str): 用于选择适配器的协议标识。
-    """
-    return LLMClient(LLMConfig(model, api_key, base_url, temperature, timeout, api_format=api_format))

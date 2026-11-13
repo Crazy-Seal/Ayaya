@@ -132,17 +132,6 @@ class PluginManager:
         """返回当前管理器的插件名称，供 Agent 查询装配结果。"""
         return list(self._plugins.keys())
 
-    def get_hooks_for_plugin(self, name: str) -> list[PluginHook]:
-        """读取指定插件已经登记的执行时机，便于检查钩子分发。
-
-        Args:
-            name (str): 当前对象的名称。
-        """
-        plugin = self._plugins.get(name)
-        if plugin:
-            return list(plugin.hooks)
-        return []
-
     def clear(self) -> None:
         """清空当前 Agent 的插件名称索引和业务钩子列表。"""
         self._hooks.clear()

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import yaml
 
-from app.schemas.tool_types import LOCAL_TOOL_KEY_PREFIX, MCP_TOOL_KEY_PREFIX
+from app.schemas.tool_types import MCP_TOOL_KEY_PREFIX
 from app.schemas.tool_permissions import ToolPolicy, TOOL_PERMISSIONS_SCHEMA_VERSION
 from app.schemas.chat_settings import ChatSettings
 from app.environment import get_chat_settings_file

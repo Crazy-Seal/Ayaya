@@ -194,27 +194,6 @@ class SessionPhase(str, Enum):
     PENDING_INTERRUPT = "pending_interrupt"
 
 
-class TurnPhase(str, Enum):
-    """表示一轮 Agent 的安全点阶段，最终提交后不能再接受打断。
-
-    Attributes:
-        IDLE (TurnPhase): 尚未开始执行，协议值为 idle。
-        PREPARING (TurnPhase): 正在准备输入、实例或恢复，协议值为 preparing。
-        LLM (TurnPhase): 等待模型分片，协议值为 llm。
-        TOOL (TurnPhase): 执行工具，协议值为 tool。
-        INTERRUPTED (TurnPhase): 已保存审批或父消息等待，协议值为 interrupted。
-        COMMITTING (TurnPhase): 最终持久提交，协议值为 committing。
-        FINISHING (TurnPhase): 回答已保存或执行已交还，正在报告和释放资源，协议值为 finishing。
-    """
-    IDLE = "idle"
-    PREPARING = "preparing"
-    LLM = "llm"
-    TOOL = "tool"
-    INTERRUPTED = "interrupted"
-    COMMITTING = "committing"
-    FINISHING = "finishing"
-
-
 class TurnInterruptReason(str, Enum):
     """表示当前轮次已受理的打断原因。
 

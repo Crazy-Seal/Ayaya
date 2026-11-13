@@ -8,7 +8,6 @@ from app.schemas.tool_identity import ToolIdentity
 
 SUBAGENT_ROSTER_CONTEXT_KEY = "core.subagents"
 SUBAGENT_PARENT_TOOL_NAMES = frozenset({"create_subagent", "interact_subagent", "get_subagent_details"})
-SUBAGENT_MESSAGE_TOOL_NAME = "message_parent"
 
 
 class SubagentAction(StrEnum):

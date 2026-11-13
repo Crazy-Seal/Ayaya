@@ -179,51 +179,6 @@ class ToolAuthorization:
         except Exception:
             return None
 
-    def validate_grant(
-        self,
-        invocation: ToolInvocation,
-        grant: dict[str, Any] | None,
-    ) -> bool:
-        """检查一份批准记录是否仍对应当前工具调用，同时遵守用户现在保存的权限。
-
-        核对工具调用编号、工具来源、参数、工具定义及准备好的动作。未携带批准记录时，
-        仅 allow 权限或 after_prepare 工具的首次只读准备阶段可以通过。
-
-        Args:
-            invocation (ToolInvocation): 当前会话、本次调用编号、工具信息、参数及准备好的动作。
-            grant (dict[str, Any] | None): 用户批准本次具体操作后生成的记录；自动允许或只读准备时可为空。
-
-        Returns:
-            bool: 本次调用可以通过权限检查时为 True；携带批准记录时还必须与具体操作一致。
-        """
-        # 1. 先读取当前权限，用户已改为 deny 时，旧批准记录也不能放行。
-        policy = self.get_policy(invocation.session_id, invocation.descriptor.identity)
-        if policy == ToolPolicy.DENY:
-            return False
-        # 2. 没有批准记录时，只允许自动放行或尚未形成具体动作的只读准备。
-        if grant is None:
-            return (
-                policy == ToolPolicy.ALLOW
-                or (
-                    invocation.descriptor.authorization_timing == AuthorizationTiming.AFTER_PREPARE
-                    and invocation.prepared_action is None
-                )
-            )
-        # 3. 有批准记录时逐项比较，防止更换工具、参数或屏幕动作后沿用原批准。
-        return (
-            grant.get("decision") == ApprovalDecisionKind.APPROVE
-            and grant.get("tool_call_id") == invocation.tool_call_id
-            and grant.get("tool_identity") == invocation.descriptor.identity.stable_key
-            and grant.get("arguments_fingerprint") == _fingerprint(invocation.arguments)
-            and grant.get("contract_fingerprint") == invocation.descriptor.contract_fingerprint
-            and grant.get("prepared_action_fingerprint")
-            == (
-                _fingerprint(invocation.prepared_action)
-                if invocation.prepared_action is not None
-                else None
-            )
-        )
-
     def authorize(
         self,
         invocation: ToolInvocation,

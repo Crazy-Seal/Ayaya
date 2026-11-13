@@ -15,7 +15,6 @@ from app.agent.utils.infra.bounded_operation import close_resources
 
 SQLITE_LOCK_TIMEOUT_SECONDS = 0.1
 SQLITE_SAVE_TIMEOUT_SECONDS = 5.0
-SQLITE_CLOSE_TIMEOUT_SECONDS = 5.0
 logger = logging.getLogger(__name__)
 
 

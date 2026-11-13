@@ -102,25 +102,6 @@ class ChatHistoryStore:
         local = parsed.astimezone(self.timezone)
         return (local - timedelta(hours=self.day_boundary_hour)).date()
 
-    def _format_local_time(self, value: str | datetime | int | float, include_weekday: bool = True) -> str:
-        """按记忆配置时区展示历史消息时间，无法解析的旧值保留原表示。
-
-        Args:
-            value (str | datetime | int | float): 当前需要校验或转换的值。
-            include_weekday (bool): 时间展示中是否包含中文星期。
-
-        Returns:
-            str: 本地日期时间及可选星期文本。
-        """
-        parsed = self._parse_timestamp(value)
-        if parsed is None:
-            return str(value)
-        local = parsed.astimezone(self.timezone)
-        if not include_weekday:
-            return local.strftime("%Y-%m-%d %H:%M:%S")
-        weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
-        return f"{local:%Y-%m-%d} {weekdays[local.weekday()]} {local:%H:%M:%S}"
-
     async def _rows(
         self,
         session_id: str,

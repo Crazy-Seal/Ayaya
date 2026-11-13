@@ -309,14 +309,6 @@ class AgentState(BaseModel):
         self.clear_pending_tool_calls()
         return had_pending
 
-    def get_pending_tool_calls(self) -> list[ToolCall]:
-        """给调用方提供尚未取得结果的工具调用列表副本。
-
-        Returns:
-            list[ToolCall]: 当前 pending_tool_calls 的列表副本。
-        """
-        return list(self.pending_tool_calls)
-
     def commit_compaction(self, candidate: Sequence[BaseMessage]) -> None:
         """先检查工具协议和允许的压缩替换，再一次替换内存消息序列；不写数据库。
 

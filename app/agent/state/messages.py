@@ -898,30 +898,6 @@ def is_screenshot_message(message: BaseMessage) -> bool:
     return isinstance(message, ToolMessage) and any(isinstance(part, ImageContent) and part.media_kind == MediaKind.SCREENSHOT for part in message.content)
 
 
-def is_system_injected_user_message(message: BaseMessage) -> bool:
-    """识别内部通知与摘要，不依赖供应商角色。
-
-    Args:
-        message (BaseMessage): 待读取或转换的业务消息。
-
-    Returns:
-        bool: 满足该业务条件时返回 True。
-    """
-    return isinstance(message, (ContextSummaryMessage, RuntimeInputMessage))
-
-
-def is_user_message(message: BaseMessage) -> bool:
-    """识别真人或内部输入；工具图片属于 ToolMessage。
-
-    Args:
-        message (BaseMessage): 待读取或转换的业务消息。
-
-    Returns:
-        bool: 满足该业务条件时返回 True。
-    """
-    return isinstance(message, (HumanMessage, ContextSummaryMessage, RuntimeInputMessage))
-
-
 def with_text(message: HumanMessage | AssistantMessage | ToolMessage, text: str) -> BaseMessage:
     """替换消息文字并保留图片及身份，供打断后缀和临时上下文使用。
 
