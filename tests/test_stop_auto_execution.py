@@ -187,14 +187,14 @@ def test_stop_preserves_notifications_until_human_input(tmp_path: Path, arrival:
 
 @pytest.mark.parametrize("reported_start", [False, True])
 def test_save_failure_stays_paused_during_cleanup_and_only_new_input_runs(tmp_path: Path, reported_start: bool) -> None:
-    """输入交付失败后在清理期间停止，结束旧轮并保留输入供真人恢复。
+    """输入交付失败后暂停并恢复已保存状态，新的明确输入开始后续工作。
 
     Args:
         tmp_path (Path): 隔离输入、checkpoint 和会话历史的临时目录。
         reported_start (bool): 首次输入交付失败前是否已经发出轮次开始事件。
     """
     async def scenario() -> None:
-        """通过清理屏障受理停止，核对终态事件、待交付输入和后续恢复。"""
+        """通过清理屏障检查错误展示、过期停止拒绝及新输入替换失败批次。"""
         path = str(tmp_path / "state.sqlite3")
         cleaning = asyncio.Event()
         release_cleanup = asyncio.Event()
@@ -242,7 +242,7 @@ def test_save_failure_stays_paused_during_cleanup_and_only_new_input_runs(tmp_pa
                 return outcome
 
             async def close(self) -> None:
-                """暂停失败尝试的清理，让用户停止发生在下一次重试之前。"""
+                """暂停失败尝试的清理，让测试检查故障暂停和旧轮停止回执。"""
                 if self.failed:
                     cleaning.set()
                     await release_cleanup.wait()

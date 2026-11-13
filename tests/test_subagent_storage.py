@@ -147,7 +147,7 @@ def test_wrong_inbox_scope_rolls_back_child_checkpoint(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("delivery", ["before", "after", "concurrent"])
 def test_retirement_keeps_history_and_blocks_late_task_inputs(tmp_path: Path, delivery: str) -> None:
-    """废弃与后台结果无论谁先提交，都保留历史并清空目标子身份的待交付输入。
+    """废弃保留历史并清除当时待交付输入，后提交的任务通知继续保存。
 
     Args:
         tmp_path (Path): 隔离数据库目录。

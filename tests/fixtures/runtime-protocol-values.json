@@ -4,15 +4,6 @@
     "running",
     "pending_interrupt"
   ],
-  "TurnPhase": [
-    "idle",
-    "preparing",
-    "llm",
-    "tool",
-    "interrupted",
-    "committing",
-    "finishing"
-  ],
   "TurnInterruptReason": [
     "stop",
     "steer"

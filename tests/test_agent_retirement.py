@@ -20,13 +20,14 @@ from app.agent.state.messages import AssistantMessage, ToolCall, ToolMessage
 from app.agent.state.manager import SessionStateManager
 from app.agent.tools.core.base import BaseTool, ToolResult
 from app.schemas.agent_storage import AgentStorageScope
-from app.schemas.subagent_types import SubagentAction
+from app.schemas.subagent_types import SubagentAction, SubagentRecord
 from tests.subagent_support import SubagentHarness, wait_for_subagent_worker, subagent_worker_running
 from app.services.chat_settings_service import ChatSettingsService
 from app.interaction.interaction_contract import ChannelCommand
 from app.agent.tools.core.runtime import ToolRuntime
 from app.agent.runtime.tasks.base import BaseTask
-from app.schemas.runtime_types import CheckpointType
+from app.agent.runtime.tasks.runtime import TaskRuntime
+from app.schemas.runtime_types import CheckpointType, InteractionEventKind, TaskStatus
 from app.routes.chat_settings import delete_chat_settings
 
 
@@ -218,7 +219,7 @@ def test_shutdown_waits_for_destroy_history_save_after_repeated_cancellation(tmp
 
 @pytest.mark.parametrize("retain", [False, True])
 def test_normal_report_timing_preserves_reuse_and_does_not_wait_for_one_shot_cleanup(tmp_path: Path, retain: bool) -> None:
-    """一次性报告不等清理，保留型在可再次受派时交付正常报告。"""
+    """父收到正常报告后，保留型子可在资源关闭期间受理下一条消息。"""
     async def scenario() -> None:
         """阻塞实际 Agent 关闭，观察父 Inbox 和只读最终结果。"""
         cleaning, released = asyncio.Event(), asyncio.Event()
@@ -420,9 +421,9 @@ def test_parent_delete_preserves_response_and_waits_for_final_commit(
 
 
 def test_deleted_parent_retries_failed_agent_close_before_shared_connections(tmp_path: Path) -> None:
-    """父 Agent 关闭失败保留原实例，后台重试完成后才释放共享连接。"""
+    """父 Agent 在关闭方法内重试客户端关闭，完成后释放共享连接。"""
     async def scenario() -> None:
-        """实际父模型保持执行，模型关闭首次失败，后续由同一后台清理恢复。"""
+        """实际父模型保持执行，删除触发关闭，客户端首次关闭失败后再次成功。"""
         from app.agent.agent import Agent, AgentConfig
         from app.agent.context import ContextStrategyConfig
         from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
@@ -583,9 +584,9 @@ def test_parent_retries_interrupted_save_before_closing_agent(tmp_path: Path, mo
 def test_parent_shutdown_closes_resources_when_interrupted_save_keeps_failing(
     tmp_path: Path, monkeypatch, delete_parent: bool,
 ) -> None:
-    """父中断保存持续失败后退出仍关闭模型，退出补记保留捕获的正文。"""
+    """父中断保存失败后退出仍关闭模型，数据库保留上次成功的检查点。"""
     async def scenario() -> None:
-        """停止后的保存错误持续到 worker 结束，再从数据库检查退出补记。"""
+        """让中断保存明确失败，检查关闭资源后的数据库未包含失败正文。"""
         from app.agent.agent import Agent, AgentConfig
         from app.agent.context import ContextStrategyConfig
         from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
@@ -598,7 +599,7 @@ def test_parent_shutdown_closes_resources_when_interrupted_save_keeps_failing(
         path = str(tmp_path / "state.sqlite3")
 
         async def fail(manager, *args, **kwargs):
-            """只阻止实时中断保存，退出补记仍使用原数据库事务。"""
+            """模拟中断保存接口返回最终失败。"""
             failed.set()
             raise sqlite3.OperationalError("测试持续中断保存失败")
 
@@ -658,7 +659,7 @@ def test_parent_shutdown_closes_resources_when_interrupted_save_keeps_failing(
 def test_child_shutdown_closes_resources_when_interrupted_save_keeps_failing(
     tmp_path: Path, monkeypatch, retain: bool,
 ) -> None:
-    """子中断保存持续失败时退出结束重试，关闭实际模型并补记正文。"""
+    """子中断保存失败后退出仍关闭模型，数据库保留上次成功的检查点。"""
     async def scenario() -> None:
         """使用真实子执行和数据库，检查保存失败不阻断资源关闭。"""
         running, failed, closed = (asyncio.Event() for _ in range(3))
@@ -929,22 +930,39 @@ def test_new_input_arriving_during_previous_worker_close_runs_without_another_me
     asyncio.run(scenario())
 
 
-def test_task_status_read_before_destroy_is_filtered_at_delivery(tmp_path: Path, monkeypatch) -> None:
-    """任务状态查询期间发生销毁，旧可用快照不能让迟到状态继续展示。"""
+def test_task_result_read_before_destroy_is_shown_without_waking_retired_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """任务通知查询与销毁交错时，界面收到结果，子会话保持关闭。
+
+    Args:
+        tmp_path (Path): 本场景独占的数据库目录。
+        monkeypatch (pytest.MonkeyPatch): 在消费者的身份查询返回前设置屏障。
+    """
     async def scenario() -> None:
-        """挂起实际查询返回，销毁提交后恢复唯一事件消费者。"""
-        entered, released = asyncio.Event(), asyncio.Event()
+        """任务完成后挂起通知查询，销毁原子提交并关闭资源后继续投递。"""
+        entered, released, finish_work = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        model_calls = 0
+        wakeups = 0
 
         async def script(messages, tools):
             """先完成保留型委派，普通后台工作单独等待。"""
+            nonlocal model_calls
+            model_calls += 1
             yield StreamChunk(content="委派完成")
 
         class Work(BaseTask):
-            """由废弃后的资源清理停止的普通后台工作。"""
-            async def run(self, runtime) -> str:
-                """保持任务执行，销毁后保存 STOPPED。"""
-                await asyncio.Event().wait()
-                return "不会执行"
+            """在测试放行后正常完成，让消费者处理已保存的终态通知。"""
+            async def run(self, runtime: TaskRuntime) -> str:
+                """等待测试安排完成时机，再返回业务结果。
+
+                Args:
+                    runtime (TaskRuntime): Supervisor 提供的任务来源和运行能力。
+                Returns:
+                    str: 需要保存并展示的后台工作结果。
+                """
+                await finish_work.wait()
+                return "后台工作完成"
 
         async with SubagentHarness(tmp_path / "state.sqlite3", script) as harness:
             receipt = await harness.create()
@@ -955,32 +973,74 @@ def test_task_status_read_before_destroy_is_filtered_at_delivery(tmp_path: Path,
             original = harness.scheduler._subagent_dao.get
             blocked = False
 
-            async def get(session_id: str, subagent_id: str):
-                """保留第一次真实查询结果，其他销毁及清理查询继续执行。"""
+            async def get(session_id: str, subagent_id: str) -> SubagentRecord | None:
+                """暂存消费者读到的可用身份，让销毁先完成再返回这份旧记录。
+
+                Args:
+                    session_id (str): 后台任务所属父上下文。
+                    subagent_id (str): 本次通知的子接收者。
+                Returns:
+                    SubagentRecord | None: 查询当时的身份记录。
+                """
                 nonlocal blocked
                 record = await original(session_id, subagent_id)
                 if not blocked and asyncio.current_task() is harness.scheduler._task_reader:
+                    assert record is not None and record.retired_at is None
                     blocked = True
                     entered.set()
                     await released.wait()
                 return record
 
+            def notify_inbox_changed() -> None:
+                """记录消费者是否错误地唤醒已经关闭的原来的子会话。"""
+                nonlocal wakeups
+                wakeups += 1
+
             monkeypatch.setattr(harness.scheduler._subagent_dao, "get", get)
+            child = harness.scheduler._sessions[receipt.context_id]
+            monkeypatch.setattr(child, "notify_inbox_changed", notify_inbox_changed)
             runtime = ToolRuntime("parent", "run", "work", "call", harness.supervisor, harness.queue,
                 subagent_id=receipt.context_id)
             task_id = await runtime.submit_task(Work(), name="work", title="后台工作",
                 notify_agent=True)
-            await asyncio.wait_for(entered.wait(), 3)
             try:
+                # 1. 任务正常结束，消费者在唤醒子 Agent 前读到仍可用的身份。
+                finish_work.set()
+                await asyncio.wait_for(entered.wait(), 3)
+                assert (await harness.supervisor.wait(task_id, timeout_ms=3000)).status == TaskStatus.COMPLETED
+                inbox = SessionStateManager(receipt.context_id, SqliteFactory(harness.path),
+                    storage_scope=AgentStorageScope.SUBAGENT, parent_session_id="parent")
+                try:
+                    notices = await inbox.read_task_terminals()
+                    assert [item.payload["task_id"] for item in notices] == [task_id]
+                finally:
+                    await inbox.close()
+                # 2. 让销毁完成资源关闭；消费者恢复时拿到的仍是销毁前的旧记录。
                 destroyed = await harness.scheduler.interact_subagent("parent", receipt.context_id, SubagentAction.DESTROY)
+                assert destroyed.accepted
+                await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, receipt.context_id), 3)
             finally:
+                finish_work.set()
                 released.set()
-            await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, destroyed.context_id), 3)
+
+            # 3. 界面继续展示真实结果，销毁清除未交付通知，子会话保持关闭。
             await asyncio.wait_for(harness.queue.join(), 3)
+            statuses = []
             while True:
                 try:
                     event = await asyncio.wait_for(next_runtime_event(harness.scheduler), 0.05)
                 except asyncio.TimeoutError:
                     break
-                assert not (event.kind == "task_status" and event.task_id == task_id)
+                if event.kind == InteractionEventKind.TASK_STATUS and event.task_id == task_id:
+                    statuses.append(event.payload["status"])
+            assert statuses == [TaskStatus.RUNNING, TaskStatus.COMPLETED]
+            assert wakeups == 0 and model_calls == 1
+            assert receipt.context_id not in harness.scheduler._sessions
+            assert not await harness.scheduler.snapshot_subagents("parent")
+            inbox = SessionStateManager(receipt.context_id, SqliteFactory(harness.path),
+                storage_scope=AgentStorageScope.SUBAGENT, parent_session_id="parent")
+            try:
+                assert not await inbox.read_task_terminals()
+            finally:
+                await inbox.close()
     asyncio.run(scenario())

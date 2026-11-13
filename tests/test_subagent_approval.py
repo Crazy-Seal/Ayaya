@@ -24,7 +24,7 @@ def test_parent_command_retries_only_pause_transactions_without_stale_approval(t
 
     Args:
         tmp_path (Path): 隔离数据库目录。
-        monkeypatch (pytest.MonkeyPatch): 在已约定的 Manager seam 注入一次保存失败。
+        monkeypatch (pytest.MonkeyPatch): 在 DAO 事务写入处注入暂时性保存失败。
         failed_step (str): 取消决定或补齐旧工具的失败位置。
     """
     from app.agent.state.manager import SessionStateManager

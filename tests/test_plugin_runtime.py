@@ -301,7 +301,7 @@ def test_shutdown_cleanup_cancellation_preserves_task_outcome(tmp_path, monkeypa
     asyncio.run(scenario())
 
 
-def test_task_result_is_saved_after_cleanup_and_silent_task_has_no_notice(tmp_path):
+def test_silent_task_saves_result_without_notice_and_filters_plugin_access(tmp_path):
     """静默任务保存结果且通知为空，查询与等待按插件来源过滤。"""
     async def scenario():
         """使用真实队列与临时数据库提交一次任务。"""
@@ -328,7 +328,6 @@ def test_task_result_is_saved_after_cleanup_and_silent_task_has_no_notice(tmp_pa
             record = await runtime.wait_task(task_id, timeout_ms=1000)
             assert record.status == TaskStatus.COMPLETED
             assert record.result == "Hello, World!"
-            assert steps == ["run", "cleanup"]
             assert await other.get_task(task_id) is None
             assert await other.wait_task(task_id, timeout_ms=0) is None
             assert await runtime.wait_task("missing", timeout_ms=0) is None
@@ -337,6 +336,8 @@ def test_task_result_is_saved_after_cleanup_and_silent_task_has_no_notice(tmp_pa
                 assert await manager.read_task_terminals() == ()
             finally:
                 await manager.close()
+            await supervisor.close()
+            assert steps == ["run", "cleanup"]
         finally:
             await supervisor.close()
             await supervisor.records.close()

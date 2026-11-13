@@ -145,14 +145,14 @@ def test_model_client_cleanup_retries_share_active_cleanup(
     tmp_path: Path, retain: bool, first_action: SubagentAction,
     repeated_action: SubagentAction, fail_retry: bool,
 ) -> None:
-    """清理失败后自动重试，重复停止或销毁不启动第二个资源释放。
+    """Agent.close 内重试客户端关闭，期间重复停止或销毁共用原关闭流程。
 
     Args:
         tmp_path (Path): 当前用例独占的数据库目录。
         retain (bool): 普通停止后是否保留子上下文。
-        first_action (SubagentAction): 首次清理失败后发起重试的操作。
+        first_action (SubagentAction): 客户端关闭首次失败后收到的管理操作。
         repeated_action (SubagentAction): 重试等待期间再次受理的操作。
-        fail_retry (bool): 第一次重试是否再次失败，以验证后续仍可重试。
+        fail_retry (bool): 第一次重试是否失败，以验证预算内的第二次重试。
     """
     async def scenario() -> None:
         """通过模型客户端关闭、命令和最终结果观察清理并发及销毁升级。"""
@@ -218,7 +218,7 @@ def test_model_client_cleanup_retries_share_active_cleanup(
             finally:
                 retry_released.set()
 
-            # 2. 后续失败继续由同一 worker 自动重试，模型无需再次发起销毁。
+            # 2. 释放客户端关闭屏障，Agent.close 在有限预算内完成剩余尝试。
             await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, receipt.context_id), 3)
             assert maximum_active == 1
             assert attempts == (3 if fail_retry else 2)
