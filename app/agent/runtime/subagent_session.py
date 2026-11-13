@@ -202,11 +202,14 @@ class SubagentSession:
             return receipt
 
     async def _finish_work(self, outcome: AgentRunOutcome) -> None:
-        """先保存和交付最终父报告，再应用保留或关闭政策。
+        """交付最终父报告，按废弃事务结果关闭身份或保留暂停会话。
 
         Args:
             outcome (AgentRunOutcome): 公共执行已经确定的本次结果。
         """
+        if outcome.kind in {AgentRunOutcomeKind.SAVE_FAILED, AgentRunOutcomeKind.FAILED}:
+            self._error = outcome.error
+        # 1. 保存本次结果并交付父报告，交付失败时保留子历史并通知界面。
         try:
             if self._result_ref is None:
                 self._result_ref = uuid4().hex
@@ -218,24 +221,25 @@ class SubagentSession:
                     if record is not None:
                         self._events.put_nowait(record)
         except Exception as exc:
-            # 1. 子对话已保存，报告交付错误单独展示，下一次输入开启新的工作。
+            # 1.1. 下一次明确输入开启新的工作，本次交付错误随子摘要展示。
             self._error = f"结果交付失败：{exc}"
             self._events.put_nowait(InteractionEvent(self.context_id, InteractionEventKind.ERROR,
                 {"detail": self._error, "report_failed": True}, run_id=outcome.run_id))
-        # 2. 一次性结束确认持久废弃，再停止归属任务；保留型普通任务跨工作继续。
+        # 2. 一次性身份在废弃提交成功后关闭，失败时保留暂停会话供后续明确操作。
         if not self.definition.if_retain_context:
             try:
                 await self._store.definitions.retire(self.context_id)
             except Exception as exc:
+                if self._session_state != SessionState.CLOSED:
+                    self._session_state = SessionState.PAUSED
                 self._error = f"一次性子上下文废弃失败：{exc}"
                 self._events.put_nowait(InteractionEvent(self.context_id, InteractionEventKind.ERROR,
                     {"detail": self._error}, run_id=outcome.run_id))
-            self._session_state = SessionState.CLOSED
+            else:
+                self._session_state = SessionState.CLOSED
         elif self._session_state != SessionState.CLOSED:
             self._session_state = SessionState.PAUSED
         self._result_ref = None
-        if outcome.kind in {AgentRunOutcomeKind.SAVE_FAILED, AgentRunOutcomeKind.FAILED}:
-            self._error = outcome.error
         self._publish(removed=self._session_state == SessionState.CLOSED)
 
     async def _prepare_run(self, run_id: str) -> bool:
@@ -316,10 +320,12 @@ class SubagentSession:
                         self._session_state = SessionState.PAUSED
                     self._publish()
         finally:
-            # 2. 已保存报告先交付；输入受理保持独立，关闭返回后原 worker 交接后续工作。
+            # 1. 报告交付后释放本次 Agent，一次性后台任务随本次工作结束。
             await self._execution.close_current_agent()
-            if self._session_state == SessionState.CLOSED:
+            if not self.definition.if_retain_context or self._session_state == SessionState.CLOSED:
                 await self._task_supervisor.stop_subagent_tasks(self.definition.session_id, self.context_id)
+            # 2. 已关闭会话释放连接并注销，废弃失败的暂停会话保留原登记。
+            if self._session_state == SessionState.CLOSED:
                 await self._manager.close()
                 self._events.put_nowait(SessionClosed(self.context_id, id(self)))
             self._worker = None

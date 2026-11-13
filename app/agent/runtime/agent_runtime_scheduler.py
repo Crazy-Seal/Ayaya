@@ -348,25 +348,27 @@ class AgentRuntimeScheduler:
                 return CommandReceipt(CommandStatus.FAILED, command.session_id, detail=str(exc))
 
     async def _handle_task_record(self, record: TaskRecord) -> None:
-        """展示已保存任务事实，消费者只提醒仍可用的接收会话。
+        """先展示任务状态，再按接收身份和会话政策交付 Agent 通知。
 
         Args:
             record (TaskRecord): 持久任务结果或当前进程的保存失败摘要。
         """
         if not self._settings_dao.exists(record.session_id):
             return
-        if record.subagent_id and record.kind != TaskRecordKind.SUBAGENT:
-            child = await self._subagent_dao.get(record.session_id, record.subagent_id)
-            if child is None or child.retired_at is not None:
-                return
-            receiver = self._sessions.get(record.subagent_id)
-            if isinstance(receiver, SubagentSession) and not receiver.accepts_notifications():
-                return
+        # 1. 后台任务状态属于父界面的展示事实，来源子会话结束后仍然发布。
         if record.background:
             self._publish(InteractionEvent(record.session_id, InteractionEventKind.TASK_STATUS,
                 {"task_id": record.task_id, "status": record.status, "exit_code": record.exit_code,
                  "tool_name": record.tool_name, "error": record.error, "subagent_id": record.subagent_id}, task_id=record.task_id))
+        # 2. 身份关闭只阻止 Agent 接收通知，待处理通知继续由持久 Inbox 保存。
         if self.phase == RuntimePhase.RUNNING and record.status not in {TaskStatus.RUNNING, TaskExecutionPhase.SAVE_FAILED} and record.notify_agent:
+            if record.subagent_id and record.kind != TaskRecordKind.SUBAGENT:
+                child = await self._subagent_dao.get(record.session_id, record.subagent_id)
+                if child is None or child.retired_at is not None:
+                    return
+                receiver = self._sessions.get(record.subagent_id)
+                if isinstance(receiver, SubagentSession) and not receiver.accepts_notifications():
+                    return
             target = record.notification_context_id or record.session_id
             session = self._sessions.get(target)
             if session is None and record.notification_scope == AgentStorageScope.MAIN:
