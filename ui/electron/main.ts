@@ -11,6 +11,7 @@ import {
   getMainWindow,
   openChatWindow,
   beginWindowShutdown,
+  finishWindowShutdown,
   getTrustedRendererPolicy,
   initWindowEventListeners,
   openLogWindow,
@@ -26,6 +27,7 @@ import {
   onBackendUnexpectedExit,
   startBackend as startBackendProcess,
   stopBackend,
+  forceStopBackend,
 } from "./backend-process.js";
 import {
   createBackendRecoveryCoordinator,
@@ -98,11 +100,14 @@ const applicationShutdownCoordinator = createApplicationShutdownCoordinator({
   beginBackendRecoveryShutdown: () => backendRecoveryCoordinator.beginShutdown(),
   stopCursorTracking,
   stopBackend,
+  forceStopBackend,
+  /** 用户明确强制退出时跳过剩余关闭等待。 */
+  forceQuit: () => app.exit(),
   closeLogs: closeLogFiles,
   /**
    * 协调器完成其处理后调用 Electron 的应用退出入口。
    */
-  quit: () => app.quit(),
+  quit: () => { finishWindowShutdown(); app.quit(); },
   /**
    * 将应用退出或后端恢复错误记录到前端日志。
    *
@@ -176,7 +181,9 @@ async () => {
     openLogWindow,
     sendBatch: sendLogBatch,
   });
-  registerIpcHandlers({ requestApplicationExit: requestApplicationShutdown });
+  registerIpcHandlers({ requestApplicationExit: requestApplicationShutdown,
+    /** 把等待界面的明确选择交给同一退出协调器。 */
+    forceApplicationExit: () => applicationShutdownCoordinator.requestForceShutdown() });
   openLogWindow();
   appendFrontendLog("info", "startup", "日志控制台已启动，正在启动后端");
 

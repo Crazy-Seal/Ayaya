@@ -775,6 +775,8 @@ export interface DesktopPetApi {
    *     Promise<void>: 主进程已受理退出请求；窗口来源无效或接口未更新时拒绝。
    */
   requestApplicationExit: () => Promise<void>;
+  /** 退出等待界面的明确操作：强制结束受管后端并退出桌面应用。 */
+  forceApplicationExit: () => Promise<void>;
   /** 页面首次加载时查询是否正在退出，补齐早于页面加载完成的通知。 */
   getApplicationShutdownState: () => Promise<boolean>;
   /** 退出确认前查询全应用执行或清理中的任务数量。 */

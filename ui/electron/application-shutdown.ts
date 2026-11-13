@@ -13,6 +13,8 @@ interface ApplicationShutdownDependencies {
   beginBackendRecoveryShutdown: () => void;
   stopCursorTracking: () => void;
   stopBackend: () => Promise<void>;
+  forceStopBackend: () => Promise<void>;
+  forceQuit: () => void;
   closeLogs: () => Promise<void>;
   quit: () => void;
   logError: (message: string, error: unknown) => void;
@@ -26,6 +28,9 @@ export interface ApplicationShutdownCoordinator {
    *  幂等地停止受管资源并退出应用。
    */
   requestShutdown(): Promise<void>;
+
+  /** 用户主动跳过等待，强制结束后端及桌面应用。 */
+  requestForceShutdown(): Promise<void>;
 
   /**
    *  返回应用是否已经进入关闭流程。
@@ -52,6 +57,9 @@ export const createApplicationShutdownCoordinator = (
 ): ApplicationShutdownCoordinator => {
   let phase: ShutdownPhase = ShutdownPhase.IDLE;
   let shutdownPromise: Promise<void> | null = null;
+  let forcePromise: Promise<void> | null = null;
+  /** 每次异步等待返回后读取当前退出阶段，识别另一入口已完成退出的情况。 */
+  const isComplete = (): boolean => phase === ShutdownPhase.COMPLETE;
 
   /**
    * 合并重复关闭请求，依次等待后端退出和日志刷新后退出 Electron。
@@ -73,19 +81,36 @@ export const createApplicationShutdownCoordinator = (
       } catch (error) {
         dependencies.logError("停止后端进程失败", error);
       }
+      if (isComplete()) return;
       try {
         await dependencies.closeLogs();
       } catch (error) {
         dependencies.logError("刷新日志文件失败", error);
       }
+      if (isComplete()) return;
       phase = ShutdownPhase.COMPLETE;
       dependencies.quit();
     })();
     return shutdownPromise;
   };
 
+  /** 合并多个窗口的强制退出请求；强制退出完成后，正常关闭的迟到回调结束等待。 */
+  const requestForceShutdown = (): Promise<void> => {
+    if (forcePromise) return forcePromise;
+    forcePromise = (/** 强制结束受管后端，随后直接退出 Electron，跳过日志等剩余等待。 */
+    async () => {
+      await dependencies.forceStopBackend();
+      if (isComplete()) return;
+      phase = ShutdownPhase.COMPLETE;
+      dependencies.forceQuit();
+    })().finally(/** 释放本次请求，终止失败时界面可再次操作。 */
+    () => { forcePromise = null; });
+    return forcePromise;
+  };
+
   return {
     requestShutdown,
+    requestForceShutdown,
     /**
      * 检查应用是否已经进入关闭流程，供退出入口避免重复启动清理。
      *
@@ -99,6 +124,6 @@ export const createApplicationShutdownCoordinator = (
      * Returns:
      *     boolean: 关闭阶段为 complete 时为 true。
      */
-    isComplete: () => phase === ShutdownPhase.COMPLETE,
+    isComplete,
   };
 };

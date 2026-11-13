@@ -13,6 +13,7 @@ export const IpcChannel = {
   DELETE_MODEL: "desktop-pet:delete-model",
   END_WINDOW_GESTURE: "desktop-pet:end-window-gesture",
   EXIT_APPLICATION: "desktop-pet:exit-application",
+  FORCE_EXIT_APPLICATION: "desktop-pet:force-exit-application",
   EXPRESSION_REQUEST: "desktop-pet:expression-request",
   GET_ACTIVE_MODEL: "desktop-pet:get-active-model",
   GET_AI_NAMES: "desktop-pet:get-ai-names",

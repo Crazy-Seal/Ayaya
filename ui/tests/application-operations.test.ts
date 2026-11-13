@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createApplicationOperations, SHUTDOWN_STATE_CHANNEL } from "../electron/application-operations.js";
 import { createApplicationShutdownCoordinator } from "../electron/application-shutdown.js";
+import { IpcChannel } from "../ipc-channels.js";
 
 test("正常运行允许操作，退出后有返回值请求拒绝、按钮事件忽略，状态查询仍可执行", /** 验证业务与日志请求在同一个入口被关闭。 */
 () => {
@@ -17,6 +18,7 @@ test("正常运行允许操作，退出后有返回值请求拒绝、按钮事�
   }
   for (const channel of ["desktop-pet:open-log-window", "desktop-pet:begin-window-gesture", "desktop-pet:exit-application"]) gate.send(channel, execute);
   assert.equal(executions, 2);
+  assert.equal(gate.invoke(IpcChannel.FORCE_EXIT_APPLICATION, execute), 3);
   assert.equal(gate.invoke(SHUTDOWN_STATE_CHANNEL, /** 迟加载页面查询不可撤销的退出状态。 */ () => gate.isShuttingDown()), true);
 });
 
@@ -31,6 +33,10 @@ async () => {
    */
   (resolve) => { releaseBackend = resolve; });
   const coordinator = createApplicationShutdownCoordinator({
+    /** 正常退出场景不应强制终止后端。 */
+    forceStopBackend: async () => assert.fail("不应强制结束"),
+    /** 正常退出场景不应强制退出应用。 */
+    forceQuit: () => assert.fail("不应强制退出"),
     /** 模拟主进程开始清理前已同步关闭门禁。 */
     beginBackendRecoveryShutdown: () => { gate.beginShutdown(); order.push("locked"); },
     /** 记录停止鼠标采样。 */

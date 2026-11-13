@@ -196,16 +196,32 @@ const installWindowGestures = (win: BrowserWindow): void => {
   () => { controller.end(); windowGestures.delete(win); });
 };
 
-/** 应用清理开始前关闭操作门禁、通知全部页面、结束采样并允许聊天释放。 */
+/** 退出等待期间保留窗口，让用户仍能操作强制退出按钮。 */
+const keepShutdownWindow = (event: { preventDefault: () => void }): void => { event.preventDefault(); };
+
+/** 资源关闭完成后允许 Electron 释放等待窗口。 */
+export const finishWindowShutdown = (): void => {
+  for (const win of BrowserWindow.getAllWindows()) win.removeListener("close", keepShutdownWindow);
+};
+
+/** 应用清理开始前关闭操作门禁、显示等待窗口并通知全部页面。 */
 export const beginWindowShutdown = (): void => {
   // 1. 先记录主进程状态，通知尚未绘制完的页面时也不会接受新的业务 IPC。
   if (!applicationOperations.beginShutdown()) return;
+  // 2. 退出可能来自最小化窗口或系统菜单，保留一个可见的等待入口。
+  if (app.isReady()) {
+    const waitingWindow = chatWindow && !chatWindow.isDestroyed() ? chatWindow
+      : logWindow && !logWindow.isDestroyed() ? logWindow : openChatWindow();
+    if (waitingWindow.isMinimized()) waitingWindow.restore();
+    waitingWindow.show(); waitingWindow.focus();
+  }
   for (const controller of windowGestures.values()) controller.end();
   applyPetPointerState();
-  // 2. 页面进入统一等待界面；尚未收到通知的迟加载页面通过退出状态查询补齐。
+  // 3. 页面进入统一等待界面；尚未收到通知的迟加载页面通过退出状态查询补齐。
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
-    // 2.1. 单个页面崩溃或正在卸载时，通知失败不能中断其他窗口锁定或应用资源清理。
+    win.on("close", keepShutdownWindow);
+    // 3.1. 单个页面崩溃或正在卸载时，记录通知失败并继续处理其他窗口。
     try { win.webContents.send(IpcChannel.APPLICATION_SHUTDOWN); }
     catch (error) { appendFrontendLog("warn", "shutdown", "通知页面进入退出状态失败", error); }
   }

@@ -129,12 +129,14 @@ const notifyModelTransformChanged = (model: {
 /**
  * 注册受信任 Renderer 的 IPC 入口，将运行时命令、事件和任务查询接入主进程。
  * Args:
- *     options ({ requestApplicationExit: () => void }): 聊天或设置页确认退出后调用的统一应用清理入口。
+ *     options (object): 普通退出和等待界面强制退出对应的应用操作。
  */
-export const registerIpcHandlers = (options: { requestApplicationExit: () => void }): void => {
+export const registerIpcHandlers = (options: { requestApplicationExit: () => void; forceApplicationExit: () => Promise<void> }): void => {
   const trustedIpc = createTrustedIpcRegistrar(getTrustedRendererPolicy());
-  trustedIpc.handle(SHUTDOWN_STATE_CHANNEL, /** 页面首次加载时补查退出状态，退出门禁只保留此查询。 */
+  trustedIpc.handle(SHUTDOWN_STATE_CHANNEL, /** 页面首次加载时补查退出状态。 */
   () => applicationOperations.isShuttingDown());
+  trustedIpc.handle(IpcChannel.FORCE_EXIT_APPLICATION, /** 可信页面的退出等待按钮直接请求强制结束。 */
+  () => options.forceApplicationExit());
   // 鼠标穿透控制
   trustedIpc.on(IpcChannel.SET_MOUSE_PASSTHROUGH, /**
    * 可信页面请求鼠标穿透时定位发送窗口，再更新窗口是否忽略鼠标事件。

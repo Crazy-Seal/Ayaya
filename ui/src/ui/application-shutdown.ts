@@ -1,8 +1,8 @@
 /** 全部页面共用退出等待界面，拦截鼠标、键盘、表单和拖入等功能入口。 */
 import type { DesktopPetApi } from "../../shared-types.js";
 
-/** 退出等待只需要状态查询和主进程通知，不接触聊天或设置业务。 */
-type ShutdownApi = Pick<DesktopPetApi, "getApplicationShutdownState" | "onApplicationShutdown">;
+/** 退出等待使用状态查询、主进程通知和用户主动强制退出操作。 */
+type ShutdownApi = Pick<DesktopPetApi, "getApplicationShutdownState" | "onApplicationShutdown" | "forceApplicationExit">;
 
 /**
  * 为一个页面建立不可撤销的退出锁定，通知与首次查询都能触发同一入口。
@@ -19,6 +19,8 @@ export const createApplicationShutdownUi = (target: Window, api: ShutdownApi) =>
   let unsubscribe: (() => void) | null = null;
   let observer: MutationObserver | null = null;
   let shutdownOverlay: HTMLElement | null = null;
+  let forceButton: HTMLButtonElement | null = null;
+  let forceStatus: HTMLElement | null = null;
   const events = ["click", "dblclick", "pointerdown", "pointerup", "keydown", "keyup",
     "pointermove", "mousedown", "mouseup", "mousemove", "touchstart", "touchmove", "touchend",
     "beforeinput", "input", "change", "submit", "wheel", "dragstart", "dragover", "drop", "paste", "contextmenu"];
@@ -30,6 +32,25 @@ export const createApplicationShutdownUi = (target: Window, api: ShutdownApi) =>
   const blockInteraction = (event: Event): void => {
     if (!locked) return;
     event.preventDefault(); event.stopImmediatePropagation();
+    if (event.type === "keydown" && (event as KeyboardEvent).key === "Tab") forceButton?.focus();
+    if (forceButton && event.composedPath().includes(forceButton) && (
+      event.type === "click" || (event.type === "keydown" && ["Enter", " "].includes((event as KeyboardEvent).key)))) {
+      void forceExit();
+    }
+  };
+
+  /** 用户明确选择后禁用重复点击，终止失败时显示原因并允许重试。 */
+  const forceExit = async (): Promise<void> => {
+    if (!forceButton || forceButton.disabled) return;
+    forceButton.disabled = true;
+    forceButton.textContent = "正在强制退出…";
+    try {
+      await api.forceApplicationExit();
+    } catch (error) {
+      forceButton.disabled = false;
+      forceButton.textContent = "强制退出";
+      if (forceStatus) forceStatus.textContent = `强制退出失败：${error instanceof Error ? error.message : String(error)}`;
+    }
   };
   /** 确认退出或收到主进程通知后锁定功能控件并展示等待状态，重复调用不重复插入。 */
   const lock = (): void => {
@@ -43,6 +64,7 @@ export const createApplicationShutdownUi = (target: Window, api: ShutdownApi) =>
     const disableControls = (): void => {
       // 1. 异步返回或重绘后出现的新控件也必须禁用，不能仅锁定退出瞬间已有的按钮。
       for (const control of doc.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>("button, input, textarea, select")) {
+        if (shutdownOverlay?.contains(control)) continue;
         if (!control.disabled) control.disabled = true;
       }
       // 2. 禁止页面内容获得焦点；退出等待提示保持可显示和可聚焦。
@@ -66,8 +88,11 @@ export const createApplicationShutdownUi = (target: Window, api: ShutdownApi) =>
     overlay.setAttribute("role", "status"); overlay.setAttribute("aria-live", "polite"); overlay.tabIndex = -1;
     const card = doc.createElement("div"); card.className = "ui-surface ui-shutdown-message";
     const title = doc.createElement("div"); title.className = "ui-window-title"; title.textContent = "正在退出…";
-    const message = doc.createElement("p"); message.textContent = "正在停止对话和后台任务，请稍候。";
-    card.append(title, message); overlay.append(card); root.append(overlay); overlay.focus();
+    const message = doc.createElement("p"); message.textContent = "正在保存数据并停止后台任务，请稍候。";
+    forceStatus = doc.createElement("p"); forceStatus.textContent = "强制退出可能丢失尚未保存的数据。";
+    forceButton = doc.createElement("button"); forceButton.type = "button";
+    forceButton.className = "ui-button ui-shutdown-force"; forceButton.textContent = "强制退出";
+    card.append(title, message, forceStatus, forceButton); overlay.append(card); root.append(overlay); overlay.focus();
   };
   /** 仅在页面真正卸载时取消退出通知和事件监听，不恢复已经确认退出的界面。 */
   const dispose = (): void => {

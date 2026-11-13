@@ -3,6 +3,35 @@ import { test } from "node:test";
 
 import { createApplicationShutdownCoordinator } from "../electron/application-shutdown.js";
 
+for (const blocked of ["backend", "logs"]) {
+  test(`等待 ${blocked} 时用户强制退出，迟到的正常关闭不会再次退出`, /** 模拟后端或日志一直等待，同时从多个窗口发起强制退出。 */
+  async () => {
+    let release!: () => void;
+    const pending = new Promise<void>(/** 保存测试释放正常关闭的入口。 */ (resolve) => { release = resolve; });
+    let forceStops = 0, forceQuits = 0, quits = 0;
+    const coordinator = createApplicationShutdownCoordinator({
+      /** 本场景无需启动恢复服务。 */ beginBackendRecoveryShutdown: () => {},
+      /** 本场景没有光标资源。 */ stopCursorTracking: () => {},
+      /** 按场景阻塞后端退出。 */ stopBackend: async () => { if (blocked === "backend") await pending; },
+      /** 按场景阻塞日志刷新。 */ closeLogs: async () => { if (blocked === "logs") await pending; },
+      /** 记录受管进程强制终止次数。 */ forceStopBackend: async () => { forceStops++; },
+      /** 记录直接退出 Electron 的次数。 */ forceQuit: () => { forceQuits++; },
+      /** 记录普通退出，不允许强退完成后的迟到回调重复退出。 */ quit: () => { quits++; },
+      /** 成功路径不能报告错误。 */ logError: () => assert.fail("不应报错"),
+    });
+    const normal = coordinator.requestShutdown();
+    await Promise.resolve();
+    const first = coordinator.requestForceShutdown();
+    assert.equal(coordinator.requestForceShutdown(), first);
+    await first;
+    assert.equal(forceStops, 1);
+    assert.equal(forceQuits, 1);
+    assert.equal(coordinator.isComplete(), true);
+    release(); await normal;
+    assert.equal(quits, 0);
+  });
+}
+
 test("重复关闭请求只停止后端并退出一次", /**
  * 验证重复关闭请求只停止后端并退出一次。
  */
@@ -25,6 +54,10 @@ async () => {
     releaseBackend = resolve;
   });
   const coordinator = createApplicationShutdownCoordinator({
+    /** 正常退出场景不应强制终止后端。 */
+    forceStopBackend: async () => assert.fail("不应强制结束"),
+    /** 正常退出场景不应强制退出应用。 */
+    forceQuit: () => assert.fail("不应强制退出"),
     /**
      * 记录恢复流程已经停止接收新操作，供检查关闭顺序。
      *
@@ -88,6 +121,10 @@ async () => {
   const logged: unknown[] = [];
   let quitCalls = 0;
   const coordinator = createApplicationShutdownCoordinator({
+    /** 正常退出场景不应强制终止后端。 */
+    forceStopBackend: async () => assert.fail("不应强制结束"),
+    /** 正常退出场景不应强制退出应用。 */
+    forceQuit: () => assert.fail("不应强制退出"),
     /**
      * 记录恢复流程已经停止接收新操作，供检查关闭顺序。
      *
@@ -144,6 +181,10 @@ test("后端停止后再刷新日志，日志失败仍允许退出", /**
 async () => {
   const order: string[] = [];
   const coordinator = createApplicationShutdownCoordinator({
+    /** 正常退出场景不应强制终止后端。 */
+    forceStopBackend: async () => assert.fail("不应强制结束"),
+    /** 正常退出场景不应强制退出应用。 */
+    forceQuit: () => assert.fail("不应强制退出"),
     /**
      * 记录恢复流程已经停止接收新操作，供检查关闭顺序。
      *

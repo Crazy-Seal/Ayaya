@@ -41,11 +41,13 @@ export const createApplicationOperations = (): ApplicationOperations => {
      * Returns:
      *     T: 退出前的正常业务响应或页面启动时查询到的退出状态。
      * Raises:
-     *     Error: 已退出且请求并非退出状态查询。
+     *     Error: 已开始退出且请求属于新的业务操作。
      */
     invoke<T>(channel: string, operation: () => T): T {
-      // 1. 迟加载的页面必须能查询退出状态并锁定自己，其余请求不能再进入业务逻辑。
-      if (shuttingDown && channel !== SHUTDOWN_STATE_CHANNEL) throw new Error("应用正在退出，无法执行新的操作");
+      // 1. 迟加载页面查询退出状态，等待界面保留强制退出；其他请求停止进入业务逻辑。
+      if (shuttingDown && channel !== SHUTDOWN_STATE_CHANNEL && channel !== IpcChannel.FORCE_EXIT_APPLICATION) {
+        throw new Error("应用正在退出，无法执行新的操作");
+      }
       return operation();
     },
     /**

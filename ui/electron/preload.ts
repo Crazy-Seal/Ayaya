@@ -222,6 +222,8 @@ const desktopPetApi: DesktopPetApi = {
    *     Promise<void>: 主进程已关闭新业务并通知全部窗口进入退出状态。
    */
   requestApplicationExit: () => ipcRenderer.invoke(IpcChannel.EXIT_APPLICATION),
+  /** 将用户点击强制退出交给主进程。 */
+  forceApplicationExit: () => ipcRenderer.invoke(IpcChannel.FORCE_EXIT_APPLICATION),
   /** 查询主进程退出状态，此查询在退出等待期间仍允许执行。 */
   getActiveTaskSummary: () => ipcRenderer.invoke(IpcChannel.GET_ACTIVE_TASK_SUMMARY),
   getApplicationShutdownState: () => ipcRenderer.invoke(IpcChannel.GET_SHUTDOWN_STATE),

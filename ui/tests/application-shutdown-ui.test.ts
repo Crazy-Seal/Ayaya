@@ -26,6 +26,8 @@ class Element {
    *     name, value (string): 属性名称与值。
    */
   setAttribute(name: string, value: string): void { this.attributes[name] = value; }
+  /** 判断控件是否属于退出提示。 */
+  contains(element: Element): boolean { return this === element || this.children.some(/** 递归查找当前提示内的控件。 */ (child) => child.contains(element)); }
   /** 记录退出提示取得焦点。 */
   focus(): void { this.focused = true; }
   /** 记录草稿输入结束占用焦点。 */
@@ -60,11 +62,14 @@ class Page {
  * Returns:
  *     object: 页面、事件目标、退出控制器以及模拟通知入口。
  */
-const fixture = (initialState = Promise.resolve(false)) => {
+const fixture = (initialState = Promise.resolve(false), forceOperation = async (): Promise<void> => {}) => {
   const target = new EventTarget(); const page = new Page();
   Object.assign(target, { document: page });
+  let forces = 0;
   let notify: (() => void) | null = null; let removals = 0;
   const ui = createApplicationShutdownUi(target as unknown as Window, {
+    /** 记录用户主动要求的强制退出。 */
+    forceApplicationExit: async () => { forces++; await forceOperation(); },
     /** 返回模拟主进程状态，不访问任何后端。 */
     getApplicationShutdownState: () => initialState,
     /**
@@ -81,6 +86,8 @@ const fixture = (initialState = Promise.resolve(false)) => {
     },
   });
   return { ui, page, target,
+    /** 查询实际强制退出次数。 */
+    forces: () => forces,
     /** 推送主进程退出通知。 */
     notify: () => notify?.(),
     /** 读取通知监听被移除的次数。 */
@@ -152,4 +159,51 @@ test("开发模式旧 preload 不打断页面初始化，本窗口确认退出�
   const event = new Event("click", { cancelable: true }); target.dispatchEvent(event);
   assert.equal(event.defaultPrevented, false);
   ui.lock(); assert.equal(page.controls[0].disabled, true); ui.dispose();
+});
+
+for (const kind of ["click", "keydown"]) {
+  test(`退出遮罩的强制按钮支持 ${kind}，其他业务仍被拦截且重复操作合并`, /** 通过真实捕获入口触发退出按钮，避免只检查 DOM 文案。 */
+  async () => {
+    const { ui, page, target, forces } = fixture(); ui.install();
+    assert.equal(forces(), 0);
+    ui.lock();
+    const button = page.root.children.at(-1)!.children[0].children.at(-1)!;
+    assert.equal(button.disabled, false);
+    let operations = 0;
+    target.addEventListener(kind, /** 原业务监听不应收到退出按钮的操作。 */ () => { operations++; });
+    for (let i = 0; i < 2; i++) {
+      const event = new Event(kind, { cancelable: true });
+      Object.assign(event, { key: "Enter", /** 模拟浏览器为按钮事件提供的实际路径。 */ composedPath: () => [button, target] });
+      target.dispatchEvent(event);
+    }
+    await Promise.resolve();
+    assert.equal(forces(), 1);
+    assert.equal(operations, 0);
+    assert.equal(button.disabled, true);
+    ui.dispose();
+  });
+}
+
+test("强制终止失败后提示原因并允许用户再次点击", /** 保持等待遮罩及业务锁定，只恢复强制按钮。 */
+async () => {
+  let attempts = 0;
+  const { ui, page, target, forces } = fixture(Promise.resolve(true), /** 第一次模拟进程终止失败。 */
+    async () => { if (++attempts === 1) throw new Error("进程终止失败"); });
+  ui.install(); await Promise.resolve();
+  const card = page.root.children.at(-1)!.children[0];
+  const button = card.children.at(-1)!;
+  /** 通过退出捕获入口派发按钮点击。 */
+  const click = (): void => {
+    const event = new Event("click", { cancelable: true });
+    Object.assign(event, { /** 返回按钮所在路径。 */ composedPath: () => [button, target] });
+    target.dispatchEvent(event);
+  };
+  click();
+  await new Promise<void>(/** 等待错误响应传播到实际界面处理器。 */ (resolve) => setImmediate(resolve));
+  assert.equal(button.disabled, false);
+  assert.match(card.children.at(-2)!.textContent, /进程终止失败/);
+  assert.ok(page.controls.every(/** 失败不会重新开放业务。 */ (control) => control.disabled));
+  click();
+  assert.equal(forces(), 2);
+  ui.dispose();
 });

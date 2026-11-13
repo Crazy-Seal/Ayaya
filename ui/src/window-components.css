@@ -553,6 +553,8 @@ textarea.ui-control::-webkit-scrollbar-thumb {
 .ui-shutdown-message { max-width: 100%; padding: var(--spacing-xl); text-align: center; }
 .ui-shutdown-message p { margin-bottom: 0; color: var(--color-text-secondary); }
 [data-application-shutdown="true"] .ui-button { opacity: var(--control-disabled-opacity); transform: none; pointer-events: none; }
+.ui-shutdown-overlay .ui-shutdown-force { margin-top: var(--spacing-lg); opacity: 1; pointer-events: auto; cursor: pointer; }
+.ui-shutdown-overlay .ui-shutdown-force:disabled { opacity: var(--control-disabled-opacity); cursor: wait; }
 .ui-dialog-heading { display: flex; align-items: center; gap: var(--spacing-md); background: var(--color-bg-elevated); }
 .ui-dialog-heading .ui-icon { width: 24px; height: 24px; color: var(--color-warning); }
 .ui-dialog-heading .ui-window-title { font-size: var(--font-size-dialog-title); }

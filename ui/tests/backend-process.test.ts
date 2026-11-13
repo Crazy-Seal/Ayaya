@@ -38,7 +38,6 @@ interface ControllerHarnessOptions {
     environmentRoot: string;
   };
   startupTimeoutMs?: number;
-  shutdownTimeoutMs?: number;
   shutdown?: (init?: RequestInit) => Promise<Response>;
 }
 
@@ -129,6 +128,7 @@ const createHarness = (options: ControllerHarnessOptions = {}) => {
     terminateProcess: async (process) => {
       terminated.push(process);
       (process as unknown as FakeChildProcess).exitCode = -1;
+      process.emit("exit", -1, null);
     },
     /**
      * 收集当前用例产生的错误，避免触发真实应用日志流程。
@@ -155,7 +155,6 @@ const createHarness = (options: ControllerHarnessOptions = {}) => {
     },
     pollIntervalMs: 1,
     startupTimeoutMs: options.startupTimeoutMs ?? 100,
-    shutdownTimeoutMs: options.shutdownTimeoutMs ?? 5,
   });
   return {
     /**
@@ -634,169 +633,57 @@ async () => {
   assert.equal(harness.shutdownCalls, 1);
 });
 
-test("优雅退出超时后只强制终止一次", /**
- * 验证优雅退出超时后只强制终止一次。
- */
-async () => {
-  const harness = createHarness({ shutdownTimeoutMs: 1 });
-  await harness.controller.startBackend();
-
-  await harness.controller.stopBackend();
-  await harness.controller.stopBackend();
-
-  assert.equal(harness.shutdownCalls, 1);
-  assert.equal(harness.terminated.length, 1);
+test("关闭请求不返回或失败，超过五秒仍等待进程，用户可主动强制退出", /** 验证等待没有自动强杀，重复点击只结束同一受管进程一次。 */
+async (context) => {
+  for (const failRequest of [false, true]) {
+    let signal: AbortSignal | undefined;
+    const harness = createHarness({
+      /** 模拟关闭接口失败或持续等待。 */
+      shutdown: async (init) => {
+        signal = init?.signal ?? undefined;
+        if (failRequest) throw new Error("关闭接口失败");
+        return new Promise<Response>(/** 保持请求等待，直至测试结束。 */ () => {});
+      },
+    });
+    await harness.controller.startBackend();
+    context.mock.timers.enable({ apis: ["setTimeout"] });
+    let finished = false;
+    const stopping = harness.controller.stopBackend();
+    void stopping.then(/** 记录实际退出，而非关闭请求已发出。 */ () => { finished = true; });
+    assert.equal(harness.controller.stopBackend(), stopping);
+    context.mock.timers.tick(60_000);
+    await waitForSpawn();
+    assert.equal(finished, false);
+    assert.equal(harness.terminated.length, 0);
+    assert.equal(signal?.aborted, false);
+    await Promise.all([harness.controller.forceStopBackend(), harness.controller.forceStopBackend()]);
+    await stopping;
+    assert.equal(harness.terminated.length, 1);
+    assert.equal(harness.shutdownCalls, 1);
+    assert.equal(signal?.aborted, true);
+    assert.equal(harness.child.listenerCount("exit"), 0);
+    context.mock.timers.reset();
+  }
 });
 
-test("关闭接口不返回也在总计五秒时强停，迟到错误被正常处理", /**
- * 验证接口等待占用同一个退出预算，超时后中止请求并只终止一次后端。
- * Args:
- *     context (TestContext): 提供可精确推进的模拟计时器。
- */
+test("关闭接口响应后仍等待实际退出，超过五秒自然退出不会强杀", /** 接口响应不代表保存及进程关闭已经完成。 */
 async (context) => {
-  let shutdownSignal: AbortSignal | undefined;
-  let rejectShutdown!: (reason: Error) => void;
-  const harness = createHarness({
-    shutdownTimeoutMs: 5000,
-    /**
-     * 保持关闭请求等待，模拟未及时响应且延迟处理取消信号的后端请求。
-     * Args:
-     *     init (RequestInit | undefined): 关闭请求及其取消信号。
-     * Returns:
-     *     Promise<Response>: 由测试在强停后报告失败的请求。
-     */
-    shutdown: (init) => {
-      shutdownSignal = init?.signal ?? undefined;
-      return new Promise<Response>(/**
-       * 保存迟到错误的报告回调。
-       * Args:
-       *     _resolve ((value: Response) => void): 本场景保持响应等待。
-       *     reject ((reason: Error) => void): 强停后报告请求错误。
-       */
-      (_resolve, reject) => { rejectShutdown = reject; });
-    },
-  });
+  const harness = createHarness();
   await harness.controller.startBackend();
   context.mock.timers.enable({ apis: ["setTimeout"] });
-  const exitListeners = harness.child.listenerCount("exit");
+  let finished = false;
   const stopping = harness.controller.stopBackend();
-  context.mock.timers.tick(4999);
-  assert.equal(harness.terminated.length, 0);
-  assert.equal(shutdownSignal?.aborted, false);
-  context.mock.timers.tick(1);
-  await stopping;
-  assert.equal(harness.terminated.length, 1);
-  assert.equal(shutdownSignal?.aborted, true);
-  assert.equal(harness.child.listenerCount("exit"), exitListeners);
-  rejectShutdown(new Error("关闭请求迟到的错误"));
+  void stopping.then(/** 记录关闭完成时刻。 */ () => { finished = true; });
+  context.mock.timers.tick(60_000);
   await waitForSpawn();
-  await harness.controller.stopBackend();
-  assert.equal(harness.shutdownCalls, 1);
-  assert.equal(harness.terminated.length, 1);
-});
-
-test("关闭接口耗时四秒后只剩一秒进程退出时间", /**
- * 验证收到关闭响应不会重新开始五秒计时。
- * Args:
- *     context (TestContext): 提供可精确推进的模拟计时器。
- */
-async (context) => {
-  const harness = createHarness({
-    shutdownTimeoutMs: 5000,
-    /**
-     * 延迟四秒返回成功，模拟后端封闭入口需要等待其他操作。
-     * Returns:
-     *     Promise<Response>: 四秒后返回的关闭响应。
-     */
-    shutdown: () => new Promise<Response>(/**
-     * 安排关闭响应返回时间。
-     * Args:
-     *     resolve ((value: Response) => void): 完成本次请求的回调。
-     */
-    (resolve) => {
-      setTimeout(/** 返回后端已受理关闭的响应。 */
-      () => resolve(new Response(null, { status: 200 })), 4000);
-    }),
-  });
-  await harness.controller.startBackend();
-  context.mock.timers.enable({ apis: ["setTimeout"] });
-  const stopping = harness.controller.stopBackend();
-  context.mock.timers.tick(4000);
-  await waitForSpawn();
+  assert.equal(finished, false);
   assert.equal(harness.terminated.length, 0);
-  context.mock.timers.tick(999);
-  await waitForSpawn();
-  assert.equal(harness.terminated.length, 0);
-  context.mock.timers.tick(1);
-  await stopping;
-  assert.equal(harness.shutdownCalls, 1);
-  assert.equal(harness.terminated.length, 1);
-});
-
-test("关闭接口仍在等待时进程提前退出，立即完成关闭并取消请求", /**
- * 验证以真实进程结束为完成依据，提前退出后清理定时器且不再强停。
- * Args:
- *     context (TestContext): 提供可精确推进的模拟计时器。
- */
-async (context) => {
-  let shutdownSignal: AbortSignal | undefined;
-  const harness = createHarness({
-    shutdownTimeoutMs: 5000,
-    /**
-     * 保持关闭请求等待，直到进程退出后收到取消信号。
-     * Args:
-     *     init (RequestInit | undefined): 关闭请求及其取消信号。
-     * Returns:
-     *     Promise<Response>: 取消时报告失败的请求。
-     */
-    shutdown: (init) => {
-      shutdownSignal = init?.signal ?? undefined;
-      return new Promise<Response>(/**
-       * 在请求取消时结束模拟网络等待。
-       * Args:
-       *     _resolve ((value: Response) => void): 本场景保持响应等待。
-       *     reject ((reason: unknown) => void): 请求取消后的失败回调。
-       */
-      (_resolve, reject) => {
-        shutdownSignal?.addEventListener("abort", /** 将取消作为请求失败交回实际控制器。 */
-        () => reject(new Error("请求已取消")), { once: true });
-      });
-    },
-  });
-  await harness.controller.startBackend();
-  context.mock.timers.enable({ apis: ["setTimeout"] });
-  const stopping = harness.controller.stopBackend();
-  context.mock.timers.tick(750);
   harness.child.exitCode = 0;
   harness.child.emit("exit", 0, null);
   await stopping;
-  assert.equal(shutdownSignal?.aborted, true);
+  await harness.controller.forceStopBackend();
   assert.equal(harness.terminated.length, 0);
   assert.equal(harness.child.listenerCount("exit"), 0);
-  context.mock.timers.tick(5000);
-  assert.equal(harness.terminated.length, 0);
-});
-
-test("关闭接口立即报错也继续在同一五秒预算内等待进程退出", /**
- * 验证请求错误不会跳过正常退出等待，也不会阻止超时强停。
- * Args:
- *     context (TestContext): 提供可精确推进的模拟计时器。
- */
-async (context) => {
-  const harness = createHarness({
-    shutdownTimeoutMs: 5000,
-    /** 模拟关闭接口连接失败。 */
-    shutdown: async () => { throw new Error("后端关闭接口连接失败"); },
-  });
-  await harness.controller.startBackend();
-  context.mock.timers.enable({ apis: ["setTimeout"] });
-  const stopping = harness.controller.stopBackend();
-  await waitForSpawn();
-  context.mock.timers.tick(4999);
-  assert.equal(harness.terminated.length, 0);
-  context.mock.timers.tick(1);
-  await stopping;
-  assert.equal(harness.terminated.length, 1);
 });
 
 test("环境解析期间停止后端会取消启动且不创建 Python", /**

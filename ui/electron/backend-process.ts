@@ -23,7 +23,6 @@ import { BackendLineDecoder, inferBackendLevel } from "./logging/log-core.js";
 
 const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
 const DEFAULT_POLL_INTERVAL_MS = 200;
-const DEFAULT_SHUTDOWN_TIMEOUT_MS = 5_000;
 
 type SpawnProcess = (
   command: string,
@@ -46,7 +45,6 @@ interface BackendProcessDependencies {
   terminateProcess: (child: ChildProcess) => Promise<void>;
   pollIntervalMs: number;
   startupTimeoutMs: number;
-  shutdownTimeoutMs: number;
   platform: NodeJS.Platform;
   ownerPid: number;
   logError: (message: string, error: unknown) => void;
@@ -79,9 +77,12 @@ export interface BackendProcessController {
   startBackend(): Promise<void>;
 
   /**
-   * 请求后端优雅退出，关闭请求和等待进程结束共用超时预算，到期后终止受管子进程。
+   * 请求后端正常退出，等待已经开始的保存和资源关闭完成。
    */
   stopBackend(): Promise<void>;
+
+  /** 用户在退出等待期间主动强制终止受管后端。 */
+  forceStopBackend(): Promise<void>;
 
   /**
    *  订阅成功就绪后的非预期退出事件。
@@ -164,11 +165,7 @@ const delay = (milliseconds: number, signal: AbortSignal): Promise<void> =>
 const terminateProcessTree = async (child: ChildProcess): Promise<void> => {
   if (!isRunning(child) || !child.pid) return;
   if (process.platform !== "win32") {
-    try {
-      child.kill("SIGKILL");
-    } catch (error) {
-      appendFrontendLog("error", "backend-process", "强制终止后端进程失败", error);
-    }
+    if (!child.kill("SIGKILL")) throw new Error("无法向后端发送终止信号");
     return;
   }
 
@@ -178,22 +175,17 @@ const terminateProcessTree = async (child: ChildProcess): Promise<void> => {
    * Args:
    *     resolve ((value: void | PromiseLike<void>) => void): 准备成功或等待结束时完成 Promise 的函数。
    */
-  (resolve) => {
+  (resolve, reject) => {
     const taskkill = spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
       windowsHide: true,
       stdio: "ignore",
     });
-    let settled = false;
-    /**
-     * 辅助终止进程退出或报错后只完成一次等待，避免重复回调影响清理。
-     */
-    const finish = (): void => {
-      if (settled) return;
-      settled = true;
-      resolve();
-    };
-    taskkill.once("error", finish);
-    taskkill.once("exit", finish);
+    taskkill.once("error", reject);
+    taskkill.once("exit", /** 终止命令失败且后端仍在运行时，将真实错误交给退出界面。 */
+    (code) => {
+      if (code === 0 || !isRunning(child)) resolve();
+      else reject(new Error(`强制终止后端失败，taskkill 退出码：${code}`));
+    });
   });
 };
 
@@ -226,7 +218,6 @@ const defaultDependencies: BackendProcessDependencies = {
   terminateProcess: terminateProcessTree,
   pollIntervalMs: DEFAULT_POLL_INTERVAL_MS,
   startupTimeoutMs: DEFAULT_STARTUP_TIMEOUT_MS,
-  shutdownTimeoutMs: DEFAULT_SHUTDOWN_TIMEOUT_MS,
   platform: process.platform,
   ownerPid: process.pid,
   /**
@@ -242,38 +233,16 @@ const defaultDependencies: BackendProcessDependencies = {
 };
 
 /**
- * 等待子进程退出或宽限时间到期，超时后的强制终止由调用方决定。
- *
+ * 等待受管进程实际退出，允许后端完成已经开始的事务确认。
  * Args:
- *     child (ChildProcess): 本次管理的子进程。
- *     timeoutMs (number): 本次等待的最长毫秒数。
- *
+ *     child (ChildProcess): 本次管理的后端进程。
  * Returns:
- *     Promise<void>: 收到退出事件或达到等待期限后完成。
+ *     Promise<void>: 收到进程退出事件后完成。
  */
-const waitForExit = async (child: ChildProcess, timeoutMs: number): Promise<void> => {
+const waitForExit = async (child: ChildProcess): Promise<void> => {
   if (!isRunning(child)) return;
-  await new Promise<void>(/**
-   * Promise 创建时登记子进程退出监听及宽限定时器，两者任一个到达都结束等待。
-   *
-   * Args:
-   *     resolve ((value: void | PromiseLike<void>) => void): 准备成功或等待结束时完成 Promise 的函数。
-   */
-  (resolve) => {
-    let settled = false;
-    /**
-     * 子进程退出或宽限到期后结束等待，并清理退出监听与定时器。
-     */
-    const finish = (): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      child.removeListener("exit", finish);
-      resolve();
-    };
-    const timer = setTimeout(finish, timeoutMs);
-    child.once("exit", finish);
-  });
+  await new Promise<void>(/** 登记正常或强制结束后的进程退出通知。 */
+  (resolve) => { child.once("exit", /** 收到进程退出通知后完成等待。 */ () => resolve()); });
 };
 
 /**
@@ -303,6 +272,8 @@ export const createBackendProcessController = (
     completion: Promise<void>;
   } | null = null;
   let managed = false;
+  let stopping: Promise<void> | null = null;
+  let forcing: Promise<void> | null = null;
 
   /**
    * 后端就绪后意外退出时通知所有监听者，某个监听者失败不影响其他监听者。
@@ -578,12 +549,12 @@ export const createBackendProcessController = (
   };
 
   /**
-   * 先取消未完成启动，再用同一宽限期请求关闭和等待退出，到期后终止受管进程。
+   * 先取消未完成启动，再请求关闭并等待受管进程实际退出。
    *
    * Returns:
    *     Promise<void>: 本次停止过程结束后完成。
    */
-  const stopBackend = async (): Promise<void> => {
+  const performStop = async (): Promise<void> => {
     // 1. 启动尚未结束时先取消并等其清理完成，再检查是否还有受管进程需要停止。
     const startup = activeStartup;
     if (startup) {
@@ -597,30 +568,44 @@ export const createBackendProcessController = (
     if (!managed || !activeGeneration) return;
     const generation = activeGeneration;
     generation.expectedExit = true;
-    activeGeneration = null;
     const current = generation.child;
     const shutdownAbort = new AbortController();
-    // 2. 发起关闭请求前开始观察进程退出，接口等待和实际收尾共用同一个宽限期。
-    const exiting = waitForExit(current, dependencies.shutdownTimeoutMs);
+    // 2. 请求通知后端开始关闭，完成与否以实际进程退出为准。
+    const exiting = waitForExit(current);
     /** 请求后端开始关闭，接口报错或迟迟不返回时，进程退出观察仍独立继续。 */
     const requestBackendShutdown = async (): Promise<void> => {
       try {
         await dependencies.fetchBackend("/internal/shutdown", { method: "POST", signal: shutdownAbort.signal });
       } catch {
-        // 后端已退出或关闭请求被中止时，由进程状态决定是否需要强制终止。
+        // 关闭请求失败后继续等待实际进程退出，用户可在等待界面主动强退。
       }
     };
     try {
       void requestBackendShutdown();
       await exiting;
     } finally {
-      // 3. 进程提前退出或总宽限期耗尽后，中止尚未完成的关闭请求。
+      // 3. 实际进程退出后，中止尚未完成的关闭请求并释放登记。
       shutdownAbort.abort();
+      if (activeGeneration === generation) activeGeneration = null;
     }
-    // 4. 总宽限期结束仍存活才强制终止，接口响应耗时不会再延长等待。
-    if (isRunning(current)) {
-      await dependencies.terminateProcess(current);
-    }
+  };
+
+  /** 合并同时到达的正常关闭请求，进程退出后释放等待句柄。 */
+  const stopBackend = (): Promise<void> => {
+    stopping ??= performStop().finally(/** 本次停止完成后释放等待句柄。 */
+    () => { stopping = null; });
+    return stopping;
+  };
+
+  /** 执行用户明确要求的强制结束，重复点击共用同一次进程终止。 */
+  const forceStopBackend = (): Promise<void> => {
+    if (forcing) return forcing;
+    const generation = activeGeneration;
+    if (!managed || !generation || !isRunning(generation.child)) return Promise.resolve();
+    generation.expectedExit = true;
+    forcing = dependencies.terminateProcess(generation.child).finally(/** 结束本次强制操作后释放句柄。 */
+    () => { forcing = null; });
+    return forcing;
   };
 
   /**
@@ -640,7 +625,7 @@ export const createBackendProcessController = (
     return () => unexpectedExitListeners.delete(listener);
   };
 
-  return { startBackend, stopBackend, onUnexpectedExit };
+  return { startBackend, stopBackend, forceStopBackend, onUnexpectedExit };
 };
 
 const defaultController = createBackendProcessController();
@@ -651,9 +636,12 @@ const defaultController = createBackendProcessController();
 export const startBackend = (): Promise<void> => defaultController.startBackend();
 
 /**
- *  请求后端优雅退出，并在超时后终止受管子进程。
+ * 请求后端正常退出并等待保存和资源关闭完成。
  */
 export const stopBackend = (): Promise<void> => defaultController.stopBackend();
+
+/** 用户明确选择后强制结束受管后端。 */
+export const forceStopBackend = (): Promise<void> => defaultController.forceStopBackend();
 
 /**
  *  订阅默认受管后端成功就绪后的非预期退出事件。
