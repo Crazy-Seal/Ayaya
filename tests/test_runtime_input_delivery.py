@@ -1,4 +1,9 @@
 """验证输入提交事实、原子交付，以及生成器关闭和取消时的执行顺序。"""
+from tests.runtime_support import collect_agent_events
+from tests.runtime_support import runtime_hub, close_test_runtime
+from app.routes.agent import observe_runtime
+from tests.runtime_support import build_test_scheduler
+from app.crud.sqlite_factory import SqliteFactory
 
 import asyncio
 from base64 import b64encode
@@ -17,7 +22,7 @@ from app.agent.core.events import EventType
 from app.agent.models.llm_client import StreamChunk
 from app.agent.plugins.base import BasePlugin, PluginHook
 
-from app.agent.state.manager import SessionStateManager
+from app.agent.state.manager import SessionStateManager, RequiredSaveError
 from app.agent.state.messages import TaskResultMessage
 from app.crud.task_record_dao import TaskRecordDao
 from app.interaction.interaction_contract import ChannelCommand
@@ -107,7 +112,7 @@ def make_agent(tmp_path, model):
     """
     return Agent(AgentConfig(session_id="s", model_name="test", api_key="test",
                              context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100)),
-                 db_path=str(tmp_path / "state.sqlite3"), llm_client=model)
+                 sqlite_factory=SqliteFactory(str(tmp_path / "state.sqlite3")), llm_client=model)
 
 
 def test_human_commit_event_precedes_on_invoke_and_model(tmp_path) -> None:
@@ -122,13 +127,21 @@ def test_human_commit_event_precedes_on_invoke_and_model(tmp_path) -> None:
         agent = make_agent(tmp_path, model)
         hooks = BlockingInputHooks()
         agent.register_plugin(hooks)
-        inbox = SessionStateManager("s", str(tmp_path / "state.sqlite3"))
+        inbox = SessionStateManager("s", SqliteFactory(str(tmp_path / "state.sqlite3")))
         human = await inbox.submit_human("desktop", "你好")
-        stream = agent.run("你好", inbox_input=human, receive_task_notifications=True)
-        pending = None
+        events = asyncio.Queue()
+        release_commit = asyncio.Event()
+
+        async def receive(event):
+            """记录事件，在输入已提交处暂停，单独核对后续钩子尚未运行。"""
+            events.put_nowait(event)
+            if event.type == EventType.HUMAN_INPUT_COMMITTED:
+                await release_commit.wait()
+
+        pending = asyncio.create_task(agent.run("你好", inbox_input=human, receive_task_notifications=True, emit=receive))
         try:
-            assert (await asyncio.wait_for(anext(stream), 2)).type == EventType.RUN_STARTED
-            event = await asyncio.wait_for(anext(stream), 2)
+            assert (await asyncio.wait_for(events.get(), 2)).type == EventType.RUN_STARTED
+            event = await asyncio.wait_for(events.get(), 2)
             assert event.type == EventType.HUMAN_INPUT_COMMITTED
             assert event.data["input_sequence"] == human.id
             state = await agent.session_state_manager.load()
@@ -136,13 +149,13 @@ def test_human_commit_event_precedes_on_invoke_and_model(tmp_path) -> None:
             assert await inbox.status(human.id) == "delivered"
             assert hooks.calls == [PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT]
             assert model.calls == 0
-            pending = asyncio.create_task(anext(stream))
+            release_commit.set()
             await asyncio.wait_for(hooks.entered.wait(), 1)
             assert not pending.done() and model.calls == 0
             hooks.release.set()
-            assert (await asyncio.wait_for(pending, 2)).type == EventType.TEXT_CHUNK
-            remaining = [item async for item in stream]
-            assert [item.type for item in remaining] == [EventType.DONE]
+            assert (await asyncio.wait_for(events.get(), 2)).type == EventType.TEXT_CHUNK
+            assert (await asyncio.wait_for(events.get(), 2)).type == EventType.DONE
+            assert (await pending).kind == "completed"
             assert model.calls == 1
             assert hooks.calls == [PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, PluginHook.ON_INVOKE]
             assert (await agent.session_state_manager.load()).long_term_memory_turn_counter == 1
@@ -152,7 +165,6 @@ def test_human_commit_event_precedes_on_invoke_and_model(tmp_path) -> None:
                 if not pending.done():
                     pending.cancel()
                 await asyncio.gather(pending, return_exceptions=True)
-            await stream.aclose()
             await agent.close()
             await inbox.close()
     asyncio.run(scenario())
@@ -172,20 +184,28 @@ def test_commit_stream_close_or_cancel_preserves_saved_fact(tmp_path, cancel_dur
         agent = make_agent(tmp_path, model)
         hooks = BlockingInputHooks()
         agent.register_plugin(hooks)
-        inbox = SessionStateManager("s", str(tmp_path / "state.sqlite3"))
+        inbox = SessionStateManager("s", SqliteFactory(str(tmp_path / "state.sqlite3")))
         human = await inbox.submit_human("desktop", "保存后停止")
-        stream = agent.run(human.payload["message"], inbox_input=human, receive_task_notifications=True)
-        pending = None
+        events = asyncio.Queue()
+        release_commit = asyncio.Event()
+
+        async def receive(event):
+            """输入提交后停在发布位置，供调用方明确取消当前调用。"""
+            events.put_nowait(event)
+            if event.type == EventType.HUMAN_INPUT_COMMITTED:
+                await release_commit.wait()
+
+        pending = asyncio.create_task(agent.run(human.payload["message"], inbox_input=human,
+            receive_task_notifications=True, emit=receive))
         try:
-            assert (await anext(stream)).type == EventType.RUN_STARTED
-            assert (await anext(stream)).type == EventType.HUMAN_INPUT_COMMITTED
+            assert (await events.get()).type == EventType.RUN_STARTED
+            assert (await events.get()).type == EventType.HUMAN_INPUT_COMMITTED
             if cancel_during_on_invoke:
-                pending = asyncio.create_task(anext(stream))
+                release_commit.set()
                 await asyncio.wait_for(hooks.entered.wait(), 1)
-                pending.cancel()
-                with pytest.raises(asyncio.CancelledError):
-                    await pending
-            await stream.aclose()
+            pending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await pending
             assert model.calls == 0
             assert len(hooks.calls) == (2 if cancel_during_on_invoke else 1)
             with closing(sqlite3.connect(tmp_path / "state.sqlite3")) as db:
@@ -201,7 +221,6 @@ def test_commit_stream_close_or_cancel_preserves_saved_fact(tmp_path, cancel_dur
                 if not pending.done():
                     pending.cancel()
                 await asyncio.gather(pending, return_exceptions=True)
-            await stream.aclose()
             await agent.close()
             await inbox.close()
     asyncio.run(scenario())
@@ -222,8 +241,8 @@ def test_input_commit_failure_rolls_back_all_persistent_writes(tmp_path, entry, 
         path = str(tmp_path / "state.sqlite3")
         model = ProbeModel()
         agent = make_agent(tmp_path, model)
-        inbox = SessionStateManager("s", path)
-        records = TaskRecordDao(path)
+        inbox = SessionStateManager("s", SqliteFactory(path))
+        records = TaskRecordDao(SqliteFactory(path))
         delivery = agent.session_state_manager
         events = []
         try:
@@ -238,12 +257,16 @@ def test_input_commit_failure_rolls_back_all_persistent_writes(tmp_path, entry, 
             with closing(sqlite3.connect(path)) as db:
                 db.execute(f"CREATE TRIGGER reject_input BEFORE {action} ON {failure_table} "
                            "BEGIN SELECT RAISE(ABORT, 'reject_input'); END")
-            with pytest.raises(sqlite3.IntegrityError, match="reject_input"):
-                if entry == "human":
-                    async for event in agent.run("原子保存", inbox_input=item, receive_task_notifications=True):
-                        events.append(event)
-                else:
+            if entry == "human":
+                async def receive_agent_event(event):
+                    """观察输入事务失败前实际已发布的事件。"""
+                    events.append(event)
+                outcome = await agent.run('原子保存', inbox_input=item, receive_task_notifications=True, emit=receive_agent_event)
+                assert outcome.kind == "save_failed" and "reject_input" in outcome.error
+            else:
+                with pytest.raises(RequiredSaveError, match="reject_input") as failure:
                     await delivery.deliver_pending(await agent.session_state_manager.load())
+                assert isinstance(failure.value.__cause__, sqlite3.IntegrityError)
             assert all(event.type == EventType.RUN_STARTED for event in events) and model.calls == 0
             assert await inbox.status(item.id) == "pending"
             assert not (await agent.session_state_manager.load()).messages
@@ -252,7 +275,7 @@ def test_input_commit_failure_rolls_back_all_persistent_writes(tmp_path, entry, 
                 assert db.execute("SELECT COUNT(*) FROM conversation_messages").fetchone()[0] == 0
                 db.execute("DROP TRIGGER reject_input")
             if entry == "human":
-                events = [event async for event in agent.run("原子保存", inbox_input=item, receive_task_notifications=True)]
+                events = [event for event in await collect_agent_events(agent.run, '原子保存', inbox_input=item, receive_task_notifications=True)]
                 assert events[0].type == EventType.RUN_STARTED
                 assert events[1].type == EventType.HUMAN_INPUT_COMMITTED
                 assert events[-1].type == EventType.DONE and model.calls == 1
@@ -283,12 +306,12 @@ def test_first_model_boundary_reads_only_explicitly_provided_inbox(tmp_path, pro
         path = str(tmp_path / "state.sqlite3")
         model = ProbeModel()
         agent = make_agent(tmp_path, model)
-        inbox = SessionStateManager("s", path)
-        records = TaskRecordDao(path)
+        inbox = SessionStateManager("s", SqliteFactory(path))
+        records = TaskRecordDao(SqliteFactory(path))
         try:
             await records.insert_running("task", "s", "任务", 1, str(tmp_path / "out"))
             await records.finish_once("task", "completed", 0)
-            events = [event async for event in agent.run("你好", receive_task_notifications=provide_inbox)]
+            events = [event for event in await collect_agent_events(agent.run, '你好', receive_task_notifications=provide_inbox)]
             assert events[0].type == EventType.RUN_STARTED
             assert events[1].type == EventType.HUMAN_INPUT_COMMITTED
             assert events[1].data["input_sequence"] is None
@@ -339,16 +362,16 @@ def test_hub_preserves_human_payload_before_blocked_on_invoke(tmp_path, with_ima
             assert session_id == "s"
             return agent
 
-        subscriptions = ChannelSubscriptionService(path)
-        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
+        subscriptions = ChannelSubscriptionService(SqliteFactory(path))
+        scheduler = build_test_scheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
             agent_factory=factory, subscriptions=subscriptions,
-            session_state_manager_factory=partial(SessionStateManager, db_path=path),
+            session_state_manager_factory=partial(SessionStateManager, sqlite_factory=SqliteFactory(path)),
         )
-        hub = InteractionEventHub(scheduler, subscriptions=subscriptions)
+        hub = runtime_hub(scheduler)
         await scheduler.start()
-        await hub.start()
-        stream = hub.subscribe("s", "desktop")
-        observer = SessionStateManager("s", path)
+        pass
+        stream = observe_runtime("s", "desktop", hub, scheduler)
+        observer = SessionStateManager("s", SqliteFactory(path))
         try:
             await anext(stream)
             receipt = await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {
@@ -376,7 +399,7 @@ def test_hub_preserves_human_payload_before_blocked_on_invoke(tmp_path, with_ima
             hooks.release.set()
             await stream.aclose()
             await hub.close()
-            await scheduler.close()
+            await close_test_runtime(scheduler)
             await agent.close()
             await observer.close()
     asyncio.run(scenario())

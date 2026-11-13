@@ -49,7 +49,7 @@ class WriteStdinTool(BaseTool):
             if context.runtime is None:
                 raise ValueError("后台任务运行器未就绪")
             runtime = context.runtime
-            record = await runtime.get_task_record(options.task_id)
+            record = await runtime.get_task_snapshot(options.task_id)
             if record is None:
                 raise KeyError("任务不存在或不属于当前聊天")
             task = await runtime.get_task(options.task_id)
@@ -57,7 +57,7 @@ class WriteStdinTool(BaseTool):
                 result = await task.interact(runtime, chars=options.chars, yield_time_ms=options.yield_time_ms)
             else:
                 # 1. 查询对象期间可能刚完成清理，重新读取已提交记录再回答终态。
-                record = await runtime.get_task_record(options.task_id)
+                record = await runtime.get_task_snapshot(options.task_id)
                 if record.status != TaskStatus.RUNNING and record.output_path:
                     result = TaskLaunchResult(options.task_id, False, "", record.status, record.exit_code,
                         error="任务已结束，输入未发送" if options.chars else None)

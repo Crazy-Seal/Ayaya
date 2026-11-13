@@ -38,18 +38,6 @@ class ChannelCommand:
             pass
 
 
-@dataclass(frozen=True, slots=True)
-class CommandReceipt:
-    """说明命令是否受理，不表示模型输入已交付或工具已完成。
-
-    Attributes:
-        accepted (bool): 是否受理，不保证后续执行已经完成。
-        reason (str | None): 拒绝命令的原因，可为空。
-        run_id (str | None): 当前运行轮次标识。
-    """
-    accepted: bool
-    reason: str | None = None
-    run_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

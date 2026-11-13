@@ -90,7 +90,7 @@ class TerminalHarness:
             KeyError: 编号不存在或属于其他会话。
         """
         runtime = self.runtime(session_id, tool_name='write_stdin')
-        record = await runtime.get_task_record(task_id)
+        record = await runtime.get_task_snapshot(task_id)
         if record is None:
             raise KeyError('任务不存在或不属于当前聊天')
         task = await runtime.get_task(task_id)
@@ -110,7 +110,7 @@ class TerminalHarness:
         Returns:
             dict: 输出页。
         """
-        return await read_terminal_output(await self.supervisor.get_task_record(task_id), offset, limit)
+        return await read_terminal_output(await self.supervisor.get_task_snapshot(task_id), offset, limit)
 
     async def read_tail(self, task_id):
         """通过记录读取有限末尾。
@@ -121,4 +121,4 @@ class TerminalHarness:
         Returns:
             str: 末尾输出。
         """
-        return await read_terminal_tail(await self.supervisor.get_task_record(task_id))
+        return await read_terminal_tail(await self.supervisor.get_task_snapshot(task_id))

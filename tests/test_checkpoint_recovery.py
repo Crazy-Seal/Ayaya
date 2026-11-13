@@ -1,3 +1,11 @@
+from app.schemas.runtime_types import AgentRunOutcomeKind
+from app.agent.state.manager import RequiredSaveError
+from tests.runtime_support import collect_agent_result
+from tests.runtime_support import make_execution_control
+from tests.runtime_support import collect_agent_events
+from app.crud.sqlite_factory import SqliteFactory
+from app.crud.task_record_dao import TaskRecordDao
+from app.services.settings_mutation import SettingsMutationCoordinator
 from tests.runtime_support import configured_settings, checkpoint_probe
 from app.agent.models.openai_message_names import MCP_TOOL_IMAGE_MESSAGE_NAME, TOOL_IMAGE_MESSAGE_NAME
 from tests.model_capture import result_parts
@@ -274,55 +282,48 @@ def test_all_interrupt_paths_save_hook_updates_before_emitting(
         if plugin_fails:
             agent.register_plugin(FailingInterruptPlugin())
         agent.register_plugin(plugin)
-        reader = SessionStateManager("checkpoint-test", db_path=str(db_path))
+        reader = SessionStateManager("checkpoint-test", sqlite_factory=SqliteFactory(str(db_path)))
 
-        async def observe(stream, expected_call: str, expected_count: int) -> None:
-            """记录本次模型输入用量观察，供用例检查只有成功响应才更新基线。
-
-            该定义仅用于外层用例：验证各中断路径先保存插件修改再发布中断事件。
-
-            Args:
-                stream (Any): 需要消费的 Agent 或模型事件流。
-                expected_call (str): 参数化用例期望发生的调用。
-                expected_count (int): 参数化用例期望记录的次数。
-            """
+        async def observe(operation, expected_call: str, expected_count: int, *arguments) -> None:
+            """通过新输出回调，在中断事件到达时核对已经提交的钩子材料。"""
             events = []
-            try:
-                async for event in stream:
-                    events.append(event)
-                    if event.type == EventType.INTERRUPT:
-                        saved = await reader.load()
-                        request_id = event.data["request_id"]
-                        assert len(plugin.interrupt_ids) == expected_count
-                        assert saved.extra["interrupt_ids"] == plugin.interrupt_ids
-                        if plugin_fails:
-                            assert saved.extra["before_plugin_error"] is True
-                        assert plugin.interrupt_ids[-1] == request_id
-                        assert saved.interrupt_data["tool_call_id"] == expected_call
-                        assert saved.interrupt_data["request_id"] == request_id
-                        assert saved.interrupt_data["resume_state"]["phase"] == (
-                            2 if path == "same_tool" and expected_count == 2 else 1
-                        )
-                        assert [item.id for item in saved.pending_actions] == (
-                            ["second"] if expected_call == "first" else []
-                        )
-                        assert not saved.pending_tool_calls
-                        assert saved.long_term_memory_turn_counter == 1
-            finally:
-                await stream.aclose()
+
+            async def receive(event):
+                """每个中断发布时，从独立连接核对持久状态。"""
+                events.append(event)
+                if event.type == EventType.INTERRUPT:
+                    saved = await reader.load()
+                    request_id = event.data["request_id"]
+                    assert len(plugin.interrupt_ids) == expected_count
+                    assert saved.extra["interrupt_ids"] == plugin.interrupt_ids
+                    if plugin_fails:
+                        assert saved.extra["before_plugin_error"] is True
+                    assert plugin.interrupt_ids[-1] == request_id
+                    assert saved.interrupt_data["tool_call_id"] == expected_call
+                    assert saved.interrupt_data["request_id"] == request_id
+                    assert saved.interrupt_data["resume_state"]["phase"] == (
+                        2 if path == "same_tool" and expected_count == 2 else 1
+                    )
+                    assert [item.id for item in saved.pending_actions] == (
+                        ["second"] if expected_call == "first" else []
+                    )
+                    assert not saved.pending_tool_calls
+                    assert saved.long_term_memory_turn_counter == 1
+            outcome = await operation(*arguments, emit=receive)
+            assert outcome.kind == AgentRunOutcomeKind.INTERRUPTED
             assert events[-1].type == EventType.INTERRUPT
             assert sum(event.type == EventType.INTERRUPT for event in events) == 1
             assert all(event.type != EventType.DONE for event in events)
 
         try:
-            await observe(agent.run("开始"), "first", 1)
+            await observe(agent.run, "first", 1, "开始")
             if path != "normal":
                 waiting = await reader.load()
                 resume_id = waiting.interrupt_data["request_id"]
                 await reader.record_authorization_decision(resume_id, {"kind": "approve"})
                 await observe(
-                    agent.resume(resume_id),
-                    "first" if path == "same_tool" else "second", 2,
+                    agent.resume,
+                    "first" if path == "same_tool" else "second", 2, resume_id,
                 )
             assert plugin.invocations == 1
             assert len(set(plugin.interrupt_ids)) == len(plugin.interrupt_ids)
@@ -438,7 +439,7 @@ async def make_agent(
             api_key="test",
             context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100),
         ),
-        db_path=str(db_path),
+        sqlite_factory=SqliteFactory(str(db_path)),
         llm_client=llm_client, plugin_runtime_factory=plugin_runtime_factory,
     )
     agent.tool_manager.register(tool)
@@ -515,20 +516,23 @@ def test_stop_during_llm_saves_visible_partial_and_completed_checkpoint(tmp_path
                 session_id="stop-test", model_name="test", api_key="test",
                 context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100),
             ),
-            db_path=str(tmp_path / "state.sqlite3"), llm_client=WaitingLLM(),
+            sqlite_factory=SqliteFactory(str(tmp_path / "state.sqlite3")), llm_client=WaitingLLM(),
         )
-        control = TurnControl("run-1")
+        execution_state, control = make_execution_control("run-1")
         events = []
 
         async def run() -> None:
             """按场景屏障产生 Agent 事件并提交测试输入。"""
-            async for event in agent.run("说句话", turn_control=control):
+            async def receive_agent_event(event):
+                """在原事件位置执行此场景的观察和控制。"""
                 events.append(event)
+            await agent.run('说句话', turn_control=control, emit=receive_agent_event)
 
         task = asyncio.create_task(run())
         try:
             await asyncio.wait_for(first_chunk.wait(), 1)
-            control.request("stop")
+            execution_state.request_stop(control.run_id)
+            control.wake_interrupt()
             await asyncio.wait_for(task, 1)
             state = await agent.session_state_manager.load()
             assert state.messages[-1].text == "已经展示的回答……（被用户打断）"
@@ -578,20 +582,23 @@ def test_stop_flushes_incomplete_time_prefix_before_saving_partial(tmp_path: Pat
                 session_id="filter-stop", model_name="test", api_key="test",
                 context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100),
             ),
-            db_path=str(tmp_path / "state.sqlite3"), llm_client=WaitingLLM(),
+            sqlite_factory=SqliteFactory(str(tmp_path / "state.sqlite3")), llm_client=WaitingLLM(),
         )
-        control = TurnControl("run-1")
+        execution_state, control = make_execution_control("run-1")
         events = []
 
         async def run() -> None:
             """按场景屏障产生 Agent 事件并提交测试输入。"""
-            async for event in agent.run("说句话", turn_control=control):
+            async def receive_agent_event(event):
+                """在原事件位置执行此场景的观察和控制。"""
                 events.append(event)
+            await agent.run('说句话', turn_control=control, emit=receive_agent_event)
 
         task = asyncio.create_task(run())
         try:
             await asyncio.wait_for(first_chunk.wait(), 1)
-            control.request("stop")
+            execution_state.request_stop(control.run_id)
+            control.wake_interrupt()
             await asyncio.wait_for(task, 1)
             assert [event.data for event in events if event.type == EventType.TEXT_CHUNK] == [
                 "[发送时间：", "……（被用户打断）",
@@ -747,9 +754,11 @@ def test_response_commit_hooks_wrap_completed_checkpoint(tmp_path: Path) -> None
 
         agent.session_state_manager.save = tracked_save
         try:
-            async for event in agent.run("开始"):
+            async def receive_agent_event(event):
+                """在原事件位置执行此场景的观察和控制。"""
                 if event.type == EventType.DONE:
-                    order.append("done")
+                    order.append('done')
+            await agent.run('开始', emit=receive_agent_event)
             return order
         finally:
             await agent.close()
@@ -800,7 +809,7 @@ def test_on_invoke_receives_prepared_data_after_input_checkpoint(tmp_path: Path)
 
         agent.session_state_manager.save = tracked_save
         try:
-            await drain(agent.run("本轮新输入"))
+            await collect_agent_events(agent.run, '本轮新输入')
             return order
         finally:
             await agent.close()
@@ -847,12 +856,12 @@ def test_intermediate_checkpoint_failure_skips_on_invoke(
             """
             assert checkpoint_type == "intermediate"
             order.append("save_intermediate_failed")
-            raise RuntimeError("模拟 intermediate 保存失败")
+            raise RequiredSaveError("模拟 intermediate 保存失败")
 
         agent.session_state_manager.save = failing_save
         try:
-            with pytest.raises(RuntimeError, match="intermediate 保存失败"):
-                await drain(agent.run("本轮新输入"))
+            outcome, _events = await collect_agent_result(agent.run, '本轮新输入')
+            assert outcome.kind == AgentRunOutcomeKind.SAVE_FAILED and "intermediate 保存失败" in outcome.error
             return order
         finally:
             await agent.close()
@@ -905,7 +914,7 @@ def test_failed_user_input_commit_keeps_pending_long_term_memory_batch(
         Args:
             agent (Agent): 本用例创建的 Agent 对象。
         """
-        plugin = MemoryPlugin(enable_diary=False)
+        plugin = MemoryPlugin(enable_diary=False, sqlite_factory=SqliteFactory())
         monkeypatch.setattr(plugin, "_mm", lambda state: MemoryManager())
         agent.plugin_manager.register(plugin)
 
@@ -921,8 +930,8 @@ def test_failed_user_input_commit_keeps_pending_long_term_memory_batch(
         nonlocal supervisor
         from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
         db_path = tmp_path / "checkpoints.sqlite3"
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=str(db_path))
-        seed = SessionStateManager("checkpoint-test", db_path=str(db_path))
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(db_path))))
+        seed = SessionStateManager("checkpoint-test", sqlite_factory=SqliteFactory(str(db_path)))
         try:
             state = AgentState.create_new("checkpoint-test")
             state.add_user_message("已完成的输入")
@@ -951,16 +960,16 @@ def test_failed_user_input_commit_keeps_pending_long_term_memory_batch(
                 checkpoint_type (Any): 本次保存中间执行进度或完整轮次的类型。
             """
             assert checkpoint_type == "intermediate"
-            raise RuntimeError("模拟 intermediate 保存失败")
+            raise RequiredSaveError("模拟 intermediate 保存失败")
 
         failed_agent.session_state_manager.save = failing_save
         try:
-            with pytest.raises(RuntimeError, match="intermediate 保存失败"):
-                await drain(failed_agent.run("第一次重试"))
+            outcome, _events = await collect_agent_result(failed_agent.run, '第一次重试')
+            assert outcome.kind == AgentRunOutcomeKind.SAVE_FAILED and "intermediate 保存失败" in outcome.error
         finally:
             await failed_agent.close()
 
-        persisted = SessionStateManager("checkpoint-test", db_path=str(db_path))
+        persisted = SessionStateManager("checkpoint-test", sqlite_factory=SqliteFactory(str(db_path)))
         try:
             counter_after_failure = (
                 await persisted.load()
@@ -977,7 +986,7 @@ def test_failed_user_input_commit_keeps_pending_long_term_memory_batch(
         )
         await register_memory(retry_agent)
         try:
-            events = await drain(retry_agent.run("第二次重试"))
+            events = await collect_agent_events(retry_agent.run, '第二次重试')
             assert events[-1].type == EventType.DONE
             counter_after_retry = (
                 await retry_agent.session_state_manager.load()
@@ -987,6 +996,7 @@ def test_failed_user_input_commit_keeps_pending_long_term_memory_batch(
 
         records = await supervisor.list_tasks("checkpoint-test")
         await supervisor.close()
+        await supervisor.records.close()
         return counter_after_failure, counter_after_retry, [record.name for record in records]
 
     assert asyncio.run(scenario()) == (10, 1, ["memory.persist_long_term"])
@@ -1025,17 +1035,17 @@ def test_completed_checkpoint_failure_skips_after_commit_hook(tmp_path: Path) ->
             """
             if checkpoint_type == "completed":
                 order.append("save_completed_failed")
-                raise RuntimeError("模拟 completed 保存失败")
+                raise RequiredSaveError("模拟 completed 保存失败")
             return await original_save(state, checkpoint_type=checkpoint_type, **kwargs)
 
         agent.session_state_manager.save = failing_save
         try:
-            with pytest.raises(RuntimeError, match="completed 保存失败"):
-                await drain(agent.run("开始"))
+            outcome, _events = await collect_agent_result(agent.run, '开始')
+            assert outcome.kind == AgentRunOutcomeKind.SAVE_FAILED and "completed 保存失败" in outcome.error
         finally:
             await agent.close()
 
-        manager = SessionStateManager("checkpoint-test", db_path=str(db_path))
+        manager = SessionStateManager("checkpoint-test", sqlite_factory=SqliteFactory(str(db_path)))
         try:
             persisted = await manager.load()
             return order, persisted.long_term_memory_turn_counter
@@ -1068,15 +1078,15 @@ def test_completed_tool_results_survive_later_llm_failure(tmp_path: Path) -> Non
             tool,
         )
         try:
-            events = await drain(agent.run("执行三个步骤"))
-            assert events[-1].type == EventType.ERROR
+            outcome, events = await collect_agent_result(agent.run, '执行三个步骤')
+            assert outcome.kind == AgentRunOutcomeKind.FAILED
 
             state = await agent.session_state_manager.load()
             tool_messages = [item for item in state.messages if isinstance(item, ToolMessage)]
             assert [item.text for item in tool_messages] == ["完成 A", "完成 B", "完成 C"]
             assert state.pending_tool_calls == ()
             assert state.long_term_memory_turn_counter == 1
-            assert await checkpoint_types(agent.session_state_manager) == ["intermediate"]
+            assert await checkpoint_types(agent.session_state_manager) == ["completed"]
         finally:
             await agent.close()
 
@@ -1101,8 +1111,8 @@ def test_new_message_after_llm_failure_counts_each_committed_human_input(tmp_pat
             StepTool(),
         )
         try:
-            events = await drain(first_agent.run("first human message"))
-            assert events[-1].type == EventType.ERROR
+            outcome, events = await collect_agent_result(first_agent.run, 'first human message')
+            assert outcome.kind == AgentRunOutcomeKind.FAILED
             failed_state = await first_agent.session_state_manager.load()
             assert failed_state.long_term_memory_turn_counter == 1
         finally:
@@ -1114,7 +1124,7 @@ def test_new_message_after_llm_failure_counts_each_committed_human_input(tmp_pat
             StepTool(),
         )
         try:
-            events = await drain(second_agent.run("please continue"))
+            events = await collect_agent_events(second_agent.run, 'please continue')
             assert events[-1].type == EventType.DONE
             completed_state = await second_agent.session_state_manager.load()
             assert completed_state.long_term_memory_turn_counter == 2
@@ -1124,7 +1134,7 @@ def test_new_message_after_llm_failure_counts_each_committed_human_input(tmp_pat
     asyncio.run(scenario())
 
 
-def test_initial_empty_response_keeps_user_intermediate_checkpoint(tmp_path: Path) -> None:
+def test_initial_empty_response_commits_failure_and_keeps_user_input(tmp_path: Path) -> None:
     """验证首次模型空回复保留真人输入中间 checkpoint。
 
     Args:
@@ -1138,20 +1148,21 @@ def test_initial_empty_response_keeps_user_intermediate_checkpoint(tmp_path: Pat
             StepTool(),
         )
         try:
-            events = await drain(agent.run("在吗"))
-            assert events[-1].type == EventType.ERROR
-            assert "finish_reason=stop" in events[-1].data
-            assert await checkpoint_types(agent.session_state_manager) == ["intermediate"]
+            outcome, events = await collect_agent_result(agent.run, '在吗')
+            assert outcome.kind == AgentRunOutcomeKind.FAILED
+            assert "finish_reason=stop" in outcome.error
+            assert await checkpoint_types(agent.session_state_manager) == ["completed"]
             state = await agent.session_state_manager.load()
-            assert isinstance(state.messages[-1], HumanMessage)
-            assert "在吗" in state.messages[-1].text
+            assert isinstance(state.messages[0], HumanMessage)
+            assert "在吗" in state.messages[0].text
+            assert "本轮执行失败" in state.messages[-1].text
         finally:
             await agent.close()
 
     asyncio.run(scenario())
 
 
-def test_empty_response_after_tool_keeps_intermediate_checkpoint(tmp_path: Path) -> None:
+def test_empty_response_after_tool_commits_failure_and_keeps_tool_result(tmp_path: Path) -> None:
     """验证工具执行后的空回复保留中间 checkpoint。
 
     Args:
@@ -1169,15 +1180,15 @@ def test_empty_response_after_tool_keeps_intermediate_checkpoint(tmp_path: Path)
             tool,
         )
         try:
-            events = await drain(agent.run("执行一步"))
-            assert events[-1].type == EventType.ERROR
-            assert "finish_reason=stop" in events[-1].data
+            outcome, events = await collect_agent_result(agent.run, '执行一步')
+            assert outcome.kind == AgentRunOutcomeKind.FAILED
+            assert "finish_reason=stop" in outcome.error
 
             state = await agent.session_state_manager.load()
             tool_messages = [item for item in state.messages if isinstance(item, ToolMessage)]
             assert [item.text for item in tool_messages] == ["完成 A"]
             assert state.pending_tool_calls == ()
-            assert await checkpoint_types(agent.session_state_manager) == ["intermediate"]
+            assert await checkpoint_types(agent.session_state_manager) == ["completed"]
         finally:
             await agent.close()
 
@@ -1198,7 +1209,7 @@ def test_tool_error_result_is_checkpointed(tmp_path: Path) -> None:
             ErrorTool(),
         )
         try:
-            await drain(agent.run("执行失败工具"))
+            await collect_agent_events(agent.run, '执行失败工具')
             state = await agent.session_state_manager.load()
             tool_messages = [item for item in state.messages if isinstance(item, ToolMessage)]
             assert tool_messages[-1].text == "错误: 测试工具失败"
@@ -1230,7 +1241,7 @@ def test_partial_tool_batch_is_marked_interrupted_without_retry(tmp_path: Path) 
         )
         try:
             with pytest.raises(asyncio.CancelledError):
-                await drain(first_agent.run("执行批量工具"))
+                await collect_agent_events(first_agent.run, '执行批量工具')
         finally:
             await first_agent.close()
 
@@ -1241,7 +1252,7 @@ def test_partial_tool_batch_is_marked_interrupted_without_retry(tmp_path: Path) 
             recovery_tool,
         )
         try:
-            await drain(second_agent.run("新的用户消息"))
+            await collect_agent_events(second_agent.run, '新的用户消息')
             state = await second_agent.session_state_manager.load()
             by_id = {
                 item.tool_call_id: item.text
@@ -1517,7 +1528,7 @@ def test_chat_resolves_unresolved_interrupt_before_new_message(tmp_path: Path) -
             ResumableScreenshotTool(resumed_calls),
         )
         try:
-            await drain(first_agent.run("请求截屏"))
+            await collect_agent_events(first_agent.run, '请求截屏')
         finally:
             await first_agent.close()
 
@@ -1527,7 +1538,7 @@ def test_chat_resolves_unresolved_interrupt_before_new_message(tmp_path: Path) -
             ResumableScreenshotTool(resumed_calls),
         )
         try:
-            events = await drain(second_agent.run("新消息"))
+            events = await collect_agent_events(second_agent.run, '新消息')
             assert events[-1].type == EventType.DONE
             after = await second_agent.session_state_manager.load()
             assert after.interrupt_data is None
@@ -1568,7 +1579,7 @@ def test_new_message_cancels_interrupted_tool_batch_before_starting_turn(
             ResumableScreenshotTool(resumed_calls),
         )
         try:
-            await drain(first_agent.run("请求截屏"))
+            await collect_agent_events(first_agent.run, '请求截屏')
         finally:
             await first_agent.close()
 
@@ -1578,7 +1589,7 @@ def test_new_message_cancels_interrupted_tool_batch_before_starting_turn(
             ResumableScreenshotTool(resumed_calls),
         )
         try:
-            events = await drain(second_agent.run("改做别的事情"))
+            events = await collect_agent_events(second_agent.run, '改做别的事情')
             assert any(event.type == EventType.TEXT_CHUNK for event in events)
 
             state = await second_agent.session_state_manager.load()
@@ -1628,7 +1639,7 @@ def test_cancelling_interrupted_batch_flushes_prior_images_after_all_tool_slots(
         first_agent.tool_manager.register(ResumableScreenshotTool(resumed_calls))
         first_agent.tool_manager.register(StepTool())
         try:
-            events = await drain(first_agent.run("先取图再请求截屏"))
+            events = await collect_agent_events(first_agent.run, '先取图再请求截屏')
             assert events[-1].type == EventType.INTERRUPT
         finally:
             await first_agent.close()
@@ -1639,7 +1650,7 @@ def test_cancelling_interrupted_batch_flushes_prior_images_after_all_tool_slots(
             ResumableScreenshotTool(resumed_calls),
         )
         try:
-            events = await drain(second_agent.run("改做别的事情"))
+            events = await collect_agent_events(second_agent.run, '改做别的事情')
             assert events[-1].type == EventType.DONE
             return await second_agent.session_state_manager.load(), resumed_calls
         finally:
@@ -1685,7 +1696,7 @@ def test_successful_turn_replaces_intermediate_with_completed(tmp_path: Path) ->
             StepTool(),
         )
         try:
-            events = await drain(agent.run("执行一步"))
+            outcome, events = await collect_agent_result(agent.run, '执行一步')
             assert events[-1].type == EventType.DONE
             assert await checkpoint_types(agent.session_state_manager) == ["completed"]
         finally:

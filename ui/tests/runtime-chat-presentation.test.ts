@@ -213,7 +213,7 @@ function createPresentation(withTaskEntry = false) {
     calls: 0, barrier: null as Promise<void> | null, failure: null as string | null,
     throughIds: [] as Array<string | undefined>, boundaries: new Map<string, number>(),
   };
-  const approvals = { opened: 0 };
+  const approvals = { opened: 0, dismissed: 0, barrier: null as Promise<{ kind: "approve" }> | null };
   const attention: ChatAttentionUpdate[] = [];
   const taskHeader = new PresentationElement();
   const taskButton = new PresentationElement();
@@ -305,7 +305,7 @@ function createPresentation(withTaskEntry = false) {
   } as unknown as Window & typeof globalThis;
   const submissions = {
     commands: [] as Parameters<NonNullable<RuntimeChatClientOptions["bridge"]>["submitInteractionCommand"]>[0][],
-    accepted: true,
+    accepted: true, status: "accepted" as const,
     barrier: null as Promise<void> | null,
   };
   const input = {
@@ -347,7 +347,7 @@ function createPresentation(withTaskEntry = false) {
     submitInteractionCommand: async (command) => {
       submissions.commands.push(command);
       if (submissions.barrier) await submissions.barrier;
-      return { accepted: submissions.accepted, reason: submissions.accepted ? undefined : "暂未受理" };
+      return { accepted: submissions.accepted, status: submissions.accepted ? "accepted" as const : "failed" as const, detail: submissions.accepted ? undefined : "暂未受理" };
     },
     /**
      *  返回空任务列表。
@@ -379,11 +379,11 @@ function createPresentation(withTaskEntry = false) {
       /**
        *  当前测试不显示审批，返回预设决定。
        */
-      open: async () => { approvals.opened += 1; return { kind: "approve" }; },
+      open: async () => { approvals.opened += 1; return approvals.barrier ? await approvals.barrier : { kind: "approve" }; },
       /**
        *  提供跨端审批关闭占位方法。
        */
-      dismiss() {},
+      dismiss() { approvals.dismissed += 1; },
     },
   });
   return {
@@ -583,6 +583,77 @@ function backgroundTask(taskId: string, outputRef: string | null): BackgroundTas
     notify_agent: true,
   };
 }
+
+test("保存故障清除未提交正文，恢复已保存进展并保留错误，旧轮迟到事件失效", /**
+ * 使用真实聊天展示器核对 FAULTED 的错误、已提交历史和后续明确输入。
+ */
+async () => {
+  const view = createPresentation();
+  try {
+    view.persisted.push({ id: "saved-tool", role: "ai", content: "本轮已保存的进展", timestamp: "2026-11-11T00:00:00Z" });
+    view.historyReads.boundaries.set("saved-tool", 1);
+    await view.emit("session_snapshot", { phase: "idle" }, 0);
+    await view.emit("run_started", {}, 1, "failed-run");
+    await view.emit("text_chunk", { value: "尚未保存的最终回答" }, 2, "failed-run");
+    await view.emit("error", { save_failed: true, detail: "执行结果保存失败" }, 3, "failed-run");
+    assert.ok(view.root.textContent.includes("执行结果保存失败"));
+    assert.equal(view.submissions.commands.length, 0);
+
+    await view.emit("history_restored", { through_message_id: "saved-tool" }, 4, "failed-run");
+    assert.ok(view.root.textContent.includes("本轮已保存的进展"));
+    assert.ok(!view.root.textContent.includes("尚未保存的最终回答"));
+    assert.ok(view.root.textContent.includes("执行结果保存失败"));
+    await view.emit("text_chunk", { value: "迟到片段" }, 5, "failed-run");
+    await view.emit("run_completed", {}, 6, "failed-run");
+    assert.ok(!view.root.textContent.includes("迟到片段"));
+    assert.ok(view.root.textContent.includes("执行结果保存失败"));
+    assert.equal(view.submissions.commands.length, 0);
+
+    view.input.value = "请继续";
+    await view.client.sendMessage();
+    assert.equal(view.submissions.commands.length, 1);
+    assert.equal(view.submissions.commands[0].kind, "human_turn");
+  } finally { view.close(); }
+});
+
+test("故障重连从快照显示保存失败，子交付错误保持父回答独立", /**
+ * 快照与实时错误都可见，子报告错误不能结束父正在展示的回答。
+ */
+async () => {
+  const view = createPresentation();
+  try {
+    await view.emit("session_snapshot", { phase: "idle", save_failure: { run_id: "failed", detail: "提交失败", restored: true } }, 0);
+    assert.ok(view.root.textContent.includes("提交失败"));
+    await view.emit("run_started", {}, 1, "parent");
+    await view.emit("text_chunk", { value: "父回答" }, 2, "parent");
+    await view.emit("error", { subagent_id: "child", report_failed: true, detail: "结果交付失败" }, 3, "child-run");
+    await view.emit("text_chunk", { value: "继续" }, 4, "parent");
+    assert.ok(view.root.textContent.includes("结果交付失败"));
+    assert.equal(view.submissions.commands.length, 0);
+  } finally { view.close(); }
+});
+
+test("任务保存失败从实时事件和重连摘要显示，停止入口关闭并保留输出", /**
+ * SAVE_FAILED 使用当前进程摘要，任务页仍提供已经保存的输出读取能力。
+ */
+async () => {
+  const view = createPresentation(true);
+  const list = new PresentationElement();
+  const page = new BackgroundTasksPage(list as unknown as HTMLElement,
+    new PresentationElement() as unknown as HTMLButtonElement);
+  const task = { ...backgroundTask("failed-task", "output"), status: "save_failed" as const, error: "磁盘写入失败" };
+  view.tasks.push(task);
+  window.desktopPetApi.getBackgroundTasks = /** 返回当前进程的保存失败摘要。 */ async () => [task];
+  try {
+    await view.emit("session_snapshot", { phase: "idle", tasks: [task] }, 0);
+    assert.ok(!view.taskButton.textContent.includes("运行中"));
+    await view.emit("task_status", { task_id: task.task_id, status: "save_failed" }, 1);
+    assert.ok(view.taskNotice.textContent.includes("结果保存失败"));
+    await page.render("s");
+    assert.ok(list.textContent.includes("结果保存失败"));
+    assert.ok(!list.textContent.includes("停止任务"));
+  } finally { view.close(); }
+});
 
 test("每个后台任务有独立卡片，详情和分页在刷新后仍分别保留", /**
  * 验证同时展开多个任务时结果与分页输出分别留在对应卡片中。
@@ -1524,3 +1595,39 @@ async () => {
     view.close();
   }
 });
+
+
+for (const child of [false, true]) {
+  test(`保存故障使对应${child ? "子" : "父"}审批失效，迟到确认不会提交`, /**
+   * 让真实客户端保持模态审批等待，再通过故障和恢复验证失效后的提交防护。
+   * Returns:
+   *     Promise<void>: 故障事件及迟到决定已验证。
+   */
+  async () => {
+    const view = createPresentation();
+    let release: ((value: { kind: "approve" }) => void) | undefined;
+    try {
+      await view.emit("session_snapshot", { phase: "idle" }, 0);
+      view.approvals.barrier = new Promise(/** 暂停用户决定，等待故障使原审批失效。 */
+        (resolve) => { release = resolve; });
+      await view.emit(child ? "subagent_interrupt" : "interrupt", {
+        value: { type: "authorization_request", request_id: "old-approval", message: "允许执行？" },
+        ...(child ? { subagent_id: "child" } : {}),
+      }, 1);
+      assert.equal(view.approvals.opened, 1);
+      const dismissed = view.approvals.dismissed;
+      await view.emit("error", { save_failed: true, detail: "审批整理保存失败",
+        ...(child ? { subagent_id: "child" } : {}) }, 2);
+      assert.equal(view.approvals.dismissed, dismissed + 1);
+      release!({ kind: "approve" });
+      await flushEvents();
+      assert.equal(view.submissions.commands.length, 0);
+      assert.deepEqual(view.attention.at(-1), { approvalId: null });
+      await view.emit("history_restored", { ...(child ? { subagent_id: "child" } : {}) }, 3);
+      assert.match(view.root.textContent, /审批整理保存失败/);
+    } finally {
+      release?.({ kind: "approve" });
+      view.close();
+    }
+  });
+}

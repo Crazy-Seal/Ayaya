@@ -6,7 +6,8 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from app.schemas.subagent_types import SubagentAction, SubagentSummary, SubagentCommandEffect
+from app.schemas.subagent_types import SubagentAction, SubagentSummary
+from app.schemas.runtime_types import CommandReceipt
 from app.schemas.tool_identity import ToolIdentity
 
 if TYPE_CHECKING:
@@ -22,14 +23,6 @@ class SubagentSource:
     subagent_id: str | None = None
 
 
-@dataclass
-class SubagentReceipt:
-    """保存受理动作及当时状态，执行结果通过父 Inbox 异步交付。"""
-    subagent_id: str
-    accepted: bool
-    effect: SubagentCommandEffect
-    summary: SubagentSummary | None
-    result_ref: str | None = None
 
 
 @dataclass(frozen=True)
@@ -41,7 +34,7 @@ class CreateSubagentRequest:
     prompt: str
     tool_whitelist: frozenset[ToolIdentity]
     if_retain_context: bool
-    reply: asyncio.Future[SubagentReceipt] = field(repr=False)
+    reply: asyncio.Future[CommandReceipt] = field(repr=False)
 
 
 @dataclass(frozen=True)
@@ -51,7 +44,7 @@ class InteractSubagentRequest:
     subagent_id: str
     action: SubagentAction
     text: str | None
-    reply: asyncio.Future[SubagentReceipt] = field(repr=False)
+    reply: asyncio.Future[CommandReceipt] = field(repr=False)
 
 
 @dataclass(frozen=True)

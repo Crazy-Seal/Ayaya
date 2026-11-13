@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING
 from app.agent.tools.core.base import BaseTool
 from app.agent.models.contracts import ToolDefinition
 from app.schemas.tool_identity import ToolIdentity
-from app.schemas.subagent_types import SUBAGENT_PARENT_TOOL_NAMES
 
 if TYPE_CHECKING:
     from app.agent.tools.authorization.manager import ToolAuthorization
@@ -56,13 +55,17 @@ class ToolManager:
         return name in self._framework_tools
 
     def _allowed(self, tool: BaseTool) -> bool:
-        """对模型目录和实际工具查找执行同一白名单及递归限制。"""
+        """对模型目录和实际工具查找执行同一白名单及递归限制。
+
+        Args:
+            tool (BaseTool): 待检查白名单范围的实际工具。
+        """
         if tool.name in self._framework_tools:
             return True
         if self._tool_whitelist is None:
             return True
         identity = getattr(tool, "identity", None) or ToolIdentity.local(tool.name)
-        return tool.name not in SUBAGENT_PARENT_TOOL_NAMES and identity in self._tool_whitelist
+        return identity in self._tool_whitelist
 
     def register(self, tool: BaseTool) -> None:
         """将工具实例按其模型可见名称登记，供后续查找和执行。

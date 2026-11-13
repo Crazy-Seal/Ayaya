@@ -7,12 +7,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.agent.plugins.base import BasePlugin, HookContext, PluginHook
 from app.agent.state.model import AgentState, TemporaryContextItem
-from app.agent.memory.manager import MemoryManager, get_memory_manager
+from app.agent.memory.manager import MemoryManager
+from app.crud.sqlite_factory import SqliteFactory
+from app.agent.tools.core.base import BaseTool
 from app.agent.plugins.runtime import PluginRuntime
 from app.agent.utils.infra.owned_work import complete_owned_work
 from app.agent.state.messages import HumanMessage
 from app.agent.plugins.memory.tasks.memory_tasks import DiaryTask, LongTermMemoryTask
-from .tools import search_diary, search_memory
+from .tools import SearchDiaryTool, SearchMemoryTool
 
 logger = logging.getLogger(__name__)
 
@@ -51,17 +53,39 @@ class MemoryPlugin(BasePlugin):
     name = "memory"
     description = "检索和沉淀长期记忆。"
     config_model = MemoryPluginConfig
-    tools = (search_memory, search_diary)
+    tools = (SearchMemoryTool, SearchDiaryTool)
     version = "1.0.0"
     priority = 100
 
-    def __init__(self, **config: Any) -> None:
+    def __init__(self, *, sqlite_factory: SqliteFactory, **config: Any) -> None:
         """校验并保存当前插件的记忆开关和真人输入提取间隔。
 
         Args:
             **config (Any): MemoryPluginConfig 接受的记忆配置字段。
+            sqlite_factory (SqliteFactory): 应用装配提供的 SQLite 连接配置。
         """
         self.config = MemoryPluginConfig(**config)
+        self._sqlite_factory = sqlite_factory
+
+    def create_tools(self) -> tuple[BaseTool, ...]:
+        """将本插件的记忆管理器查询入口绑定到两个记忆搜索工具。
+
+        Returns:
+            tuple[BaseTool, ...]: 与自动记忆钩子使用相同连接配置的搜索工具。
+        """
+        return SearchMemoryTool(self._manager_for), SearchDiaryTool(self._manager_for)
+
+    def _manager_for(self, session_id: str) -> MemoryManager:
+        """按实际调用上下文取得共享记忆对象。
+
+        Args:
+            session_id (str): 父或子的真实会话编号。
+
+        Returns:
+            MemoryManager: 缓存于本应用连接工厂范围的记忆管理器。
+        """
+        from app.agent.memory.manager import get_memory_manager
+        return get_memory_manager(session_id, self._sqlite_factory)
 
     @property
     def hooks(self) -> list[PluginHook]:
@@ -84,7 +108,7 @@ class MemoryPlugin(BasePlugin):
         Returns:
             MemoryManager: 当前会话缓存的记忆管理器。
         """
-        return get_memory_manager(state.session_id)
+        return self._manager_for(state.session_id)
 
     async def execute(self, context: HookContext) -> None:
         """按执行时机准备和启动记忆任务，并召回本轮相关记忆。
@@ -99,6 +123,7 @@ class MemoryPlugin(BasePlugin):
             # 1. 新输入已经保存，先启动提交前准备好的上一批记忆任务。
             memory_job = context.data.get("memory")
             if memory_job:
+                assert context.runtime is not None
                 manager = memory_job["manager"]
                 cutoff = memory_job["protocol_history_cutoff"]
                 if memory_job["check_diary"]:

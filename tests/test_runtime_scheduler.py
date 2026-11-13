@@ -1,3 +1,11 @@
+from tests.runtime_support import runtime_hub, close_test_runtime, next_runtime_event
+from app.routes.agent import observe_runtime
+from app.schemas.runtime_types import AgentRunOutcome, AgentRunOutcomeKind
+from tests.runtime_support import build_test_scheduler
+from app.crud.sqlite_factory import SqliteFactory
+from tests.runtime_support import finish_task_record
+from app.crud.task_record_dao import TaskRecordDao
+from app.services.settings_mutation import SettingsMutationCoordinator
 from tests.runtime_support import RuntimeAgentStub
 from tests.runtime_support import configured_settings, finish_test_turn
 from app.services.channel_subscription_service import ChannelSubscriptionService
@@ -56,7 +64,7 @@ def test_message_arriving_before_wait_signal_is_cleared_is_processed_immediately
 
         class RecordingAgent(RuntimeAgentStub):
             """使用真实数据库保存输入，只替换模型回答。"""
-            async def run(self, message, *, inbox_input=None, **kwargs):
+            async def run(self, message, *, inbox_input=None, emit, **kwargs):
                 """保存当前真人输入，记录执行顺序后正常结束。
 
                 Args:
@@ -67,8 +75,9 @@ def test_message_arriving_before_wait_signal_is_cleared_is_processed_immediately
                 Yields:
                     AgentEvent: 这轮正常完成的事件。
                 """
-                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": kwargs.get("origin_channel", "desktop"), "resumed": False})
-                manager = SessionStateManager("s", path)
+                outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
+                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": kwargs.get("origin_channel", "desktop"), "resumed": False}))
+                manager = SessionStateManager("s", SqliteFactory(path))
                 try:
                     state = await manager.load()
                     state.add_user_message(message)
@@ -78,14 +87,16 @@ def test_message_arriving_before_wait_signal_is_cleared_is_processed_immediately
                 calls.append(message)
                 if message == "恰好到达的新消息":
                     processed.set()
-                yield AgentEvent(EventType.DONE, None)
+                await emit(AgentEvent(EventType.DONE, None))
+
+                return outcome
 
             async def close(self) -> None:
                 """测试 Agent 不持有外部资源。"""
 
-        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
+        scheduler = build_test_scheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
            agent_factory=lambda _session, _manager: RecordingAgent(),
-            session_state_manager_factory=lambda session: InterleavingInbox(session, path),
+            session_state_manager_factory=lambda session: InterleavingInbox(session, SqliteFactory(path)),
         )
         try:
             await scheduler.start()
@@ -97,7 +108,7 @@ def test_message_arriving_before_wait_signal_is_cleared_is_processed_immediately
             await asyncio.wait_for(processed.wait(), 2)
             assert calls == ["第一条消息", "恰好到达的新消息"]
         finally:
-            await scheduler.close()
+            await close_test_runtime(scheduler)
 
     asyncio.run(scenario())
 
@@ -151,18 +162,18 @@ def test_committed_human_is_visible_before_first_model_chunk(tmp_path: Path) -> 
                     session_id=session_id, model_name="test", api_key="test",
                     context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100),
                 ),
-                db_path=db_path, llm_client=WaitingLLM(),
+                sqlite_factory=SqliteFactory(db_path), llm_client=WaitingLLM(),
             session_state_manager=_manager, )
 
-        subscriptions = ChannelSubscriptionService()
-        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
+        subscriptions = ChannelSubscriptionService(sqlite_factory=SqliteFactory())
+        scheduler = build_test_scheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
             subscriptions=subscriptions, agent_factory=make_agent,
-            session_state_manager_factory=lambda session: SessionStateManager(session, db_path),
+            session_state_manager_factory=lambda session: SessionStateManager(session, SqliteFactory(db_path)),
         )
-        hub = InteractionEventHub(scheduler, subscriptions=subscriptions)
-        await hub.start()
+        hub = runtime_hub(scheduler)
+        pass
         await scheduler.start()
-        events = hub.subscribe("s", "desktop")
+        events = observe_runtime("s", "desktop", hub, scheduler)
         await anext(events)
         try:
             # 2. 模型首片保持阻塞，仍必须从订阅中收到已经提交的真人消息。
@@ -182,7 +193,7 @@ def test_committed_human_is_visible_before_first_model_chunk(tmp_path: Path) -> 
             release_model.set()
             await events.aclose()
             await hub.close()
-            await scheduler.close()
+            await close_test_runtime(scheduler)
 
     asyncio.run(scenario())
 
@@ -203,7 +214,7 @@ def test_subscriber_disconnect_does_not_cancel_run_and_origin_is_scoped(tmp_path
 
         class FakeAgent(RuntimeAgentStub):
             """提供隔离测试替身，用于验证：订阅断开不取消运行，回复只向桌面及原来源投递。"""
-            async def run(self, message, images=None, *, origin_channel="desktop", inbox_input=None, turn_control=None, receive_task_notifications=False, inbox_inputs=None):
+            async def run(self, message, images=None, *, origin_channel="desktop", inbox_input=None, turn_control=None, receive_task_notifications=False, inbox_inputs=None, emit):
                 """按场景屏障产生 Agent 事件并提交测试输入。
 
                 Args:
@@ -219,9 +230,10 @@ def test_subscriber_disconnect_does_not_cancel_run_and_origin_is_scoped(tmp_path
                 Yields:
                     AgentEvent: 当前测试场景的预设分片或事件。
                 """
-                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": origin_channel, "resumed": False})
+                outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
+                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": origin_channel, "resumed": False}))
                 calls.append((message, origin_channel))
-                manager = SessionStateManager("s", str(tmp_path / "runtime.sqlite3"))
+                manager = SessionStateManager("s", SqliteFactory(str(tmp_path / "runtime.sqlite3")))
                 try:
                     state = await manager.load()
                     human_message = state.add_user_message(message, origin_channel=origin_channel)
@@ -229,35 +241,37 @@ def test_subscriber_disconnect_does_not_cancel_run_and_origin_is_scoped(tmp_path
                         state, checkpoint_type="intermediate", inbox_inputs=(inbox_input,),
                     )
                     # 1. 替身遵循真实 Agent：只有事务成功后才发布输入事实。
-                    yield AgentEvent(EventType.HUMAN_INPUT_COMMITTED, {"message": human_message, "input_sequence": inbox_input.id})
+                    await emit(AgentEvent(EventType.HUMAN_INPUT_COMMITTED, {"message": human_message, "input_sequence": inbox_input.id}))
                 finally:
                     await manager.close()
-                yield AgentEvent(EventType.TEXT_CHUNK, "正在处理")
+                await emit(AgentEvent(EventType.TEXT_CHUNK, "正在处理"))
                 await release.wait()
                 completed.set()
-                yield AgentEvent(EventType.TEXT_CHUNK, "完成")
-                yield AgentEvent(EventType.DONE, None)
+                await emit(AgentEvent(EventType.TEXT_CHUNK, "完成"))
+                await emit(AgentEvent(EventType.DONE, None))
+
+                return outcome
 
             async def close(self):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
-        subscriptions = ChannelSubscriptionService()
+        subscriptions = ChannelSubscriptionService(sqlite_factory=SqliteFactory())
         subscriptions.register_channel("qq")
         subscriptions.set_default_enabled("qq", True)
         subscriptions.register_channel("telegram")
         subscriptions.set_default_enabled("telegram", True)
-        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
+        scheduler = build_test_scheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
             subscriptions=subscriptions,
            agent_factory=lambda _session, _manager: FakeAgent(),
-            session_state_manager_factory=lambda session: SessionStateManager(session, str(tmp_path / "runtime.sqlite3")),
+            session_state_manager_factory=lambda session: SessionStateManager(session, SqliteFactory(str(tmp_path / "runtime.sqlite3"))),
         )
-        hub = InteractionEventHub(scheduler, subscriptions=subscriptions)
-        await hub.start()
+        hub = runtime_hub(scheduler)
+        pass
         await scheduler.start()
-        desktop = hub.subscribe("s", "desktop")
-        qq = hub.subscribe("s", "qq")
-        telegram = hub.subscribe("s", "telegram")
+        desktop = observe_runtime("s", "desktop", hub, scheduler)
+        qq = observe_runtime("s", "qq", hub, scheduler)
+        telegram = observe_runtime("s", "telegram", hub, scheduler)
         await anext(desktop)
         await anext(qq)
         await anext(telegram)
@@ -278,7 +292,7 @@ def test_subscriber_disconnect_does_not_cancel_run_and_origin_is_scoped(tmp_path
         await qq.aclose()
         await telegram.aclose()
         await hub.close()
-        await scheduler.close()
+        await close_test_runtime(scheduler)
 
     asyncio.run(scenario())
 
@@ -299,7 +313,7 @@ def test_snapshot_excludes_reply_text_before_and_after_tool_call(tmp_path) -> No
 
         class FakeAgent(RuntimeAgentStub):
             """提供隔离测试替身，用于验证：快照不携带回答正文，工具前后的文字仅通过增量转发。"""
-            async def run(self, message, images=None, *, origin_channel="desktop", inbox_input=None, turn_control=None, receive_task_notifications=False, inbox_inputs=None):
+            async def run(self, message, images=None, *, origin_channel="desktop", inbox_input=None, turn_control=None, receive_task_notifications=False, inbox_inputs=None, emit):
                 """按场景屏障产生 Agent 事件并提交测试输入。
 
                 Args:
@@ -315,22 +329,25 @@ def test_snapshot_excludes_reply_text_before_and_after_tool_call(tmp_path) -> No
                 Yields:
                     AgentEvent: 当前测试场景的预设分片或事件。
                 """
-                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": origin_channel, "resumed": False})
-                yield AgentEvent(EventType.TEXT_CHUNK, "已保存的说明")
-                yield AgentEvent(EventType.TOOL_CALL, "example")
+                outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
+                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": origin_channel, "resumed": False}))
+                await emit(AgentEvent(EventType.TEXT_CHUNK, "已保存的说明"))
+                await emit(AgentEvent(EventType.TOOL_CALL, "example"))
                 tool_started.set()
                 await release.wait()
-                yield AgentEvent(EventType.TEXT_CHUNK, "工具后的新文本")
+                await emit(AgentEvent(EventType.TEXT_CHUNK, "工具后的新文本"))
                 await finish_test_turn(db_path, (inbox_input,), message=message, origin=origin_channel, release_queued=turn_control.reason is None)
-                yield AgentEvent(EventType.DONE, None)
+                await emit(AgentEvent(EventType.DONE, None))
+
+                return outcome
 
             async def close(self):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
-        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
+        scheduler = build_test_scheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
            agent_factory=lambda _session, _manager: FakeAgent(),
-            session_state_manager_factory=lambda session: SessionStateManager(session, str(tmp_path / "state.sqlite3")),
+            session_state_manager_factory=lambda session: SessionStateManager(session, SqliteFactory(str(tmp_path / "state.sqlite3"))),
         )
         await scheduler.start()
         try:
@@ -344,7 +361,7 @@ def test_snapshot_excludes_reply_text_before_and_after_tool_call(tmp_path) -> No
                 await asyncio.sleep(0.01)
         finally:
             release.set()
-            await scheduler.close()
+            await close_test_runtime(scheduler)
 
     asyncio.run(scenario())
 
@@ -387,7 +404,7 @@ def test_stop_while_publishing_chunk_still_saves_interrupted_response(tmp_path) 
         class PausedAgent(Agent):
             """在公开 Agent 输出处暂停，独立于渠道分发构造停止安全点。"""
 
-            async def run(self, *args, **kwargs):
+            async def run(self, *args, emit, **kwargs):
                 """转发真实执行，在测试指定事件之后等待停止请求。
 
                 Args:
@@ -397,14 +414,16 @@ def test_stop_while_publishing_chunk_still_saves_interrupted_response(tmp_path) 
                 Yields:
                     AgentEvent: 原 Agent 产生的事件。
                 """
-                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": kwargs.get("origin_channel", "desktop"), "resumed": False})
-                async for event in super().run(*args, **kwargs):
-                    yield event
+                async def paused_emit(event):
+                    """正文已投递后停在同步屏障，让用户停止与流发布交错。"""
+                    await emit(event)
                     if event.type == EventType.TEXT_CHUNK:
                         publishing.set()
                         await release_publish.wait()
                     if event.type == EventType.DONE:
                         completed.set()
+
+                return await super().run(*args, emit=paused_emit, **kwargs)
 
         def make_agent(session: str, _manager) -> Agent:
             """装配隔离存储和模型替身。
@@ -423,12 +442,12 @@ def test_stop_while_publishing_chunk_still_saves_interrupted_response(tmp_path) 
                         compression_trigger_tokens_k=100,
                     ),
                 ),
-                db_path=db_path, llm_client=WaitingLLM(),
+                sqlite_factory=SqliteFactory(db_path), llm_client=WaitingLLM(),
             )
 
-        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
+        scheduler = build_test_scheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
            agent_factory=make_agent,
-            session_state_manager_factory=lambda session: SessionStateManager(session, db_path),
+            session_state_manager_factory=lambda session: SessionStateManager(session, SqliteFactory(db_path)),
         )
         await scheduler.start()
         try:
@@ -442,7 +461,7 @@ def test_stop_while_publishing_chunk_still_saves_interrupted_response(tmp_path) 
             assert stopped.accepted
             release_publish.set()
             await asyncio.wait_for(completed.wait(), 2)
-            manager = SessionStateManager("s", db_path)
+            manager = SessionStateManager("s", SqliteFactory(db_path))
             try:
                 state = await manager.load()
                 assert state.messages[-1].text == "已经显示……（被用户打断）"
@@ -450,7 +469,7 @@ def test_stop_while_publishing_chunk_still_saves_interrupted_response(tmp_path) 
                 await manager.close()
         finally:
             release_publish.set()
-            await scheduler.close()
+            await close_test_runtime(scheduler)
 
     asyncio.run(scenario())
 
@@ -513,7 +532,7 @@ def test_stop_after_tool_notice_prevents_unstarted_tool_side_effect(tmp_path) ->
         class PausedAgent(Agent):
             """在公开 Agent 输出处暂停，独立于渠道分发构造停止安全点。"""
 
-            async def run(self, *args, **kwargs):
+            async def run(self, *args, emit, **kwargs):
                 """转发真实执行，在测试指定事件之后等待停止请求。
 
                 Args:
@@ -523,14 +542,16 @@ def test_stop_after_tool_notice_prevents_unstarted_tool_side_effect(tmp_path) ->
                 Yields:
                     AgentEvent: 原 Agent 产生的事件。
                 """
-                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": kwargs.get("origin_channel", "desktop"), "resumed": False})
-                async for event in super().run(*args, **kwargs):
-                    yield event
+                async def paused_emit(event):
+                    """工具提示已投递后停在同步屏障，核对最后启动安全点。"""
+                    await emit(event)
                     if event.type == EventType.TOOL_CALL:
                         tool_notice.set()
                         await release_notice.wait()
                     if event.type == EventType.DONE:
                         completed.set()
+
+                return await super().run(*args, emit=paused_emit, **kwargs)
 
         def make_agent(session: str, _manager) -> Agent:
             """装配隔离存储和模型替身。
@@ -547,14 +568,14 @@ def test_stop_after_tool_notice_prevents_unstarted_tool_side_effect(tmp_path) ->
                     session_id=session, model_name="test", api_key="test",
                     context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100),
                 ),
-                db_path=db_path, llm_client=ToolLLM(),
+                sqlite_factory=SqliteFactory(db_path), llm_client=ToolLLM(),
             )
             agent.tool_manager.register(RecordingTool())
             return agent
 
-        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
+        scheduler = build_test_scheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
            agent_factory=make_agent,
-            session_state_manager_factory=lambda session: SessionStateManager(session, db_path),
+            session_state_manager_factory=lambda session: SessionStateManager(session, SqliteFactory(db_path)),
         )
         await scheduler.start()
         try:
@@ -568,7 +589,7 @@ def test_stop_after_tool_notice_prevents_unstarted_tool_side_effect(tmp_path) ->
             release_notice.set()
             await asyncio.wait_for(completed.wait(), 2)
             assert executed == []
-            manager = SessionStateManager("s", db_path)
+            manager = SessionStateManager("s", SqliteFactory(db_path))
             try:
                 state = await manager.load()
                 assert any(isinstance(item, ToolMessage) for item in state.messages)
@@ -576,7 +597,7 @@ def test_stop_after_tool_notice_prevents_unstarted_tool_side_effect(tmp_path) ->
                 await manager.close()
         finally:
             release_notice.set()
-            await scheduler.close()
+            await close_test_runtime(scheduler)
 
     asyncio.run(scenario())
 
@@ -598,7 +619,7 @@ def test_new_message_from_other_channel_steers_active_run(tmp_path) -> None:
 
         class FakeAgent(RuntimeAgentStub):
             """提供隔离测试替身，用于验证：其他渠道的新输入能引导共享会话的活动轮次。"""
-            async def run(self, message, images=None, *, origin_channel="desktop", inbox_input=None, turn_control=None, receive_task_notifications=False, inbox_inputs=None):
+            async def run(self, message, images=None, *, origin_channel="desktop", inbox_input=None, turn_control=None, receive_task_notifications=False, inbox_inputs=None, emit):
                 """按场景屏障产生 Agent 事件并提交测试输入。
 
                 Args:
@@ -614,7 +635,8 @@ def test_new_message_from_other_channel_steers_active_run(tmp_path) -> None:
                 Yields:
                     AgentEvent: 当前测试场景的预设分片或事件。
                 """
-                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": origin_channel, "resumed": False})
+                outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
+                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": origin_channel, "resumed": False}))
                 calls.append((message, origin_channel))
                 if message == "first":
                     first_running.set()
@@ -623,21 +645,23 @@ def test_new_message_from_other_channel_steers_active_run(tmp_path) -> None:
                 else:
                     finished.set()
                 await finish_test_turn(db_path, (inbox_input,), message=message, origin=origin_channel, release_queued=turn_control.reason is None)
-                yield AgentEvent(EventType.DONE, None)
+                await emit(AgentEvent(EventType.DONE, None))
+
+                return outcome
 
             async def close(self):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
-        subscriptions = ChannelSubscriptionService()
+        subscriptions = ChannelSubscriptionService(sqlite_factory=SqliteFactory())
         subscriptions.register_channel("qq")
         subscriptions.set_default_enabled("qq", True)
-        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
+        scheduler = build_test_scheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
             subscriptions=subscriptions, agent_factory=lambda _session, _manager: FakeAgent(),
-            session_state_manager_factory=lambda session: SessionStateManager(session, str(tmp_path / "state.sqlite3")),
+            session_state_manager_factory=lambda session: SessionStateManager(session, SqliteFactory(str(tmp_path / "state.sqlite3"))),
         )
-        hub = InteractionEventHub(scheduler, subscriptions=subscriptions)
-        await hub.start()
+        hub = runtime_hub(scheduler)
+        pass
         await scheduler.start()
         try:
             await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "first"}))
@@ -648,7 +672,7 @@ def test_new_message_from_other_channel_steers_active_run(tmp_path) -> None:
             assert calls == [("first", "desktop"), ("second", "qq")]
         finally:
             await hub.close()
-            await scheduler.close()
+            await close_test_runtime(scheduler)
 
     asyncio.run(scenario())
 
@@ -670,7 +694,7 @@ def test_queued_turn_receives_new_run_id(tmp_path) -> None:
 
         class FakeAgent(RuntimeAgentStub):
             """提供隔离测试替身，用于验证：排队输入放行后取得独立运行标识。"""
-            async def run(self, message, images=None, *, origin_channel="desktop", inbox_input=None, turn_control=None, receive_task_notifications=False, inbox_inputs=None):
+            async def run(self, message, images=None, *, origin_channel="desktop", inbox_input=None, turn_control=None, receive_task_notifications=False, inbox_inputs=None, emit):
                 """按场景屏障产生 Agent 事件并提交测试输入。
 
                 Args:
@@ -686,27 +710,30 @@ def test_queued_turn_receives_new_run_id(tmp_path) -> None:
                 Yields:
                     AgentEvent: 当前测试场景的预设分片或事件。
                 """
-                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": origin_channel, "resumed": False})
+                outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
+                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": origin_channel, "resumed": False}))
                 if message == "first":
                     await release.wait()
                 else:
                     second_done.set()
                 await finish_test_turn(db_path, (inbox_input,), message=message, origin=origin_channel, release_queued=turn_control.reason is None)
-                yield AgentEvent(EventType.DONE, None)
+                await emit(AgentEvent(EventType.DONE, None))
+
+                return outcome
 
             async def close(self):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
-        subscriptions = ChannelSubscriptionService()
-        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
+        subscriptions = ChannelSubscriptionService(sqlite_factory=SqliteFactory())
+        scheduler = build_test_scheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
             subscriptions=subscriptions, agent_factory=lambda _session, _manager: FakeAgent(),
-            session_state_manager_factory=lambda session: SessionStateManager(session, str(tmp_path / "state.sqlite3")),
+            session_state_manager_factory=lambda session: SessionStateManager(session, SqliteFactory(str(tmp_path / "state.sqlite3"))),
         )
-        hub = InteractionEventHub(scheduler, subscriptions=subscriptions)
-        await hub.start()
+        hub = runtime_hub(scheduler)
+        pass
         await scheduler.start()
-        desktop = hub.subscribe("s", "desktop")
+        desktop = observe_runtime("s", "desktop", hub, scheduler)
         await anext(desktop)
         try:
             await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "first"}))
@@ -727,7 +754,7 @@ def test_queued_turn_receives_new_run_id(tmp_path) -> None:
         finally:
             await desktop.aclose()
             await hub.close()
-            await scheduler.close()
+            await close_test_runtime(scheduler)
 
     asyncio.run(scenario())
 
@@ -749,7 +776,7 @@ def test_interrupted_turn_applies_steer_before_older_queued_message(tmp_path) ->
 
         class FakeAgent(RuntimeAgentStub):
             """提供隔离测试替身，用于验证：打断后先处理引导，再放行较早的排队输入。"""
-            async def run(self, message, images=None, *, origin_channel="desktop", inbox_input=None, turn_control=None, receive_task_notifications=False, inbox_inputs=None):
+            async def run(self, message, images=None, *, origin_channel="desktop", inbox_input=None, turn_control=None, receive_task_notifications=False, inbox_inputs=None, emit):
                 """按场景屏障产生 Agent 事件并提交测试输入。
 
                 Args:
@@ -765,7 +792,8 @@ def test_interrupted_turn_applies_steer_before_older_queued_message(tmp_path) ->
                 Yields:
                     AgentEvent: 当前测试场景的预设分片或事件。
                 """
-                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": origin_channel, "resumed": False})
+                outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
+                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": origin_channel, "resumed": False}))
                 calls.append(message)
                 if message == "first":
                     started.set()
@@ -774,15 +802,17 @@ def test_interrupted_turn_applies_steer_before_older_queued_message(tmp_path) ->
                 if len(calls) == 3:
                     all_done.set()
                 await finish_test_turn(db_path, (inbox_input,), message=message, origin=origin_channel, release_queued=turn_control.reason is None)
-                yield AgentEvent(EventType.DONE, None)
+                await emit(AgentEvent(EventType.DONE, None))
+
+                return outcome
 
             async def close(self):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
-        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
+        scheduler = build_test_scheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
            agent_factory=lambda _session, _manager: FakeAgent(),
-            session_state_manager_factory=lambda session: SessionStateManager(session, str(tmp_path / "state.sqlite3")),
+            session_state_manager_factory=lambda session: SessionStateManager(session, SqliteFactory(str(tmp_path / "state.sqlite3"))),
         )
         await scheduler.start()
         try:
@@ -798,7 +828,7 @@ def test_interrupted_turn_applies_steer_before_older_queued_message(tmp_path) ->
             await asyncio.wait_for(all_done.wait(), 2)
             assert calls == ["first", "steer", "queued"]
         finally:
-            await scheduler.close()
+            await close_test_runtime(scheduler)
 
     asyncio.run(scenario())
 
@@ -821,7 +851,7 @@ def test_task_only_wakeup_does_not_release_queue_left_by_stopped_turn(tmp_path) 
 
         class FakeAgent(RuntimeAgentStub):
             """提供隔离测试替身，用于验证：后台通知唤醒不放行停止轮次遗留的排队消息。"""
-            async def run(self, message, images=None, *, origin_channel="desktop", inbox_input=None, turn_control=None, receive_task_notifications=False, inbox_inputs=None):
+            async def run(self, message, images=None, *, origin_channel="desktop", inbox_input=None, turn_control=None, receive_task_notifications=False, inbox_inputs=None, emit):
                 """按场景屏障产生 Agent 事件并提交测试输入。
 
                 Args:
@@ -837,7 +867,8 @@ def test_task_only_wakeup_does_not_release_queue_left_by_stopped_turn(tmp_path) 
                 Yields:
                     AgentEvent: 当前测试场景的预设分片或事件。
                 """
-                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": origin_channel, "resumed": False})
+                outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
+                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": origin_channel, "resumed": False}))
                 calls.append(message)
                 if message == "旧轮次":
                     first_started.set()
@@ -846,9 +877,11 @@ def test_task_only_wakeup_does_not_release_queue_left_by_stopped_turn(tmp_path) 
                 if message == "排队消息":
                     queue_done.set()
                 await finish_test_turn(db_path, (inbox_input,), message=message, origin=origin_channel, release_queued=turn_control.reason is None)
-                yield AgentEvent(EventType.DONE, None)
+                await emit(AgentEvent(EventType.DONE, None))
 
-            async def run_runtime_inputs(self, messages=None, *, inbox_inputs, turn_control=None, receive_task_notifications=False):
+                return outcome
+
+            async def run_runtime_inputs(self, messages=None, *, inbox_inputs, turn_control=None, receive_task_notifications=False, emit):
                 """验证后台通知批次并产生测试回复。
 
                 Args:
@@ -861,21 +894,26 @@ def test_task_only_wakeup_does_not_release_queue_left_by_stopped_turn(tmp_path) 
                 Yields:
                     AgentEvent: 当前测试场景的预设分片或事件。
                 """
-                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False})
+                outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
+                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False}))
                 task_done.set()
                 await finish_test_turn(db_path, inbox_inputs, runtime_inputs=messages)
-                yield AgentEvent(EventType.DONE, None)
+                await emit(AgentEvent(EventType.DONE, None))
+
+                return outcome
 
             async def close(self):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=db_path)
-        scheduler = AgentRuntimeScheduler(runtime_queue=supervisor.runtime_queue,
+        supervisor_settings = configured_settings()
+        supervisor_mutations = SettingsMutationCoordinator()
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(db_path)))
+        scheduler = build_test_scheduler(runtime_queue=supervisor.runtime_queue,
             task_supervisor=supervisor,
             agent_factory=lambda _session, _manager: FakeAgent(),
-            session_state_manager_factory=lambda session: SessionStateManager(session, db_path),
-        )
+            session_state_manager_factory=lambda session: SessionStateManager(session, SqliteFactory(db_path)),
+         chat_settings_dao=supervisor_settings, mutation_coordinator=supervisor_mutations)
         await scheduler.start()
         records = supervisor.records
         try:
@@ -894,7 +932,7 @@ def test_task_only_wakeup_does_not_release_queue_left_by_stopped_turn(tmp_path) 
                     break
                 await asyncio.sleep(0.01)
             await records.insert_running("task-1", "s", "后台任务", 1, str(tmp_path / "out"))
-            assert await supervisor.commit_terminal_state_once("task-1", "completed")
+            assert await finish_task_record(supervisor, "task-1", "completed")
             # 2. 用户停止后仅保存通知；新真人输入恢复执行，再按原规则放行旧排队消息。
             assert not task_done.is_set()
             assert not queue_done.is_set()
@@ -906,8 +944,9 @@ def test_task_only_wakeup_does_not_release_queue_left_by_stopped_turn(tmp_path) 
             await asyncio.wait_for(queue_done.wait(), 1)
             assert calls == ["旧轮次", "新轮次", "排队消息"]
         finally:
-            await scheduler.close()
+            await close_test_runtime(scheduler)
             await supervisor.close()
+            await supervisor.records.close()
 
     asyncio.run(scenario())
 
@@ -923,7 +962,7 @@ def test_after_restart_abandoned_queue_is_discarded(tmp_path) -> None:
         """在隔离异步环境中安排并验证：异常重启后排队输入作废，不能由新轮次重新放行。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         db_path = str(tmp_path / "state.sqlite3")
-        before_restart = SessionStateManager("s", db_path)
+        before_restart = SessionStateManager("s", SqliteFactory(db_path))
         try:
             await before_restart.submit_human("desktop", "崩溃前排队", queued=True)
         finally:
@@ -934,7 +973,7 @@ def test_after_restart_abandoned_queue_is_discarded(tmp_path) -> None:
 
         class FakeAgent(RuntimeAgentStub):
             """提供隔离测试替身，用于验证：异常重启后排队输入作废，不能由新轮次重新放行。"""
-            async def run(self, message, images=None, *, origin_channel="desktop", inbox_input=None, turn_control=None, receive_task_notifications=False, inbox_inputs=None):
+            async def run(self, message, images=None, *, origin_channel="desktop", inbox_input=None, turn_control=None, receive_task_notifications=False, inbox_inputs=None, emit):
                 """按场景屏障产生 Agent 事件并提交测试输入。
 
                 Args:
@@ -950,20 +989,23 @@ def test_after_restart_abandoned_queue_is_discarded(tmp_path) -> None:
                 Yields:
                     AgentEvent: 当前测试场景的预设分片或事件。
                 """
-                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": origin_channel, "resumed": False})
+                outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
+                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": origin_channel, "resumed": False}))
                 calls.append(message)
                 if message == "崩溃前排队":
                     queue_done.set()
                 await finish_test_turn(db_path, (inbox_input,), message=message, origin=origin_channel, release_queued=turn_control.reason is None)
-                yield AgentEvent(EventType.DONE, None)
+                await emit(AgentEvent(EventType.DONE, None))
+
+                return outcome
 
             async def close(self):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
-        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
+        scheduler = build_test_scheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
            agent_factory=lambda _session, _manager: FakeAgent(),
-            session_state_manager_factory=lambda session: SessionStateManager(session, db_path),
+            session_state_manager_factory=lambda session: SessionStateManager(session, SqliteFactory(db_path)),
         )
         await scheduler.start()
         try:
@@ -980,7 +1022,7 @@ def test_after_restart_abandoned_queue_is_discarded(tmp_path) -> None:
             assert calls == ["新的正常轮次"]
             assert not queue_done.is_set()
         finally:
-            await scheduler.close()
+            await close_test_runtime(scheduler)
 
     asyncio.run(scenario())
 
@@ -1004,7 +1046,7 @@ def test_stale_steer_cannot_cancel_current_run(tmp_path) -> None:
 
         class FakeAgent(RuntimeAgentStub):
             """提供隔离测试替身，用于验证：过期引导不能停止当前不同轮次。"""
-            async def run(self, message, images=None, *, origin_channel="desktop", inbox_input=None, turn_control=None, receive_task_notifications=False, inbox_inputs=None):
+            async def run(self, message, images=None, *, origin_channel="desktop", inbox_input=None, turn_control=None, receive_task_notifications=False, inbox_inputs=None, emit):
                 """按场景屏障产生 Agent 事件并提交测试输入。
 
                 Args:
@@ -1020,7 +1062,8 @@ def test_stale_steer_cannot_cancel_current_run(tmp_path) -> None:
                 Yields:
                     AgentEvent: 当前测试场景的预设分片或事件。
                 """
-                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": origin_channel, "resumed": False})
+                outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
+                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": origin_channel, "resumed": False}))
                 controls.append(turn_control)
                 messages.append(message)
                 started.set()
@@ -1029,15 +1072,17 @@ def test_stale_steer_cannot_cancel_current_run(tmp_path) -> None:
                 else:
                     second_done.set()
                 await finish_test_turn(db_path, (inbox_input,), message=message, origin=origin_channel, release_queued=turn_control.reason is None)
-                yield AgentEvent(EventType.DONE, None)
+                await emit(AgentEvent(EventType.DONE, None))
+
+                return outcome
 
             async def close(self):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
-        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
+        scheduler = build_test_scheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
            agent_factory=lambda _session, _manager: FakeAgent(),
-            session_state_manager_factory=lambda session: SessionStateManager(session, str(tmp_path / "state.sqlite3")),
+            session_state_manager_factory=lambda session: SessionStateManager(session, SqliteFactory(str(tmp_path / "state.sqlite3"))),
         )
         await scheduler.start()
         try:
@@ -1047,15 +1092,17 @@ def test_stale_steer_cannot_cancel_current_run(tmp_path) -> None:
                 "s", "desktop", "human_steer", {"message": "迟到引导"},
                 target_run_id="旧轮次",
             ))
-            assert accepted.accepted
+            assert not accepted.accepted
             assert controls[0].reason is None
-            assert ((await scheduler.snapshot("s")).payload)["queued_inputs"][0]["message"] == "迟到引导"
+            assert ((await scheduler.snapshot("s")).payload)["queued_inputs"] == []
             release.set()
-            await asyncio.wait_for(second_done.wait(), 1)
-            assert messages == ["当前任务", "迟到引导"]
+            while (await asyncio.wait_for(next_runtime_event(scheduler), 1)).kind != "run_completed":
+                pass
+            assert not second_done.is_set()
+            assert messages == ["当前任务"]
         finally:
             release.set()
-            await scheduler.close()
+            await close_test_runtime(scheduler)
 
     asyncio.run(scenario())
 
@@ -1095,7 +1142,7 @@ def test_run_completion_waits_for_steer_inbox_commit(tmp_path) -> None:
 
         class FakeAgent(RuntimeAgentStub):
             """提供隔离测试替身，用于验证：轮次结束与引导持久受理的竞争不会丢失输入。"""
-            async def run(self, message, images=None, *, origin_channel="desktop", inbox_input=None, turn_control=None, receive_task_notifications=False, inbox_inputs=None):
+            async def run(self, message, images=None, *, origin_channel="desktop", inbox_input=None, turn_control=None, receive_task_notifications=False, inbox_inputs=None, emit):
                 """按场景屏障产生 Agent 事件并提交测试输入。
 
                 Args:
@@ -1111,7 +1158,8 @@ def test_run_completion_waits_for_steer_inbox_commit(tmp_path) -> None:
                 Yields:
                     AgentEvent: 当前测试场景的预设分片或事件。
                 """
-                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": origin_channel, "resumed": False})
+                outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
+                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": origin_channel, "resumed": False}))
                 controls.append(turn_control)
                 if message == "旧指令":
                     started.set()
@@ -1119,15 +1167,17 @@ def test_run_completion_waits_for_steer_inbox_commit(tmp_path) -> None:
                 else:
                     second_done.set()
                 await finish_test_turn(db_path, (inbox_input,), message=message, origin=origin_channel, release_queued=turn_control.reason is None)
-                yield AgentEvent(EventType.DONE, None)
+                await emit(AgentEvent(EventType.DONE, None))
+
+                return outcome
 
             async def close(self):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
-        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
+        scheduler = build_test_scheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
            agent_factory=lambda _session, _manager: FakeAgent(),
-            session_state_manager_factory=lambda session: SlowInbox(session, str(tmp_path / "state.sqlite3")),
+            session_state_manager_factory=lambda session: SlowInbox(session, SqliteFactory(str(tmp_path / "state.sqlite3"))),
         )
         await scheduler.start()
         try:
@@ -1149,7 +1199,7 @@ def test_run_completion_waits_for_steer_inbox_commit(tmp_path) -> None:
         finally:
             finish_write.set()
             finish_first.set()
-            await scheduler.close()
+            await close_test_runtime(scheduler)
 
     asyncio.run(scenario())
 
@@ -1167,7 +1217,7 @@ def test_failed_input_commit_never_publishes_human_message(tmp_path) -> None:
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         class FakeAgent(RuntimeAgentStub):
             """提供隔离测试替身，用于验证：输入 checkpoint 失败时不会发布真人消息。"""
-            async def run(self, message, images=None, *, origin_channel="desktop", inbox_input=None, turn_control=None, receive_task_notifications=False, inbox_inputs=None):
+            async def run(self, message, images=None, *, origin_channel="desktop", inbox_input=None, turn_control=None, receive_task_notifications=False, inbox_inputs=None, emit):
                 """按场景屏障产生 Agent 事件并提交测试输入。
 
                 Args:
@@ -1183,24 +1233,26 @@ def test_failed_input_commit_never_publishes_human_message(tmp_path) -> None:
                 Yields:
                     AgentEvent: 当前测试场景的预设分片或事件。
                 """
-                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": origin_channel, "resumed": False})
+                outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
+                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": origin_channel, "resumed": False}))
                 raise RuntimeError("checkpoint 写入失败")
                 await finish_test_turn(db_path, (inbox_input,), message=message, origin=origin_channel, release_queued=turn_control.reason is None)
-                yield AgentEvent(EventType.DONE, None)
+                await emit(AgentEvent(EventType.DONE, None))
+
 
             async def close(self):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
-        subscriptions = ChannelSubscriptionService()
-        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
+        subscriptions = ChannelSubscriptionService(sqlite_factory=SqliteFactory())
+        scheduler = build_test_scheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
             subscriptions=subscriptions, agent_factory=lambda _session, _manager: FakeAgent(),
-            session_state_manager_factory=lambda session: SessionStateManager(session, str(tmp_path / "state.sqlite3")),
+            session_state_manager_factory=lambda session: SessionStateManager(session, SqliteFactory(str(tmp_path / "state.sqlite3"))),
         )
-        hub = InteractionEventHub(scheduler, subscriptions=subscriptions)
-        await hub.start()
+        hub = runtime_hub(scheduler)
+        pass
         await scheduler.start()
-        stream = hub.subscribe("s", "desktop")
+        stream = observe_runtime("s", "desktop", hub, scheduler)
         await anext(stream)
         try:
             await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "不可幽灵显示"}))
@@ -1209,7 +1261,7 @@ def test_failed_input_commit_never_publishes_human_message(tmp_path) -> None:
         finally:
             await stream.aclose()
             await hub.close()
-            await scheduler.close()
+            await close_test_runtime(scheduler)
 
     asyncio.run(scenario())
 
@@ -1235,13 +1287,13 @@ def test_queued_message_waits_during_approval_and_can_be_cancelled(tmp_path, mon
             "message": "确认", "origin_channel": "qq",
             "tool_call_id": call.id, "tool_name": call.name, "tool_args": {},
         })
-        manager = SessionStateManager("s", db_path)
+        manager = SessionStateManager("s", SqliteFactory(db_path))
         await manager.save(state, checkpoint_type="intermediate")
         await manager.close()
         class ApprovalAgent(RuntimeAgentStub):
             """保存真实审批，供公开排队命令使用。"""
 
-            async def run(self, message, *, inbox_input, **kwargs):
+            async def run(self, message, *, inbox_input, emit, **kwargs):
                 """交付触发审批的输入，保存后产生审批通知。
 
                 Args:
@@ -1252,30 +1304,34 @@ def test_queued_message_waits_during_approval_and_can_be_cancelled(tmp_path, mon
                 Yields:
                     AgentEvent: 已保存的审批。
                 """
-                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": kwargs.get("origin_channel", "desktop"), "resumed": False})
-                manager = SessionStateManager("s", db_path)
+                outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
+                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": kwargs.get("origin_channel", "desktop"), "resumed": False}))
+                manager = SessionStateManager("s", SqliteFactory(db_path))
                 try:
                     await manager.save(state, checkpoint_type="intermediate", inbox_inputs=(inbox_input,))
                 finally:
                     await manager.close()
                 from tests.runtime_support import pause_test_turn
                 pause_test_turn(kwargs["turn_control"], "approval-1")
-                yield AgentEvent(EventType.INTERRUPT, state.interrupt_data)
+                await emit(AgentEvent(EventType.INTERRUPT, state.interrupt_data))
+                outcome = AgentRunOutcome(AgentRunOutcomeKind.INTERRUPTED)
+
+                return outcome
 
             async def close(self):
                 """测试对象无外部资源。"""
 
-        subscriptions = ChannelSubscriptionService()
+        subscriptions = ChannelSubscriptionService(sqlite_factory=SqliteFactory())
         subscriptions.register_channel("qq")
         subscriptions.set_default_enabled("qq", True)
-        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
+        scheduler = build_test_scheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
             subscriptions=subscriptions, agent_factory=lambda _session, _manager: ApprovalAgent(),
-            session_state_manager_factory=lambda session: SessionStateManager(session, db_path),
+            session_state_manager_factory=lambda session: SessionStateManager(session, SqliteFactory(db_path)),
         )
-        hub = InteractionEventHub(scheduler, subscriptions=subscriptions)
-        await hub.start()
+        hub = runtime_hub(scheduler)
+        pass
         await scheduler.start()
-        stream = hub.subscribe("s", "qq")
+        stream = observe_runtime("s", "qq", hub, scheduler)
         await anext(stream)
         await scheduler.submit(ChannelCommand("s", "qq", "human_turn", {"message": "启动审批"}))
         while (await asyncio.wait_for(anext(stream), 1)).kind != "interrupt":
@@ -1289,7 +1345,7 @@ def test_queued_message_waits_during_approval_and_can_be_cancelled(tmp_path, mon
             assert snapshot["phase"] == "pending_interrupt"
             assert snapshot["queued_inputs"][0]["message"] == "等这轮结束"
             sequence = snapshot["queued_inputs"][0]["input_sequence"]
-            manager = SessionStateManager("s", db_path)
+            manager = SessionStateManager("s", SqliteFactory(db_path))
             try:
                 assert (await manager.load()).interrupt_data["request_id"] == "approval-1"
             finally:
@@ -1302,7 +1358,7 @@ def test_queued_message_waits_during_approval_and_can_be_cancelled(tmp_path, mon
         finally:
             await stream.aclose()
             await hub.close()
-            await scheduler.close()
+            await close_test_runtime(scheduler)
 
     asyncio.run(scenario())
 
@@ -1322,7 +1378,7 @@ def test_authorization_is_first_wins_across_channels(tmp_path) -> None:
 
         class FakeAgent(RuntimeAgentStub):
             """提供隔离测试替身，用于验证：多端审批只接受第一个有效决定。"""
-            async def run(self, message, images=None, *, origin_channel="desktop", inbox_input=None, turn_control=None, receive_task_notifications=False, inbox_inputs=None):
+            async def run(self, message, images=None, *, origin_channel="desktop", inbox_input=None, turn_control=None, receive_task_notifications=False, inbox_inputs=None, emit):
                 """按场景屏障产生 Agent 事件并提交测试输入。
 
                 Args:
@@ -1338,8 +1394,9 @@ def test_authorization_is_first_wins_across_channels(tmp_path) -> None:
                 Yields:
                     AgentEvent: 当前测试场景的预设分片或事件。
                 """
-                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": origin_channel, "resumed": False})
-                manager = SessionStateManager("s", db_path)
+                outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
+                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": origin_channel, "resumed": False}))
+                manager = SessionStateManager("s", SqliteFactory(db_path))
                 try:
                     state = AgentState.create_new("s")
                     human_message = state.add_user_message(message, origin_channel=origin_channel)
@@ -1354,16 +1411,19 @@ def test_authorization_is_first_wins_across_channels(tmp_path) -> None:
                     })
                     await manager.save(state, checkpoint_type="intermediate", inbox_inputs=(inbox_input,))
                     # 1. 替身遵循真实 Agent：只有事务成功后才发布输入事实。
-                    yield AgentEvent(EventType.HUMAN_INPUT_COMMITTED, {"message": human_message, "input_sequence": inbox_input.id})
+                    await emit(AgentEvent(EventType.HUMAN_INPUT_COMMITTED, {"message": human_message, "input_sequence": inbox_input.id}))
                 finally:
                     await manager.close()
                 from tests.runtime_support import pause_test_turn
                 pause_test_turn(turn_control, "approval-1")
-                yield AgentEvent(EventType.INTERRUPT, {
+                await emit(AgentEvent(EventType.INTERRUPT, {
                     "type": "authorization_request", "request_id": "approval-1", "message": "批准?",
-                })
+                }))
+                outcome = AgentRunOutcome(AgentRunOutcomeKind.INTERRUPTED)
 
-            async def resume(self, request_id, *, turn_control=None, receive_task_notifications=False):
+                return outcome
+
+            async def resume(self, request_id, *, turn_control=None, receive_task_notifications=False, emit):
                 """记录恢复决定并产生测试事件。
 
                 Args:
@@ -1376,31 +1436,34 @@ def test_authorization_is_first_wins_across_channels(tmp_path) -> None:
                 Yields:
                     AgentEvent: 当前测试场景的预设分片或事件。
                 """
-                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": "qq", "resumed": True})
-                manager = SessionStateManager("s", db_path)
+                outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
+                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": "qq", "resumed": True}))
+                manager = SessionStateManager("s", SqliteFactory(db_path))
                 try:
                     restored = await manager.load_for_resume(request_id)
                     decisions.append(restored.interrupt_data["runtime_decision"])
                 finally:
                     await manager.close()
-                yield AgentEvent(EventType.DONE, None)
+                await emit(AgentEvent(EventType.DONE, None))
+
+                return outcome
 
             async def close(self):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
-        subscriptions = ChannelSubscriptionService()
+        subscriptions = ChannelSubscriptionService(sqlite_factory=SqliteFactory())
         subscriptions.register_channel("qq")
         subscriptions.set_default_enabled("qq", True)
-        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
+        scheduler = build_test_scheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
             subscriptions=subscriptions, agent_factory=lambda _session, _manager: FakeAgent(),
-            session_state_manager_factory=lambda session: SessionStateManager(session, db_path),
+            session_state_manager_factory=lambda session: SessionStateManager(session, SqliteFactory(db_path)),
         )
-        hub = InteractionEventHub(scheduler, subscriptions=subscriptions)
-        await hub.start()
+        hub = runtime_hub(scheduler)
+        pass
         await scheduler.start()
-        desktop = hub.subscribe("s", "desktop")
-        qq = hub.subscribe("s", "qq")
+        desktop = observe_runtime("s", "desktop", hub, scheduler)
+        qq = observe_runtime("s", "qq", hub, scheduler)
         await anext(desktop)
         await anext(qq)
         await scheduler.submit(ChannelCommand("s", "qq", "human_turn", {"message": "请操作"}))
@@ -1429,6 +1492,6 @@ def test_authorization_is_first_wins_across_channels(tmp_path) -> None:
         await desktop.aclose()
         await qq.aclose()
         await hub.close()
-        await scheduler.close()
+        await close_test_runtime(scheduler)
 
     asyncio.run(scenario())

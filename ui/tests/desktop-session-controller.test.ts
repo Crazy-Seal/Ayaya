@@ -203,7 +203,7 @@ class Harness {
        */
       submitInteractionCommand: async (command) => {
         this.commands.push(command);
-        return { accepted: true, run_id: "run" };
+        return { accepted: true, status: "accepted" as const, run_id: "run" };
       },
       /**
        *  返回空任务列表，避免访问生产数据。

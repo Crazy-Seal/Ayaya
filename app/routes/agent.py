@@ -1,4 +1,5 @@
 from dataclasses import asdict
+from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -40,7 +41,40 @@ async def submit_command(
         dict: 直接序列化的 CommandReceipt，不使用 Result 包装。
     """
     receipt = await scheduler.submit(ChannelCommand(**command.model_dump()))
-    return asdict(receipt)
+    return {**asdict(receipt), "accepted": receipt.accepted}
+
+
+async def observe_runtime(session_id: str, channel: str, hub: InteractionEventHub,
+                          scheduler: AgentRuntimeScheduler) -> AsyncIterator:
+    """先登记连接再查询运行快照，消费水位之后的事件并在所有退出路径注销。
+
+    Args:
+        session_id (str): 本次观察的父会话。
+        channel (str): 已注册接收渠道。
+        hub (InteractionEventHub): 应用输出缓冲。
+        scheduler (AgentRuntimeScheduler): 业务快照查询入口。
+
+    Yields:
+        InteractionEvent: 当前快照和与之对应的后续增量。
+    """
+    subscriber = await hub.register(session_id, channel)
+    if subscriber is None:
+        return
+    try:
+        snapshot = await scheduler.snapshot(session_id)
+        if not hub.contains(subscriber):
+            return
+        yield hub.visible_snapshot(snapshot, channel)
+        sequence = snapshot.event_sequence
+        while True:
+            event = await subscriber.queue.get()
+            if event is None:
+                return
+            if event.event_sequence > sequence:
+                sequence = event.event_sequence
+                yield event
+    finally:
+        hub.unsubscribe(subscriber)
 
 
 @router.get("/agent/events/{session_id}")
@@ -49,14 +83,16 @@ async def subscribe_events(
     channel: str = DESKTOP_CHANNEL,
     hub: InteractionEventHub = Depends(get_interaction_event_hub),
     subscriptions: ChannelSubscriptionService = Depends(get_channel_subscription_service),
+    scheduler: AgentRuntimeScheduler = Depends(get_runtime_scheduler),
 ) -> StreamingResponse:
     """校验渠道订阅后建立会话观察流，连接结束不取消 Agent。
 
     Args:
         session_id (str): 共享 Ayaya 会话标识。
         channel (str): 已注册渠道标识。
-        hub (InteractionEventHub): 主动读取 Scheduler 的共享分发对象。
+        hub (InteractionEventHub): 保存序号、订阅和输出缓冲的共享分发对象。
         subscriptions (ChannelSubscriptionService): 共享渠道配置。
+        scheduler (AgentRuntimeScheduler): 应用注入的运行快照查询入口。
 
     Returns:
         StreamingResponse: 独立的会话 SSE，先发送接收方快照再发送增量。
@@ -73,7 +109,7 @@ async def subscribe_events(
 
     # 1. 会话长期订阅共用分钟心跳和 JSON 投影，心跳不占业务事件序号。
     return StreamingResponse(stream_sse_json(
-        hub.subscribe(session_id, channel),
+        observe_runtime(session_id, channel, hub, scheduler),
         heartbeat_interval=SSE_HEARTBEAT_SECONDS,
     ), media_type="text/event-stream")
 
@@ -190,7 +226,7 @@ async def background_task_output(
     Raises:
         HTTPException: 任务不属于该会话时返回 HTTP 404，分页参数无效时返回 HTTP 400。
     """
-    record = await supervisor.get_task_record(task_id)
+    record = await supervisor.get_task_snapshot(task_id)
     if record is None or record.session_id != session_id:
         raise HTTPException(status_code=404, detail="任务不存在")
     try:

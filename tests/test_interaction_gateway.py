@@ -1,3 +1,6 @@
+from tests.runtime_support import runtime_hub, close_test_runtime
+from app.routes.agent import observe_runtime
+from app.crud.sqlite_factory import SqliteFactory
 from tests.runtime_event_source import EventSource
 from app.services.channel_subscription_service import ChannelSubscriptionService
 import asyncio
@@ -6,7 +9,8 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from app.interaction.interaction_contract import InteractionEvent
 from app.interaction.interaction_event_hub import InteractionEventHub
 from app.interaction.interaction_adapter import InteractionAdapter
-from app.interaction.interaction_contract import ChannelCommand, CommandReceipt
+from app.interaction.interaction_contract import ChannelCommand
+from app.schemas.runtime_types import CommandReceipt, CommandStatus
 
 
 class InProcessInteractionAdapter:
@@ -45,7 +49,7 @@ class InProcessInteractionAdapter:
             CommandReceipt: 来源不匹配时的拒绝回执，或测试处理函数返回的回执。
         """
         if command.origin_channel != self.channel:
-            return CommandReceipt(False, "命令来源与 Adapter 渠道不匹配")
+            return CommandReceipt(CommandStatus.INVALID, detail="命令来源与 Adapter 渠道不匹配")
         return await self._command_handler(command)
 
     def subscribe(self, session_id: str) -> AsyncIterator[InteractionEvent]:
@@ -66,15 +70,15 @@ def test_event_hub_routes_only_to_desktop_and_origin() -> None:
     async def scenario() -> None:
         """在隔离异步环境中安排并验证：事件只投递桌面及来源渠道。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
-        source = EventSource()
-        subscriptions = ChannelSubscriptionService()
-        hub = InteractionEventHub(source, subscriptions=subscriptions)
-        await hub.start()
+        subscriptions = ChannelSubscriptionService(sqlite_factory=SqliteFactory())
+        hub = InteractionEventHub(subscriptions=subscriptions)
+        source = EventSource(hub)
+        pass
         subscriptions.register_channel("qq")
         subscriptions.register_channel("telegram")
-        desktop = hub.subscribe("shared", "desktop")
-        qq = hub.subscribe("shared", "qq")
-        telegram = hub.subscribe("shared", "telegram")
+        desktop = observe_runtime("shared", "desktop", hub, source)
+        qq = observe_runtime("shared", "qq", hub, source)
+        telegram = observe_runtime("shared", "telegram", hub, source)
         # 2. 核对公开结果和持久状态，确保场景中的输入、通知或副作用未重复。
         assert (await anext(desktop)).kind == "session_snapshot"
         assert (await anext(qq)).kind == "session_snapshot"
@@ -107,10 +111,10 @@ def test_in_process_adapter_uses_shared_command_and_event_contract() -> None:
     async def scenario() -> None:
         """在隔离异步环境中安排并验证：进程内 Adapter 与桌面使用同一命令事件契约。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
-        source = EventSource()
-        subscriptions = ChannelSubscriptionService()
-        hub = InteractionEventHub(source, subscriptions=subscriptions)
-        await hub.start()
+        subscriptions = ChannelSubscriptionService(sqlite_factory=SqliteFactory())
+        hub = InteractionEventHub(subscriptions=subscriptions)
+        source = EventSource(hub)
+        pass
         subscriptions.register_channel("test")
         commands: list[ChannelCommand] = []
 
@@ -128,9 +132,9 @@ def test_in_process_adapter_uses_shared_command_and_event_contract() -> None:
                 command.session_id, "human_message", command.payload,
                 origin_channel=command.origin_channel,
             ))
-            return CommandReceipt(True)
+            return CommandReceipt(CommandStatus.ACCEPTED)
 
-        adapter: InteractionAdapter = InProcessInteractionAdapter("test", submit, hub.subscribe)
+        adapter: InteractionAdapter = InProcessInteractionAdapter("test", submit, lambda session, channel: observe_runtime(session, channel, hub, source))
         events = adapter.subscribe("s")
         # 2. 核对公开结果和持久状态，确保场景中的输入、通知或副作用未重复。
         assert (await anext(events)).kind == "session_snapshot"
@@ -152,11 +156,11 @@ def test_slow_subscriber_reconnects_from_snapshot_watermark() -> None:
     async def scenario() -> None:
         """在隔离异步环境中安排并验证：慢订阅者断开后可按快照水位恢复。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
-        source = EventSource()
-        subscriptions = ChannelSubscriptionService()
-        hub = InteractionEventHub(source, subscriptions=subscriptions, queue_size=1)
-        await hub.start()
-        stream = hub.subscribe("s", "desktop")
+        subscriptions = ChannelSubscriptionService(sqlite_factory=SqliteFactory())
+        hub = InteractionEventHub(subscriptions=subscriptions, queue_size=1)
+        source = EventSource(hub)
+        pass
+        stream = observe_runtime("s", "desktop", hub, source)
         initial = await anext(stream)
         # 2. 核对公开结果和持久状态，确保场景中的输入、通知或副作用未重复。
         assert initial.event_sequence == 0
@@ -168,7 +172,7 @@ def test_slow_subscriber_reconnects_from_snapshot_watermark() -> None:
             pass
         else:
             raise AssertionError("慢订阅者应断开并从快照恢复")
-        replacement = hub.subscribe("s", "desktop")
+        replacement = observe_runtime("s", "desktop", hub, source)
         snapshot = await anext(replacement)
         assert snapshot.kind == "session_snapshot"
         assert snapshot.stream_epoch == initial.stream_epoch

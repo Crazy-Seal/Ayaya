@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from datetime import date, datetime, time, timezone, timedelta
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import aiosqlite
@@ -16,7 +15,7 @@ from app.agent.state.messages import (
     HumanMessage,
     message_from_history,
 )
-from app.environment import get_chat_history_db
+from app.crud.sqlite_factory import SqliteFactory
 
 
 class ChatHistoryStore:
@@ -26,18 +25,19 @@ class ChatHistoryStore:
 
     def __init__(
         self,
-        db_path: Path | str | None = None,
+        sqlite_factory: SqliteFactory,
         timezone: ZoneInfo | None = None,
         day_boundary_hour: int = 4,
     ) -> None:
         """保存协议日志路径、时区和日期分界配置；构造时不连接数据库或初始化表。
 
         Args:
-            db_path (Path | str | None): 当前环境使用的 SQLite 数据库路径。
             timezone (ZoneInfo | None): 日记日期计算使用的时区；省略时使用本机时区。
             day_boundary_hour (int): 本地一天的起始小时，默认凌晨四点。
+            sqlite_factory (SqliteFactory): 应用装配提供的 SQLite 连接配置。
         """
-        self.db_path = Path(db_path) if db_path else get_chat_history_db()
+        self._sqlite_factory = sqlite_factory
+        self.db_path = sqlite_factory.main_path
         self.timezone = timezone or datetime.now().astimezone().tzinfo
         self.day_boundary_hour = day_boundary_hour
 
@@ -151,8 +151,7 @@ class ChatHistoryStore:
         if end is not None:
             clauses.append("created_at < ?")
             params.append(end.isoformat())
-        async with aiosqlite.connect(str(self.db_path)) as conn:
-            await conn.execute("PRAGMA busy_timeout=5000")
+        async with self._sqlite_factory.connection() as conn:
             if not await self._table_exists(conn):
                 return []
             return await conn.execute_fetchall(
@@ -197,8 +196,7 @@ class ChatHistoryStore:
         Returns:
             int: 最新协议行编号；无记录或尚未建表时为零。
         """
-        async with aiosqlite.connect(str(self.db_path)) as conn:
-            await conn.execute("PRAGMA busy_timeout=5000")
+        async with self._sqlite_factory.connection() as conn:
             if not await self._table_exists(conn):
                 return 0
             rows = await conn.execute_fetchall(
@@ -228,8 +226,7 @@ class ChatHistoryStore:
         if max_history_id is not None:
             clauses.append("id <= ?")
             params.append(max_history_id)
-        async with aiosqlite.connect(str(self.db_path)) as conn:
-            await conn.execute("PRAGMA busy_timeout=5000")
+        async with self._sqlite_factory.connection() as conn:
             if not await self._table_exists(conn):
                 return None
             async with conn.execute(
@@ -299,8 +296,7 @@ class ChatHistoryStore:
             clauses.append("id <= ?")
             params.append(max_history_id)
         params.append(limit)
-        async with aiosqlite.connect(str(self.db_path)) as conn:
-            await conn.execute("PRAGMA busy_timeout=5000")
+        async with self._sqlite_factory.connection() as conn:
             if not await self._table_exists(conn):
                 return []
             rows = await conn.execute_fetchall(
@@ -374,8 +370,7 @@ class ChatHistoryStore:
         records: list[BaseMessage] = []
         complete: list[list[BaseMessage]] = []
         before_id: int | None = None
-        async with aiosqlite.connect(str(self.db_path)) as conn:
-            await conn.execute("PRAGMA busy_timeout=5000")
+        async with self._sqlite_factory.connection() as conn:
             if not await self._table_exists(conn):
                 return [], []
             while len(complete) < required:

@@ -79,6 +79,7 @@ export const InteractionEventKind = {
   ERROR: "error",
   SUBAGENT_STATUS: "subagent_status",
   SUBAGENT_INTERRUPT: "subagent_interrupt",
+  HISTORY_RESTORED: "history_restored",
 } as const;
 export type InteractionEventKind = typeof InteractionEventKind[keyof typeof InteractionEventKind];
 
@@ -400,7 +401,22 @@ export type ChannelCommand = {
  *     reason (string): 未受理的原因，可为空。
  *     run_id (string): 本次受理或事件关联的运行轮次。
  */
-export type CommandReceipt = { accepted: boolean; reason?: string; run_id?: string };
+/** 命令入口返回的互斥处理结果，accepted 由后端从 status 推导。 */
+export const CommandStatus = {
+  ACCEPTED: "accepted", NOT_FOUND: "not_found", CLOSED: "closed", STALE: "stale",
+  TOO_LATE: "too_late", INVALID: "invalid", FAILED: "failed",
+} as const;
+export type CommandStatus = typeof CommandStatus[keyof typeof CommandStatus];
+export type CommandReceipt = {
+  status: CommandStatus;
+  accepted: boolean;
+  context_id?: string | null;
+  run_id?: string | null;
+  detail?: string | null;
+};
+
+/** 当前进程中任务结果的保存故障，数据库仍保留最后已提交记录。 */
+export const TaskExecutionPhase = { SAVE_FAILED: "save_failed" } as const;
 
 /**
  * 表示共享会话中已注册渠道的启用配置和可用状态。
@@ -446,7 +462,7 @@ export type BackgroundTaskRecord = {
   plugin_name: string | null;
   output_ref: string | null;
   notify_agent: boolean;
-  status: TaskStatus;
+  status: TaskStatus | typeof TaskExecutionPhase.SAVE_FAILED;
   pid: number | null;
   exit_code: number | null;
   created_at: string;

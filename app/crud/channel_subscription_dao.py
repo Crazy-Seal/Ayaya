@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 import os
+import logging
+import asyncio
 
 import aiosqlite
 
-from app.environment import get_checkpoint_db
+from app.crud.sqlite_factory import SqliteFactory
+from app.crud.sqlite_factory import SQLITE_SAVE_TIMEOUT_SECONDS
+from app.crud.sqlite_save import run_sqlite_save, sqlite_transaction
+from app.agent.utils.infra.bounded_operation import close_resources
+
+logger = logging.getLogger(__name__)
 
 
 CHANNEL_SUBSCRIPTION_SCHEMA_SQL = """
@@ -25,13 +32,14 @@ class ChannelSubscriptionDao:
     Attributes:
         db_path (str | None): 共享 SQLite 路径，省略时使用当前环境的隔离存储。
     """
-    def __init__(self, db_path: str | None = None) -> None:
+    def __init__(self, sqlite_factory: SqliteFactory) -> None:
         """保存订阅配置的数据库路径。
 
         Args:
-            db_path (str | None): 共享 SQLite 路径，省略时使用当前环境的隔离存储。
+            sqlite_factory (SqliteFactory): 应用装配提供的 SQLite 连接配置。
         """
-        self.db_path = str(db_path or get_checkpoint_db())
+        self._sqlite_factory = sqlite_factory
+        self.db_path = str(sqlite_factory.main_path)
 
     async def _connect(self) -> aiosqlite.Connection:
         """打开 SQLite 并幂等创建渠道订阅表。
@@ -41,9 +49,13 @@ class ChannelSubscriptionDao:
         """
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         # 1. 在当前环境数据库幂等建表，调用方负责在操作 finally 关闭这次连接。
-        db = await aiosqlite.connect(self.db_path)
-        await db.execute(CHANNEL_SUBSCRIPTION_SCHEMA_SQL)
-        await db.commit()
+        db = await self._sqlite_factory.connect()
+        try:
+            async with sqlite_transaction(db):
+                await db.execute(CHANNEL_SUBSCRIPTION_SCHEMA_SQL)
+        except BaseException:
+            await close_resources(((self.db_path, db.close),), logger=logger)
+            raise
         return db
 
     async def get(self, session_id: str, channel: str) -> bool | None:
@@ -67,7 +79,7 @@ class ChannelSubscriptionDao:
                 row = await cursor.fetchone()
             return bool(row[0]) if row else None
         finally:
-            await db.close()
+            await close_resources(((self.db_path, db.close),), logger=logger)
 
     async def set(self, session_id: str, channel: str, enabled: bool) -> None:
         """按会话渠道主键插入或更新启用状态。
@@ -77,15 +89,28 @@ class ChannelSubscriptionDao:
             channel (str): 已注册渠道标识。
             enabled (bool): 渠道是否参与该会话的双向互通。
         """
-        # 1. 按会话渠道主键 upsert，提交后关闭连接，其他会话设置不受影响。
-        db = await self._connect()
-        try:
-            await db.execute(
-                "INSERT INTO channel_subscriptions (session_id, channel, enabled) "
-                "VALUES (?, ?, ?) ON CONFLICT(session_id, channel) "
-                "DO UPDATE SET enabled = excluded.enabled",
-                (session_id, channel, int(enabled)),
-            )
-            await db.commit()
-        finally:
-            await db.close()
+        saved_connection: aiosqlite.Connection | None = None
+
+        async def save_attempt() -> None:
+            """按固定会话渠道主键保存配置，确认提交后才让业务层更新缓存。"""
+            nonlocal saved_connection
+            db = await self._connect()
+            try:
+                async with sqlite_transaction(db):
+                    await db.execute(
+                        "INSERT INTO channel_subscriptions (session_id, channel, enabled) "
+                        "VALUES (?, ?, ?) ON CONFLICT(session_id, channel) "
+                        "DO UPDATE SET enabled = excluded.enabled",
+                        (session_id, channel, int(enabled)))
+            except BaseException:
+                await close_resources(((self.db_path, db.close),), logger=logger)
+                raise
+            saved_connection = db
+
+        await run_sqlite_save(save_attempt, timeout_seconds=SQLITE_SAVE_TIMEOUT_SECONDS)
+        # 1. 保存结果已经确认，资源关闭按独立预算结束并记录最终错误。
+        if saved_connection is not None:
+            try:
+                await close_resources(((self.db_path, saved_connection.close),), logger=logger)
+            except asyncio.CancelledError:
+                logger.warning("订阅已保存，连接关闭等待被取消：%s", self.db_path)

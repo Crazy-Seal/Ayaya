@@ -1,3 +1,4 @@
+from app.crud.sqlite_factory import SqliteFactory
 from app.agent.context import ContextStrategyConfig
 from app.schemas.chat_settings import AgentPluginSettings, ChatSettings
 from app.agent.runtime import agent_factory
@@ -37,11 +38,11 @@ def test_memory_plugin_owns_image_processing(monkeypatch) -> None:
     monkeypatch.setattr(
         agent_factory,
         "Agent",
-        lambda config, **kwargs: captured.update(kwargs) or config,
+        lambda config, sqlite_factory, **kwargs: captured.update(kwargs) or config,
     )
     settings = _settings()
 
-    config = agent_factory.build_agent(settings)
+    config = agent_factory.build_agent(settings, sqlite_factory=SqliteFactory())
 
     assert config.context_strategy.compression_trigger_tokens_k == 100
     assert captured["chat_settings"] is settings
@@ -59,7 +60,7 @@ def test_agent_factory_uses_top_level_context_strategy(monkeypatch) -> None:
     Args:
         monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
     """
-    monkeypatch.setattr(agent_factory, "Agent", lambda config, **kwargs: config)
+    monkeypatch.setattr(agent_factory, "Agent", lambda config, sqlite_factory, **kwargs: config)
 
     settings = _settings(
         context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100),
@@ -76,7 +77,7 @@ def test_agent_factory_uses_top_level_context_strategy(monkeypatch) -> None:
         }
     )
 
-    config = agent_factory.build_agent(settings)
+    config = agent_factory.build_agent(settings, sqlite_factory=SqliteFactory())
 
     assert config.context_strategy.compression_trigger_tokens_k == 100
     assert config.plugins[0]["config"] == {
@@ -93,7 +94,7 @@ def test_agent_factory_loads_enabled_memory_when_all_memory_types_are_disabled(m
     Args:
         monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
     """
-    monkeypatch.setattr(agent_factory, "Agent", lambda config, **kwargs: config)
+    monkeypatch.setattr(agent_factory, "Agent", lambda config, sqlite_factory, **kwargs: config)
 
     settings = _settings(
         agent_plugins={
@@ -110,7 +111,7 @@ def test_agent_factory_loads_enabled_memory_when_all_memory_types_are_disabled(m
 
     from app.crud.chat_settings_dao import ChatSettingsDao
     from app.services.chat_settings_service import ChatSettingsService
-    config = agent_factory.build_agent(ChatSettingsService(ChatSettingsDao()).normalize(settings))
+    config = agent_factory.build_agent(ChatSettingsService(ChatSettingsDao()).normalize(settings), sqlite_factory=SqliteFactory())
 
     assert config.plugins[0]["config"] == {
         "enable_diary": False,

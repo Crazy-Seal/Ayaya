@@ -1,4 +1,5 @@
 """验证临时环境图片的模型请求、审批恢复材料和轮次结束清理。"""
+from app.crud.sqlite_factory import SqliteFactory
 
 from openai import AsyncOpenAI
 from typing import cast
@@ -116,7 +117,7 @@ def test_environment_images_restore_without_entering_history_and_clear_on_end(
     async def scenario() -> None:
         """在隔离数据库中验证图片保存、恢复和轮次结束的完整流程。"""
         db_path = tmp_path / "state.sqlite3"
-        manager = SessionStateManager("environment-checkpoint", str(db_path))
+        manager = SessionStateManager("environment-checkpoint", SqliteFactory(str(db_path)))
         state = AgentState.create_new("environment-checkpoint")
         state.add_user_message("查看当前页面")
         image = ImageContent("data:image/png;base64,AA==", media_kind=MediaKind.ENVIRONMENT)

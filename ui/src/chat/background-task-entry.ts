@@ -1,5 +1,5 @@
 import type { BackgroundTaskRecord, DesktopPetApi } from "../types.js";
-import { TaskStatus } from "../../shared-types.js";
+import { TaskStatus, TaskExecutionPhase } from "../../shared-types.js";
 import { TASK_NOTICE_DURATION_MS } from "../../runtime-constants.js";
 
 /**
@@ -93,6 +93,7 @@ export class BackgroundTaskEntry {
       const labels: Record<string, string> = {
         [TaskStatus.COMPLETED]: "已完成", [TaskStatus.FAILED]: "失败",
         [TaskStatus.STOPPED]: "已停止", [TaskStatus.ORPHANED]: "已失联",
+        [TaskExecutionPhase.SAVE_FAILED]: "结果保存失败",
       };
       const label = labels[status] || status;
       this.showNotice(`任务 ${taskId.slice(0, 8)} ${label}`);

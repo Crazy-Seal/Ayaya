@@ -1,4 +1,5 @@
 """引导、父暂停隔离、保留型再次委派和子后台进程生命周期。"""
+from app.crud.sqlite_factory import SqliteFactory
 
 import asyncio
 from pathlib import Path
@@ -62,18 +63,18 @@ def test_child_end_keeps_tool_history_and_retired_identity_rejects_commands(
 
         async with SubagentHarness(tmp_path / "state.sqlite3", script, retain=retain, tools=(TraceTool(),)) as harness:
             receipt = await harness.create()
-            identifier = receipt.subagent_id
+            identifier = receipt.context_id
             await asyncio.wait_for(entered.wait(), 3)
             if finish == "idle_destroy":
-                await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, receipt.subagent_id), 3)
+                await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, receipt.context_id), 3)
                 receipt = await harness.scheduler.interact_subagent("parent", identifier, SubagentAction.DESTROY)
             elif finish in {"stop", "destroy"}:
                 action = SubagentAction.STOP if finish == "stop" else SubagentAction.DESTROY
                 await harness.scheduler.interact_subagent("parent", identifier, action)
-            await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, receipt.subagent_id), 3)
+            await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, receipt.context_id), 3)
             retired = not retain or finish in {"destroy", "idle_destroy"}
-            dao = SubagentDao(harness.path)
-            manager = SessionStateManager(identifier, harness.path, storage_scope=AgentStorageScope.SUBAGENT)
+            dao = SubagentDao(SqliteFactory(harness.path))
+            manager = SessionStateManager(identifier, SqliteFactory(harness.path), storage_scope=AgentStorageScope.SUBAGENT)
             try:
                 record = await dao.get("parent", identifier)
                 assert record.definition.if_retain_context == retain
@@ -119,10 +120,10 @@ def test_stop_before_first_input_load_still_commits_one_final_report(tmp_path: P
         async with SubagentHarness(tmp_path / "state.sqlite3", script) as harness:
             receipt = await harness.create()
             await asyncio.wait_for(entered.wait(), 3)
-            assert (await harness.scheduler.interact_subagent("parent", receipt.subagent_id, action)).accepted
+            assert (await harness.scheduler.interact_subagent("parent", receipt.context_id, action)).accepted
             released.set()
-            await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, receipt.subagent_id), 3)
-            details = await harness.scheduler.get_subagent_details("parent", receipt.subagent_id)
+            await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, receipt.context_id), 3)
+            details = await harness.scheduler.get_subagent_details("parent", receipt.context_id)
             assert len(details["results"]) == 1
             assert details["results"][0]["status"] == "stopped"
             assert len([item for item in details["recent_interactions"] if item["kind"] == "final"]) == 1
@@ -196,16 +197,16 @@ def test_model_client_cleanup_retries_share_active_cleanup(
         async with Harness(tmp_path / "state.sqlite3", script, retain=retain) as harness:
             receipt = await harness.create()
             await asyncio.wait_for(failed.wait(), 3)
-            assert subagent_worker_running(harness.scheduler, receipt.subagent_id)
+            assert subagent_worker_running(harness.scheduler, receipt.context_id)
 
             # 1. 让第一次重试停在模型客户端关闭中，再受理重复停止或销毁。
             try:
-                first = await harness.scheduler.interact_subagent("parent", receipt.subagent_id, first_action)
+                first = await harness.scheduler.interact_subagent("parent", receipt.context_id, first_action)
                 assert first.accepted == (retain or first_action == SubagentAction.DESTROY)
                 await asyncio.wait_for(retry_entered.wait(), 3)
-                repeated = await harness.scheduler.interact_subagent("parent", receipt.subagent_id, repeated_action)
+                repeated = await harness.scheduler.interact_subagent("parent", receipt.context_id, repeated_action)
                 assert repeated.accepted == (retain and first_action != SubagentAction.DESTROY or repeated_action == SubagentAction.DESTROY)
-                assert subagent_worker_running(harness.scheduler, receipt.subagent_id)
+                assert subagent_worker_running(harness.scheduler, receipt.context_id)
                 # 1.1. 等待可能出现的并发关闭，确认当前只有一个重试在执行。
                 try:
                     await asyncio.wait_for(concurrent_cleanup.wait(), 0.1)
@@ -218,12 +219,12 @@ def test_model_client_cleanup_retries_share_active_cleanup(
                 retry_released.set()
 
             # 2. 后续失败继续由同一 worker 自动重试，模型无需再次发起销毁。
-            await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, receipt.subagent_id), 3)
+            await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, receipt.context_id), 3)
             assert maximum_active == 1
             assert attempts == (3 if fail_retry else 2)
 
             # 3. 收尾报告只保存一次，销毁升级生效，普通停止保留可复用上下文。
-            details = await harness.scheduler.get_subagent_details("parent", receipt.subagent_id)
+            details = await harness.scheduler.get_subagent_details("parent", receipt.context_id)
             destroyed = not retain or SubagentAction.DESTROY in (first_action, repeated_action)
             assert details["context_available"] == (not destroyed)
             assert len(details["results"]) == 1
@@ -232,7 +233,7 @@ def test_model_client_cleanup_retries_share_active_cleanup(
             summaries = await harness.scheduler.snapshot_subagents("parent")
             if destroyed:
                 assert not summaries
-                manager = SessionStateManager(receipt.subagent_id, harness.path, storage_scope=AgentStorageScope.SUBAGENT)
+                manager = SessionStateManager(receipt.context_id, SqliteFactory(harness.path), storage_scope=AgentStorageScope.SUBAGENT)
                 try:
                     assert not await manager.read_activation_batch()
                 finally:
@@ -281,18 +282,20 @@ def test_last_connection_close_failure_finishes_child_execution(
                 receipt = await harness.create()
                 if destroy:
                     # 1. 先正常完成保留型任务，故障仅发生在显式销毁的最后关闭阶段。
-                    await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, receipt.subagent_id), 3)
+                    await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, receipt.context_id), 3)
                     fail_close = True
                     receipt = await harness.scheduler.interact_subagent(
-                        "parent", receipt.subagent_id, SubagentAction.DESTROY,
+                        "parent", receipt.context_id, SubagentAction.DESTROY,
                     )
                     assert receipt.accepted
 
                 # 2. 关闭异常仍完成执行回执，结果及父通知对应的最终交互只保存一次。
-                await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, receipt.subagent_id), 3)
-                assert len(failed_stores) == 1
-                assert any(record.exc_info is not None for record in caplog.records)
-                details = await harness.scheduler.get_subagent_details("parent", receipt.subagent_id)
+                await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, receipt.context_id), 3)
+                expected_closed = int(not retain or destroy)
+                assert len(failed_stores) == expected_closed
+                if expected_closed:
+                    assert any(record.exc_info is not None for record in caplog.records)
+                details = await harness.scheduler.get_subagent_details("parent", receipt.context_id)
                 assert len(details["results"]) == 1
                 assert details["results"][0]["status"] == TaskStatus.COMPLETED
                 assert len([item for item in details["recent_interactions"] if item["kind"] == "final"]) == 1
@@ -304,10 +307,10 @@ def test_last_connection_close_failure_finishes_child_execution(
                     # 3. 保留型已结束本次执行，后续命令能开始新委派。
                     assert summaries[0].status == SubagentPublicStatus.IDLE
                     next_task = await harness.scheduler.interact_subagent(
-                        "parent", receipt.subagent_id, SubagentAction.COMMAND, "继续下一项任务",
+                        "parent", receipt.context_id, SubagentAction.COMMAND, "继续下一项任务",
                     )
                     assert next_task.accepted
-                    await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, next_task.subagent_id), 3)
+                    await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, next_task.context_id), 3)
         finally:
             # 4. 测试主动释放故障注入留下的连接，避免影响临时数据库清理。
             for store in failed_stores:
@@ -330,9 +333,9 @@ def test_guidance_continues_same_child_without_intermediate_report(tmp_path: Pat
         async with SubagentHarness(tmp_path / "state.sqlite3", script, retain=False) as harness:
             receipt = await harness.create()
             await asyncio.wait_for(entered.wait(), 3)
-            await harness.scheduler.interact_subagent("parent", receipt.subagent_id, SubagentAction.COMMAND, "新方向")
-            await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, receipt.subagent_id), 3)
-            detail = await harness.scheduler.get_subagent_details("parent", receipt.subagent_id)
+            await harness.scheduler.interact_subagent("parent", receipt.context_id, SubagentAction.COMMAND, "新方向")
+            await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, receipt.context_id), 3)
+            detail = await harness.scheduler.get_subagent_details("parent", receipt.context_id)
             assert len(detail["results"]) == 1
             assert detail["results"][0]["result"] == "按新方向完成"
             assert not detail["context_available"]
@@ -369,7 +372,7 @@ def test_application_shutdown_cancels_a_child_waiting_inside_a_tool(tmp_path: Pa
             await asyncio.wait_for(harness.scheduler.begin_shutdown(), 3)
             await asyncio.wait_for(harness.scheduler.wait_for_workers(), 3)
             assert cancelled.is_set()
-            assert not subagent_worker_running(harness.scheduler, receipt.subagent_id)
+            assert not subagent_worker_running(harness.scheduler, receipt.context_id)
     asyncio.run(scenario())
 
 
@@ -388,13 +391,61 @@ def test_stopped_retained_child_can_be_explicitly_reused(tmp_path: Path) -> None
         async with SubagentHarness(tmp_path / "state.sqlite3", script) as harness:
             first = await harness.create()
             await asyncio.wait_for(entered.wait(), 3)
-            await harness.scheduler.interact_subagent("parent", first.subagent_id, SubagentAction.STOP)
-            await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, first.subagent_id), 3)
+            await harness.scheduler.interact_subagent("parent", first.context_id, SubagentAction.STOP)
+            await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, first.context_id), 3)
             assert (await harness.scheduler.snapshot_subagents("parent"))[0].status == SubagentPublicStatus.IDLE
-            second = await harness.scheduler.interact_subagent("parent", first.subagent_id, SubagentAction.COMMAND, "第二项")
-            await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, second.subagent_id), 3)
-            detail = await harness.scheduler.get_subagent_details("parent", first.subagent_id)
+            second = await harness.scheduler.interact_subagent("parent", first.context_id, SubagentAction.COMMAND, "第二项")
+            await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, second.context_id), 3)
+            detail = await harness.scheduler.get_subagent_details("parent", first.context_id)
             assert [record["status"] for record in reversed(detail["results"])] == ["stopped", "completed"]
+    asyncio.run(scenario())
+
+
+def test_new_child_message_during_wait_cleanup_keeps_accepted_input_enabled(tmp_path: Path, monkeypatch) -> None:
+    """子停止正在保存等待协议时，新明确消息继续交付并形成唯一最终报告。"""
+    from app.agent.runtime.agent_execution import AgentExecution
+
+    async def scenario() -> None:
+        """在真实等待结束后设置屏障，交错停止、新消息与原 worker 收尾。"""
+        entered, released = asyncio.Event(), asyncio.Event()
+        original = AgentExecution.finish_waiting
+        calls = 0
+
+        async def finish(execution):
+            """原等待已结束，输入受理仍可在资源交还前更新会话政策。"""
+            await original(execution)
+            if execution.context_id != "parent" and not entered.is_set():
+                entered.set()
+                await released.wait()
+
+        async def script(messages, tools):
+            """先等待父回复，新明确消息受理后完成第二项指令。"""
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                yield StreamChunk(tool_call=ToolCall("ask", "message_parent", {"text": "请确认下一项", "expect_reply": True}))
+            else:
+                assert "第二项明确消息" in str(messages)
+                yield StreamChunk(content="第二项已完成")
+
+        async with SubagentHarness(tmp_path / "state.sqlite3", script) as harness:
+            receipt = await harness.create()
+            identifier = receipt.context_id
+            from tests.subagent_support import wait_for_subagent_status
+            await asyncio.wait_for(wait_for_subagent_status(harness.scheduler, identifier, SubagentPublicStatus.WAITING_PARENT), 3)
+            monkeypatch.setattr(AgentExecution, "finish_waiting", finish)
+            try:
+                assert (await harness.scheduler.interact_subagent("parent", identifier, SubagentAction.STOP)).accepted
+                await asyncio.wait_for(entered.wait(), 3)
+                assert (await harness.scheduler.interact_subagent("parent", identifier, SubagentAction.COMMAND, "第二项明确消息")).accepted
+            finally:
+                released.set()
+            await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, identifier), 3)
+            assert calls == 2
+            details = await harness.scheduler.get_subagent_details("parent", identifier)
+            assert len(details["results"]) == 1
+            assert details["results"][0]["status"] == "completed"
+            assert details["results"][0]["result"] == "第二项已完成"
     asyncio.run(scenario())
 
 
@@ -413,11 +464,11 @@ def test_parent_stop_does_not_stop_child_or_allow_its_result_to_wake_parent(tmp_
             await asyncio.wait_for(child_entered.wait(), 3)
             assert (await harness.scheduler.submit(ChannelCommand("parent", "desktop", CommandKind.STOP_TURN))).accepted
             parent_release.set()
-            assert subagent_worker_running(harness.scheduler, receipt.subagent_id)
+            assert subagent_worker_running(harness.scheduler, receipt.context_id)
             child_release.set()
-            await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, receipt.subagent_id), 3)
+            await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, receipt.context_id), 3)
             assert harness.received.empty()
-            manager = SessionStateManager("parent", harness.path)
+            manager = SessionStateManager("parent", SqliteFactory(harness.path))
             try:
                 notices = await manager.read_task_terminals()
                 assert len(notices) == 1
@@ -471,9 +522,9 @@ def test_background_task_lifetime_and_notification_recipient(tmp_path: Path, ret
 
         async with SubagentHarness(tmp_path / "state.sqlite3", script, retain=retain, tools=(StartWork(),)) as harness:
             receipt = await harness.create()
-            await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, receipt.subagent_id), 3)
-            record = await harness.supervisor.get_task_record(task_ids[0])
-            assert record.subagent_id == receipt.subagent_id
+            await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, receipt.context_id), 3)
+            record = await harness.supervisor.get_task_snapshot(task_ids[0])
+            assert record.subagent_id == receipt.context_id
             if not retain:
                 assert record.status == TaskStatus.STOPPED
                 assert cleaned.is_set()
@@ -482,12 +533,12 @@ def test_background_task_lifetime_and_notification_recipient(tmp_path: Path, ret
                 assert not cleaned.is_set()
                 released.set()
                 await harness.supervisor.wait(task_ids[0], timeout_ms=3000)
-                manager = SessionStateManager(receipt.subagent_id, harness.path, storage_scope=AgentStorageScope.SUBAGENT)
+                manager = SessionStateManager(receipt.context_id, SqliteFactory(harness.path), storage_scope=AgentStorageScope.SUBAGENT)
                 try:
                     assert len(await manager.read_task_terminals()) == 1
                 finally:
                     await manager.close()
                 assert (await harness.scheduler.snapshot_subagents("parent"))[0].status == SubagentPublicStatus.IDLE
-                next_task = await harness.scheduler.interact_subagent("parent", receipt.subagent_id, SubagentAction.COMMAND, "读后台结果")
-                await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, next_task.subagent_id), 3)
+                next_task = await harness.scheduler.interact_subagent("parent", receipt.context_id, SubagentAction.COMMAND, "读后台结果")
+                await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, next_task.context_id), 3)
     asyncio.run(scenario())

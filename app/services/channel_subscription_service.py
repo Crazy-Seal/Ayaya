@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 
+from app.crud.sqlite_factory import SqliteFactory
 from app.crud.channel_subscription_dao import ChannelSubscriptionDao
 from app.interaction.interaction_contract import ChannelDescriptor
 from app.schemas.runtime_types import DESKTOP_CHANNEL
@@ -16,13 +17,13 @@ class ChannelSubscriptionService:
         _saved (dict[tuple[str, str], bool | None]): 持久覆盖值缓存；None 表示采用默认值。
     """
 
-    def __init__(self, db_path: str | None = None) -> None:
+    def __init__(self, sqlite_factory: SqliteFactory) -> None:
         """创建访问对象并登记桌面，不读取数据库。
 
         Args:
-            db_path (str | None): 测试可替换的数据库路径。
+            sqlite_factory (SqliteFactory): 应用装配提供的 SQLite 连接配置。
         """
-        self._dao = ChannelSubscriptionDao(db_path)
+        self._dao = ChannelSubscriptionDao(sqlite_factory)
         self._channels = {DESKTOP_CHANNEL: ChannelDescriptor(DESKTOP_CHANNEL, "桌面", ready=True)}
         self._saved: dict[tuple[str, str], bool | None] = {}
 

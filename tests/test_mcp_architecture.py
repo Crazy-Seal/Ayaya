@@ -1,3 +1,4 @@
+from app.crud.sqlite_factory import SqliteFactory
 from pathlib import Path
 
 import pytest
@@ -147,7 +148,7 @@ async def test_agent_assembles_tools_and_isolates_server_failures(tmp_path: Path
             context_strategy=settings.context_strategy,
             mcp=settings.mcp,
         ),
-        db_path=str(tmp_path / "state.sqlite3"),
+        sqlite_factory=SqliteFactory(str(tmp_path / "state.sqlite3")),
         mcp_connection_manager=manager,
         tool_authorization=ToolAuthorization(lambda _session_id: settings),
     )

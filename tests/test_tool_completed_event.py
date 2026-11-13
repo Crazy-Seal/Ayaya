@@ -1,4 +1,10 @@
 """验证工具完成事件、历史图片展示及运行中历史查询终点。"""
+from tests.runtime_support import collect_agent_events
+from tests.runtime_support import runtime_hub, close_test_runtime
+from app.routes.agent import observe_runtime
+from tests.runtime_support import next_runtime_event
+from tests.runtime_support import build_test_scheduler
+from app.crud.sqlite_factory import SqliteFactory
 
 import asyncio
 from pathlib import Path
@@ -9,7 +15,8 @@ import pytest
 from app.agent.core.events import EventType
 from app.agent.models.contracts import StreamChunk
 from app.agent.state import AgentState
-from app.agent.state.manager import SessionStateManager
+from app.agent.state.manager import RequiredSaveError, SessionStateManager
+from app.schemas.runtime_types import AgentRunOutcomeKind
 from app.agent.state.messages import ToolCall, ToolMessage
 from app.crud.chat_history_dao import ChatHistoryDao
 from app.routes.chat_history import list_chat_history_last_n
@@ -35,7 +42,7 @@ def test_tool_completed_is_emitted_after_each_durable_result(tmp_path: Path, res
             scripts.insert(0, [StreamChunk(content="准备操作"), *(StreamChunk(tool_call=call) for call in calls)])
         agent = await make_agent(path, scripts, ImageStepTool())
         manager = agent.session_state_manager
-        dao = ChatHistoryDao(path)
+        dao = ChatHistoryDao(SqliteFactory(path))
         try:
             if resumed:
                 state = AgentState.create_new("checkpoint-test")
@@ -49,12 +56,11 @@ def test_tool_completed_is_emitted_after_each_durable_result(tmp_path: Path, res
                 state.clear_pending_tool_calls()
                 await manager.save_progress(state)
                 stream = agent.pipeline.resume_tools(state, {"kind": "approve"}, session_state_manager=manager)
-            else:
-                stream = agent.run("执行两个图片工具")
             completed = []
-            async for event in stream:
+            async def receive(event):
+                """在每次完成事件交付时读取真实已保存工具结果，验证下一项尚未执行。"""
                 if event.type != EventType.TOOL_COMPLETED:
-                    continue
+                    return
                 completed.append(event.data)
                 saved = await manager.load()
                 results = [message for message in saved.messages if isinstance(message, ToolMessage)]
@@ -70,6 +76,12 @@ def test_tool_completed_is_emitted_after_each_durable_result(tmp_path: Path, res
                 assert history[-1]["images"]
                 assert history[-1]["content"] == ""
                 assert history[-1]["id"] == f"{event.data['message_id']}:images"
+            if resumed:
+                async for event in stream:
+                    await receive(event)
+            else:
+                outcome = await agent.run("执行两个图片工具", emit=receive)
+                assert outcome.kind == AgentRunOutcomeKind.COMPLETED
             assert [entry["tool_call_id"] for entry in completed] == ["a", "b"]
         finally:
             await agent.close()
@@ -99,15 +111,18 @@ def test_failed_result_save_does_not_emit_tool_completed(tmp_path: Path, monkeyp
                 int: 尚无工具结果时真实保存返回的 checkpoint 编号。
             """
             if any(isinstance(message, ToolMessage) for message in state.messages):
-                raise RuntimeError("工具结果保存失败")
+                raise RequiredSaveError("工具结果保存失败")
             return await original(state)
 
         monkeypatch.setattr(agent.session_state_manager, "save_progress", fail_result)
         try:
             events = []
-            with pytest.raises(RuntimeError, match="工具结果保存失败"):
-                async for event in agent.run("执行"):
-                    events.append(event)
+            async def receive_agent_event(event):
+                """在原事件位置执行此场景的观察和控制。"""
+                events.append(event)
+            outcome = await agent.run('执行', emit=receive_agent_event)
+            assert outcome.kind == AgentRunOutcomeKind.SAVE_FAILED
+            assert outcome.error == "工具结果保存失败"
             assert not any(event.type == EventType.TOOL_COMPLETED for event in events)
             saved = await agent.session_state_manager.load()
             assert not any(isinstance(message, ToolMessage) for message in saved.messages)
@@ -134,16 +149,16 @@ def test_scheduler_forwards_tool_completed_before_following_reply(tmp_path: Path
             [StreamChunk(tool_call=ToolCall("call", "image_step", {}))],
             [StreamChunk(content="后续回答")],
         ], ImageStepTool(), session_id="s")
-        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(),
+        scheduler = build_test_scheduler(chat_settings_dao=configured_settings(),
             runtime_queue=asyncio.Queue(), agent_factory=lambda _session, _manager: agent,
-            session_state_manager_factory=lambda session: SessionStateManager(session, str(path)),
+            session_state_manager_factory=lambda session: SessionStateManager(session, SqliteFactory(str(path))),
         )
         try:
             await scheduler.start()
             assert (await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "执行"}))).accepted
             events = []
             while True:
-                event = await asyncio.wait_for(scheduler.next_event(), 3)
+                event = await asyncio.wait_for(next_runtime_event(scheduler), 3)
                 assert event is not None
                 events.append(event)
                 if event.kind == InteractionEventKind.RUN_COMPLETED:
@@ -154,12 +169,12 @@ def test_scheduler_forwards_tool_completed_before_following_reply(tmp_path: Path
             completed = next(event for event in events if event.kind == InteractionEventKind.TOOL_COMPLETED)
             assert completed.payload["value"]["tool_call_id"] == "call"
             assert completed.payload["value"]["tool_name"] == "image_step"
-            history = await ChatHistoryDao(path).list_chat_history_last_n_async(
+            history = await ChatHistoryDao(SqliteFactory(path)).list_chat_history_last_n_async(
                 "s", through_message_id=completed.payload["value"]["message_id"],
             )
             assert history[-1]["images"] and history[-1]["content"] == ""
         finally:
-            await scheduler.close()
+            await close_test_runtime(scheduler)
 
     asyncio.run(scenario())
 
@@ -173,7 +188,7 @@ def test_history_stops_at_tool_result_even_when_later_reply_is_saved(tmp_path: P
     async def scenario() -> None:
         """先保存工具和后续回复，再按工具消息编号查询其前面的历史。"""
         path = tmp_path / "state.sqlite3"
-        manager = SessionStateManager("s", str(path))
+        manager = SessionStateManager("s", SqliteFactory(str(path)))
         try:
             state = AgentState.create_new("s")
             state.add_user_message("开始")
@@ -182,7 +197,7 @@ def test_history_stops_at_tool_result_even_when_later_reply_is_saved(tmp_path: P
             tool = state.record_tool_result(call, ())
             state.add_assistant_message("工具之后已经保存的回答")
             await manager.save_progress(state)
-            dao = ChatHistoryDao(path)
+            dao = ChatHistoryDao(SqliteFactory(path))
             dao.READ_CHUNK_SIZE = 1
             limited = await dao.list_chat_history_last_n_async("s", n=1, through_message_id=tool.message_id)
             assert len(limited) == 1 and limited[0]["role"] == "AI_Tool_Calling"

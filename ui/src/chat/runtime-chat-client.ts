@@ -129,6 +129,10 @@ export class RuntimeChatClient {
   private refreshedApprovals = new Set<string>();
   /** 当前会话唯一待重发输入，不属于已保存历史；新输入受理后覆盖。 */
   private failedInput: FailedInteractionInput | null = null;
+  /** 本进程已失败的回答编号，迟到分片通过 epoch 和 run 一起拒绝。 */
+  private failedRuns = new Set<string>();
+  /** 保存故障在已提交历史刷新后继续显示，新的明确输入由用户主动发送。 */
+  private saveFailure: { run_id: string | null; detail: string } | null = null;
 
   /**
    * 装配 RuntimeChatClient 的依赖并初始化本地视图状态。
@@ -197,6 +201,8 @@ export class RuntimeChatClient {
     this.refreshingRevision = null;
     // 1.1. 切换会话清理上一轮临时状态和审批，避免迟到事件串入新视图。
     if (this.sessionId !== sessionId) {
+      this.failedRuns.clear();
+      this.saveFailure = null;
       this.clearFailedInput(this.failedInput);
       this.options.onAttention?.({ reset: true });
       this.attentionApprovalId = null;
@@ -459,6 +465,23 @@ export class RuntimeChatClient {
   }
 
   /**
+   * 执行故障后关闭该上下文的旧审批，迟到的弹窗决定会在提交前失效。
+   * Args:
+   *     subagentId (string | null): 故障所属子编号，父会话为空。
+   * Returns:
+   *     boolean: 本次关闭了仍在显示的对应审批时为 true。
+   */
+  private dismissFailedApproval(subagentId: string | null): boolean {
+    if (this.approvalSubagentId !== subagentId || (!this.approvalId && !this.attentionApprovalId)) return false;
+    this.approvalId = null;
+    this.approvalSubagentId = null;
+    this.attentionApprovalId = null;
+    this.options.onAttention?.({ approvalId: null });
+    this.dialog.dismiss();
+    return true;
+  }
+
+  /**
    * 提交当前请求的人工决定，业务拒绝时显示已处理或过期原因。
    *
    * Args:
@@ -478,7 +501,7 @@ export class RuntimeChatClient {
         ...(subagentId ? { subagent_id: subagentId } : {}),
         payload: decision,
       });
-      if (!receipt.accepted) this.options.chatHistory.showErrorMessage(receipt.reason || "审批已由其他入口处理");
+      if (!receipt.accepted) this.options.chatHistory.showErrorMessage(receipt.detail || "审批已由其他入口处理");
     } catch (error) {
       this.options.chatHistory.showErrorMessage(`提交审批失败: ${String(error)}`);
     }
@@ -527,7 +550,7 @@ export class RuntimeChatClient {
         session_id: sessionId, origin_channel: DESKTOP_CHANNEL,
         kind: CommandKind.CANCEL_QUEUED, payload: { input_sequence: sequence },
       });
-      if (!receipt.accepted) throw new Error(receipt.reason || "排队消息无法撤销");
+      if (!receipt.accepted) throw new Error(receipt.detail || "排队消息无法撤销");
     } catch (error) {
       this.options.chatHistory.showErrorMessage(String(error));
     }
@@ -602,7 +625,7 @@ export class RuntimeChatClient {
         payload: { message: input.message, images: input.images },
       });
       if (sessionId !== this.sessionId) return;
-      if (!receipt.accepted) throw new Error(receipt.reason || "命令未被受理");
+      if (!receipt.accepted) throw new Error(receipt.detail || "命令未被受理");
       // 3. 只清除本次点击对应的失败展示，期间到达的新失败由其自身按钮处理。
       this.clearFailedInput(input);
     } catch (error) {
@@ -649,7 +672,7 @@ export class RuntimeChatClient {
           ? this.runId ?? undefined : undefined,
         payload: { message, images: images ?? [] },
       });
-      if (!receipt.accepted) throw new Error(receipt.reason || "命令未被受理");
+      if (!receipt.accepted) throw new Error(receipt.detail || "命令未被受理");
       if (this.sessionId !== sessionId) return;
       // 4. 受理有效输入后清空草稿和附件；停止动作不消耗用户草稿。
       if (kind !== CommandKind.STOP_TURN) {
@@ -705,9 +728,13 @@ export class RuntimeChatClient {
         this.sequence = -1;
         this.deferredRuns.clear();
         this.refreshedApprovals.clear();
+        this.failedRuns.clear();
       }
       this.sequence = event.event_sequence;
       const snapshot = event.payload;
+      const failure = snapshot.save_failure as { run_id?: string; detail?: string } | null;
+      this.saveFailure = failure ? { run_id: failure.run_id || null, detail: failure.detail || "执行结果保存失败" } : null;
+      if (this.saveFailure?.run_id) this.failedRuns.add(this.replyKey(this.saveFailure.run_id));
       // 2.1. 此处仅标注既有线协议；仍沿用缺省空闲和未知值不匹配已知分支的行为。
       this.phase = String(snapshot.phase || SessionPhase.IDLE) as SessionPhase;
       const restoredRun = typeof snapshot.run_id === "string" ? snapshot.run_id : null;
@@ -760,12 +787,33 @@ export class RuntimeChatClient {
       }
       // 2.2. 主进程收到快照不等于页面已初始化；此处历史查询和当前状态应用都已结束。
       this.initialized = true;
+      if (this.saveFailure) this.options.chatHistory.showErrorMessage(this.saveFailure.detail);
       this.updateSendButton();
       return;
     }
     // 3. 仅接受同 epoch 且序号递增的增量，序号空隙不代表消息丢失。
     if (event.stream_epoch !== this.epoch || event.event_sequence <= this.sequence) return;
     this.sequence = event.event_sequence;
+    if (event.run_id && this.failedRuns.has(this.replyKey(event.run_id))
+        && [InteractionEventKind.RUN_STARTED, InteractionEventKind.TEXT_CHUNK,
+          InteractionEventKind.TOOL_CALL, InteractionEventKind.TOOL_COMPLETED, InteractionEventKind.RUN_COMPLETED]
+          .some(/** 判断增量是否会重新生成失败轮次的临时回答。 */
+            (kind) => kind === event.kind)) return;
+    if (event.kind === InteractionEventKind.HISTORY_RESTORED) {
+      const subagentId = typeof event.payload.subagent_id === "string" ? event.payload.subagent_id : null;
+      this.dismissFailedApproval(subagentId);
+      if (subagentId) return;
+      this.options.chatHistory.abortStreaming();
+      this.streaming = false;
+      this.partial = "";
+      this.phase = SessionPhase.IDLE;
+      this.runId = null;
+      await this.refreshHistory(typeof event.payload.through_message_id === "string" ? event.payload.through_message_id : undefined);
+      if (event.session_id !== this.sessionId || revision !== this.sessionRevision) return;
+      if (this.saveFailure) this.options.chatHistory.showErrorMessage(this.saveFailure.detail);
+      this.updateSendButton();
+      return;
+    }
     // 4. 真人事件已随 checkpoint 交付，用 message_id 与刚载入历史去重。
     if (event.kind === InteractionEventKind.SUBAGENT_STATUS) {
       const identifier = String(event.payload.subagent_id);
@@ -899,7 +947,28 @@ export class RuntimeChatClient {
       this.deferredRuns.delete(completedKey);
       this.options.chatHistory.hideTypingIndicator();
     } else if (event.kind === InteractionEventKind.ERROR) {
-      if (!this.approvalSubagentId) {
+      const detail = String(event.payload.detail || event.payload.value || "运行失败");
+      const dismissedApproval = this.dismissFailedApproval(typeof event.payload.subagent_id === "string" ? event.payload.subagent_id : null);
+      if (event.payload.subagent_id) {
+        this.options.chatHistory.showErrorMessage(`子 Agent ${String(event.payload.subagent_id)}：${detail}`);
+        return;
+      }
+      if (event.payload.save_failed === true) {
+        this.saveFailure = { run_id: event.run_id || this.runId, detail };
+        if (this.saveFailure.run_id) this.failedRuns.add(this.replyKey(this.saveFailure.run_id));
+        this.options.chatHistory.abortStreaming();
+        this.streaming = false;
+        this.partial = "";
+        this.phase = SessionPhase.IDLE;
+        this.runId = null;
+        this.pendingSteerMessage = null;
+        this.options.chatHistory.clearPendingSteer?.();
+        this.options.chatHistory.hideTypingIndicator();
+        this.options.chatHistory.showErrorMessage(detail);
+        this.updateSendButton();
+        return;
+      }
+      if (!this.approvalSubagentId && !dismissedApproval) {
         this.attentionApprovalId = null;
         this.options.onAttention?.({ approvalId: null });
       }
@@ -912,7 +981,6 @@ export class RuntimeChatClient {
       if (event.session_id !== this.sessionId || revision !== this.sessionRevision) return;
       this.deferredRuns.delete(failedKey);
       this.options.chatHistory.hideTypingIndicator();
-      const detail = String(event.payload.detail || event.payload.value || "运行失败");
       const failed = event.payload.failed_input as FailedInteractionInput | undefined;
       if (failed) {
         // 8.1. 失败输入没有进入历史，只在当前页面显示；已删除的排队项也立即移除。

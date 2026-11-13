@@ -1,4 +1,8 @@
 """检查默认 Shell 启动和隔离后台任务的实时输出。"""
+from app.crud.sqlite_factory import SqliteFactory
+
+from app.crud.task_record_dao import TaskRecordDao
+from app.services.settings_mutation import SettingsMutationCoordinator
 from tests.terminal_harness import TerminalHarness
 from tests.runtime_support import configured_settings
 
@@ -37,9 +41,7 @@ def test_direct_power_shell_output_is_visible_before_exit_and_survives_stop(
     """
     async def scenario() -> None:
         """运行无外部副作用的输出和等待命令，最后停止受管进程树。"""
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
-            db_path=str(tmp_path / "state.sqlite3"),
-        )
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "state.sqlite3"))))
         terminal_for_supervisor = TerminalHarness(supervisor, spool_dir=tmp_path / "tasks")
         command = "[Console]::WriteLine('中文实时输出'); [Console]::Out.Flush(); Start-Sleep -Seconds 30"
         try:
@@ -56,18 +58,19 @@ def test_direct_power_shell_output_is_visible_before_exit_and_survives_stop(
                     break
                 assert asyncio.get_running_loop().time() < deadline, "命令仍在等待时应已保存输出"
                 await asyncio.sleep(0.02)
-            record = await supervisor.get_task_record(launched.task_id)
+            record = await supervisor.get_task_snapshot(launched.task_id)
             assert record.status == TaskStatus.RUNNING
             assert record.background
             # 2. 显式停止同一个任务，宽限结束后原输出仍能从持久日志读取。
             assert await supervisor.stop_task(launched.task_id)
             deadline = asyncio.get_running_loop().time() + 6
-            while (await supervisor.get_task_record(launched.task_id)).status == TaskStatus.RUNNING:
+            while (await supervisor.get_task_snapshot(launched.task_id)).status == TaskStatus.RUNNING:
                 assert asyncio.get_running_loop().time() < deadline, "受管 PowerShell 应在宽限后结束"
                 await asyncio.sleep(0.02)
-            assert (await supervisor.get_task_record(launched.task_id)).status == TaskStatus.STOPPED
+            assert (await supervisor.get_task_snapshot(launched.task_id)).status == TaskStatus.STOPPED
             assert "中文实时输出" in (await terminal_for_supervisor.read_output(launched.task_id, 0, 4096))["text"]
         finally:
             await supervisor.close()
+            await supervisor.records.close()
 
     asyncio.run(scenario())

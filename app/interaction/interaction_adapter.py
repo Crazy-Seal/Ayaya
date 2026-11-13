@@ -1,11 +1,12 @@
 """定义渠道提交命令和订阅事件的公共接口。"""
 
 from __future__ import annotations
+from app.schemas.runtime_types import CommandReceipt
 
 from collections.abc import AsyncIterator
 from typing import Protocol
 
-from app.interaction.interaction_contract import ChannelCommand, CommandReceipt, InteractionEvent
+from app.interaction.interaction_contract import ChannelCommand, InteractionEvent
 
 
 class InteractionAdapter(Protocol):

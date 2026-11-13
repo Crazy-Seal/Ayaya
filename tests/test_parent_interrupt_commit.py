@@ -1,4 +1,5 @@
 """通过状态存储接口验证子暂停与父收件原子提交。"""
+from app.crud.sqlite_factory import SqliteFactory
 
 import asyncio
 import sqlite3
@@ -6,7 +7,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from app.agent.state.manager import SessionStateManager
+from app.agent.state.manager import SessionStateManager, RequiredSaveError
 from app.agent.state.messages import ToolCall
 from app.crud.subagent_dao import SubagentDao
 from app.schemas.agent_storage import AgentStorageScope
@@ -19,9 +20,9 @@ def test_parent_interrupt_replay_does_not_duplicate_parent_input(tmp_path) -> No
     async def scenario() -> None:
         """用真实存储的加载、查询及提交接口观察投递结果。"""
         path = str(tmp_path / 'state.sqlite3')
-        dao = SubagentDao(path)
-        parent = SessionStateManager('parent', path)
-        child = SessionStateManager('child', path, storage_scope=AgentStorageScope.SUBAGENT)
+        dao = SubagentDao(SqliteFactory(path))
+        parent = SessionStateManager('parent', SqliteFactory(path))
+        child = SessionStateManager('child', SqliteFactory(path), storage_scope=AgentStorageScope.SUBAGENT)
         definition = SubagentDefinition('child', 'parent', '助手', '执行任务', frozenset(), True, datetime.now(timezone.utc))
         try:
             await dao.create_with_command(definition, '开始', 'create')
@@ -49,9 +50,9 @@ def test_parent_interrupt_failure_rolls_back_every_write(tmp_path, table: str) -
     async def scenario() -> None:
         """用隔离库触发器注入失败，通过公开读取核对回滚。"""
         path = str(tmp_path / 'state.sqlite3')
-        dao = SubagentDao(path)
-        parent = SessionStateManager('parent', path)
-        child = SessionStateManager('child', path, storage_scope=AgentStorageScope.SUBAGENT)
+        dao = SubagentDao(SqliteFactory(path))
+        parent = SessionStateManager('parent', SqliteFactory(path))
+        child = SessionStateManager('child', SqliteFactory(path), storage_scope=AgentStorageScope.SUBAGENT)
         definition = SubagentDefinition('child', 'parent', '助手', '执行任务', frozenset(), True, datetime.now(timezone.utc))
         try:
             await dao.create_with_command(definition, '开始', 'create')
@@ -66,8 +67,9 @@ def test_parent_interrupt_failure_rolls_back_every_write(tmp_path, table: str) -
             candidate.clear_pending_tool_calls()
             with sqlite3.connect(path) as db:
                 db.execute(f"CREATE TRIGGER fail_pause BEFORE INSERT ON {table} BEGIN SELECT RAISE(ABORT, 'pause failure'); END")
-            with pytest.raises(sqlite3.IntegrityError, match='pause failure'):
+            with pytest.raises(RequiredSaveError, match='pause failure') as failure:
                 await child.commit_parent_interrupt(candidate)
+            assert isinstance(failure.value.__cause__, sqlite3.IntegrityError)
             assert (await child.load()).interrupt_data is None
             assert await parent.read_activation_batch() == ()
             assert [item.kind for item in await dao.recent_interactions('child')] == ['task']

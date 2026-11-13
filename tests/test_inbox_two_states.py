@@ -1,4 +1,16 @@
+from tests.runtime_support import make_execution_control
 """从输入查询和保存接口验证两阶段交付及排队撤销。"""
+from tests.runtime_support import collect_agent_events
+from tests.runtime_support import runtime_hub, close_test_runtime
+from app.routes.agent import observe_runtime
+from app.schemas.runtime_types import AgentRunOutcome, AgentRunOutcomeKind
+from tests.runtime_support import next_runtime_event
+from tests.runtime_support import build_test_scheduler
+from app.crud.sqlite_factory import SqliteFactory
+
+from tests.runtime_support import finish_task_record
+from app.crud.task_record_dao import TaskRecordDao
+from app.services.settings_mutation import SettingsMutationCoordinator
 from tests.runtime_support import RuntimeAgentStub
 
 import asyncio
@@ -26,8 +38,8 @@ def test_read_does_not_claim_and_cancelled_input_rolls_back(tmp_path) -> None:
     async def scenario():
         """通过查询、取消和真实事务验证未交付输入的行为。"""
         path = str(tmp_path / "state.sqlite3")
-        inbox = SessionStateManager("s", path)
-        manager = SessionStateManager("s", path)
+        inbox = SessionStateManager("s", SqliteFactory(path))
+        manager = SessionStateManager("s", SqliteFactory(path))
         try:
             # 1. 放行排队输入后只读取，不占用它，也不禁止撤销。
             item = await inbox.submit_human("desktop", "排队", queued=True)
@@ -62,7 +74,7 @@ def test_task_notice_failure_stops_until_human_reactivates(tmp_path) -> None:
         class NoticeAgent(RuntimeAgentStub):
             """真人轮次正常保存，纯通知轮次总在保存之前失败。"""
 
-            async def run(self, message, *, inbox_input, **kwargs):
+            async def run(self, message, *, inbox_input, emit, **kwargs):
                 """保存真人和同批通知，模拟正常完成。
 
                 Args:
@@ -73,12 +85,15 @@ def test_task_notice_failure_stops_until_human_reactivates(tmp_path) -> None:
                 Yields:
                     AgentEvent: 完成事件。
                 """
-                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": kwargs.get("origin_channel", "desktop"), "resumed": False})
+                outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
+                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": kwargs.get("origin_channel", "desktop"), "resumed": False}))
                 await finish_test_turn(path, kwargs.get("inbox_inputs", (inbox_input,)), message=message,
                     runtime_inputs=kwargs.get("runtime_inputs", ()), release_queued=True)
-                yield AgentEvent(EventType.DONE, None)
+                await emit(AgentEvent(EventType.DONE, None))
 
-            async def run_runtime_inputs(self, messages=None, **kwargs):
+                return outcome
+
+            async def run_runtime_inputs(self, messages=None, *, emit, **kwargs):
                 """计数并注入交付失败，不调用模型。
 
                 Args:
@@ -88,11 +103,14 @@ def test_task_notice_failure_stops_until_human_reactivates(tmp_path) -> None:
                 Yields:
                     AgentEvent: 本用例在交付前失败，不产生执行事件。
                 """
-                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False})
+                outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
+                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False}))
                 nonlocal attempts
                 attempts += 1
                 raise RuntimeError("通知保存失败")
-                yield
+
+
+
 
             async def close(self):
                 """当前替身没有额外资源。"""
@@ -119,36 +137,39 @@ def test_task_notice_failure_stops_until_human_reactivates(tmp_path) -> None:
                 InteractionEvent: 对应阶段的实际事件。
             """
             while True:
-                event = await asyncio.wait_for(scheduler.next_event(), 2)
+                event = await asyncio.wait_for(next_runtime_event(scheduler), 2)
                 if event.kind == kind:
                     return event
 
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=path)
-        scheduler = AgentRuntimeScheduler(runtime_queue=supervisor.runtime_queue, agent_factory=factory, task_supervisor=supervisor,
-            session_state_manager_factory=partial(SessionStateManager, db_path=path),
-        )
-        records, inbox = supervisor.records, SessionStateManager("s", path)
+        supervisor_settings = configured_settings()
+        supervisor_mutations = SettingsMutationCoordinator()
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(path)))
+        scheduler = build_test_scheduler(runtime_queue=supervisor.runtime_queue, agent_factory=factory, task_supervisor=supervisor,
+            session_state_manager_factory=partial(SessionStateManager, sqlite_factory=SqliteFactory(path)),
+         chat_settings_dao=supervisor_settings, mutation_coordinator=supervisor_mutations)
+        records, inbox = supervisor.records, SessionStateManager("s", SqliteFactory(path))
         await scheduler.start()
         try:
             # 1. 本次真人输入先取得激活资格，随后任务终态才允许自动交付。
             await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "启动"}))
             await until("run_completed")
             await records.insert_running("task", "s", "任务", 1, str(tmp_path / "output"))
-            await supervisor.commit_terminal_state_once("task", "completed")
+            await finish_task_record(supervisor, "task", "completed")
             error = await until("error")
-            assert attempts == 4 and "failed_input" not in error.payload
+            assert attempts == 1 and "failed_input" not in error.payload
             assert len(await inbox.read_task_terminals()) == 1
             # 2. 耗尽后后台通知不重新激活；新的真人输入则一并提交保留的任务事实。
             await records.insert_running("later", "s", "后续任务", 1, str(tmp_path / "later"))
-            await supervisor.commit_terminal_state_once("later", "completed")
+            await finish_task_record(supervisor, "later", "completed")
             await until("task_status")
-            assert attempts == 4
+            assert attempts == 1
             await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "继续"}))
             await until("run_completed")
             assert await inbox.read_task_terminals() == ()
         finally:
-            await scheduler.close()
+            await close_test_runtime(scheduler)
             await supervisor.close()
+            await supervisor.records.close()
             await inbox.close()
     asyncio.run(scenario())
 
@@ -186,14 +207,13 @@ def test_cancel_during_agent_initialization_finishes_without_model(tmp_path) -> 
                     None: 本测试禁止模型执行。
                 """
                 raise AssertionError("已撤销输入不能调用模型")
-                yield
 
             async def close(self):
                 """替身没有外部资源。"""
 
         agent = WaitingAgent(AgentConfig(session_id="s", model_name="test", api_key="test", context_strategy=ContextStrategyConfig()),
-                             db_path=path, llm_client=Model())
-        inbox = SessionStateManager("s", path)
+                             sqlite_factory=SqliteFactory(path), llm_client=Model())
+        inbox = SessionStateManager("s", SqliteFactory(path))
 
         async def consume():
             """完整读取取消轮次，返回供断言的公开事件。
@@ -201,7 +221,7 @@ def test_cancel_during_agent_initialization_finishes_without_model(tmp_path) -> 
             Returns:
                 list[AgentEvent]: 本轮输出。
             """
-            return [event async for event in agent.run("取消我", inbox_input=item)]
+            return [event for event in await collect_agent_events(agent.run, '取消我', inbox_input=item)]
 
         work = None
         try:
@@ -229,104 +249,76 @@ def test_cancel_during_agent_initialization_finishes_without_model(tmp_path) -> 
 
 
 @pytest.mark.parametrize("failures", [2, 4])
-def test_delivery_retries_then_succeeds_or_returns_failed_input(tmp_path, failures) -> None:
-    """未交付输入至多尝试四次，耗尽后删除并返回可重发内容。
-
-    Args:
-        tmp_path (Path): 隔离数据库目录。
-        failures (int): 保存输入前连续失败的次数。
-    """
+def test_delivery_retries_only_transaction_and_never_replays_agent(tmp_path, monkeypatch, failures) -> None:
+    """输入具名事务最多四次尝试，模型和实际 Agent 始终只执行一次。"""
     async def scenario():
-        """从命令、事件、快照和 Inbox 结果验证有限重试。"""
+        """通过真实 Agent 与 SQLite 临时锁故障验证事务重试及耗尽后的暂停。"""
+        import sqlite3
+        from app.crud.agent_state_dao import AgentStateDao
+        from app.agent.models.contracts import StreamChunk
         path = str(tmp_path / "state.sqlite3")
+        factory = SqliteFactory(path)
         attempts = 0
-        agents, controls, closed = [], [], []
+        model_calls = 0
+        agent_calls = 0
+        original = AgentStateDao._write_state_in_transaction
 
-        class TestAgent(RuntimeAgentStub):
-            """按次数失败，成功时执行真实输入保存事务。"""
-
-            async def run(self, message, *, inbox_input, **kwargs):
-                """保存前按次数失败，成功时交付输入并完成。
-
-                Args:
-                    message (str): 真人正文。
-                    inbox_input (InboxEnvelope): 待读取输入。
-                    **kwargs (dict): 本轮其他参数。
-
-                Yields:
-                    AgentEvent: 正常完成事件。
-                """
-                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": kwargs.get("origin_channel", "desktop"), "resumed": False})
-                nonlocal attempts
+        async def save(dao, db, state, **kwargs):
+            """只在输入进展写入时模拟 BUSY，最终保存使用真实事务。"""
+            nonlocal attempts
+            if dao.session_id == "s" and kwargs.get("checkpoint_type") == "intermediate":
                 attempts += 1
-                controls.append(kwargs["turn_control"])
                 if attempts <= failures:
-                    raise RuntimeError("保存前失败")
-                manager = SessionStateManager("s", path)
-                try:
-                    state = await manager.load()
-                    human = state.add_user_message(message)
-                    await manager.save(state, checkpoint_type="intermediate", inbox_inputs=(inbox_input,))
-                    yield AgentEvent(EventType.HUMAN_INPUT_COMMITTED, {"message": human, "input_sequence": inbox_input.id})
-                    await manager.save(state, checkpoint_type="completed", release_queued=True)
-                finally:
-                    await manager.close()
-                kwargs["turn_control"].run_state.begin_finishing(kwargs["turn_control"].run_id)
-                yield AgentEvent(EventType.DONE, None)
+                    error = sqlite3.OperationalError("输入保存暂时占用")
+                    error.sqlite_errorcode = sqlite3.SQLITE_BUSY
+                    raise error
+            return await original(dao, db, state, **kwargs)
+
+        class Model:
+            """只有输入已经交付才产生最终回答。"""
+
+            async def astream(self, messages, tools=None):
+                """记录模型业务实际执行的次数。"""
+                nonlocal model_calls
+                model_calls += 1
+                yield StreamChunk(content="已完成")
 
             async def close(self):
-                """每次尝试都关闭，没有额外资源。"""
-                closed.append(self)
+                """测试模型没有独立资源。"""
 
-        def factory(session_id, _manager):
-            """每次尝试创建独立 Agent。
+        def create(context, manager):
+            """每次业务创建实际 Agent，事务重试始终复用原执行。"""
+            nonlocal agent_calls
+            agent_calls += 1
+            return Agent(AgentConfig(context, "test", "test", ContextStrategyConfig()), factory,
+                         llm_client=Model(), session_state_manager=manager)
 
-            Args:
-                _manager (SessionStateManager): worker 拥有并借给本次执行的会话状态业务对象。
-                session_id (str): 当前会话编号。
-
-            Returns:
-                TestAgent: 本次尝试对象。
-            """
-            agent = TestAgent()
-            agents.append(agent)
-            return agent
-
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=path)
-        scheduler = AgentRuntimeScheduler(runtime_queue=supervisor.runtime_queue, agent_factory=factory, task_supervisor=supervisor,
-            session_state_manager_factory=partial(SessionStateManager, db_path=path),
-        )
-        inbox = SessionStateManager("s", path)
-        await scheduler.start()
+        scheduler = build_test_scheduler(runtime_queue=asyncio.Queue(), agent_factory=create,
+            session_state_manager_factory=lambda context: SessionStateManager(context, factory), chat_settings_dao=configured_settings())
+        inbox = SessionStateManager("s", factory)
         try:
-            # 1. 提交真人输入，通过真实输出观察全部尝试，只允许一个轮次开始事件。
+            await scheduler.start()
+            monkeypatch.setattr(AgentStateDao, "_write_state_in_transaction", save)
             await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "原始输入"}))
             events = []
-            while True:
-                event = await asyncio.wait_for(scheduler.next_event(), 2)
-                events.append(event)
-                if event.kind in {"error", "run_completed"}:
-                    break
+            ending = "history_restored" if failures == 4 else "run_completed"
+            while not events or events[-1].kind != ending:
+                events.append(await asyncio.wait_for(next_runtime_event(scheduler), 2))
             assert attempts == min(failures + 1, 4)
-            assert len(agents) == attempts and len({id(agent) for agent in agents}) == attempts
-            assert all(control is controls[0] for control in controls)
+            assert agent_calls == 1 and model_calls == (0 if failures == 4 else 1)
             assert [event.kind for event in events].count("run_started") == 1
-            assert (await scheduler.snapshot("s")).payload["phase"] == "idle"
             if failures == 4:
-                # 2. 耗尽后原输入被删除；后台通知不能重启这批失败尝试。
-                assert events[-1].payload["failed_input"]["message"] == "原始输入"
-                assert await inbox.read_next() is None
-                await supervisor.records.insert_running("later", "s", "后续任务", 1, str(tmp_path / "out"))
-                await supervisor.commit_terminal_state_once("later", "completed")
-                event = await asyncio.wait_for(scheduler.next_event(), 1)
-                assert event.kind == "task_status"
-                assert attempts == 4
+                assert any(event.kind == "error" and event.payload["save_failed"] for event in events)
+                assert (await scheduler.snapshot("s")).payload["session_state"] == "paused"
+                assert [item.payload["message"] for item in await inbox.pending_humans()] == ["原始输入"]
+                await scheduler.task_supervisor.records.insert_running("later", "s", title="后续任务", background=True)
+                await finish_task_record(scheduler.task_supervisor, "later", "completed")
+                await scheduler.runtime_queue.join()
+                assert attempts == 4 and agent_calls == 1 and model_calls == 0
             else:
-                # 2. 保存最终成功，只发布一次真人消息和完成事件，Inbox 不再查询到它。
-                assert [event.kind for event in events] == ["run_started", "human_message", "run_completed"]
-                assert (await inbox.pending_humans()) == []
+                assert [event.kind for event in events] == ["run_started", "human_message", "text_chunk", "run_completed"]
+                assert not await inbox.pending_humans()
         finally:
             await inbox.close()
-            await scheduler.close()
-            await supervisor.close()
+            await close_test_runtime(scheduler)
     asyncio.run(scenario())

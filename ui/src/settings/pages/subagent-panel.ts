@@ -158,7 +158,7 @@ export class SubagentPanel {
     try {
       const receipt = await this.bridge.submitInteractionCommand({ session_id: sessionId, origin_channel: DESKTOP_CHANNEL,
         kind: CommandKind.INTERACT_SUBAGENT, subagent_id: subagentId, payload: { action: "stop" } });
-      if (!receipt.accepted) throw new Error(receipt.reason || "停止未受理");
+      if (!receipt.accepted) throw new Error(receipt.detail || "停止未受理");
       if (sessionId === this.sessionId) await this.render(sessionId);
     } catch (error) {
       button.disabled = false;

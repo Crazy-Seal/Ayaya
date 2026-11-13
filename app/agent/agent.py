@@ -3,13 +3,15 @@ Agent 核心类
 
 门面类，协调各管理器，提供统一的接口。
 """
+from app.crud.sqlite_factory import SqliteFactory
 
 import asyncio
+import sqlite3
 from uuid import uuid4
 import logging
 from contextlib import aclosing
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, TYPE_CHECKING, Awaitable, Callable
+from typing import Any, AsyncGenerator, TYPE_CHECKING, Awaitable, Callable, cast
 
 from app.agent.models.contracts import OPENAI_CHAT_COMPLETIONS
 from app.schemas.runtime_types import (
@@ -32,7 +34,10 @@ from app.agent.state import AgentState
 from app.agent.state.manager import SessionStateManager
 from app.agent.runtime.session_inbox import InboxEnvelope, InputNoLongerPending
 from app.agent.runtime.turn_control import TurnControl, TurnInterrupted
-from app.agent.utils.infra.owned_work import complete_owned_work
+from app.crud.sqlite_save import SqliteRollbackError
+from app.agent.utils.infra.bounded_operation import OperationTimeoutError
+from app.agent.state.manager import RequiredSaveError
+from app.agent.utils.infra.bounded_operation import close_resources
 from app.schemas.desktop import DesktopOperations
 from app.agent.state.messages import RuntimeInputMessage, AssistantMessage, HumanMessage
 from app.schemas.tool_identity import ToolIdentity
@@ -40,7 +45,7 @@ from app.schemas.runtime_types import AgentRunOutcome, AgentRunOutcomeKind, Turn
 from app.agent.tools.core.runtime import ToolRuntimeFactory
 from app.agent.tools.core.base import BaseTool
 from app.agent.tools.authorization.manager import ToolAuthorization
-from app.schemas.mcp import MCPModelSettings, MCPConnectionConfig
+from app.schemas.mcp import MCPModelSettings, MCPConnectionConfig, MCPServerConfig
 from app.mcp.types import PluginMCPBinder
 
 if TYPE_CHECKING:
@@ -48,28 +53,6 @@ if TYPE_CHECKING:
     from app.mcp.mcp_connection_manager import MCPConnectionManager
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class _PendingResponse:
-    """保留尚未保存成功的回答，由原 Agent 在收尾重试时使用。
-
-    Attributes:
-        state (AgentState): 尚待保存的原执行状态，中断后缀在各次保存时独立准备。
-        partial_persisted (bool): 正文是否已经加入原状态中的助手消息。
-        origin_channel (str): 回答所属的界面或渠道。
-        outcome (AgentRunOutcome): 保存成功后交还 Scheduler 的正文及停止原因。
-        release_queued (bool): 正常完成时是否原子放行排队输入。
-        commit_context (dict): 正常响应提交钩子共用的本次材料。
-        turn_control (TurnControl | None): 保存成功后确认原轮进入收尾的控制对象。
-    """
-    state: AgentState
-    partial_persisted: bool
-    origin_channel: str
-    outcome: AgentRunOutcome
-    release_queued: bool = False
-    commit_context: dict = field(default_factory=dict)
-    turn_control: TurnControl | None = None
 
 
 @dataclass
@@ -103,13 +86,12 @@ class Agent:
         _initialized (bool): 工具和插件是否已经完成初始化。
         session_state_manager (SessionStateManager): 当前会话的输入和状态业务对象。
         _owns_state_manager (bool): 独立创建时负责关闭；worker 注入的对象只借用。
-        _pending_response (_PendingResponse | None): 保存失败时保留正文和原状态，供收尾重试。
     """
 
     def __init__(
         self,
         config: AgentConfig,
-        db_path: str | None = None,
+        sqlite_factory: SqliteFactory,
         mcp_connection_manager: "MCPConnectionManager | None" = None,
         *,
         llm_client: LLMClient | None = None,
@@ -129,7 +111,6 @@ class Agent:
 
         Args:
             config (AgentConfig): 当前会话的 Agent 配置。
-            db_path (str | None): 共享 SQLite 路径，省略时使用当前环境的隔离存储。
             mcp_connection_manager (MCPConnectionManager | None): 共享 MCP 连接管理器。
             llm_client (LLMClient | None): 可替换的流式模型客户端。
             chat_settings (ChatSettings | None): 会话模型和插件配置。
@@ -143,8 +124,10 @@ class Agent:
             tool_whitelist (frozenset[ToolIdentity] | None): 子普通工具可见范围；空集合表示无普通工具。
             enable_plugin_hooks (bool): 是否执行已登记插件的自动业务钩子。
             environment_provider (Callable | None): 每次模型请求前异步读取当前子名单的入口。
+            sqlite_factory (SqliteFactory): 应用装配提供的 SQLite 连接配置。
         """
         self.config = config
+        self._sqlite_factory = sqlite_factory
         self.mcp_connection_manager = mcp_connection_manager
         self._bind_plugin_mcp = bind_plugin_mcp
 
@@ -158,11 +141,9 @@ class Agent:
             authorization=self.tool_authorization,
         )
         self._permission_session_id = permission_session_id or config.session_id
-        self.last_outcome: AgentRunOutcome | None = None
-        self._pending_response: _PendingResponse | None = None
         self.plugin_manager = PluginManager(plugin_runtime_factory, enable_plugin_hooks=enable_plugin_hooks)
         self._owns_state_manager = session_state_manager is None
-        self.session_state_manager = session_state_manager or SessionStateManager(config.session_id, db_path)
+        self.session_state_manager = session_state_manager or SessionStateManager(config.session_id, sqlite_factory)
         # LLM 客户端
         self.llm_client = llm_client
         if self.llm_client is None:
@@ -254,14 +235,18 @@ class Agent:
                 plugin_name = plugin_config.get("name")
                 plugin_params = plugin_config.get("config", {})
 
+            if not isinstance(plugin_name, str):
+                raise ValueError("插件配置缺少名称")
+
             plugin_class = PluginRegistry.get(plugin_name)
             if plugin_class:
                 try:
-                    plugin = plugin_class(**plugin_params)
+                    from app.agent.core.plugin_factory import create_plugin
+                    plugin = create_plugin(plugin_class, plugin_params, self._sqlite_factory)
                     self.plugin_manager.register(plugin)
                     from app.agent.plugins.tool_adapter import PluginToolAdapter
-                    for tool_class in plugin_class.tools:
-                        adapter = PluginToolAdapter(plugin_name, tool_class())
+                    for tool in plugin.create_tools():
+                        adapter = PluginToolAdapter(plugin_name, tool)
                         if self.tool_manager.has(adapter.name):
                             raise ValueError(f"插件工具公开名称冲突: {adapter.name}")
                         self.tool_manager.register(adapter)
@@ -284,7 +269,7 @@ class Agent:
 
         for server_id, server_policy in self.config.mcp.servers.items():
             try:
-                server_config = self.mcp_connection_manager.get_server_config(server_id)
+                server_config = cast(MCPServerConfig, self.mcp_connection_manager.get_server_config(server_id))
             except MCPConnectionError as exc:
                 logger.error("MCP Server '%s' 配置不可用，已跳过: %s", server_id, exc)
                 continue
@@ -334,7 +319,7 @@ class Agent:
                 except MCPConnectionError as exc:
                     logger.error("插件 MCP '%s' 连接失败: %s", key, exc)
 
-    async def run(
+    async def _run(
         self,
         message: str,
         images: list[str] | None = None,
@@ -344,7 +329,8 @@ class Agent:
         inbox_inputs: tuple[InboxEnvelope, ...] | None = None,
         turn_control: TurnControl | None = None,
         receive_task_notifications: bool = False,
-    ) -> AsyncIterator[AgentEvent]:
+        emit: Callable[[AgentEvent], Awaitable[None]],
+    ) -> AgentRunOutcome:
         """交付真人输入并运行一轮对话，先闭合遗留工具协议，再由 Agent 提交最终响应。
 
         Args:
@@ -356,11 +342,11 @@ class Agent:
             turn_control (TurnControl | None): 当前 run 的停止与引导控制器。
             receive_task_notifications (bool): 是否在模型安全点交付任务通知。
 
-        Yields:
-            AgentEvent: 按执行顺序产生的 Agent 事件。
+            emit (Callable[[AgentEvent], Awaitable[None]]): 接收本轮已确定执行事件的异步输出入口。
 
+        Returns:
+            AgentRunOutcome: 本次执行的明确结果，过程事件由 emit 交付。
         """
-        self.last_outcome = None
         await self.initialize()
         self.plugin_manager.run_id = turn_control.run_id if turn_control else uuid4().hex
         runtime_context = RuntimeContext.capture()
@@ -369,7 +355,7 @@ class Agent:
 
         # 1. Agent 自行加载状态，再报告执行开始；Scheduler 不预加载执行材料。
         state = await self.session_state_manager.load()
-        yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": origin_channel, "resumed": False})
+        await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": origin_channel, "resumed": False}))
         # 2. 新输入前结束旧协议，业务状态准备和保存统一交给 Manager。
         await self.session_state_manager.close_previous_tools(state)
 
@@ -383,15 +369,15 @@ class Agent:
                 activation_data=activation_data,
             )) as committed_events:
                 async for event in committed_events:
-                    yield event
+                    await emit(event)
         except InputNoLongerPending:
             # 3.2. 保存事务已回滚；丢弃本次内存状态，不执行正文和工具的打断保存。
-            yield AgentEvent(EventType.DONE, {"input_cancelled": True})
-            return
+            await emit(AgentEvent(EventType.DONE, {"input_cancelled": True}))
+            return AgentRunOutcome(AgentRunOutcomeKind.STOPPED)
 
         # 4. 执行管道；最终提交与 DONE 只由 Agent 负责。
         # 显式等待下层迭代关闭，保证响应和借用资源在返回前完成清理。
-        async with aclosing(self._stream_and_finalize(
+        return await self._stream_and_finalize(
             state,
             self.pipeline.execute(
                 state,
@@ -399,13 +385,12 @@ class Agent:
                 runtime_context=runtime_context, receive_task_notifications=receive_task_notifications,
                 activation_data=activation_data,
             ),
-            failure_message="本轮执行出错，已保留最近工具进度，未写入最终 checkpoint",
+            failure_message="本轮执行出错，正在保存失败结果和已完成工具进度",
             origin_channel=origin_channel,
             turn_control=turn_control,
             release_queued=inbox_input is not None,
-        )) as managed_events:
-            async for event in managed_events:
-                yield event
+            emit=emit,
+        )
 
     async def _commit_runtime_activation_inputs(
         self, state: AgentState, messages: tuple[HumanMessage | RuntimeInputMessage, ...] | None,
@@ -432,12 +417,13 @@ class Agent:
         # 3. 消息与输入交付标记原子保存；失败时直接退出，不启动后台派生任务。
         await self.session_state_manager.commit_runtime_inputs(state, messages, inputs)
 
-    async def run_runtime_inputs(
+    async def _run_runtime_inputs(
         self, messages: tuple[HumanMessage | RuntimeInputMessage, ...] | None = None, *,
         inbox_inputs: tuple[InboxEnvelope, ...],
         turn_control: TurnControl | None = None,
         receive_task_notifications: bool = False,
-    ) -> AsyncIterator[AgentEvent]:
+        emit: Callable[[AgentEvent], Awaitable[None]],
+    ) -> AgentRunOutcome:
         """交付父命令或内部通知，父命令先结束上一轮工具调用再启动模型循环。
 
         Args:
@@ -446,13 +432,11 @@ class Agent:
             turn_control (TurnControl | None): 当前 run 的停止与引导控制器。
             receive_task_notifications (bool): 是否在模型安全点交付任务通知。
 
-        Yields:
-            AgentEvent: 按执行顺序产生的 Agent 事件。
+            emit (Callable[[AgentEvent], Awaitable[None]]): 接收本轮已确定执行事件的异步输出入口。
 
-        Raises:
-            RuntimeError: 只有内部通知时，待处理工具中断期间不能交付。
+        Returns:
+            AgentRunOutcome: 本次执行的明确结果，过程事件由 emit 交付。
         """
-        self.last_outcome = None
         await self.initialize()
         self.plugin_manager.run_id = turn_control.run_id if turn_control else uuid4().hex
         state = await self.session_state_manager.load()
@@ -466,7 +450,7 @@ class Agent:
         elif state.is_interrupted():
             # 1.1. 自动通知继续等待原审批恢复，不主动结束正在等待决定的工具调用。
             raise RuntimeError("待处理工具中断期间不能交付后台通知")
-        yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": DESKTOP_CHANNEL, "resumed": False})
+        await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": DESKTOP_CHANNEL, "resumed": False}))
         # 2. 新激活先准备并保存输入，再以 desktop 来源进入 ON_INVOKE 和模型循环。
         # 2.1. 通知可以启动上一批已到期的记忆提取，但自身不增加真人计数。
         activation_data: dict = {}
@@ -476,13 +460,13 @@ class Agent:
             )
         except InputNoLongerPending:
             # 2.2. 整批输入未交付时直接结束，不把回滚后的内存状态传给模型。
-            yield AgentEvent(EventType.DONE, {"input_cancelled": True})
-            return
+            await emit(AgentEvent(EventType.DONE, {"input_cancelled": True}))
+            return AgentRunOutcome(AgentRunOutcomeKind.STOPPED)
         runtime_context = RuntimeContext.capture()
         runtime_context.turn_control = turn_control
         runtime_context.origin_channel = DESKTOP_CHANNEL
         # 显式等待下层迭代关闭，保证响应和借用资源在返回前完成清理。
-        async with aclosing(self._stream_and_finalize(
+        return await self._stream_and_finalize(
             state,
             self.pipeline.execute(
                 state, session_state_manager=self.session_state_manager,
@@ -492,9 +476,8 @@ class Agent:
             failure_message="后台通知执行出错",
             origin_channel=DESKTOP_CHANNEL,
             turn_control=turn_control,
-        )) as managed_events:
-            async for event in managed_events:
-                yield event
+            emit=emit,
+        )
 
     async def _commit_user_input(
         self,
@@ -506,7 +489,7 @@ class Agent:
         origin_channel: str = DESKTOP_CHANNEL,
         inbox_input: InboxEnvelope | None = None,
         inbox_inputs: tuple[InboxEnvelope, ...] | None = None,
-    ) -> AsyncIterator[AgentEvent]:
+    ) -> AsyncGenerator[AgentEvent, None]:
         """准备并提交一次真人输入激活，保存同批通知与真人消息。
 
         由 run 在模型循环开始前调用。前置钩子处理本次输入之前的记忆批次；
@@ -546,11 +529,12 @@ class Agent:
             "input_sequence": human_input.id if human_input is not None else None,
         })
 
-    async def resume(
+    async def _resume(
         self, request_id: str, *, resume_data: dict | None = None,
         turn_control: TurnControl | None = None,
         receive_task_notifications: bool = False,
-    ) -> AsyncIterator[AgentEvent]:
+        emit: Callable[[AgentEvent], Awaitable[None]],
+    ) -> AgentRunOutcome:
         """由 Agent 加载持久中断，核验请求后继续原轮次，不重新提交激活输入。
 
         Args:
@@ -559,210 +543,241 @@ class Agent:
             turn_control (TurnControl | None): 原轮次的停止控制。
             receive_task_notifications (bool): 是否在模型安全点交付任务通知。
 
-        Yields:
-            AgentEvent: 核验成功后的开始事件及恢复过程；过期请求不产生事件。
+            emit (Callable[[AgentEvent], Awaitable[None]]): 接收本轮已确定执行事件的异步输出入口。
+
+        Returns:
+            AgentRunOutcome: 本次执行的明确结果，过程事件由 emit 交付。
         """
-        self.last_outcome = None
         await self.initialize()
         self.plugin_manager.run_id = turn_control.run_id if turn_control else uuid4().hex
         state = await self.session_state_manager.load_for_resume(request_id)
         if state is None:
-            return
+            return AgentRunOutcome(AgentRunOutcomeKind.STOPPED)
         interrupt = state.interrupt_data or {}
         origin = str(interrupt.get("origin_channel") or next(
-            (item.origin_channel for item in reversed(state.messages) if hasattr(item, "origin_channel")),
+            (getattr(item, "origin_channel") for item in reversed(state.messages) if hasattr(item, "origin_channel")),
             DESKTOP_CHANNEL,
         ))
         runtime_context = RuntimeContext.capture()
         runtime_context.turn_control = turn_control
         runtime_context.origin_channel = origin
         # 1. 只有同一份持久状态核验成功才报告恢复开始，随后才可能执行工具。
-        yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": origin, "resumed": True})
+        await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": origin, "resumed": True}))
         decision = interrupt.get("runtime_decision") if interrupt.get("type") == "authorization_request" else resume_data
         # 2. Agent 保持最终提交与 DONE 所有权，Pipeline 只借用状态业务对象。
         # 显式等待下层迭代关闭，保证响应和借用资源在返回前完成清理。
-        async with aclosing(self._stream_and_finalize(
+        return await self._stream_and_finalize(
             state,
             self.pipeline.resume_tools(state, decision or {},
                 session_state_manager=self.session_state_manager,
                 runtime_context=runtime_context, receive_task_notifications=receive_task_notifications),
-            failure_message="恢复执行出错，已保留最近工具进度，未写入最终 checkpoint",
+            failure_message="恢复执行出错，正在保存失败结果和已完成工具进度",
             origin_channel=origin, turn_control=turn_control, release_queued=True,
-        )) as managed_events:
-            async for event in managed_events:
-                yield event
+            emit=emit,
+        )
 
 
     async def _stream_and_finalize(
-        self,
-        state: AgentState,
-        event_stream: AsyncIterator[AgentEvent],
-        *,
-        failure_message: str,
-        origin_channel: str = DESKTOP_CHANNEL,
-        turn_control: TurnControl | None = None,
-        release_queued: bool = False,
-    ) -> AsyncIterator[AgentEvent]:
-        """转发管道事件，在正常完成或用户打断时执行对应的持久化收尾。
+        self, state: AgentState, event_stream: AsyncGenerator[AgentEvent, None], *,
+        failure_message: str, origin_channel: str = DESKTOP_CHANNEL,
+        turn_control: TurnControl | None = None, release_queued: bool = False,
+        emit: Callable[[AgentEvent], Awaitable[None]],
+    ) -> AgentRunOutcome:
+        """发布模型工具进展，并将已保存的完成、等待或停止结果交还执行对象。
 
         Args:
-            state (AgentState): 当前 Agent 状态。
-            event_stream (AsyncIterator[AgentEvent]): 待收尾的 Agent 内部事件迭代器。
-            failure_message (str): 运行失败时使用的中文日志说明。
-            origin_channel (str): 输入或本轮回复所属的渠道。
-            turn_control (TurnControl | None): 当前 run 的停止与引导控制器。
-            release_queued (bool): 是否随正常完成的 checkpoint 原子放行排队输入。
+            state (AgentState): 本次执行的消息和工具协议。
+            event_stream (AsyncIterator[AgentEvent]): Pipeline 的模型工具进展。
+            failure_message (str): 业务失败日志说明。
+            origin_channel (str): 本次回答所属渠道。
+            turn_control (TurnControl | None): 所属执行提供的安全点能力。
+            release_queued (bool): 正常结束时是否放行排队真人输入。
+            emit (Callable): 执行所有者提供的事件投递能力。
 
-        Yields:
-            AgentEvent: 按执行顺序产生的 Agent 事件。
+        Returns:
+            AgentRunOutcome: 业务结果或保持原轮次的已保存等待。
         """
-        self.last_outcome = None
-        # 1. 管道错误保留最近进度，中断先保存来源后返回，二者都不伪造正常完成。
+        # 1. 模型工具循环只运行一次，必需保存失败直接交还入口。
+        visible_partial = ""
         try:
-            # 显式等待下层迭代关闭，保证响应和借用资源在返回前完成清理。
-            async with aclosing(event_stream) as managed_events:
-                async for event in managed_events:
+            async with aclosing(event_stream) as stream:
+                async for event in stream:
                     if event.type == EventType.ERROR:
-                        # 1.1. 失败时清空内存背景；持久进度仍按原失败规则保留，新激活会重新重置。
-                        state.clear_temporary_context()
-                        self.last_outcome = AgentRunOutcome(AgentRunOutcomeKind.FAILED, error=str(event.data))
-                        if turn_control is not None:
-                            turn_control.run_state.begin_finishing(turn_control.run_id)
-                        yield event
                         logger.warning("%s: %s", failure_message, self.config.session_id)
-                        return
-                    if event.type == EventType.INTERRUPT:
-                        if turn_control and turn_control.reason:
+                        if turn_control is not None:
                             turn_control.check()
-                        self.last_outcome = AgentRunOutcome(AgentRunOutcomeKind.INTERRUPTED)
-                        yield event
-                        return
-                    yield event
+                        return await self._finalize_failed_response(state, str(event.data), turn_control,
+                            origin_channel, partial=visible_partial)
+                    if event.type == EventType.TEXT_CHUNK:
+                        visible_partial += str(event.data)
+                    elif event.type == EventType.TOOL_CALL:
+                        visible_partial = ""
+                    await emit(event)
+                    if event.type == EventType.INTERRUPT:
+                        return AgentRunOutcome(AgentRunOutcomeKind.INTERRUPTED,
+                                               wait=turn_control.wait if turn_control else None)
             if turn_control is not None:
                 turn_control.check()
-            await self._finalize_response(
-                state, release_queued=release_queued, turn_control=turn_control,
-            )
-        # 2. 用户打断统一收尾并保存已显示文本，DONE 仍由 Agent 在保存之后产生。
-        except TurnInterrupted:
-            if turn_control is None:
+            outcome = await self._finalize_response(state, release_queued=release_queued, turn_control=turn_control)
+        except (TurnInterrupted, asyncio.CancelledError):
+            # 2. 已接受的控制结束旧协议，提交确认仍由 DAO 保护。
+            if turn_control is None or turn_control.reason is None:
                 raise
-            await complete_owned_work(self._finalize_interrupted_response(state, turn_control, origin_channel))
+            outcome = await self._finalize_interrupted_response(state, turn_control, origin_channel)
             if turn_control.partial.strip():
-                yield AgentEvent(EventType.TEXT_CHUNK, "……（被用户打断）")
-            yield AgentEvent(EventType.DONE, None)
-            return
-        except (asyncio.CancelledError, GeneratorExit):
-            # 3. 销毁取消挂起工具，或输出消费者关闭迭代器时，仍保存已受理的中断。
-            # 等待保存完成后继续传播取消；Scheduler 随后关闭资源并读取实际结果。
-            if turn_control is not None and turn_control.reason is not None:
-                await complete_owned_work(self._finalize_interrupted_response(state, turn_control, origin_channel))
-            raise
-
-        final = next((message for message in reversed(state.messages) if isinstance(message, AssistantMessage)), None)
-        self.last_outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED,
-                                           result=final.text if final else "",
-                                           final_message_id=final.message_id if final else None)
-        yield AgentEvent(EventType.DONE, None)
-
+                await emit(AgentEvent(EventType.TEXT_CHUNK, "……（被用户打断）"))
+        # 3. 完成事件只在最终保存成功后发送，结果不依赖观察方读取事件。
+        await emit(AgentEvent(EventType.DONE, None))
+        return outcome
 
     async def _finalize_interrupted_response(
         self, state: AgentState, turn_control: TurnControl, origin_channel: str,
-    ) -> None:
-        """保存中断正文及工具结束记录，再交还已保存的运行结果。
-
-        Args:
-            state (AgentState): 当前执行持有的会话状态，包含尚未保存的正文及工具进度。
-            turn_control (TurnControl): 已受理的停止或引导信号，以及本步骤已生成的正文。
-            origin_channel (str): 被打断回答所属的界面或渠道。
-        """
-        # 1. 原执行停止后保留未修改的状态；数据库暂时失败时，清理 worker 可继续保存。
-        self._pending_response = _PendingResponse(
-            state.model_copy(deep=True), turn_control.partial_persisted, origin_channel,
-            AgentRunOutcome(
-                AgentRunOutcomeKind.STEERED if turn_control.reason == TurnInterruptReason.STEER else AgentRunOutcomeKind.STOPPED,
-                result=turn_control.partial,
-            ),
-            turn_control=turn_control,
-        )
-        # 2. 首次保存仍更新原执行状态，保持正常 stop 的内存消息及工具记录一致。
-        await self._save_response(self._pending_response, state)
-
-    async def finish_pending_response(self) -> AgentRunOutcome | None:
-        """提交待保存的回答，保存与结果登记完成后才交还执行所有者。
-
-        父子执行都在释放 Agent 前调用。保存失败时继续持有原状态，调用方只需
-        重试本方法；再次取消等待也先完成本次事务和结果登记，资源关闭另行执行。
-
-        Returns:
-            AgentRunOutcome | None: 本次成功保存的正常或中断结果；没有待保存回答时为空。
-
-        Raises:
-            Exception: 保存失败，调用方继续持有 Agent 及原回答并按收尾流程重试。
-        """
-        pending = self._pending_response
-        if pending is None:
-            return None
-        # 1. 每次从原状态准备工具结束记录和正文后缀，失败重试不会重复修改正文。
-        return await complete_owned_work(self._save_response(pending, pending.state.model_copy(deep=True)))
-
-    async def _save_response(
-        self, pending: _PendingResponse, state: AgentState,
     ) -> AgentRunOutcome:
-        """保存本次准备的中断回答，事务成功后释放待保存材料并登记结果。
+        """保存已展示正文和工具结束协议，再返回停止或引导的真实结果。
 
         Args:
-            pending (_PendingResponse): 原执行的正文、停止原因和回答来源。
-            state (AgentState): 首次保存使用原执行状态，失败重试使用原状态的副本。
+            state (AgentState): 被打断的执行材料。
+            turn_control (TurnControl): 原执行的停止原因和已展示正文。
+            origin_channel (str): 被打断回答所属渠道。
 
         Returns:
-            AgentRunOutcome: 已与结束检查点一同保存的实际中断结果。
+            AgentRunOutcome: 已保存的停止或引导结果。
         """
-        # 1. 原状态及结果保留到事务成功；重试不重新请求模型或执行工具。
-        if pending.outcome.kind == AgentRunOutcomeKind.COMPLETED:
-            await self.session_state_manager.complete_turn(state, release_queued=pending.release_queued)
-        else:
-            await self.session_state_manager.finish_interrupted_turn(
-                state, partial=pending.outcome.result, partial_persisted=pending.partial_persisted,
-                origin_channel=pending.origin_channel)
-        # 2. 保存成功到登记结果之间不等待，取消也保留真实提交结果。
-        self.last_outcome = pending.outcome
-        self._pending_response = None
-        if pending.turn_control is not None:
-            pending.turn_control.run_state.begin_finishing(pending.turn_control.run_id)
-        if pending.outcome.kind == AgentRunOutcomeKind.COMPLETED:
-            await self.plugin_manager.run_hooks(PluginHook.AFTER_RESPONSE_COMMIT, state, data=pending.commit_context)
-        return pending.outcome
-
+        turn_control.begin_interrupted_commit()
+        await self.session_state_manager.finish_interrupted_turn(
+            state, partial=turn_control.partial, partial_persisted=turn_control.partial_persisted,
+            origin_channel=origin_channel)
+        return AgentRunOutcome(
+            AgentRunOutcomeKind.STEERED if turn_control.reason == TurnInterruptReason.STEER else AgentRunOutcomeKind.STOPPED,
+            result=turn_control.partial)
 
     async def _finalize_response(
         self, state: AgentState, *, release_queued: bool = False,
         turn_control: TurnControl | None = None,
-    ) -> None:
-        """在响应提交钩子之间写入 completed checkpoint，并按需原子放行排队输入。
+    ) -> AgentRunOutcome:
+        """由 Agent 唯一提交最终回答，钩子在 DAO 的保存重试之外执行一次。
 
         Args:
-            state (AgentState): 当前 Agent 状态。
-            release_queued (bool): 是否随正常完成的 checkpoint 原子放行排队输入。
-            turn_control (TurnControl | None): 当前 run 的停止与引导控制器。
+            state (AgentState): 模型工具循环产生的最终消息。
+            release_queued (bool): 正常真人轮次完成时放行后续排队输入。
+            turn_control (TurnControl | None): 最终保存前的执行安全点。
+
+        Returns:
+            AgentRunOutcome: 已确认保存的最终正文及消息编号。
         """
         commit_context: dict = {}
-        await self.plugin_manager.run_hooks(
-            PluginHook.BEFORE_RESPONSE_COMMIT,
-            state,
-            data=commit_context,
-        )
-        # 1. 提交前最后检查打断信号，进入 committing 后拒绝停止。
+        await self.plugin_manager.run_hooks(PluginHook.BEFORE_RESPONSE_COMMIT, state, data=commit_context)
         if turn_control is not None:
             turn_control.begin_commit()
-        # 2. 正常正文和排队放行也保留为待保存材料，临时失败只重试本次提交。
-        final = next((message for message in reversed(state.messages) if isinstance(message, AssistantMessage)), None)
-        self._pending_response = _PendingResponse(state.model_copy(deep=True), False,
-            final.origin_channel if final else DESKTOP_CHANNEL,
-            AgentRunOutcome(AgentRunOutcomeKind.COMPLETED, result=final.text if final else "",
-                            final_message_id=final.message_id if final else None),
-            release_queued=release_queued, commit_context=commit_context, turn_control=turn_control)
-        await complete_owned_work(self._save_response(self._pending_response, state))
+        await self.session_state_manager.complete_turn(state, release_queued=release_queued)
+        final = next((item for item in reversed(state.messages) if isinstance(item, AssistantMessage)), None)
+        outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED, result=final.text if final else "",
+                                  final_message_id=final.message_id if final else None)
+        await self.plugin_manager.run_hooks(PluginHook.AFTER_RESPONSE_COMMIT, state, data=commit_context)
+        return outcome
+
+    async def _finalize_failed_response(self, state: AgentState, error: str, turn_control: TurnControl | None,
+                                        origin_channel: str, *, partial: str = "") -> AgentRunOutcome:
+        """保存模型或执行失败的最终结果，已经完成的工具效果和历史保持可追踪。
+
+        Args:
+            state (AgentState): 失败前可确认的执行状态。
+            error (str): 最终业务错误说明。
+            turn_control (TurnControl | None): 当前执行的提交保护及可见片段。
+            origin_channel (str): 本轮结果所属渠道。
+            partial (str): 独立调用本步骤已显示的正文。
+
+        Returns:
+            AgentRunOutcome: 失败收尾已经保存的明确结果。
+        """
+        if turn_control is not None:
+            turn_control.begin_failed_commit()
+            already_saved = any(message.message_id == turn_control.partial_message_id for message in state.messages)
+            partial = "" if already_saved else turn_control.partial
+        await self.session_state_manager.finish_failed_turn(state, error=error, partial=partial, origin_channel=origin_channel)
+        return AgentRunOutcome(AgentRunOutcomeKind.FAILED, error=error)
+
+    async def _perform(self, operation: Awaitable[AgentRunOutcome], *, turn_control: TurnControl | None,
+                       origin_channel: str = DESKTOP_CHANNEL) -> AgentRunOutcome:
+        """接收一次执行的最终结果，保存故障与业务错误分别交还调用者。
+
+        Args:
+            operation (Awaitable[AgentRunOutcome]): 已准备好、只运行一次的执行入口。
+            turn_control (TurnControl | None): 当前执行的提交资格和已显示正文。
+            origin_channel (str): 失败结果应归属的输入渠道。
+
+        Returns:
+            AgentRunOutcome: 明确的执行结果，原始异常保留在日志链中。
+        """
+        try:
+            return await operation
+        except (RequiredSaveError, sqlite3.Error, OSError, OperationTimeoutError, SqliteRollbackError) as exc:
+            return AgentRunOutcome(AgentRunOutcomeKind.SAVE_FAILED, error=str(exc))
+        except Exception as exc:
+            logger.exception("Agent 执行失败：%s", self.config.session_id)
+            try:
+                state = await self.session_state_manager.load()
+                return await self._finalize_failed_response(state, str(exc), turn_control, origin_channel)
+            except Exception as save_error:
+                return AgentRunOutcome(AgentRunOutcomeKind.SAVE_FAILED, error=str(save_error))
+
+    async def run(self, message: str, images: list[str] | None = None, *,
+                  origin_channel: str = DESKTOP_CHANNEL, inbox_input: InboxEnvelope | None = None,
+                  inbox_inputs: tuple[InboxEnvelope, ...] | None = None, turn_control: TurnControl | None = None,
+                  receive_task_notifications: bool = False, emit: Callable[[AgentEvent], Awaitable[None]]) -> AgentRunOutcome:
+        """处理一次真人输入，返回执行结果并通过 emit 发布过程事件。
+
+        Args:
+            message (str): 真人正文。
+            images (list[str] | None): 真人附件。
+            origin_channel (str): 输入来源渠道。
+            inbox_input (InboxEnvelope | None): 单条受理输入。
+            inbox_inputs (tuple[InboxEnvelope, ...] | None): 本次原子交付的输入批次。
+            turn_control (TurnControl | None): 执行安全点能力。
+            receive_task_notifications (bool): 是否交付执行中通知。
+            emit (Callable): 流式事件接收能力。
+
+        Returns:
+            AgentRunOutcome: 已保存的完成、停止、等待或明确失败。
+        """
+        return await self._perform(self._run(message, images, origin_channel=origin_channel, inbox_input=inbox_input,
+            inbox_inputs=inbox_inputs, turn_control=turn_control, receive_task_notifications=receive_task_notifications, emit=emit), turn_control=turn_control, origin_channel=origin_channel)
+
+    async def run_runtime_inputs(self, messages: tuple[HumanMessage | RuntimeInputMessage, ...] | None = None, *,
+                                 inbox_inputs: tuple[InboxEnvelope, ...], turn_control: TurnControl | None = None,
+                                 receive_task_notifications: bool = False,
+                                 emit: Callable[[AgentEvent], Awaitable[None]]) -> AgentRunOutcome:
+        """处理父消息或普通通知，输入保存和模型循环共用一次执行。
+
+        Args:
+            messages (tuple | None): 已准备的业务消息，省略时从 Inbox 转换。
+            inbox_inputs (tuple[InboxEnvelope, ...]): 本次待交付输入。
+            turn_control (TurnControl | None): 执行安全点能力。
+            receive_task_notifications (bool): 是否交付执行中通知。
+            emit (Callable): 流式事件接收能力。
+
+        Returns:
+            AgentRunOutcome: 已保存结果或明确故障。
+        """
+        return await self._perform(self._run_runtime_inputs(messages, inbox_inputs=inbox_inputs, turn_control=turn_control,
+            receive_task_notifications=receive_task_notifications, emit=emit), turn_control=turn_control)
+
+    async def resume(self, request_id: str, *, resume_data: dict | None = None, turn_control: TurnControl | None = None,
+                     receive_task_notifications: bool = False, emit: Callable[[AgentEvent], Awaitable[None]]) -> AgentRunOutcome:
+        """恢复已确认决定的原审批，保持输入和 run 身份。
+
+        Args:
+            request_id (str): 已保存的等待编号。
+            resume_data (dict | None): 工具继续执行材料。
+            turn_control (TurnControl | None): 原执行控制。
+            receive_task_notifications (bool): 是否交付执行中通知。
+            emit (Callable): 流式事件接收能力。
+
+        Returns:
+            AgentRunOutcome: 本段执行的明确结果。
+        """
+        return await self._perform(self._resume(request_id, resume_data=resume_data, turn_control=turn_control,
+            receive_task_notifications=receive_task_notifications, emit=emit), turn_control=turn_control)
 
     # ==================== 运行时操作 ====================
 
@@ -821,19 +836,13 @@ class Agent:
     # ==================== 生命周期 ====================
 
     async def close(self) -> None:
-        """清空插件索引，关闭模型客户端和本实例拥有的状态连接。
-
-        Raises:
-            Exception: 模型客户端或状态连接关闭失败。
-        """
+        """在共同预算内释放自有客户端和独立调用所拥有的 Manager，最终失败记日志。"""
         self.plugin_manager.clear()
-        # 1. 关闭模型客户端；失败时仍释放本实例拥有的状态连接。
-        try:
-            await self.llm_client.close()
-        finally:
-            if self._owns_state_manager:
-                await self.session_state_manager.close()
-        logger.info(f"Agent 已关闭: {self.config.session_id}")
+        assert self.llm_client is not None
+        resources: list[tuple[str, Callable[[], Awaitable[None]]]] = [("模型客户端", self.llm_client.close)]
+        if self._owns_state_manager:
+            resources.append(("独立 Agent 状态连接", self.session_state_manager.close))
+        await close_resources(tuple(resources), logger=logger, retryable=(Exception,))
 
     async def __aenter__(self) -> "Agent":
         """调用方进入异步上下文时初始化工具和插件。

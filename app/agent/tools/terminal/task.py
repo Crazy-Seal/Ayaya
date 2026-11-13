@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import codecs
 import os
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -15,6 +16,7 @@ from app.agent.tools.terminal.models import TaskLaunchResult
 from app.agent.tools.terminal.process import TerminalOperations, dispose_terminal
 from app.crud.task_record_dao import TaskRecordDao
 from app.agent.utils.infra.owned_work import complete_owned_work
+from app.agent.utils.infra.bounded_operation import run_bounded
 from app.schemas.runtime_types import TaskStatus
 from app.schemas.task_types import TaskRecord
 
@@ -22,6 +24,8 @@ if TYPE_CHECKING:
     from app.agent.tools.core.runtime import ToolRuntime
 
 TERMINAL_STOP_GRACE_SECONDS = 2
+TERMINAL_CLEANUP_TIMEOUT_SECONDS = 5.0
+logger = logging.getLogger(__name__)
 TASK_OUTPUT_PAGE_MAX_BYTES = 64 * 1024
 TASK_OUTPUT_PAGE_DEFAULT_BYTES = 16 * 1024
 TASK_RECENT_OUTPUT_BYTES = 256
@@ -106,6 +110,10 @@ class TerminalTask(BaseTask):
                 if not pending.done():
                     pending.cancel()
             await asyncio.gather(reader, waiter, return_exceptions=True)
+            self.accepts_input = False
+            if self.exit_code is None and waiter.done() and not waiter.cancelled() and waiter.exception() is None:
+                self.exit_code = waiter.result()
+            await self.records.save_terminal_exit_code(self.task_id, self.exit_code)
 
     async def _prepare_process(self, runtime: ToolRuntime) -> None:
         """创建进程并保存终端信息，使取消后的清理始终取得实际资源。
@@ -139,13 +147,16 @@ class TerminalTask(BaseTask):
             await asyncio.to_thread(spool.flush)
 
     async def cleanup(self) -> None:
-        """释放实际进程并保存退出码，不登记任务或提交通用终态。"""
+        """在共同预算内有限关闭实际终端，最终错误记入日志。"""
         self.accepts_input = False
         self.ready.set()
         try:
             if self.process is not None:
-                await dispose_terminal(self.process)
-                await self.records.save_terminal_exit_code(self.task_id, self.exit_code)
+                await run_bounded(lambda: dispose_terminal(self.process),
+                    retryable=(OSError, RuntimeError), timeout_seconds=TERMINAL_CLEANUP_TIMEOUT_SECONDS)
+                self.process = None
+        except Exception:
+            logger.exception("终端资源关闭失败：%s", self.task_id)
         finally:
             self.changed.set()
 
@@ -165,7 +176,7 @@ class TerminalTask(BaseTask):
         """
         await self.ready.wait()
         async with self.interaction:
-            record = await runtime.get_task_record(self.task_id)
+            record = await runtime.get_task_snapshot(self.task_id)
             error = None
             if chars and record.status == TaskStatus.RUNNING and self.accepts_input:
                 try:
@@ -177,7 +188,7 @@ class TerminalTask(BaseTask):
             try:
                 return await self._observe(runtime, yield_time_ms, initial=initial, error=error)
             except OSError as exc:
-                record = await runtime.get_task_record(self.task_id)
+                record = await runtime.get_task_snapshot(self.task_id)
                 detail = f"{error}；" if error else "输入已写入；" if chars else ""
                 return TaskLaunchResult(self.task_id, record.status == TaskStatus.RUNNING, "", record.status,
                     record.exit_code, error=f"{detail}读取任务输出失败：{exc}")
@@ -199,14 +210,14 @@ class TerminalTask(BaseTask):
         while True:
             # 1. 先清通知再查询，避免检查与等待之间遗漏输出变化。
             self.changed.clear()
-            record = await runtime.get_task_record(self.task_id)
+            record = await runtime.get_task_snapshot(self.task_id)
             ended = record.status != TaskStatus.RUNNING
             if ended and not initial:
                 return TaskLaunchResult(self.task_id, False, "", record.status, record.exit_code, error=error)
             page = await read_terminal_output(record, self.offset, TASK_OUTPUT_PAGE_MAX_BYTES - 3) if record.output_path else {"text": "", "next_offset": self.offset}
             remaining = deadline - asyncio.get_running_loop().time()
             if ended or remaining <= 0 or (not initial and page["text"]):
-                record = await runtime.get_task_record(self.task_id)
+                record = await runtime.get_task_snapshot(self.task_id)
                 ended = record.status != TaskStatus.RUNNING
                 output = page["text"] if initial or not ended else ""
                 if output:

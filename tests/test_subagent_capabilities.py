@@ -1,4 +1,5 @@
 """子工具白名单、动态父授权和插件钩子开关的公开接口回归。"""
+from app.crud.sqlite_factory import SqliteFactory
 
 import asyncio
 from datetime import datetime, timezone
@@ -36,7 +37,7 @@ def test_parent_management_tools_are_configurable_in_the_existing_permission_cat
 @pytest.mark.parametrize("identity", [ToolIdentity.local("operation"), ToolIdentity.local("operation", plugin_name="test"),
     ToolIdentity.mcp("server", "operation"), ToolIdentity.mcp("server", "operation", plugin_name="test")])
 def test_whitelist_filters_all_tool_origins_and_forged_lookup(identity: ToolIdentity) -> None:
-    """四种来源同时受可见范围限制，普通查找无法绕过空白名单或创建孙 Agent。"""
+    """四种来源同时受可见范围限制，普通查找遵守完整工具身份和白名单。"""
     class Operation(BaseTool):
         """提供可被真实查询和调用的普通工具。"""
         name, description = "operation", "测试操作"
@@ -58,7 +59,7 @@ def test_whitelist_filters_all_tool_origins_and_forged_lookup(identity: ToolIden
     assert [item.name for item in allowed.get_tools()] == [tool.name]
     tool.name = "create_subagent"
     allowed.register(tool)
-    assert allowed.get("create_subagent") is None
+    assert allowed.get("create_subagent") is tool
     denied.register_framework_tool(MessageParentTool())
     assert [item.name for item in denied.get_tools()] == ["message_parent"]
 
@@ -171,9 +172,9 @@ def test_factory_assembles_child_mcp_with_parent_identity_and_current_permission
             mcp=MCPModelSettings(servers={"server": MCPServerPolicy(enabled=True, identity_fingerprint="f" * 64)}))
         definition = SubagentDefinition("child", "parent", "助手", "child", frozenset({ToolIdentity.mcp("server", "operation")}),
             True, datetime.now(timezone.utc))
-        manager = SessionStateManager("child", str(tmp_path / "state.sqlite3"), storage_scope=AgentStorageScope.SUBAGENT)
+        manager = SessionStateManager("child", SqliteFactory(str(tmp_path / "state.sqlite3")), storage_scope=AgentStorageScope.SUBAGENT)
         agent = build_agent(settings, mcp_connection_manager=Connection(), tool_authorization=ToolAuthorization(lambda sid: settings if sid == "parent" else None),
-            session_state_manager=manager, subagent=definition)
+            session_state_manager=manager, subagent=definition, sqlite_factory=SqliteFactory())
         try:
             await agent.initialize()
             available = agent.tool_manager.get_tools()

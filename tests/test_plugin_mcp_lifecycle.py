@@ -1,3 +1,4 @@
+from app.crud.sqlite_factory import SqliteFactory
 """验证插件声明、会话保存、实际装配和连接清理组成完整流程。"""
 
 from app.mcp.mcp_connection_manager import SessionFactory
@@ -89,7 +90,7 @@ async def test_plugin_mcp_binds_permissions_and_disconnects_on_parameter_change(
     authorization = ToolAuthorization(dao.get_chat_settings)
     prepared = service.prepare(saved)
     agent = agent_factory.build_agent(prepared.settings, manager, authorization, bind_plugin_mcp=plugins.bind_mcp,
-                                      plugin_mcp={"lifecycle": prepared.plugins["lifecycle"].mcp_servers})
+                                      plugin_mcp={"lifecycle": prepared.plugins["lifecycle"].mcp_servers}, sqlite_factory=SqliteFactory())
     try:
         await agent.initialize()
         assert opened == ["first-server"]

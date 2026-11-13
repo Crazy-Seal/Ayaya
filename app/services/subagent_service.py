@@ -1,4 +1,5 @@
-"""准备子身份、父子消息和结果业务，执行资源由 AgentSession 管理。"""
+"""准备子身份、父子消息和结果业务，执行资源由所属会话管理。"""
+from collections.abc import Callable
 
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -8,34 +9,26 @@ from app.agent.runtime.subagent_requests import CreateSubagentRequest
 from app.agent.state.manager import SessionStateManager
 from app.crud.subagent_dao import SubagentDao
 from app.crud.task_record_dao import TaskRecordDao
-from app.schemas.agent_storage import AgentStorageScope
 from app.schemas.runtime_types import AgentRunOutcome, AgentRunOutcomeKind, InboxKind, TaskStatus, TurnInterruptReason
 from app.schemas.subagent_types import SubagentDefinition, SubagentRecord, TaskRecordKind
-from app.schemas.task_types import TaskRecord
 from app.services.agent_identity_service import AgentIdentityService
 
 
 class SubagentService:
     """集中子身份和结果的持久业务，供运行层组织执行流程。"""
 
-    def __init__(self, definitions: SubagentDao, results: TaskRecordDao, identity: AgentIdentityService) -> None:
+    def __init__(self, definitions: SubagentDao, results: TaskRecordDao, identity: AgentIdentityService,
+                 *, manager_factory: Callable[[SubagentDefinition], SessionStateManager]) -> None:
         """注入共享持久化与身份资格规则。
 
         Args:
             definitions (SubagentDao): 子身份及显式交互的事务存储。
             results (TaskRecordDao): 执行结果及通知的事务存储。
             identity (AgentIdentityService): 共享的身份资格查询对象。
+            manager_factory (Callable[[SubagentDefinition], SessionStateManager]): 按实际子定义创建独立输入及历史对象的工厂。
         """
         self.definitions, self.results, self.identity = definitions, results, identity
-
-    def new_manager(self, definition: SubagentDefinition) -> SessionStateManager:
-        """为子历史准备持久状态对象，由实际使用方负责关闭。
-
-        Args:
-            definition (SubagentDefinition): 已确认父子归属的固定子定义。
-        """
-        return SessionStateManager(definition.subagent_id, self.definitions.db_path,
-                                   storage_scope=AgentStorageScope.SUBAGENT)
+        self._manager_factory = manager_factory
 
     async def create(self, request: CreateSubagentRequest) -> tuple[SubagentDefinition, bool]:
         """构造稳定定义并保存初始任务，重试返回原受理的身份。
@@ -49,27 +42,6 @@ class SubagentService:
                                                            f"{request.source.run_id}:{request.source.tool_call_id}")
         return saved, saved.subagent_id == definition.subagent_id
 
-    async def pending_creation(self, definition: SubagentDefinition) -> bool:
-        """查询初始命令是否仍待交付，为重放创建选择运行或历史回执。
-
-        Args:
-            definition (SubagentDefinition): 已确认父子归属的固定子定义。
-        """
-        manager = self.new_manager(definition)
-        try:
-            return any(item.kind == InboxKind.AGENT_COMMAND for item in await manager.read_activation_batch())
-        finally:
-            await manager.close()
-
-    async def latest_result(self, definition: SubagentDefinition) -> TaskRecord | None:
-        """读取此子最近的结果段，为创建回执重放提供已保存引用。
-
-        Args:
-            definition (SubagentDefinition): 已确认父子归属的固定子定义。
-        """
-        return next((item for item in await self.results.list(definition.session_id)
-                     if item.subagent_id == definition.subagent_id and item.kind == TaskRecordKind.SUBAGENT), None)
-
     async def finish_run(self, run_id: str, outcome: AgentRunOutcome, *, notify: bool) -> bool:
         """把执行结果映射为首次终态和报告，运行层在提交后发布记录。
 
@@ -79,8 +51,8 @@ class SubagentService:
             notify (bool): 是否允许随终态提交父收件通知。
         """
         status = (TaskStatus.COMPLETED if outcome.kind == AgentRunOutcomeKind.COMPLETED else
-                  TaskStatus.FAILED if outcome.kind == AgentRunOutcomeKind.FAILED else TaskStatus.STOPPED)
-        return await self.results.finish_once(run_id, status, result=outcome.result, error=outcome.error, notify=notify)
+                  TaskStatus.FAILED if outcome.kind in {AgentRunOutcomeKind.FAILED, AgentRunOutcomeKind.SAVE_FAILED} else TaskStatus.STOPPED)
+        return await self.results.finish_once(run_id, status, result=outcome.result, error=outcome.error, notify=notify) is not None
 
     async def get_details(self, session_id: str, subagent_id: str, interaction_limit: int) -> dict[str, object]:
         """查询归属内的定义、交互和最终报告，实时摘要交由运行层合并。
@@ -119,7 +91,7 @@ class SubagentService:
         available = []
         for record in await self.definitions.list_records():
             definition = record.definition
-            manager = self.new_manager(definition)
+            manager = self._manager_factory(definition)
             try:
                 batch = await manager.read_activation_batch()
                 if definition.subagent_id not in orphaned and any(item.kind == InboxKind.AGENT_COMMAND for item in batch):

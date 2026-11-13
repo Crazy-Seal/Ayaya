@@ -1,4 +1,9 @@
 """用公开事件流验证状态查询和增量交付的并发顺序。"""
+from tests.runtime_support import runtime_hub, close_test_runtime
+from app.routes.agent import observe_runtime
+from app.schemas.runtime_types import AgentRunOutcome, AgentRunOutcomeKind
+from tests.runtime_support import build_test_scheduler
+from app.crud.sqlite_factory import SqliteFactory
 from tests.runtime_support import RuntimeAgentStub
 
 import asyncio
@@ -26,16 +31,16 @@ def test_snapshot_failure_or_cancellation_allows_reconnection(cancelled: bool) -
     """
     async def scenario() -> None:
         """反复终止首次查询，再验证新连接和正常输出。"""
-        source = EventSource()
+        source = EventSource(InteractionEventHub(subscriptions=ChannelSubscriptionService(SqliteFactory())))
         source.fail_snapshot = True
         if cancelled:
             source.release_snapshot = asyncio.Event()
-        hub = InteractionEventHub(source, subscriptions=ChannelSubscriptionService())
-        await hub.start()
+        hub = source.hub
+        pass
         try:
             for _ in range(3):
                 source.snapshot_entered.clear()
-                stream = hub.subscribe("s", "desktop")
+                stream = observe_runtime("s", "desktop", hub, source)
                 waiting = asyncio.create_task(anext(stream))
                 await asyncio.wait_for(source.snapshot_entered.wait(), 1)
                 if cancelled:
@@ -48,7 +53,7 @@ def test_snapshot_failure_or_cancellation_allows_reconnection(cancelled: bool) -
                 await stream.aclose()
             source.fail_snapshot = False
             source.release_snapshot = None
-            recovered = hub.subscribe("s", "desktop")
+            recovered = observe_runtime("s", "desktop", hub, source)
             try:
                 assert (await anext(recovered)).payload["phase"] == "idle"
                 await source.publish(InteractionEvent("s", "text_chunk", {"value": "恢复后输出"}))
@@ -113,7 +118,7 @@ def test_event_during_inbox_query_reaches_old_and_new_connection(
                 """
                 self.manager = manager
 
-            async def run(self, message, **kwargs):
+            async def run(self, message, *, emit, **kwargs):
                 """先产生片段，再等待查询交错后继续。
 
                 Args:
@@ -123,10 +128,11 @@ def test_event_during_inbox_query_reaches_old_and_new_connection(
                 Yields:
                     AgentEvent: 已知片段及指定的并发事件。
                 """
-                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": kwargs.get("origin_channel", "desktop"), "resumed": False})
+                outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
+                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": kwargs.get("origin_channel", "desktop"), "resumed": False}))
                 state = await self.manager.load()
                 await self.manager.commit_human_input(state, message, None, inputs=kwargs["inbox_inputs"])
-                yield AgentEvent(EventType.TEXT_CHUNK, "今天")
+                await emit(AgentEvent(EventType.TEXT_CHUNK, "今天"))
                 await release_agent.wait()
                 control = kwargs["turn_control"]
                 if event_type == EventType.INTERRUPT:
@@ -137,11 +143,15 @@ def test_event_during_inbox_query_reaches_old_and_new_connection(
                     state.set_interrupt({**data, "tool_call_id": "approval-call", "tool_name": "test_tool"})
                     await self.manager.save_progress(state)
                     pause_test_turn(control, data["request_id"])
+                    outcome = AgentRunOutcome(AgentRunOutcomeKind.INTERRUPTED)
                 elif event_type in {EventType.DONE, EventType.ERROR}:
-                    control.run_state.begin_finishing(control.run_id)
-                yield AgentEvent(event_type, data)
+                    if event_type == EventType.ERROR:
+                        outcome = AgentRunOutcome(AgentRunOutcomeKind.FAILED, error=str(data))
+                await emit(AgentEvent(event_type, data))
                 if event_type == EventType.TEXT_CHUNK:
                     await asyncio.Event().wait()
+
+                return outcome
 
             async def close(self):
                 """测试执行对象没有外部资源。"""
@@ -158,16 +168,16 @@ def test_event_during_inbox_query_reaches_old_and_new_connection(
             """
             return Agent(_manager)
 
-        subscriptions = ChannelSubscriptionService(path)
-        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
+        subscriptions = ChannelSubscriptionService(SqliteFactory(path))
+        scheduler = build_test_scheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
             agent_factory=factory, subscriptions=subscriptions,
-            session_state_manager_factory=partial(WaitingInbox, db_path=path),
+            session_state_manager_factory=partial(WaitingInbox, sqlite_factory=SqliteFactory(path)),
         )
-        hub = InteractionEventHub(scheduler, subscriptions=subscriptions)
+        hub = runtime_hub(scheduler)
         await scheduler.start()
-        await hub.start()
-        old = hub.subscribe("s", "desktop")
-        new = hub.subscribe("s", "desktop")
+        pass
+        old = observe_runtime("s", "desktop", hub, scheduler)
+        new = observe_runtime("s", "desktop", hub, scheduler)
         waiting = None
         try:
             await anext(old)
@@ -200,7 +210,7 @@ def test_event_during_inbox_query_reaches_old_and_new_connection(
             await old.aclose()
             await new.aclose()
             await hub.close()
-            await scheduler.close()
+            await close_test_runtime(scheduler)
     asyncio.run(scenario())
 
 
@@ -208,13 +218,13 @@ def test_event_already_reflected_in_snapshot_is_not_delivered_again() -> None:
     """状态已包含但尚未被 Hub 领取的事件不会向新连接重复交付。"""
     async def scenario() -> None:
         """先产生事件，随后同时启动领取和首次状态查询。"""
-        source = EventSource()
+        source = EventSource(InteractionEventHub(subscriptions=ChannelSubscriptionService(SqliteFactory())))
         await source.publish(InteractionEvent("s", "text_chunk", {"value": "状态之前"}))
-        hub = InteractionEventHub(source, subscriptions=ChannelSubscriptionService())
-        stream = hub.subscribe("s", "desktop")
+        hub = source.hub
+        stream = observe_runtime("s", "desktop", hub, source)
         try:
             assert (await anext(stream)).event_sequence == 1
-            await hub.start()
+            pass
             await source.publish(InteractionEvent("s", "text_chunk", {"value": "状态之后"}))
             event = await asyncio.wait_for(anext(stream), 1)
             assert event.event_sequence == 2 and event.payload["value"] == "状态之后"

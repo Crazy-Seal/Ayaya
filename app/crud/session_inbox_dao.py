@@ -4,13 +4,19 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
-import os
+import asyncio
 from typing import Any
 
+import logging
+import sqlite3
 import aiosqlite
+from app.agent.utils.infra.bounded_operation import close_resources
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from app.crud.sqlite_factory import SqliteFactory, SQLITE_SAVE_TIMEOUT_SECONDS
+from app.crud.sqlite_save import run_sqlite_save, sqlite_transaction, SqliteRollbackError
 
 from app.agent.runtime.session_inbox import InboxEnvelope, InputNoLongerPending
-from app.environment import get_checkpoint_db
 from app.schemas.agent_storage import AgentStorageScope
 from app.schemas.runtime_types import InboxDeliveryMode, InboxKind, InboxStatus, SYSTEM_INPUT_ORIGIN
 
@@ -55,6 +61,8 @@ async def append_input_in_transaction(
         f"INSERT INTO {storage_scope.inbox_table}(session_id,kind,origin_channel,payload_json,created_at) VALUES (?,?,?,?,?)",
         (context_id, kind.value, origin_channel, json.dumps(payload, ensure_ascii=False), datetime.now(timezone.utc).isoformat()),
     )
+    if cursor.lastrowid is None:
+        raise RuntimeError("数据库未返回新输入编号")
     return int(cursor.lastrowid)
 
 
@@ -65,10 +73,12 @@ async def ensure_inbox_schema(db: aiosqlite.Connection, *,
     Args:
         db (aiosqlite.Connection): 当前存储操作的数据库连接。
 
+        storage_scope (AgentStorageScope): 本上下文使用的父表或子表范围。
+
     Raises:
         RuntimeError: 现有 Inbox 仍包含已删除的 claimed 结构。
     """
-    rows = await db.execute_fetchall(f"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = '{storage_scope.inbox_table}'")
+    rows = list(await db.execute_fetchall(f"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = '{storage_scope.inbox_table}'"))
     if rows and "claimed" in rows[0][0]:
         raise RuntimeError("session_inbox 需要先执行 scripts/migrate_inbox_two_states.py 离线迁移")
     await db.execute(INBOX_SCHEMA_SQL.replace("session_inbox", storage_scope.inbox_table))
@@ -179,6 +189,8 @@ async def append_task_terminal_in_transaction(
     )
 
 
+logger = logging.getLogger(__name__)
+
 class SessionInboxDao:
     """访问一个会话的待处理输入，包含真人消息和后台任务结束通知。
 
@@ -190,57 +202,35 @@ class SessionInboxDao:
 
     Attributes:
         session_id (str): 共享 Ayaya 会话标识。
-        db_path (str | None): 共享 SQLite 路径，省略时使用当前环境的隔离存储。
+        sqlite_factory (SqliteFactory): 共享 SQLite 路径，省略时使用当前环境的隔离存储。
         _db (aiosqlite.Connection | None): 参与当前原子持久化操作的 SQLite 连接。
     """
 
-    def __init__(self, session_id: str, db_path: str | None = None, *,
+    def __init__(self, session_id: str, sqlite_factory: SqliteFactory, *,
                  storage_scope: AgentStorageScope = AgentStorageScope.MAIN):
         """绑定会话和测试可替换的数据库路径，延迟创建 SQLite 连接。
 
         Args:
             session_id (str): 共享 Ayaya 会话标识。
-            db_path (str | None): 共享 SQLite 路径，省略时使用当前环境的隔离存储。
+            sqlite_factory (SqliteFactory): 共享 SQLite 路径，省略时使用当前环境的隔离存储。
+            storage_scope (AgentStorageScope): 本上下文使用的父表或子表范围。
         """
         self.session_id = session_id
         self.storage_scope = AgentStorageScope(storage_scope)
-        self.db_path = str(db_path or get_checkpoint_db())
+        self._sqlite_factory = sqlite_factory
+        self.db_path = str(sqlite_factory.main_path)
         self._db: aiosqlite.Connection | None = None
+        self._write_lock = asyncio.Lock()
+        self._db_lock = asyncio.Lock()
 
-    @staticmethod
-    async def reset_after_restart(db_path: str | None = None, *,
-                                  storage_scope: AgentStorageScope = AgentStorageScope.MAIN) -> None:
-        """启动和关闭时作废未交付真人意图，保留任务通知。
-
-        Args:
-            db_path (str | None): 隔离测试或应用数据库路径。
-        """
-        database = str(db_path or get_checkpoint_db())
-        directory = os.path.dirname(database)
-        if directory:
-            os.makedirs(directory, exist_ok=True)
-        async with aiosqlite.connect(database) as db:
-            await ensure_inbox_schema(db, storage_scope=storage_scope)
-            await db.execute(f"DELETE FROM {storage_scope.inbox_table} WHERE kind = ? AND status = ?",
-                             (InboxKind.HUMAN.value, InboxStatus.PENDING.value))
-            await db.commit()
-
-    @staticmethod
-    async def pending_sessions(db_path: str | None = None, *,
-                               storage_scope: AgentStorageScope = AgentStorageScope.MAIN) -> list[str]:
-        """查询有未交付输入的会话，不赋予执行资格。
-
-        Args:
-            db_path (str | None): 应用或测试数据库路径。
-
-        Returns:
-            list[str]: 包含 pending 输入的会话编号。
-        """
-        async with aiosqlite.connect(str(db_path or get_checkpoint_db())) as db:
-            await ensure_inbox_schema(db, storage_scope=storage_scope)
-            rows = await db.execute_fetchall(
-                f"SELECT DISTINCT session_id FROM {storage_scope.inbox_table} WHERE status = ?", (InboxStatus.PENDING.value,))
-        return [str(row[0]) for row in rows]
+    async def reset_after_restart(self) -> None:
+        """启动时作废旧真人意图，普通通知继续保留。"""
+        async def save_attempt() -> None:
+            """在同一事务中删除上次进程尚未交付的真人输入。"""
+            async with self._transaction() as db:
+                await db.execute(f"DELETE FROM {self.storage_scope.inbox_table} WHERE kind=? AND status=?",
+                                 (InboxKind.HUMAN.value, InboxStatus.PENDING.value))
+        await run_sqlite_save(save_attempt, timeout_seconds=SQLITE_SAVE_TIMEOUT_SECONDS)
 
     async def _get_db(self) -> aiosqlite.Connection:
         """复用会话连接并幂等初始化 Inbox 表及排序索引。
@@ -248,19 +238,38 @@ class SessionInboxDao:
         Returns:
             aiosqlite.Connection: 已经完成幂等 Inbox 初始化的实例连接。
         """
-        # 1. 按环境路径延迟打开连接，建表和索引只在该连接首次使用时初始化。
-        if self._db is None:
-            os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-            self._db = await aiosqlite.connect(self.db_path)
-            await ensure_inbox_schema(self._db, storage_scope=self.storage_scope)
-            await self._db.execute(
-                f"CREATE INDEX IF NOT EXISTS idx_{self.storage_scope.inbox_table}_order "
-                f"ON {self.storage_scope.inbox_table}(session_id, status, id)"
-            )
-            await self._db.commit()
-        return self._db
+        async with self._db_lock:
+            if self._db is None:
+                db = await self._sqlite_factory.connect()
+                try:
+                    async with sqlite_transaction(db):
+                        await ensure_inbox_schema(db, storage_scope=self.storage_scope)
+                        await db.execute(
+                            f"CREATE INDEX IF NOT EXISTS idx_{self.storage_scope.inbox_table}_order "
+                            f"ON {self.storage_scope.inbox_table}(session_id, status, id)")
+                except BaseException:
+                    await close_resources(((self.db_path, db.close),), logger=logger)
+                    raise
+                self._db = db
+            return self._db
 
-    def _from_row(self, row: tuple[Any, ...]) -> InboxEnvelope:
+    @asynccontextmanager
+    async def _transaction(self) -> AsyncIterator[aiosqlite.Connection]:
+        """串行本对象的业务事务，回滚失败后清除已经停用的连接。
+
+        Yields:
+            aiosqlite.Connection: 当前安全尝试使用的连接。
+        """
+        async with self._write_lock:
+            db = await self._get_db()
+            try:
+                async with sqlite_transaction(db):
+                    yield db
+            except SqliteRollbackError:
+                self._db = None
+                raise
+
+    def _from_row(self, row: sqlite3.Row | tuple[Any, ...]) -> InboxEnvelope:
         """将固定列顺序的数据库行还原为不可变输入快照。
 
         Args:
@@ -290,17 +299,17 @@ class SessionInboxDao:
         """
         from app.agent.state.messages import PluginNotificationMessage
         PluginNotificationMessage(plugin_name=plugin_name, name=name, text=text)
-        db = await self._get_db()
-        try:
-            await db.execute(
-                f"INSERT INTO {self.storage_scope.inbox_table} (session_id, kind, origin_channel, payload_json, created_at) VALUES (?, ?, ?, ?, ?)",
-                (self.session_id, InboxKind.PLUGIN_NOTIFICATION.value, SYSTEM_INPUT_ORIGIN,
-                 json.dumps({"plugin_name": plugin_name, "name": name, "text": text}, ensure_ascii=False),
-                 datetime.now(timezone.utc).isoformat()))
-            await db.commit()
-        except BaseException:
-            await db.rollback()
-            raise
+        prepared_at = datetime.now(timezone.utc).isoformat()
+        async def save_attempt() -> None:
+            """提交本次已准备的业务材料，失败后由共享规则决定安全重试。"""
+            async with self._transaction() as db:
+                await db.execute(
+                    f"INSERT INTO {self.storage_scope.inbox_table} (session_id, kind, origin_channel, payload_json, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (self.session_id, InboxKind.PLUGIN_NOTIFICATION.value, SYSTEM_INPUT_ORIGIN,
+                     json.dumps({"plugin_name": plugin_name, "name": name, "text": text}, ensure_ascii=False),
+                     prepared_at))
+
+        return await run_sqlite_save(save_attempt, timeout_seconds=SQLITE_SAVE_TIMEOUT_SECONDS)
 
     async def read_runtime_inputs(self) -> tuple[InboxEnvelope, ...]:
         """按输入编号读取任务和插件通知，留待统一的消息交付事务保存。"""
@@ -308,7 +317,7 @@ class SessionInboxDao:
 
     async def submit_human(
         self, origin_channel: str, message: str, *, images: list[str] | None = None,
-        queued: bool = False,
+        queued: bool = False, discarded_ids: tuple[int, ...] = (),
     ) -> InboxEnvelope:
         """校验真人内容并持久写入 pending 输入，返回值不代表已交付模型。
 
@@ -318,6 +327,8 @@ class SessionInboxDao:
             images (list[str] | None): 真人附件的图片 data URL 列表。
             queued (bool): 是否等前一真人轮次正常完成后才交付。
 
+            discarded_ids (tuple[int, ...]): 前次交付失败且由本会话明确放弃的输入编号。
+
         Returns:
             InboxEnvelope: 已持久受理但尚未交付模型的输入快照。
 
@@ -325,28 +336,36 @@ class SessionInboxDao:
             ValueError: 消息来源和内容不可为空。
             RuntimeError: 数据库未返回 Inbox ID。
         """
-        # 1. 同时验证来源及文本或附件，纯图片输入也可受理。
         if not origin_channel or (not message.strip() and not images):
             raise ValueError("消息来源和内容不可为空")
-        db = await self._get_db()
-        payload = {"message": message, "images": images or []}
-        # 2. 先写 pending 记录并提交，再返回 input_sequence；此时尚未交付模型。
-        cursor = await db.execute(
-            f"INSERT INTO {self.storage_scope.inbox_table} "
-            "(session_id, kind, origin_channel, payload_json, delivery_mode, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (self.session_id, InboxKind.HUMAN.value, origin_channel, json.dumps(payload, ensure_ascii=False),
-             (InboxDeliveryMode.QUEUED if queued else InboxDeliveryMode.IMMEDIATE).value,
-             datetime.now(timezone.utc).isoformat()),
-        )
-        await db.commit()
-        if cursor.lastrowid is None:
-            raise RuntimeError("数据库未返回 Inbox ID")
-        return InboxEnvelope(
-            int(cursor.lastrowid), self.session_id, InboxKind.HUMAN, origin_channel,
-            payload, InboxStatus.PENDING, InboxDeliveryMode.QUEUED if queued else InboxDeliveryMode.IMMEDIATE,
-            self.storage_scope,
-        )
+        payload = {"message": message, "images": list(images or [])}
+        prepared_at = datetime.now(timezone.utc).isoformat()
+        async def save_attempt() -> InboxEnvelope:
+            """提交本次已准备的业务材料，失败后由共享规则决定安全重试。"""
+            async with self._transaction() as db:
+                if discarded_ids:
+                    placeholders = ",".join("?" for _ in discarded_ids)
+                    await db.execute(f"DELETE FROM {self.storage_scope.inbox_table} WHERE session_id=? "
+                        f"AND status=? AND kind=? AND id IN ({placeholders})",
+                        (self.session_id, InboxStatus.PENDING.value, InboxKind.HUMAN.value, *discarded_ids))
+                # 2. 先写 pending 记录并提交，再返回 input_sequence；此时尚未交付模型。
+                cursor = await db.execute(
+                    f"INSERT INTO {self.storage_scope.inbox_table} "
+                    "(session_id, kind, origin_channel, payload_json, delivery_mode, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (self.session_id, InboxKind.HUMAN.value, origin_channel, json.dumps(payload, ensure_ascii=False),
+                     (InboxDeliveryMode.QUEUED if queued else InboxDeliveryMode.IMMEDIATE).value,
+                     prepared_at),
+                )
+                if cursor.lastrowid is None:
+                    raise RuntimeError("数据库未返回 Inbox ID")
+                return InboxEnvelope(
+                    int(cursor.lastrowid), self.session_id, InboxKind.HUMAN, origin_channel,
+                    payload, InboxStatus.PENDING, InboxDeliveryMode.QUEUED if queued else InboxDeliveryMode.IMMEDIATE,
+                    self.storage_scope,
+                )
+
+        return await run_sqlite_save(save_attempt, timeout_seconds=SQLITE_SAVE_TIMEOUT_SECONDS)
 
     async def _pending(self, kind: InboxKind | str | None, include_queued: bool) -> tuple[InboxEnvelope, ...]:
         """读取可交付输入，不改变数据库状态。
@@ -358,17 +377,18 @@ class SessionInboxDao:
         Returns:
             tuple[InboxEnvelope, ...]: 按输入编号排序的 pending 记录。
         """
-        db = await self._get_db()
-        kind_value = kind.value if isinstance(kind, InboxKind) else kind
-        rows = await db.execute_fetchall(
-            "SELECT id, session_id, kind, origin_channel, payload_json, status, delivery_mode "
-            f"FROM {self.storage_scope.inbox_table} WHERE session_id = ? AND status = ? "
-            "AND (? IS NULL OR kind = ?) "
-            "AND (delivery_mode = ? OR (? AND queue_ready = 1)) ORDER BY id",
-            (self.session_id, InboxStatus.PENDING.value, kind_value, kind_value,
-             InboxDeliveryMode.IMMEDIATE.value, include_queued),
-        )
-        return tuple(self._from_row(row) for row in rows)
+        async with self._write_lock:
+            db = await self._get_db()
+            kind_value = kind.value if isinstance(kind, InboxKind) else kind
+            rows = list(await db.execute_fetchall(
+                "SELECT id, session_id, kind, origin_channel, payload_json, status, delivery_mode "
+                f"FROM {self.storage_scope.inbox_table} WHERE session_id = ? AND status = ? "
+                "AND (? IS NULL OR kind = ?) "
+                "AND (delivery_mode = ? OR (? AND queue_ready = 1)) ORDER BY id",
+                (self.session_id, InboxStatus.PENDING.value, kind_value, kind_value,
+                 InboxDeliveryMode.IMMEDIATE.value, include_queued),
+            ))
+            return tuple(self._from_row(row) for row in rows)
 
     async def read_next(self, *, kind: InboxKind | str | None = None, include_queued: bool = True) -> InboxEnvelope | None:
         """查询最早的可交付输入，读取后仍可撤销排队输入。
@@ -406,10 +426,13 @@ class SessionInboxDao:
         再提交自身连接上的更新。完成 checkpoint 的原子放行由 AgentStateDao
         直接调用模块级事务函数完成，不经此独立提交入口。
         """
-        db = await self._get_db()
-        # 1. 复用唯一的放行筛选规则，完成后才提交本次独立更新。
-        await release_queued_in_transaction(db, self.session_id, storage_scope=self.storage_scope)
-        await db.commit()
+        async def save_attempt() -> None:
+            """提交本次已准备的业务材料，失败后由共享规则决定安全重试。"""
+            async with self._transaction() as db:
+                # 1. 复用唯一的放行筛选规则，完成后才提交本次独立更新。
+                await release_queued_in_transaction(db, self.session_id, storage_scope=self.storage_scope)
+
+        return await run_sqlite_save(save_attempt, timeout_seconds=SQLITE_SAVE_TIMEOUT_SECONDS)
 
     async def read_task_terminals(self) -> tuple[InboxEnvelope, ...]:
         """模型调用前查询待交付任务通知，不改变输入状态。
@@ -425,10 +448,13 @@ class SessionInboxDao:
         Args:
             envelope_id (int): 当前失败真人输入的编号。
         """
-        db = await self._get_db()
-        await db.execute(f"DELETE FROM {self.storage_scope.inbox_table} WHERE session_id = ? AND id = ? AND kind = ? AND status = ?",
-                         (self.session_id, envelope_id, InboxKind.HUMAN.value, InboxStatus.PENDING.value))
-        await db.commit()
+        async def save_attempt() -> None:
+            """提交本次已准备的业务材料，失败后由共享规则决定安全重试。"""
+            async with self._transaction() as db:
+                await db.execute(f"DELETE FROM {self.storage_scope.inbox_table} WHERE session_id = ? AND id = ? AND kind = ? AND status = ?",
+                             (self.session_id, envelope_id, InboxKind.HUMAN.value, InboxStatus.PENDING.value))
+
+        return await run_sqlite_save(save_attempt, timeout_seconds=SQLITE_SAVE_TIMEOUT_SECONDS)
 
     async def status(self, envelope_id: int) -> InboxStatus | None:
         """查询指定输入的交付状态，用于确保真人事件在 checkpoint 提交后发布。
@@ -439,13 +465,14 @@ class SessionInboxDao:
         Returns:
             InboxStatus | None: 该输入的交付状态，记录不存在时为空。
         """
-        db = await self._get_db()
-        async with db.execute(
-            f"SELECT status FROM {self.storage_scope.inbox_table} WHERE session_id = ? AND id = ?",
-            (self.session_id, envelope_id),
-        ) as cursor:
-            row = await cursor.fetchone()
-        return InboxStatus(row[0]) if row else None
+        async with self._write_lock:
+            db = await self._get_db()
+            async with db.execute(
+                f"SELECT status FROM {self.storage_scope.inbox_table} WHERE session_id = ? AND id = ?",
+                (self.session_id, envelope_id),
+            ) as cursor:
+                row = await cursor.fetchone()
+            return InboxStatus(row[0]) if row else None
 
     async def pending_humans(self, *, origin_channel: str | None = None) -> list[InboxEnvelope]:
         """查询未交付真人输入，按需限定来源以生成接收方快照。
@@ -456,15 +483,16 @@ class SessionInboxDao:
         Returns:
             list[InboxEnvelope]: 按输入序号排序的未交付真人输入。
         """
-        db = await self._get_db()
-        rows = await db.execute_fetchall(
-            "SELECT id, session_id, kind, origin_channel, payload_json, status, "
-            f"delivery_mode FROM {self.storage_scope.inbox_table} "
-            "WHERE session_id = ? AND kind = ? AND status != ? "
-            "AND (? IS NULL OR origin_channel = ?) ORDER BY id",
-            (self.session_id, InboxKind.HUMAN.value, InboxStatus.DELIVERED.value, origin_channel, origin_channel),
-        )
-        return [self._from_row(row) for row in rows]
+        async with self._write_lock:
+            db = await self._get_db()
+            rows = list(await db.execute_fetchall(
+                "SELECT id, session_id, kind, origin_channel, payload_json, status, "
+                f"delivery_mode FROM {self.storage_scope.inbox_table} "
+                "WHERE session_id = ? AND kind = ? AND status != ? "
+                "AND (? IS NULL OR origin_channel = ?) ORDER BY id",
+                (self.session_id, InboxKind.HUMAN.value, InboxStatus.DELIVERED.value, origin_channel, origin_channel),
+            ))
+            return [self._from_row(row) for row in rows]
 
     async def cancel_queued(self, envelope_id: int, origin_channel: str) -> bool:
         """仅删除当前来源尚未交付的排队消息，保存成功的输入不能撤销。
@@ -476,46 +504,57 @@ class SessionInboxDao:
         Returns:
             bool: 只有同来源尚未交付的排队记录实际被删除时为真。
         """
-        db = await self._get_db()
-        # 1. 条件删除同时约束会话、来源、排队模式和 pending，已经交付的输入不可撤销。
-        cursor = await db.execute(
-            f"DELETE FROM {self.storage_scope.inbox_table} WHERE session_id = ? AND id = ? "
-            "AND origin_channel = ? AND kind = ? "
-            "AND delivery_mode = ? AND status = ?",
-            (self.session_id, envelope_id, origin_channel, InboxKind.HUMAN.value,
-             InboxDeliveryMode.QUEUED.value, InboxStatus.PENDING.value),
-        )
-        await db.commit()
-        return cursor.rowcount == 1
+        async def save_attempt() -> bool:
+            """提交本次已准备的业务材料，失败后由共享规则决定安全重试。"""
+            async with self._transaction() as db:
+                # 1. 条件删除同时约束会话、来源、排队模式和 pending，已经交付的输入不可撤销。
+                cursor = await db.execute(
+                    f"DELETE FROM {self.storage_scope.inbox_table} WHERE session_id = ? AND id = ? "
+                    "AND origin_channel = ? AND kind = ? "
+                    "AND delivery_mode = ? AND status = ?",
+                    (self.session_id, envelope_id, origin_channel, InboxKind.HUMAN.value,
+                     InboxDeliveryMode.QUEUED.value, InboxStatus.PENDING.value),
+                )
+                return cursor.rowcount == 1
+
+        return await run_sqlite_save(save_attempt, timeout_seconds=SQLITE_SAVE_TIMEOUT_SECONDS)
 
     async def pending_sessions(self) -> tuple[str, ...]:
         """列出尚有待交付输入的上下文，供启动整理已删除的父身份。"""
-        db = await self._get_db()
-        rows = await db.execute_fetchall(
-            f"SELECT DISTINCT session_id FROM {self.storage_scope.inbox_table} WHERE status=?",
-            (InboxStatus.PENDING.value,))
-        return tuple(str(row[0]) for row in rows)
+        async with self._write_lock:
+            db = await self._get_db()
+            rows = list(await db.execute_fetchall(
+                f"SELECT DISTINCT session_id FROM {self.storage_scope.inbox_table} WHERE status=?",
+                (InboxStatus.PENDING.value,)))
+            return tuple(str(row[0]) for row in rows)
 
     async def discard_pending(self) -> None:
         """父配置已删除时清除全部待交付输入，保留已经交付的历史。"""
-        db = await self._get_db()
-        try:
-            await discard_pending_in_transaction(db, self.session_id, storage_scope=self.storage_scope)
-            await db.commit()
-        except BaseException:
-            await db.rollback()
-            raise
+        async def save_attempt() -> None:
+            """提交本次已准备的业务材料，失败后由共享规则决定安全重试。"""
+            async with self._transaction() as db:
+                try:
+                    await discard_pending_in_transaction(db, self.session_id, storage_scope=self.storage_scope)
+                except BaseException:
+                    await db.rollback()
+                    raise
+
+        return await run_sqlite_save(save_attempt, timeout_seconds=SQLITE_SAVE_TIMEOUT_SECONDS)
 
     async def discard_pending_commands(self) -> None:
         """重启或最终停止时作废未消费的指令和 A2A 回复，保留后台通知。"""
-        db = await self._get_db()
-        await db.execute(f"DELETE FROM {self.storage_scope.inbox_table} WHERE session_id=? AND status=? "
-                         "AND kind IN (?,?,?)", (self.session_id, InboxStatus.PENDING.value, InboxKind.HUMAN.value,
-                                                 InboxKind.AGENT_COMMAND.value, InboxKind.PARENT_REPLY.value))
-        await db.commit()
+        async def save_attempt() -> None:
+            """提交本次已准备的业务材料，失败后由共享规则决定安全重试。"""
+            async with self._transaction() as db:
+                await db.execute(f"DELETE FROM {self.storage_scope.inbox_table} WHERE session_id=? AND status=? "
+                             "AND kind IN (?,?,?)", (self.session_id, InboxStatus.PENDING.value, InboxKind.HUMAN.value,
+                                                     InboxKind.AGENT_COMMAND.value, InboxKind.PARENT_REPLY.value))
+
+        return await run_sqlite_save(save_attempt, timeout_seconds=SQLITE_SAVE_TIMEOUT_SECONDS)
 
     async def close(self) -> None:
-        """关闭实例持有的 SQLite 连接，后续访问可以重新打开。"""
-        if self._db is not None:
-            await self._db.close()
-            self._db = None
+        """在有限预算内释放本对象连接，已开始的保存确认由写锁排序完成。"""
+        async with self._write_lock:
+            db, self._db = self._db, None
+            if db is not None:
+                await close_resources(((self.db_path, db.close),), logger=logger, retryable=(sqlite3.Error, OSError))

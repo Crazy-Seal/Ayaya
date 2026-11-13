@@ -1,4 +1,5 @@
 """通过插件发现、钩子和真实模型执行流程验证桌面环境截图。"""
+from app.crud.sqlite_factory import SqliteFactory
 
 import base64
 from contextlib import closing
@@ -131,7 +132,7 @@ async def test_each_model_request_refreshes_desktop_and_compacts_tool_screenshot
     state = AgentState.create_new(config.session_id)
     state.add_user_message("看一下桌面")
     database = tmp_path / "state.sqlite3"
-    manager = SessionStateManager(config.session_id, str(database))
+    manager = SessionStateManager(config.session_id, SqliteFactory(str(database)))
     try:
         events = [event async for event in pipeline.execute(state, session_state_manager=manager)]
         assert not [event for event in events if event.type == EventType.ERROR]
@@ -277,7 +278,7 @@ async def test_plugin_switch_controls_capture(
                             openai_base_url="http://localhost", temperature=0.7, system_prompt="test",
                             context_strategy={}, agent_plugins={"memory": {"enabled": False},
                             desktop_plugin.name: {"enabled": enabled}})
-    agent = agent_factory.build_agent(settings)
+    agent = agent_factory.build_agent(settings, sqlite_factory=SqliteFactory())
     state = AgentState.create_new(settings.session_id)
     try:
         await agent.initialize()

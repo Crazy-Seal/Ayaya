@@ -1,4 +1,11 @@
+from tests.runtime_support import make_execution_control
 """验证工具持久受理后的立即回执和异步执行归属。"""
+from tests.runtime_support import collect_agent_events
+from app.schemas.runtime_types import CommandReceipt, CommandStatus
+from app.crud.sqlite_factory import SqliteFactory
+
+from app.crud.task_record_dao import TaskRecordDao
+from app.services.settings_mutation import SettingsMutationCoordinator
 
 import asyncio
 from pathlib import Path
@@ -7,7 +14,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.agent.runtime.subagent_requests import SubagentReceipt
 from app.agent.runtime.subagent_requests import CreateSubagentRequest
 from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
 from app.agent.agent import Agent, AgentConfig
@@ -26,7 +32,6 @@ from app.agent.tools.create_subagent import CreateSubagentTool
 from app.agent.tools.interact_subagent import InteractSubagentTool
 from app.agent.tools.get_subagent_details import GetSubagentDetailsTool
 from app.agent.tools._subagent_support import MessageParentTool
-from app.schemas.subagent_types import SubagentCommandEffect
 from app.schemas.chat_settings import ChatSettings, AgentPluginSettings
 from app.schemas.mcp import MCPModelSettings, MCPServerPolicy
 from app.schemas.tool_identity import ToolIdentity
@@ -61,7 +66,7 @@ def test_parent_model_public_names_become_source_specific_whitelist(tmp_path: Pa
     async def scenario() -> None:
         """仅替换模型和请求消费者，保留 Agent 装配、权限过滤及工具执行。"""
         queue = asyncio.Queue()
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=queue, db_path=str(tmp_path / "tasks.sqlite3"))
+        supervisor = TaskSupervisor(runtime_queue=queue, records=TaskRecordDao(SqliteFactory(str(tmp_path / "tasks.sqlite3"))))
         settings = ChatSettings(session_id="parent", model_name="test", openai_api_key="test",
             openai_base_url="http://unused", temperature=0, system_prompt="完成任务",
             context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100),
@@ -113,12 +118,12 @@ def test_parent_model_public_names_become_source_specific_whitelist(tmp_path: Pa
             request = await asyncio.wait_for(queue.get(), 3)
             assert isinstance(request, CreateSubagentRequest)
             assert request.tool_whitelist == expected_identities
-            request.reply.set_result(SubagentReceipt("child", True, SubagentCommandEffect.STARTED, None))
+            request.reply.set_result(CommandReceipt(CommandStatus.ACCEPTED, "child"))
             return request
 
         agent = Agent(AgentConfig(session_id="parent", model_name="test", api_key="test",
             system_prompt="完成任务", context_strategy=settings.context_strategy), llm_client=Model(),
-            db_path=str(tmp_path / "state.sqlite3"), tool_authorization=authorization,
+            sqlite_factory=SqliteFactory(str(tmp_path / "state.sqlite3")), tool_authorization=authorization,
             tool_runtime_factory=lambda name, run, call: ToolRuntime("parent", run, name, call, supervisor, queue))
         for tool in targets:
             agent.register_tool(tool)
@@ -140,6 +145,7 @@ def test_parent_model_public_names_become_source_specific_whitelist(tmp_path: Pa
             await asyncio.gather(consumer, return_exceptions=True)
             await agent.close()
             await supervisor.close()
+            await supervisor.records.close()
     asyncio.run(scenario())
 
 
@@ -149,8 +155,10 @@ async def _run_parent(agent: Agent) -> None:
     Args:
         agent (Agent): 使用可控模型和隔离存储的父 Agent。
     """
-    async for _event in agent.run("开始委派", turn_control=TurnControl("parent-run")):
+    async def receive_agent_event(_event):
+        """在原事件位置执行此场景的观察和控制。"""
         pass
+    await agent.run('开始委派', turn_control=make_execution_control('parent-run')[1], emit=receive_agent_event)
 
 
 @pytest.mark.parametrize("name", ["missing", "local:operation", "operation"])
@@ -164,7 +172,7 @@ def test_unavailable_public_name_is_rejected_before_creation(tmp_path: Path, nam
     async def scenario() -> None:
         """使用真实权限过滤产生目录，再检查创建工具没有投递请求。"""
         queue = asyncio.Queue()
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=queue, db_path=str(tmp_path / "state.sqlite3"))
+        supervisor = TaskSupervisor(runtime_queue=queue, records=TaskRecordDao(SqliteFactory(str(tmp_path / "state.sqlite3"))))
         settings = ChatSettings(session_id="parent", model_name="test", openai_api_key="test",
             openai_base_url="http://unused", temperature=0, system_prompt="测试", context_strategy={},
             tool_permissions={"local:operation": ToolPolicy.DENY})
@@ -178,17 +186,18 @@ def test_unavailable_public_name_is_rejected_before_creation(tmp_path: Path, nam
             assert queue.empty()
         finally:
             await supervisor.close()
+            await supervisor.records.close()
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("tool,args,effect", [
-    (CreateSubagentTool({}), {"name": "助手", "system_prompt": "test", "prompt": "任务"}, SubagentCommandEffect.STARTED),
-    (InteractSubagentTool(), {"subagent_id": "child", "action": "command", "text": "继续"}, SubagentCommandEffect.STEERED),
-    (InteractSubagentTool(), {"subagent_id": "child", "action": "stop"}, SubagentCommandEffect.STOPPING),
-    (InteractSubagentTool(), {"subagent_id": "child", "action": "destroy"}, SubagentCommandEffect.RELEASED),
+@pytest.mark.parametrize("tool,args", [
+    (CreateSubagentTool({}), {"name": "助手", "system_prompt": "test", "prompt": "任务"}),
+    (InteractSubagentTool(), {"subagent_id": "child", "action": "command", "text": "继续"}),
+    (InteractSubagentTool(), {"subagent_id": "child", "action": "stop"}),
+    (InteractSubagentTool(), {"subagent_id": "child", "action": "destroy"}),
 ])
 def test_subagent_tool_returns_receipt_after_acceptance(
-    tmp_path: Path, tool: BaseTool, args: dict, effect: SubagentCommandEffect,
+    tmp_path: Path, tool: BaseTool, args: dict,
 ) -> None:
     """创建及交互持久受理后立即返回回执，后续结果由异步通知交付。
 
@@ -196,26 +205,26 @@ def test_subagent_tool_returns_receipt_after_acceptance(
         tmp_path (Path): 本次测试独占的任务数据库目录。
         tool (BaseTool): 发起创建或交互的工具实例。
         args (dict): 模型提交的业务参数。
-        effect (SubagentCommandEffect): 消费者确认持久受理后采取的动作。
     """
     async def scenario() -> None:
         """只消费受理请求，验证工具无需再查询名单或等待执行。"""
         import json
         queue = asyncio.Queue()
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=queue, db_path=str(tmp_path / "state.sqlite3"))
+        supervisor = TaskSupervisor(runtime_queue=queue, records=TaskRecordDao(SqliteFactory(str(tmp_path / "state.sqlite3"))))
         runtime = ToolRuntime("parent", "run", tool.name, "call", supervisor, queue)
         invocation = asyncio.create_task(tool.execute(args, ToolContext("parent", AgentState.create_new("parent"), runtime=runtime)))
         try:
             request = await asyncio.wait_for(queue.get(), 1)
             assert not invocation.done()
-            request.reply.set_result(SubagentReceipt("child", True, effect, None))
+            request.reply.set_result(CommandReceipt(CommandStatus.ACCEPTED, "child"))
             result = await asyncio.wait_for(invocation, 1)
-            assert json.loads(result.text) == {"subagent_id": "child", "accepted": True, "effect": effect.value}
+            assert json.loads(result.text) == {"context_id": "child", "accepted": True, "status": "accepted", "run_id": None, "detail": None}
             assert queue.empty()
         finally:
             invocation.cancel()
             await asyncio.gather(invocation, return_exceptions=True)
             await supervisor.close()
+            await supervisor.records.close()
     asyncio.run(scenario())
 
 
@@ -240,7 +249,7 @@ def test_cancelled_tool_wait_cancels_unneeded_receipt(
     async def scenario() -> None:
         """取得真实工具投递的请求，取消等待后核对已失去接收者的回执。"""
         queue = asyncio.Queue()
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=queue, db_path=str(tmp_path / "state.sqlite3"))
+        supervisor = TaskSupervisor(runtime_queue=queue, records=TaskRecordDao(SqliteFactory(str(tmp_path / "state.sqlite3"))))
         runtime = ToolRuntime("parent", "run", tool.name, "call", supervisor, queue,
                               subagent_id="child" if tool.name == "message_parent" else None)
         invocation = asyncio.create_task(tool.execute(
@@ -253,6 +262,7 @@ def test_cancelled_tool_wait_cancels_unneeded_receipt(
             assert request.reply.cancelled()
         finally:
             await supervisor.close()
+            await supervisor.records.close()
     asyncio.run(scenario())
 
 
@@ -267,8 +277,7 @@ def test_creation_uses_current_tool_identities_after_catalog_changes(tmp_path: P
     async def scenario() -> None:
         """通过实际工具查找和队列请求观察最新身份是否参与持久受理。"""
         queue = asyncio.Queue()
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=queue,
-                                    db_path=str(tmp_path / "state.sqlite3"))
+        supervisor = TaskSupervisor(runtime_queue=queue, records=TaskRecordDao(SqliteFactory(str(tmp_path / "state.sqlite3"))))
         settings = ChatSettings(session_id="parent", model_name="test", openai_api_key="test",
             openai_base_url="http://unused", temperature=0, system_prompt="测试", context_strategy={},
             tool_permissions={"local:create_subagent": ToolPolicy.ALLOW, "local:operation": ToolPolicy.ALLOW})
@@ -315,13 +324,14 @@ def test_creation_uses_current_tool_identities_after_catalog_changes(tmp_path: P
                 invocation = asyncio.create_task(tool.execute(args, context))
                 request = await asyncio.wait_for(queue.get(), 1)
                 assert request.tool_whitelist == frozenset({expected})
-                request.reply.set_result(SubagentReceipt("child", True, SubagentCommandEffect.STARTED, None))
+                request.reply.set_result(CommandReceipt(CommandStatus.ACCEPTED, "child"))
                 assert (await asyncio.wait_for(invocation, 1)).text
         finally:
             if invocation is not None:
                 invocation.cancel()
                 await asyncio.gather(invocation, return_exceptions=True)
             await supervisor.close()
+            await supervisor.records.close()
     asyncio.run(scenario())
 
 
@@ -336,14 +346,13 @@ def test_factory_wires_creation_tool_to_its_agent_catalog(tmp_path: Path) -> Non
         from app.agent.runtime import agent_factory
 
         queue = asyncio.Queue()
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=queue,
-                                    db_path=str(tmp_path / "state.sqlite3"))
+        supervisor = TaskSupervisor(runtime_queue=queue, records=TaskRecordDao(SqliteFactory(str(tmp_path / "state.sqlite3"))))
         settings = ChatSettings(session_id="parent", model_name="test", openai_api_key="test",
             openai_base_url="http://unused", temperature=0, system_prompt="测试", context_strategy={},
             agent_plugins={"memory": AgentPluginSettings(enabled=False)},
             tool_permissions={"local:create_subagent": ToolPolicy.ALLOW, "local:operation": ToolPolicy.ALLOW})
         agent = agent_factory.build_agent(settings, tool_authorization=ToolAuthorization(lambda _: settings), runtime_queue=queue,
-            tool_runtime_factory=lambda name, run, call: ToolRuntime("parent", run, name, call, supervisor, queue))
+            tool_runtime_factory=lambda name, run, call: ToolRuntime("parent", run, name, call, supervisor, queue), sqlite_factory=SqliteFactory())
         invocation = None
         try:
             agent.register_tool(OperationTool())
@@ -356,7 +365,7 @@ def test_factory_wires_creation_tool_to_its_agent_catalog(tmp_path: Path) -> Non
                 "prompt": "开始", "tool_whitelist": ["operation"]}, context))
             request = await asyncio.wait_for(queue.get(), 1)
             assert request.tool_whitelist == frozenset({ToolIdentity.local("operation")})
-            request.reply.set_result(SubagentReceipt("child", True, SubagentCommandEffect.STARTED, None))
+            request.reply.set_result(CommandReceipt(CommandStatus.ACCEPTED, "child"))
             assert (await asyncio.wait_for(invocation, 1)).text
         finally:
             if invocation is not None:
@@ -364,4 +373,5 @@ def test_factory_wires_creation_tool_to_its_agent_catalog(tmp_path: Path) -> Non
                 await asyncio.gather(invocation, return_exceptions=True)
             await agent.close()
             await supervisor.close()
+            await supervisor.records.close()
     asyncio.run(scenario())

@@ -1,3 +1,4 @@
+from app.crud.sqlite_factory import SqliteFactory
 from app.schemas.subagent_types import SubagentDefinition
 from app.agent.agent import Agent
 from fastapi import Depends, Request
@@ -12,10 +13,13 @@ from app.crud.chat_settings_dao import ChatSettingsDao
 from app.crud.mcp_settings_dao import MCPSettingsDao
 from app.crud.desktop_settings_dao import DesktopSettingsDao
 from app.services.desktop_settings_service import DesktopSettingsService
-from app.schemas.runtime_types import RuntimePhase
 from app.desktop.desktop_controller import DesktopController
 from app.desktop.driver import DesktopDriver
 from app.environment import get_data_dir
+from app.agent.runtime.runtime_factory import assemble_runtime_scheduler
+from app.schemas.agent_storage import AgentStorageScope
+from app.services.agent_identity_service import AgentIdentityService
+from app.services.subagent_service import SubagentService
 from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.interaction.interaction_event_hub import InteractionEventHub
 from app.services.channel_subscription_service import ChannelSubscriptionService
@@ -89,14 +93,13 @@ def get_desktop_settings_service(request: Request) -> DesktopSettingsService:
     return request.app.state.desktop_settings_service
 
 
-@lru_cache(maxsize=1)
-def get_chat_history_dao() -> ChatHistoryDao:
-    """向路由和服务提供进程内缓存的历史访问对象。
+def get_chat_history_dao(request: Request) -> ChatHistoryDao:
+    """路由读取应用已经装配的历史 DAO。
 
-    Returns:
-        ChatHistoryDao: 共享 ChatHistoryDao。
+    Args:
+        request (Request): 提供本次应用实例的请求。
     """
-    return ChatHistoryDao()
+    return request.app.state.chat_history_dao
 
 
 @lru_cache(maxsize=1)
@@ -196,18 +199,19 @@ def get_interaction_event_hub(request: Request) -> InteractionEventHub:
     return request.app.state.interaction_event_hub
 
 
-@lru_cache(maxsize=1)
-def get_channel_subscription_service() -> ChannelSubscriptionService:
-    """取得命令、分发和设置页共用的配置对象。
+def get_channel_subscription_service(request: Request) -> ChannelSubscriptionService:
+    """路由取得应用持有的共享渠道设置。
 
-    Returns:
-        ChannelSubscriptionService: 统一的描述、持久设置和缓存入口。
+    Args:
+        request (Request): 提供本次应用实例的请求。
     """
-    return ChannelSubscriptionService()
+    return request.app.state.channel_subscriptions
 
 
-def create_runtime_scheduler(supervisor: TaskSupervisor, runtime_queue: asyncio.Queue) -> AgentRuntimeScheduler:
-    """装配执行模块，任务状态写入其临时输出，不创建 Hub。
+def create_runtime_scheduler(supervisor: TaskSupervisor, runtime_queue: asyncio.Queue, *,
+    sqlite_factory: SqliteFactory, hub: InteractionEventHub, subscriptions: ChannelSubscriptionService,
+    identity: AgentIdentityService, subagents: SubagentService) -> AgentRuntimeScheduler:
+    """借用应用共享依赖装配独立父子会话，向既有 Hub 注入单向发布能力。
 
     Returns:
         AgentRuntimeScheduler: 共享执行模块。
@@ -215,6 +219,11 @@ def create_runtime_scheduler(supervisor: TaskSupervisor, runtime_queue: asyncio.
     Args:
         supervisor (TaskSupervisor): 应用共享的任务提交、查询和有限等待对象。
         runtime_queue (asyncio.Queue): 应用创建、Scheduler 独占消费的共享请求队列。
+        sqlite_factory (SqliteFactory): 应用装配提供的 SQLite 连接配置。
+        hub (InteractionEventHub): 应用拥有的事件编号及订阅缓冲。
+        subscriptions (ChannelSubscriptionService): 命令与输出共用的渠道设置。
+        identity (AgentIdentityService): 显式 Agent 命令使用的身份核验服务。
+        subagents (SubagentService): 子定义、交互和最终报告的持久业务。
     """
     settings_dao = get_chat_settings_dao()
     mcp_manager = get_mcp_connection_manager()
@@ -249,12 +258,17 @@ def create_runtime_scheduler(supervisor: TaskSupervisor, runtime_queue: asyncio.
                 plugin_name, session_id, run_id, _supervisor=supervisor, _runtime_queue=runtime_queue),
             bind_plugin_mcp=get_plugin_service().bind_mcp,
             plugin_mcp={name: plugin.mcp_servers for name, plugin in prepared.plugins.items()
-                        if prepared.settings.agent_plugins[name].enabled},
-            runtime_queue=runtime_queue,
+                        if (prepared.settings.agent_plugins or {})[name].enabled},
+            runtime_queue=runtime_queue, sqlite_factory=sqlite_factory,
         )
 
     def create_subagent(definition: SubagentDefinition, session_state_manager: SessionStateManager) -> Agent:
-        """读取父最新配置创建子执行，权限与共享连接仍属于父会话。"""
+        """读取父最新配置创建子执行，权限与共享连接仍属于父会话。
+
+        Args:
+            definition (SubagentDefinition): 已保存的子身份、所属父会话及保留政策。
+            session_state_manager (SessionStateManager): 所属会话借给本次执行的输入和历史对象。
+        """
         prepared = settings_service.prepare(settings_dao.get_chat_settings(definition.session_id))
         return build_agent(
             prepared.settings, mcp_manager, authorization,
@@ -264,21 +278,32 @@ def create_runtime_scheduler(supervisor: TaskSupervisor, runtime_queue: asyncio.
             desktop, session_state_manager=session_state_manager,
             bind_plugin_mcp=get_plugin_service().bind_mcp,
             plugin_mcp={name: plugin.mcp_servers for name, plugin in prepared.plugins.items()
-                        if prepared.settings.agent_plugins[name].enabled},
-            subagent=definition, runtime_queue=runtime_queue,
+                        if (prepared.settings.agent_plugins or {})[name].enabled},
+            subagent=definition, runtime_queue=runtime_queue, sqlite_factory=sqlite_factory,
         )
 
-    scheduler = AgentRuntimeScheduler(
-        runtime_queue=runtime_queue,
-        agent_factory=create_agent,
-        subagent_factory=create_subagent,
-        subscriptions=get_channel_subscription_service(),
-        task_supervisor=supervisor,
-        chat_settings_dao=settings_dao,
-        mutation_coordinator=get_settings_mutation_coordinator(),
-        cleanup_session_connections=mcp_manager.disconnect_plugin,
-    )
-    return scheduler
+    def create_manager(context_id: str) -> SessionStateManager:
+        """为父会话和启动整理创建拥有独立连接的持久状态对象。
+
+        Args:
+            context_id (str): 当前实际上下文。
+        """
+        return SessionStateManager(context_id, sqlite_factory)
+
+    def create_child_manager(definition: SubagentDefinition) -> SessionStateManager:
+        """为子上下文创建子表范围的持久状态对象。
+
+        Args:
+            definition (SubagentDefinition): 固定子定义及父归属。
+        """
+        return SessionStateManager(definition.subagent_id, sqlite_factory,
+            storage_scope=AgentStorageScope.SUBAGENT, parent_session_id=definition.session_id)
+
+    return assemble_runtime_scheduler(runtime_queue=runtime_queue, agent_factory=create_agent,
+        subagent_factory=create_subagent, manager_factory=create_manager, child_manager_factory=create_child_manager,
+        identity=identity, subagents=subagents, task_supervisor=supervisor, subscriptions=subscriptions,
+        mutation_coordinator=get_settings_mutation_coordinator(), hub=hub,
+        cleanup_session_connections=mcp_manager.disconnect_plugin)
 
 
 @lru_cache(maxsize=1)
@@ -363,7 +388,7 @@ def get_tool_permission_service(
         Returns:
             tuple[MCPConnectionConfig, ...]: 启用插件的服务声明，禁用时为空。
         """
-        item = settings.agent_plugins[plugin_name]
+        item = (settings.agent_plugins or {})[plugin_name]
         return plugins.prepare_plugin(plugin_name, item).mcp_servers if item.enabled else ()
 
     return ToolPermissionService(

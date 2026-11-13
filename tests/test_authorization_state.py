@@ -1,4 +1,10 @@
 """验证审批状态归属及 Scheduler 保存成功后才发布决定的顺序。"""
+from tests.runtime_support import runtime_hub, close_test_runtime
+from app.routes.agent import observe_runtime
+from app.schemas.runtime_types import AgentRunOutcome, AgentRunOutcomeKind
+from tests.runtime_support import next_runtime_event
+from tests.runtime_support import build_test_scheduler
+from app.crud.sqlite_factory import SqliteFactory
 from tests.runtime_support import RuntimeAgentStub
 
 import asyncio
@@ -118,7 +124,7 @@ class WaitingAgent(RuntimeAgentStub):
         self.path = path
         self.waiting = asyncio.Event()
 
-    async def run(self, message: str, **kwargs):
+    async def run(self, message: str, emit, **kwargs):
         """让新指令停在回答前，供测试检查 Scheduler 已提交的状态。
 
         Args:
@@ -128,9 +134,10 @@ class WaitingAgent(RuntimeAgentStub):
         Yields:
             AgentEvent: 屏障结束时的完成事件，测试正常清理会先取消等待。
         """
-        yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": kwargs.get("origin_channel", "desktop"), "resumed": False})
+        outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
+        await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": kwargs.get("origin_channel", "desktop"), "resumed": False}))
         if message == "建立本次审批":
-            manager = SessionStateManager("s", self.path)
+            manager = SessionStateManager("s", SqliteFactory(self.path))
             try:
                 state = approval_state()
                 await manager.save(state, checkpoint_type="intermediate", inbox_inputs=(kwargs["inbox_input"],))
@@ -138,10 +145,13 @@ class WaitingAgent(RuntimeAgentStub):
                 await manager.close()
             from tests.runtime_support import pause_test_turn
             pause_test_turn(kwargs["turn_control"], state.interrupt_data["request_id"])
-            yield AgentEvent(EventType.INTERRUPT, state.interrupt_data)
-            return
+            await emit(AgentEvent(EventType.INTERRUPT, state.interrupt_data))
+            outcome = AgentRunOutcome(AgentRunOutcomeKind.INTERRUPTED)
+            return outcome
         await self.waiting.wait()
-        yield AgentEvent(EventType.DONE, None)
+        await emit(AgentEvent(EventType.DONE, None))
+
+        return outcome
 
     async def close(self) -> None:
         """替身不持有外部资源，worker 取消后无需额外清理。"""
@@ -166,7 +176,7 @@ def make_scheduler(path: str) -> AgentRuntimeScheduler:
         Returns:
             SessionStateManager: 测试数据库访问对象。
         """
-        return SessionStateManager(session, path)
+        return SessionStateManager(session, SqliteFactory(path))
 
     def inbox_factory(session: str) -> SessionStateManager:
         """为命令提交和 worker 创建真实隔离输入队列。
@@ -177,7 +187,7 @@ def make_scheduler(path: str) -> AgentRuntimeScheduler:
         Returns:
             SessionStateManager: 测试数据库输入队列。
         """
-        return SessionStateManager(session, path)
+        return SessionStateManager(session, SqliteFactory(path))
 
     def agent_factory(session: str, _manager) -> WaitingAgent:
         """在输入已保存后阻塞后续回答，不参与审批保存规则。
@@ -191,7 +201,7 @@ def make_scheduler(path: str) -> AgentRuntimeScheduler:
         """
         return WaitingAgent(path)
 
-    return AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
+    return build_test_scheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
         agent_factory=agent_factory,
     session_state_manager_factory=state_factory, )
 
@@ -205,28 +215,28 @@ def test_stop_pending_parent_approval_cancels_decision_and_ignores_stale_target(
     async def scenario() -> None:
         """从公开命令、审批事件和快照核对停止后的结果。"""
         path = str(tmp_path / "state.sqlite3")
-        scheduler, manager = make_scheduler(path), SessionStateManager("s", path)
+        scheduler, manager = make_scheduler(path), SessionStateManager("s", SqliteFactory(path))
         try:
             await scheduler.start()
             await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "建立本次审批"}))
-            while (event := await asyncio.wait_for(scheduler.next_event(), 2)).kind != "interrupt":
+            while (event := await asyncio.wait_for(next_runtime_event(scheduler), 2)).kind != "interrupt":
                 pass
             assert not (await scheduler.submit(ChannelCommand("s", "desktop", "stop_turn",
                 target_run_id="old-run"))).accepted
             assert (await manager.load()).get_pending_authorization("approval") is not None
             receipt = await scheduler.submit(ChannelCommand("s", "desktop", "stop_turn", target_run_id=event.run_id))
             assert receipt.accepted
-            resolved = await asyncio.wait_for(scheduler.next_event(), 2)
+            resolved = await asyncio.wait_for(next_runtime_event(scheduler), 2)
             assert resolved.kind == "authorization_resolved" and resolved.payload["outcome"] == "cancelled"
-            assert (await asyncio.wait_for(scheduler.next_event(), 2)).kind == "run_completed"
+            assert (await asyncio.wait_for(next_runtime_event(scheduler), 2)).kind == "run_completed"
             snapshot = (await scheduler.snapshot("s")).payload
             assert snapshot["phase"] == "idle"
-            assert (await manager.load()).interrupt_data["runtime_decision"]["kind"] == "cancelled"
+            assert (await manager.load()).interrupt_data is None
             assert not (await scheduler.submit(ChannelCommand("s", "desktop", "resolve_authorization",
                 {"kind": "approve"}, request_id="approval"))).accepted
         finally:
             await manager.close()
-            await scheduler.close()
+            await close_test_runtime(scheduler)
 
     asyncio.run(scenario())
 
@@ -245,17 +255,17 @@ def test_decision_save_failure_publishes_nothing_and_retry_uses_persisted_state(
         """使用真实触发器拒绝状态保存，通过公开命令和事件流核对失败与重试。"""
         path = str(tmp_path / "state.sqlite3")
         scheduler = make_scheduler(path)
-        manager = SessionStateManager("s", path)
+        manager = SessionStateManager("s", SqliteFactory(path))
         next_event = None
         try:
             await scheduler.start()
             state = approval_state()
             await manager.save(state, checkpoint_type="intermediate")
-            if operation == "cancel":
+            if operation in {"approve", "cancel"}:
                 await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "建立本次审批"}))
-                while (await asyncio.wait_for(scheduler.next_event(), 1)).kind != "interrupt":
+                while (await asyncio.wait_for(next_runtime_event(scheduler), 1)).kind != "interrupt":
                     pass
-            next_event = asyncio.create_task(scheduler.next_event())
+            next_event = asyncio.create_task(next_runtime_event(scheduler))
             # 1. 审批已经持久等待，拒绝接下来的 checkpoint 插入以模拟保存失败。
             async with aiosqlite.connect(path) as inspection:
                 await inspection.execute(
@@ -267,20 +277,30 @@ def test_decision_save_failure_publishes_nothing_and_retry_uses_persisted_state(
                                      request_id="approval") if operation == "approve" else ChannelCommand(
                 "s", "desktop", "human_turn", {"message": "取消旧审批并开始新指令"},
             )
-            with pytest.raises(sqlite3.IntegrityError, match="reject decision"):
-                await scheduler.submit(command)
+            failed = await scheduler.submit(command)
+            if operation == "approve":
+                assert not failed.accepted and "reject decision" in failed.detail
+            else:
+                assert failed.accepted
+                event = await asyncio.wait_for(next_event, 1)
+                assert event.kind == "error" and event.payload["save_failed"]
+                while (await asyncio.wait_for(next_runtime_event(scheduler), 1)).kind != "history_restored":
+                    pass
+                next_event = None
             # 2. 已加载对象中的决定未提交，数据库仍未决，事件接收方仍在等待。
             assert (await manager.load()).get_pending_authorization("approval") is not None
             await asyncio.sleep(0)
-            assert not next_event.done()
+            assert next_event is None or not next_event.done()
             async with aiosqlite.connect(path) as inspection:
                 await inspection.execute("DROP TRIGGER reject_decision")
                 await inspection.commit()
             # 3. 重试读取持久旧状态；保存成功之后才发布决定，恢复信息仍保持原值。
             assert (await scheduler.submit(command)).accepted
-            event = await asyncio.wait_for(next_event, 1)
-            assert event.kind == "authorization_resolved"
-            assert event.payload["outcome"] == ("approve" if operation == "approve" else "cancelled")
+            if operation == "approve":
+                event = await asyncio.wait_for(next_event, 1)
+                assert event.kind == "authorization_resolved" and event.payload["outcome"] == "approve"
+            else:
+                assert (await scheduler.snapshot("s")).payload["session_state"] == "enabled"
             restored = await manager.load()
             assert restored.interrupt_data["resume_state"] == state.interrupt_data["resume_state"]
             assert restored.pending_actions == state.pending_actions
@@ -289,7 +309,7 @@ def test_decision_save_failure_publishes_nothing_and_retry_uses_persisted_state(
                 next_event.cancel()
                 await asyncio.gather(next_event, return_exceptions=True)
             await manager.close()
-            await scheduler.close()
+            await close_test_runtime(scheduler)
 
     asyncio.run(scenario())
 
@@ -304,10 +324,12 @@ def test_steer_inbox_failure_preserves_approval_and_retry_saves_input_first(tmp_
         """用两个触发器分别注入 Inbox 失败和检查新消息先于决定持久保存。"""
         path = str(tmp_path / "state.sqlite3")
         scheduler = make_scheduler(path)
-        manager = SessionStateManager("s", path)
+        manager = SessionStateManager("s", SqliteFactory(path))
         try:
             await scheduler.start()
-            await manager.save(approval_state(), checkpoint_type="intermediate")
+            await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "建立本次审批"}))
+            await next_runtime_event(scheduler)
+            await next_runtime_event(scheduler)
             command = ChannelCommand(
                 "s", "desktop", "resolve_authorization", {"kind": "steer", "message": "新指令"},
                 request_id="approval",
@@ -319,11 +341,11 @@ def test_steer_inbox_failure_preserves_approval_and_retry_saves_input_first(tmp_
                     "BEGIN SELECT RAISE(ABORT, 'reject steer'); END",
                 )
                 await inspection.commit()
-            with pytest.raises(sqlite3.IntegrityError, match="reject steer"):
-                await scheduler.submit(command)
+            failed = await scheduler.submit(command)
+            assert not failed.accepted and "reject steer" in failed.detail
             assert (await manager.load()).get_pending_authorization("approval") is not None
             async with aiosqlite.connect(path) as inspection:
-                assert (await (await inspection.execute("SELECT COUNT(*) FROM session_inbox")).fetchone())[0] == 0
+                assert (await (await inspection.execute("SELECT COUNT(*) FROM session_inbox WHERE status='pending'")).fetchone())[0] == 0
                 await inspection.execute("DROP TRIGGER reject_steer")
                 # 2. 真实保存顺序必须先有 Inbox 新消息，否则拒绝带引导决定的 checkpoint。
                 await inspection.execute(
@@ -338,13 +360,13 @@ def test_steer_inbox_failure_preserves_approval_and_retry_saves_input_first(tmp_
             restored = await manager.load()
             assert restored.interrupt_data["runtime_decision"] == command.payload
             async with aiosqlite.connect(path) as inspection:
-                assert (await (await inspection.execute("SELECT COUNT(*) FROM session_inbox")).fetchone())[0] == 1
+                assert (await (await inspection.execute("SELECT COUNT(*) FROM session_inbox WHERE status='pending'")).fetchone())[0] == 1
             # 3. 旧请求随后过期，不能再次保存同一引导消息。
             assert not (await scheduler.submit(command)).accepted
             async with aiosqlite.connect(path) as inspection:
-                assert (await (await inspection.execute("SELECT COUNT(*) FROM session_inbox")).fetchone())[0] == 1
+                assert (await (await inspection.execute("SELECT COUNT(*) FROM session_inbox WHERE status='pending'")).fetchone())[0] == 1
         finally:
             await manager.close()
-            await scheduler.close()
+            await close_test_runtime(scheduler)
 
     asyncio.run(scenario())

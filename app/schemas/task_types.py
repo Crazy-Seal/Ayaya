@@ -2,13 +2,14 @@
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
-from app.schemas.runtime_types import TaskStatus
+from app.schemas.runtime_types import TaskStatus, TaskExecutionPhase
 from app.schemas.agent_storage import AgentStorageScope
 from app.schemas.subagent_types import TaskRecordKind
 
 TERMINAL_TASK_NAME = "terminal"
+TaskSnapshotStatus = TaskStatus | Literal[TaskExecutionPhase.SAVE_FAILED]
 
 
 @dataclass(frozen=True)
@@ -19,7 +20,7 @@ class TaskRecord:
         task_id (str): 区分本次执行的稳定编号，查询和停止时使用。
         session_id (str): 创建任务的会话编号。
         command (str | None): 终端实际命令，通用任务为空。
-        status (TaskStatus): 已保存的运行或终态。
+        status (TaskSnapshotStatus): 持久业务状态；进程查询摘要也可表达保存失败。
         pid (int | None): 终端系统进程编号，通用任务为空。
         exit_code (int | None): 实际终端退出码，通用任务或进程未结束时为空。
         output_path (str | None): 完整终端输出文件路径，通用任务为空。
@@ -33,7 +34,7 @@ class TaskRecord:
         name (str): 插件定义的稳定任务名称，可用于多次执行。
         title (str): 本次任务给用户阅读的说明。
         result (str | None): run 返回的结果正文，清理失败也保留已取得结果。
-        error (str | None): 执行或清理失败的错误摘要。
+        error (str | None): 业务失败摘要；保存失败的查询摘要提供对应保存错误。
         plugin_name (str | None): 提交任务的插件名称，内置终端为空。
         notify_agent (bool): 终态保存时是否原子写入唯一结果通知。
     """
@@ -41,7 +42,7 @@ class TaskRecord:
     task_id: str
     session_id: str
     command: str | None
-    status: TaskStatus
+    status: TaskSnapshotStatus
     pid: int | None
     exit_code: int | None
     output_path: str | None
@@ -63,6 +64,19 @@ class TaskRecord:
     notification_scope: AgentStorageScope = AgentStorageScope.MAIN
     kind: TaskRecordKind = TaskRecordKind.ORDINARY
     end_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class TaskSnapshot(TaskRecord):
+    """供查询读取任务进展，保存失败时保留本次进程确认的错误。
+
+    Attributes:
+        phase (TaskExecutionPhase): 运行记录或持久结果生成的任务阶段。
+        save_error (str | None): 结果保存耗尽的原因，重启后由 orphaned 整理。
+    """
+
+    phase: TaskExecutionPhase = TaskExecutionPhase.RUNNING
+    save_error: str | None = None
 
 
 class PluginRequestKind(StrEnum):

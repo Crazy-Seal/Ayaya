@@ -17,10 +17,9 @@ class EventSource:
         release_snapshot (asyncio.Event | None): 指定时暂停查询，测试负责放行。
     """
 
-    def __init__(self) -> None:
+    def __init__(self, hub) -> None:
         """创建空输出，默认状态查询直接成功。"""
-        self.events = asyncio.Queue()
-        self.sequence = 0
+        self.hub = hub
         self.fail_snapshot = False
         self.snapshot_entered = asyncio.Event()
         self.release_snapshot = None
@@ -31,16 +30,7 @@ class EventSource:
         Args:
             event (InteractionEvent): 测试预设事件。
         """
-        self.sequence += 1
-        self.events.put_nowait(replace(event, stream_epoch="test-epoch", event_sequence=self.sequence))
-
-    async def next_event(self):
-        """等待 Hub 领取测试数据。
-
-        Returns:
-            InteractionEvent | None: 下一个测试事件或结束标记。
-        """
-        return await self.events.get()
+        self.hub.publish(event)
 
     async def snapshot(self, session_id: str) -> InteractionEvent:
         """复制编号后按需等待，让测试插入查询交错或失败。
@@ -54,7 +44,7 @@ class EventSource:
         Raises:
             RuntimeError: 测试要求模拟查询失败。
         """
-        sequence = self.sequence
+        epoch, sequence = self.hub.watermark(session_id)
         self.snapshot_entered.set()
         if self.release_snapshot is not None:
             await self.release_snapshot.wait()
@@ -63,4 +53,4 @@ class EventSource:
         return InteractionEvent(session_id, "session_snapshot", {
             "phase": "idle", "run_id": None, "origin_channel": None, "interrupt": None,
             "pending_inputs": [], "queued_inputs": [], "tasks": [],
-        }, stream_epoch="test-epoch", event_sequence=sequence)
+        }, stream_epoch=epoch, event_sequence=sequence)

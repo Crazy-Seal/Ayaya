@@ -1,139 +1,149 @@
-"""由一个领取任务读取 Scheduler 输出，分发到各渠道连接。"""
+"""为应用输出编号并分发到独立连接，网络消费和运行快照由入口组织。"""
 
 import asyncio
 from collections import defaultdict
-from dataclasses import replace
-import logging
-from typing import AsyncIterator
+from dataclasses import dataclass, replace
+from uuid import uuid4
 
 from app.interaction.interaction_contract import InteractionEvent
-from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.schemas.runtime_types import DESKTOP_CHANNEL, SessionPhase
 from app.services.channel_subscription_service import ChannelSubscriptionService
 
 
-logger = logging.getLogger(__name__)
 INTERACTION_SUBSCRIBER_QUEUE_SIZE = 256
 
 
+@dataclass(frozen=True, slots=True)
+class InteractionSubscription:
+    """持有一个连接的缓冲，结束连接只影响本连接的观察。"""
+
+    session_id: str
+    channel: str
+    queue: asyncio.Queue[InteractionEvent | None]
+
+
 class InteractionEventHub:
-    """管理连接及慢接收方，不修改会话执行状态。
+    """拥有输出 epoch、每会话序号和订阅缓冲，通过同步发布隔离慢网络。
 
     Attributes:
-        _scheduler (AgentRuntimeScheduler): 状态和临时事件的唯一来源。
-        _subscriptions (ChannelSubscriptionService): 与命令入口共享的配置。
-        _queue_size (int): 每个连接允许积压的事件数。
-        _subscribers (dict): 按会话、渠道保存独立连接队列。
-        _reader (asyncio.Task | None): 唯一事件领取任务。
-        _closed (bool): 关闭后禁止新连接。
+        _subscriptions (ChannelSubscriptionService): 命令和观察共用的渠道配置。
+        _subscribers (dict): 每个渠道各连接的有界缓冲。
+        _epoch (str): 本次应用输出编号的命名空间。
+        _sequences (dict[str, int]): 每会话最后一次发布的序号。
     """
 
-    def __init__(
-        self, scheduler: AgentRuntimeScheduler, *, subscriptions: ChannelSubscriptionService,
-        queue_size: int = INTERACTION_SUBSCRIBER_QUEUE_SIZE,
-    ) -> None:
-        """保存依赖，不自动启动任务。
+    def __init__(self, *, subscriptions: ChannelSubscriptionService,
+                 queue_size: int = INTERACTION_SUBSCRIBER_QUEUE_SIZE) -> None:
+        """保存渠道配置并创建输出身份，运行查询保持在业务入口。
 
         Args:
-            scheduler (AgentRuntimeScheduler): 事件和状态来源。
-            subscriptions (ChannelSubscriptionService): 共享配置对象。
-            queue_size (int): 单个订阅积压容量，必须为正。
-
-        Raises:
-            ValueError: 容量不是正数。
+            subscriptions (ChannelSubscriptionService): 应用共享的渠道配置。
+            queue_size (int): 单连接最多积压的事件数量。
         """
         if queue_size < 1:
             raise ValueError("订阅队列容量必须为正数")
-        self._scheduler = scheduler
-        self._subscriptions = subscriptions
-        self._queue_size = queue_size
-        self._subscribers: dict[tuple[str, str], set[asyncio.Queue]] = defaultdict(set)
-        self._reader: asyncio.Task | None = None
+        self._subscriptions, self._queue_size = subscriptions, queue_size
+        self._subscribers: dict[tuple[str, str], set[InteractionSubscription]] = defaultdict(set)
+        self._epoch = uuid4().hex
+        self._sequences: dict[str, int] = defaultdict(int)
         self._closed = False
 
-    async def start(self) -> None:
-        """应用启动时创建唯一领取任务，重复调用不增加消费者。
-
-        Raises:
-            RuntimeError: 已关闭实例不能重启。
-        """
-        if self._closed:
-            raise RuntimeError("已关闭的事件分发不能重新启动")
-        if self._reader is None:
-            self._reader = asyncio.create_task(self._receive())
-
-    def _end_subscription(self, key: tuple[str, str], queue: asyncio.Queue) -> None:
-        """移除连接，将积压替换为结束标记。
+    def watermark(self, session_id: str) -> tuple[str, int]:
+        """在队列采样位置取得与业务摘要对应的输出水位。
 
         Args:
-            key (tuple[str, str]): 会话及接收渠道。
-            queue (asyncio.Queue): 本连接的队列。
-        """
-        self._subscribers[key].discard(queue)
-        while not queue.empty():
-            queue.get_nowait()
-        queue.put_nowait(None)
-
-    async def _receive(self) -> None:
-        """等待输出并同步分发，绝不等待 Adapter 网络发送。"""
-        try:
-            while True:
-                event = await self._scheduler.next_event()
-                if event is None:
-                    return
-                # 1. 领取后的分发段不等待，接收方快慢由其独立队列隔离。
-                for key, queues in tuple(self._subscribers.items()):
-                    session_id, channel = key
-                    if session_id != event.session_id:
-                        continue
-                    if channel != DESKTOP_CHANNEL and channel != event.origin_channel:
-                        continue
-                    if not self._subscriptions.enabled_for_delivery(session_id, channel):
-                        continue
-                    for queue in tuple(queues):
-                        try:
-                            queue.put_nowait(event)
-                        except asyncio.QueueFull:
-                            self._end_subscription(key, queue)
-        except Exception:
-            logger.exception("领取会话事件失败，结束现有订阅")
-            raise
-        finally:
-            # 2. 来源结束或任务取消均结束连接，不改变 Scheduler 的执行。
-            self._closed = True
-            for key, queues in tuple(self._subscribers.items()):
-                for queue in tuple(queues):
-                    self._end_subscription(key, queue)
-
-    def begin_shutdown(self) -> None:
-        """拒绝新连接并结束现有订阅，让服务器先完成 SSE 请求。
-
-        应用在请求关闭时调用。内部领取任务继续读取 Scheduler 输出，
-        等生产者收尾后由 close 统一释放。
-        """
-        self._closed = True
-        for key, queues in tuple(self._subscribers.items()):
-            for queue in tuple(queues):
-                self._end_subscription(key, queue)
-
-    async def close(self) -> None:
-        """结束所有连接，取消并等待领取任务，允许重复清理。"""
-        self.begin_shutdown()
-        if self._reader is not None:
-            if not self._reader.done():
-                self._reader.cancel()
-            await asyncio.gather(self._reader, return_exceptions=True)
-
-    @staticmethod
-    def _visible_snapshot(event: InteractionEvent, channel: str) -> InteractionEvent:
-        """筛选接收渠道可见的数据，保留原状态编号。
-
-        Args:
-            event (InteractionEvent): 未筛选的当前状态。
-            channel (str): 接收渠道。
+            session_id (str): 需要采样的父会话编号。
 
         Returns:
-            InteractionEvent: 桌面完整状态或仅本渠道可见的内容。
+            tuple[str, int]: 输出命名空间和已发布序号。
+        """
+        return self._epoch, self._sequences[session_id]
+
+    def publish(self, event: InteractionEvent) -> InteractionEvent:
+        """同步编号并投递可见连接，连接溢出时只结束该连接。
+
+        Args:
+            event (InteractionEvent): Scheduler 已路由的展示事实。
+
+        Returns:
+            InteractionEvent: 已分配 epoch 和序号的事件。
+        """
+        self._sequences[event.session_id] += 1
+        event = replace(event, stream_epoch=self._epoch, event_sequence=self._sequences[event.session_id])
+        for (session_id, channel), subscribers in tuple(self._subscribers.items()):
+            if session_id != event.session_id or channel not in {DESKTOP_CHANNEL, event.origin_channel}:
+                continue
+            if not self._subscriptions.enabled_for_delivery(session_id, channel):
+                continue
+            for subscriber in tuple(subscribers):
+                try:
+                    subscriber.queue.put_nowait(event)
+                except asyncio.QueueFull:
+                    self.unsubscribe(subscriber)
+        return event
+
+    async def register(self, session_id: str, channel: str) -> InteractionSubscription | None:
+        """登记并开始缓冲本连接，运行快照查询随后由路由发起。
+
+        Args:
+            session_id (str): 要观察的父会话编号。
+            channel (str): 已注册的接收渠道。
+
+        Returns:
+            InteractionSubscription | None: 已登记连接，Hub 关闭时为空。
+        """
+        self._subscriptions.validate_source(channel)
+        if not await self._subscriptions.is_enabled(session_id, channel):
+            raise ValueError("该会话未订阅此渠道")
+        if self._closed:
+            return None
+        subscriber = InteractionSubscription(session_id, channel, asyncio.Queue(self._queue_size))
+        self._subscribers[(session_id, channel)].add(subscriber)
+        return subscriber
+
+    def contains(self, subscriber: InteractionSubscription) -> bool:
+        """快照查询后核验本连接仍可观察，溢出的连接通过重连取得新快照。
+
+        Args:
+            subscriber (InteractionSubscription): 本连接登记句柄。
+        """
+        return subscriber in self._subscribers.get((subscriber.session_id, subscriber.channel), ())
+
+    def unsubscribe(self, subscriber: InteractionSubscription) -> None:
+        """移除本连接并释放积压，唤醒仍在等待的网络消费者。
+
+        Args:
+            subscriber (InteractionSubscription): 需要释放的连接。
+        """
+        key = (subscriber.session_id, subscriber.channel)
+        self._subscribers[key].discard(subscriber)
+        if not self._subscribers[key]:
+            self._subscribers.pop(key, None)
+        while not subscriber.queue.empty():
+            subscriber.queue.get_nowait()
+        subscriber.queue.put_nowait(None)
+
+    def begin_shutdown(self) -> None:
+        """结束网络观察，运行生产者和队列按应用生命周期顺序收尾。"""
+        self._closed = True
+        for subscribers in tuple(self._subscribers.values()):
+            for subscriber in tuple(subscribers):
+                self.unsubscribe(subscriber)
+
+    async def close(self) -> None:
+        """释放应用拥有的全部连接缓冲，允许重复关闭。"""
+        self.begin_shutdown()
+
+    @staticmethod
+    def visible_snapshot(event: InteractionEvent, channel: str) -> InteractionEvent:
+        """按渠道筛选快照内容，保留与运行采样对应的输出水位。
+
+        Args:
+            event (InteractionEvent): 业务查询入口生成的完整快照。
+            channel (str): 本连接接收渠道。
+
+        Returns:
+            InteractionEvent: 当前渠道可以展示的快照。
         """
         if channel == DESKTOP_CHANNEL:
             return event
@@ -143,43 +153,3 @@ class InteractionEventHub:
             return replace(event, payload={"phase": SessionPhase.IDLE, "queued_inputs": queued})
         return replace(event, payload={**payload, "queued_inputs": queued, "tasks": [],
             "pending_inputs": [item for item in payload["pending_inputs"] if item["origin_channel"] == channel]})
-
-    async def subscribe(self, session_id: str, channel: str) -> AsyncIterator[InteractionEvent]:
-        """先登记再查询状态，跳过状态已包含的事件。
-
-        Args:
-            session_id (str): 共享会话编号。
-            channel (str): 接收渠道。
-
-        Yields:
-            InteractionEvent: 首次状态和编号更大的可见事件。
-
-        Raises:
-            ValueError: 渠道未注册或本会话未启用。
-        """
-        self._subscriptions.validate_source(channel)
-        if not await self._subscriptions.is_enabled(session_id, channel):
-            raise ValueError("该会话未订阅此渠道")
-        if self._closed:
-            return
-        queue: asyncio.Queue = asyncio.Queue(self._queue_size)
-        key = (session_id, channel)
-        self._subscribers[key].add(queue)
-        try:
-            # 1. 查询期间的新事件进入已登记队列，查询失败时也由 finally 清理。
-            snapshot = await self._scheduler.snapshot(session_id)
-            if self._closed or queue not in self._subscribers[key]:
-                return
-            yield self._visible_snapshot(snapshot, channel)
-            # 2. 过滤查询前已发生但尚未分发的事件，仅交付当前状态之后的增量。
-            sequence = snapshot.event_sequence
-            while True:
-                event = await queue.get()
-                if event is None:
-                    return
-                if event.event_sequence <= sequence:
-                    continue
-                sequence = event.event_sequence
-                yield event
-        finally:
-            self._subscribers[key].discard(queue)

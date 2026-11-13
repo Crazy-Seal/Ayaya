@@ -85,6 +85,14 @@ class BasePlugin(ABC):
     tools: tuple[type[BaseTool], ...] = ()
     mcp_servers: tuple[MCPConnectionConfig, ...] = ()
 
+    def create_tools(self) -> tuple[BaseTool, ...]:
+        """为当前插件创建工具，依赖共享插件资源的工具由所属插件装配。
+
+        Returns:
+            tuple[BaseTool, ...]: 已绑定依赖、准备交给工具管理器的实例。
+        """
+        return tuple(tool_class() for tool_class in self.tools)
+
     @classmethod
     def resolve_mcp_servers(cls, config: dict[str, Any]) -> tuple[MCPConnectionConfig, ...]:
         """根据会话插件参数返回连接声明，默认使用类中列出的服务。

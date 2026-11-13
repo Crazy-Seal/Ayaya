@@ -1,3 +1,4 @@
+from app.crud.sqlite_factory import SqliteFactory
 """验证记忆查询工具由记忆插件提供，沿用插件配置、执行与审批流程。"""
 
 from datetime import date
@@ -77,7 +78,7 @@ async def test_memory_queries_follow_plugin_switch_and_permissions(
                              search_diary=AsyncMock(return_value="今天完成了任务"))
     sessions = []
 
-    def get_memory(session_id: str):
+    def get_memory(session_id: str, sqlite_factory: SqliteFactory):
         """记录工具使用的会话并返回隔离的记忆查询服务。
 
         Args:
@@ -97,7 +98,7 @@ async def test_memory_queries_follow_plugin_switch_and_permissions(
                                 "tool_permissions": {f"local:{name}": policy for name in MEMORY_TOOL_NAMES},
                             }})
     authorization = ToolAuthorization(lambda _: settings)
-    agent = agent_factory.build_agent(settings, tool_authorization=authorization)
+    agent = agent_factory.build_agent(settings, tool_authorization=authorization, sqlite_factory=SqliteFactory())
     try:
         await agent.initialize()
         queries = {tool.identity.name: tool for tool in agent.tool_manager.get_all()

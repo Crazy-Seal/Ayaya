@@ -1,4 +1,12 @@
 """使用真实 Scheduler、Agent 和 SQLite 的子功能测试装配，只替换模型与父发起动作。"""
+from tests.runtime_support import runtime_hub, close_test_runtime
+from app.routes.agent import observe_runtime
+from app.schemas.runtime_types import AgentRunOutcome, AgentRunOutcomeKind
+from tests.runtime_support import build_test_scheduler
+from app.crud.sqlite_factory import SqliteFactory
+
+from app.crud.task_record_dao import TaskRecordDao
+from app.services.settings_mutation import SettingsMutationCoordinator
 from tests.runtime_support import RuntimeAgentStub
 
 import asyncio
@@ -33,9 +41,15 @@ async def wait_for_subagent_worker(scheduler: AgentRuntimeScheduler, subagent_id
         scheduler (AgentRuntimeScheduler): 测试实际运行的调度器。
         subagent_id (str): 本次需要等待的执行上下文。
     """
-    worker = scheduler._session(subagent_id).worker
+    session = scheduler._sessions.get(subagent_id)
+    if session is None:
+        return
+    worker = session._worker
     if worker is not None:
         await asyncio.shield(worker)
+    closing = session._closing_task
+    if closing is not None:
+        await asyncio.shield(closing)
 
 
 def subagent_worker_running(scheduler: AgentRuntimeScheduler, subagent_id: str) -> bool:
@@ -48,7 +62,8 @@ def subagent_worker_running(scheduler: AgentRuntimeScheduler, subagent_id: str) 
     Returns:
         bool: 已登记且仍未结束的 worker 返回 True。
     """
-    worker = scheduler._session(subagent_id).worker
+    session = scheduler._sessions.get(subagent_id)
+    worker = session._worker if session is not None else None
     return worker is not None and not worker.done()
 
 
@@ -80,7 +95,9 @@ class SubagentHarness:
         self.queue = asyncio.Queue()
         self.created = asyncio.Queue()
         self.received = asyncio.Queue()
-        self.supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=self.queue, db_path=self.path)
+        self.supervisor_settings = configured_settings()
+        self.supervisor_mutations = SettingsMutationCoordinator()
+        self.supervisor = TaskSupervisor(runtime_queue=self.queue, records=TaskRecordDao(SqliteFactory(self.path)))
         harness = self
 
         class Parent(RuntimeAgentStub):
@@ -89,9 +106,10 @@ class SubagentHarness:
                 """借用父 worker 的 Manager。"""
                 self.manager = manager
 
-            async def run(self, message, *, turn_control, inbox_inputs, **kwargs):
+            async def run(self, message, *, turn_control, inbox_inputs, emit, **kwargs):
                 """保存真人发起动作并创建一个子身份。"""
-                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False})
+                outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
+                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False}))
                 state = await self.manager.load()
                 await self.manager.commit_human_input(state, message, None, inputs=inbox_inputs)
                 source = SubagentSource("parent", turn_control.run_id, "create")
@@ -102,23 +120,28 @@ class SubagentHarness:
                 await harness.created.put(await future)
                 if harness.parent_release is not None:
                     await harness.parent_release.wait()
-                yield AgentEvent(EventType.DONE, None)
+                await emit(AgentEvent(EventType.DONE, None))
 
-            async def run_runtime_inputs(self, *, inbox_inputs, **kwargs):
+                return outcome
+
+            async def run_runtime_inputs(self, *, inbox_inputs, emit, **kwargs):
                 """通过实际 Manager 消费后台报告并通知测试观察者。"""
-                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False})
+                outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
+                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False}))
                 state = await self.manager.load()
                 await self.manager.commit_runtime_inputs(state, None, inbox_inputs)
                 await harness.received.put(inbox_inputs)
-                yield AgentEvent(EventType.DONE, None)
+                await emit(AgentEvent(EventType.DONE, None))
+
+                return outcome
 
             async def close(self) -> None:
                 """Manager 生命周期属于 worker。"""
 
-        self.scheduler = AgentRuntimeScheduler(runtime_queue=self.queue,
+        self.scheduler = build_test_scheduler(runtime_queue=self.queue,
             agent_factory=lambda _session, manager: Parent(manager), subagent_factory=self._child,
             task_supervisor=self.supervisor,
-            session_state_manager_factory=lambda context: SessionStateManager(context, self.path))
+            session_state_manager_factory=lambda context: SessionStateManager(context, SqliteFactory(self.path)), chat_settings_dao=self.supervisor_settings, mutation_coordinator=self.supervisor_mutations)
 
     def _child(self, definition, manager: SessionStateManager) -> Agent:
         """真实子 Agent 使用已确认的配置及资源所有权，只替换网络模型。"""
@@ -141,7 +164,7 @@ class SubagentHarness:
             permission_session_id=definition.session_id, tool_whitelist=definition.tool_whitelist,
             tool_authorization=self.authorization,
             tool_runtime_factory=lambda name, run, call: ToolRuntime(definition.session_id, run, name, call,
-                self.supervisor, self.queue, subagent_id=definition.subagent_id))
+                self.supervisor, self.queue, subagent_id=definition.subagent_id), sqlite_factory=SqliteFactory())
         agent.tool_manager.register_framework_tool(MessageParentTool())
         for tool in self.tools:
             agent.register_tool(tool)
@@ -160,5 +183,6 @@ class SubagentHarness:
 
     async def __aexit__(self, *_args) -> None:
         """先结束 Agent 生产者，再关闭普通后台任务，避免遗留子进程。"""
-        await self.scheduler.close()
+        await close_test_runtime(self.scheduler)
         await self.supervisor.close()
+        await self.supervisor.records.close()

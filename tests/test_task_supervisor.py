@@ -1,3 +1,11 @@
+from tests.runtime_support import runtime_hub, close_test_runtime
+from app.routes.agent import observe_runtime
+from app.schemas.runtime_types import AgentRunOutcome, AgentRunOutcomeKind
+from tests.runtime_support import build_test_scheduler
+from app.crud.sqlite_factory import SqliteFactory
+from tests.runtime_support import finish_task_record
+from app.crud.task_record_dao import TaskRecordDao
+from app.services.settings_mutation import SettingsMutationCoordinator
 from tests.runtime_support import RuntimeAgentStub
 from tests.terminal_harness import TerminalHarness
 from tests.runtime_support import configured_settings
@@ -19,7 +27,6 @@ from app.agent.state.messages import TaskResultMessage
 from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.interaction.interaction_event_hub import InteractionEventHub
 
-from app.crud.task_record_dao import TaskRecordDao
 from app.schemas.runtime_types import TaskStatus
 from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
 
@@ -32,7 +39,7 @@ def test_task_list_excludes_foreground_until_same_process_becomes_background(tmp
     """
     async def scenario() -> None:
         """通过任务启动与列表接口检查前后台展示边界，不依赖私有字段。"""
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "state.sqlite3"))
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "state.sqlite3"))))
         terminal_for_supervisor = TerminalHarness(supervisor, spool_dir=tmp_path / "tasks")
         try:
             # 1. 正常前台完成仍保留可按身份查询的输出，但不进入后台任务列表。
@@ -51,15 +58,17 @@ def test_task_list_excludes_foreground_until_same_process_becomes_background(tmp
             assert [record.task_id for record in await supervisor.list_tasks("s")] == [timeout.task_id]
         finally:
             await supervisor.close()
+            await supervisor.records.close()
 
         # 3. 模式与同一任务身份都能跨重启恢复，完成的前台命令不会重新进入后台列表。
-        restarted = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "state.sqlite3"))
+        restarted = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "state.sqlite3"))))
         try:
-            assert (await restarted.get_task_record(foreground.task_id)).background is False
-            assert (await restarted.get_task_record(timeout.task_id)).background is True
+            assert (await restarted.get_task_snapshot(foreground.task_id)).background is False
+            assert (await restarted.get_task_snapshot(timeout.task_id)).background is True
             assert [record.task_id for record in await restarted.list_tasks("s")] == [timeout.task_id]
         finally:
             await restarted.close()
+            await restarted.records.close()
 
     asyncio.run(scenario())
 
@@ -75,7 +84,7 @@ def test_background_task_terminal_notification_is_once_and_output_survives_resta
         """在隔离异步环境中安排并验证：任务终态只通知一次且输出重启后可查。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         db_path = str(tmp_path / "state.sqlite3")
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=db_path)
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(db_path)))
         terminal_for_supervisor = TerminalHarness(supervisor, spool_dir=tmp_path / "tasks")
         try:
             result = await terminal_for_supervisor.launch_terminal(
@@ -87,7 +96,7 @@ def test_background_task_terminal_notification_is_once_and_output_survives_resta
             task_id = result.task_id
             assert task_id
             for _ in range(100):
-                record = await supervisor.get_task_record(task_id)
+                record = await supervisor.get_task_snapshot(task_id)
                 if record and record.status != "running":
                     break
                 await asyncio.sleep(0.02)
@@ -97,8 +106,8 @@ def test_background_task_terminal_notification_is_once_and_output_survives_resta
             )
             page = await terminal_for_supervisor.read_output(task_id, 0, 1024)
             assert "hello" in page["text"]
-            await supervisor.commit_terminal_state_once(task_id, "completed")
-            inbox = SessionStateManager("s", db_path)
+            await finish_task_record(supervisor, task_id, "completed")
+            inbox = SessionStateManager("s", SqliteFactory(db_path))
             try:
                 input_record = await inbox.read_next()
                 assert input_record is not None and input_record.kind == "task_terminal"
@@ -108,12 +117,14 @@ def test_background_task_terminal_notification_is_once_and_output_survives_resta
                 await inbox.close()
         finally:
             await supervisor.close()
-        restarted = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=db_path)
+            await supervisor.records.close()
+        restarted = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(db_path)))
         terminal_for_restarted = TerminalHarness(restarted, spool_dir=tmp_path / "tasks")
         # 2. 核对公开结果和持久状态，确保场景中的输入、通知或副作用未重复。
-        assert (await restarted.get_task_record(task_id)).status == "completed"
+        assert (await restarted.get_task_snapshot(task_id)).status == "completed"
         assert "hello" in (await terminal_for_restarted.read_output(task_id, 0, 1024))["text"]
         await restarted.close()
+        await restarted.records.close()
 
     asyncio.run(scenario())
 
@@ -127,8 +138,8 @@ def test_terminal_notification_failure_rolls_back_task_and_retry_notifies_once(t
     async def scenario() -> None:
         """从任务 DAO 和 Inbox 公开入口验证真实 SQLite 故障后的回滚与重试。"""
         path = str(tmp_path / "state.sqlite3")
-        records = TaskRecordDao(path)
-        inbox = SessionStateManager("s", path)
+        records = TaskRecordDao(SqliteFactory(path))
+        inbox = SessionStateManager("s", SqliteFactory(path))
         try:
             # 1. 只拒绝任务通知插入，让任务终态更新先执行，再检查两项一起回滚。
             await records.insert_running("task", "s", "测试命令", 1, str(tmp_path / "out"))
@@ -206,7 +217,7 @@ def test_spool_write_failure_marks_task_failed_and_notifies_once(tmp_path, monke
         """在隔离异步环境中安排并验证：输出写入失败会终止任务并仅通知一次。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         db_path = str(tmp_path / "state.sqlite3")
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=db_path)
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(db_path)))
         terminal_for_supervisor = TerminalHarness(supervisor, spool_dir=tmp_path / "tasks")
         try:
             result = await terminal_for_supervisor.launch_terminal(
@@ -214,12 +225,12 @@ def test_spool_write_failure_marks_task_failed_and_notifies_once(tmp_path, monke
                 cwd=str(tmp_path), yield_time_ms=0,
             )
             for _ in range(100):
-                record = await supervisor.get_task_record(result.task_id)
+                record = await supervisor.get_task_snapshot(result.task_id)
                 if record is not None and record.status != "running":
                     break
                 await asyncio.sleep(0.02)
             assert record is not None and record.status == "failed"
-            inbox = SessionStateManager("s", db_path)
+            inbox = SessionStateManager("s", SqliteFactory(db_path))
             try:
                 inputs = await inbox.read_activation_batch()
                 assert len(inputs) == 1 and inputs[0].payload["status"] == "failed"
@@ -227,6 +238,7 @@ def test_spool_write_failure_marks_task_failed_and_notifies_once(tmp_path, monke
                 await inbox.close()
         finally:
             await supervisor.close()
+            await supervisor.records.close()
 
     asyncio.run(scenario())
 
@@ -251,9 +263,7 @@ def test_immediate_child_is_in_job_and_stops_with_parent(tmp_path) -> None:
             "staging=pid_path.with_suffix('.tmp'); staging.write_text(str(child.pid)); staging.replace(pid_path); "
             "time.sleep(30)"
         )
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
-            db_path=str(tmp_path / "state.sqlite3"),
-        )
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "state.sqlite3"))))
         terminal_for_supervisor = TerminalHarness(supervisor, spool_dir=tmp_path / "tasks")
         try:
             result = await terminal_for_supervisor.launch_terminal(
@@ -269,7 +279,7 @@ def test_immediate_child_is_in_job_and_stops_with_parent(tmp_path) -> None:
             child_pid = int(pid_file.read_text())
             assert await supervisor.stop_task(result.task_id)
             for _ in range(200):
-                record = await supervisor.get_task_record(result.task_id)
+                record = await supervisor.get_task_snapshot(result.task_id)
                 if record is not None and record.status != "running":
                     break
                 await asyncio.sleep(0.02)
@@ -288,6 +298,7 @@ def test_immediate_child_is_in_job_and_stops_with_parent(tmp_path) -> None:
                     kernel.CloseHandle(handle)
         finally:
             await supervisor.close()
+            await supervisor.records.close()
 
     asyncio.run(scenario())
 
@@ -318,14 +329,15 @@ def test_existing_task_table_is_upgraded_only_by_offline_migration(tmp_path) -> 
     async def scenario() -> None:
         """离线升级完成后通过正式查询接口恢复历史记录。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=str(db_path))
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(db_path))))
         try:
-            record = await supervisor.get_task_record("old")
+            record = await supervisor.get_task_snapshot("old")
             assert record is not None and record.command == "old command"
             assert record.origin_run_id is None and record.origin_tool_call_id is None
             assert record.output_ref == "old"
         finally:
             await supervisor.close()
+            await supervisor.records.close()
 
     asyncio.run(scenario())
 
@@ -340,9 +352,7 @@ def test_output_pages_preserve_utf8_characters_across_byte_boundaries(tmp_path) 
     async def scenario() -> None:
         """在隔离异步环境中安排并验证：按字节分页仍保留完整 UTF-8 字符。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
-            db_path=str(tmp_path / "state.sqlite3"),
-        )
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "state.sqlite3"))))
         terminal_for_supervisor = TerminalHarness(supervisor, spool_dir=tmp_path / "tasks")
         try:
             result = await terminal_for_supervisor.launch_terminal(
@@ -363,6 +373,7 @@ def test_output_pages_preserve_utf8_characters_across_byte_boundaries(tmp_path) 
             assert await terminal_for_supervisor.read_tail(result.task_id) == "你好"
         finally:
             await supervisor.close()
+            await supervisor.records.close()
 
     asyncio.run(scenario())
 
@@ -377,9 +388,7 @@ def test_running_output_keeps_incomplete_utf8_bytes_for_next_page(tmp_path) -> N
     async def scenario() -> None:
         """在隔离异步环境中安排并验证：运行中不完整 UTF-8 字节留给下一页。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
-            db_path=str(tmp_path / "state.sqlite3"),
-        )
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "state.sqlite3"))))
         terminal_for_supervisor = TerminalHarness(supervisor, spool_dir=tmp_path / "tasks")
         try:
             command = (
@@ -393,7 +402,7 @@ def test_running_output_keeps_incomplete_utf8_bytes_for_next_page(tmp_path) -> N
                 cwd=str(tmp_path), yield_time_ms=0,
             )
             for _ in range(100):
-                record = await supervisor.get_task_record(result.task_id)
+                record = await supervisor.get_task_snapshot(result.task_id)
                 if record is not None and record.status == "running" and (tmp_path / "partial-ready").exists():
                     break
                 await asyncio.sleep(0.01)
@@ -402,13 +411,14 @@ def test_running_output_keeps_incomplete_utf8_bytes_for_next_page(tmp_path) -> N
             assert page["next_offset"] == 0
             await terminal_for_supervisor.interact("s", result.task_id, chars="\n", yield_time_ms=0)
             for _ in range(100):
-                if (await supervisor.get_task_record(result.task_id)).status == "completed":
+                if (await supervisor.get_task_snapshot(result.task_id)).status == "completed":
                     break
                 await asyncio.sleep(0.01)
             completed = await terminal_for_supervisor.read_output(result.task_id, page["next_offset"], 1)
             assert completed["text"] == "你"
         finally:
             await supervisor.close()
+            await supervisor.records.close()
 
     asyncio.run(scenario())
 
@@ -423,9 +433,7 @@ def test_foreground_result_is_bounded_but_spool_keeps_full_output(tmp_path) -> N
     async def scenario() -> None:
         """在隔离异步环境中安排并验证：前台返回限制预览大小而完整输出仍保存。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
-            db_path=str(tmp_path / "state.sqlite3"),
-        )
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "state.sqlite3"))))
         terminal_for_supervisor = TerminalHarness(supervisor, spool_dir=tmp_path / "tasks")
         try:
             result = await terminal_for_supervisor.launch_terminal(
@@ -434,13 +442,14 @@ def test_foreground_result_is_bounded_but_spool_keeps_full_output(tmp_path) -> N
             )
             assert len(result.output.encode("utf-8")) <= 64 * 1024
             assert "task-output://" not in result.render()
-            record = await supervisor.get_task_record(result.task_id)
+            record = await supervisor.get_task_snapshot(result.task_id)
             assert record is not None
             assert (tmp_path / "tasks" / result.task_id / "output.log").stat().st_size > 100000
             remaining = await terminal_for_supervisor.read_output(result.task_id, len(result.output.encode("utf-8")), 64 * 1024)
             assert (result.output + remaining["text"]).splitlines() == ["x" * 100000]
         finally:
             await supervisor.close()
+            await supervisor.records.close()
 
     asyncio.run(scenario())
 
@@ -455,9 +464,7 @@ def test_explicit_stop_ends_process_and_records_stopped_status(tmp_path) -> None
     async def scenario() -> None:
         """在隔离异步环境中安排并验证：显式停止结束受管进程并记录 stopped。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
-            db_path=str(tmp_path / "state.sqlite3"),
-        )
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "state.sqlite3"))))
         terminal_for_supervisor = TerminalHarness(supervisor, spool_dir=tmp_path / "tasks")
         try:
             result = await terminal_for_supervisor.launch_terminal(
@@ -466,13 +473,14 @@ def test_explicit_stop_ends_process_and_records_stopped_status(tmp_path) -> None
             )
             assert await supervisor.stop_task(result.task_id)
             for _ in range(200):
-                record = await supervisor.get_task_record(result.task_id)
+                record = await supervisor.get_task_snapshot(result.task_id)
                 if record is not None and record.status != "running":
                     break
                 await asyncio.sleep(0.02)
             assert record is not None and record.status == "stopped"
         finally:
             await supervisor.close()
+            await supervisor.records.close()
 
     asyncio.run(scenario())
 
@@ -493,7 +501,9 @@ def test_terminal_notification_wakes_idle_agent_on_desktop_channel(tmp_path, mon
         background_release = asyncio.Event()
         deliveries = 0
         work = None
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=db_path)
+        supervisor_settings = configured_settings()
+        supervisor_mutations = SettingsMutationCoordinator()
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(db_path)))
         terminal_for_supervisor = TerminalHarness(supervisor, spool_dir=tmp_path / "tasks")
         original_mark_background = supervisor.records.mark_background
 
@@ -510,7 +520,7 @@ def test_terminal_notification_wakes_idle_agent_on_desktop_channel(tmp_path, mon
 
         class FakeAgent(RuntimeAgentStub):
             """提供隔离测试替身，用于验证：终态通知唤醒空闲 Agent 并只发给桌面。"""
-            async def run(self, message, *, inbox_input=None, **kwargs):
+            async def run(self, message, *, inbox_input=None, emit, **kwargs):
                 """持久交付本次真人输入，建立当前进程的会话激活资格。
 
                 Args:
@@ -521,17 +531,20 @@ def test_terminal_notification_wakes_idle_agent_on_desktop_channel(tmp_path, mon
                 Yields:
                     AgentEvent: 正常完成事件。
                 """
-                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": kwargs.get("origin_channel", "desktop"), "resumed": False})
-                manager = SessionStateManager("s", db_path)
+                outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
+                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": kwargs.get("origin_channel", "desktop"), "resumed": False}))
+                manager = SessionStateManager("s", SqliteFactory(db_path))
                 try:
                     state = await manager.load()
                     state.add_user_message(message)
                     await manager.save(state, checkpoint_type="completed", inbox_inputs=(inbox_input,))
                 finally:
                     await manager.close()
-                yield AgentEvent(EventType.DONE, None)
+                await emit(AgentEvent(EventType.DONE, None))
 
-            async def run_runtime_inputs(self, messages=None, *, inbox_inputs, turn_control=None, receive_task_notifications=False):
+                return outcome
+
+            async def run_runtime_inputs(self, messages=None, *, inbox_inputs, turn_control=None, receive_task_notifications=False, emit):
                 """验证后台通知批次并产生测试回复。
 
                 Args:
@@ -544,10 +557,11 @@ def test_terminal_notification_wakes_idle_agent_on_desktop_channel(tmp_path, mon
                 Yields:
                     AgentEvent: 当前测试场景的预设分片或事件。
                 """
-                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False})
+                outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
+                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False}))
                 nonlocal deliveries
                 deliveries += 1
-                manager = SessionStateManager("s", db_path)
+                manager = SessionStateManager("s", SqliteFactory(db_path))
                 try:
                     state = await manager.load()
                     for message in messages if messages is not None else task_result_messages(inbox_inputs):
@@ -558,23 +572,25 @@ def test_terminal_notification_wakes_idle_agent_on_desktop_channel(tmp_path, mon
                 finally:
                     await manager.close()
                 delivered.set()
-                yield AgentEvent(EventType.DONE, None)
+                await emit(AgentEvent(EventType.DONE, None))
+
+                return outcome
 
             async def close(self):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
-        subscriptions = ChannelSubscriptionService()
-        scheduler = AgentRuntimeScheduler(runtime_queue=supervisor.runtime_queue,
+        subscriptions = ChannelSubscriptionService(sqlite_factory=SqliteFactory())
+        scheduler = build_test_scheduler(runtime_queue=supervisor.runtime_queue,
             subscriptions=subscriptions, agent_factory=lambda _session, _manager: FakeAgent(),
-            session_state_manager_factory=lambda session: SessionStateManager(session, db_path),
+            session_state_manager_factory=lambda session: SessionStateManager(session, SqliteFactory(db_path)),
             task_supervisor=supervisor,
-        )
-        hub = InteractionEventHub(scheduler, subscriptions=subscriptions)
-        await hub.start()
+         chat_settings_dao=supervisor_settings, mutation_coordinator=supervisor_mutations)
+        hub = runtime_hub(scheduler)
+        pass
         await scheduler.start()
         from app.interaction.interaction_contract import ChannelCommand
-        desktop = hub.subscribe("s", "desktop")
+        desktop = observe_runtime("s", "desktop", hub, scheduler)
         await anext(desktop)
         try:
             # 1. 受理不代表开始执行；先观察首轮完整结束，再检查后台通知启动的新轮次。
@@ -606,8 +622,8 @@ def test_terminal_notification_wakes_idle_agent_on_desktop_channel(tmp_path, mon
             with pytest.raises(asyncio.TimeoutError):
                 await asyncio.wait_for(anext(desktop), 0.05)
             assert deliveries == 1
-            assert (await supervisor.get_task_record(result.task_id)).status == "completed"
-            inbox = SessionStateManager("s", db_path)
+            assert (await supervisor.get_task_snapshot(result.task_id)).status == "completed"
+            inbox = SessionStateManager("s", SqliteFactory(db_path))
             try:
                 assert await inbox.read_next() is None
             finally:
@@ -620,8 +636,9 @@ def test_terminal_notification_wakes_idle_agent_on_desktop_channel(tmp_path, mon
                 await asyncio.gather(work, return_exceptions=True)
             await desktop.aclose()
             await supervisor.close()
+            await supervisor.records.close()
             await hub.close()
-            await scheduler.close()
+            await close_test_runtime(scheduler)
 
     asyncio.run(scenario())
 
@@ -637,18 +654,19 @@ def test_restart_marks_unfinished_task_orphaned_once(tmp_path) -> None:
         """在隔离异步环境中安排并验证：重启后的遗留任务只标记并通知 orphaned 一次。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         db_path = str(tmp_path / "state.sqlite3")
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=db_path)
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(db_path)))
         output_path = tmp_path / "tasks" / "old" / "output.log"
         output_path.parent.mkdir(parents=True)
         output_path.write_text("unfinished", encoding="utf-8")
         await supervisor.records.insert_running("old", "s", "long command", 1, str(output_path))
         await supervisor.close()
-        restarted = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=db_path)
+        await supervisor.records.close()
+        restarted = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(db_path)))
         try:
             await restarted.recover_orphaned()
             await restarted.recover_orphaned()
-            assert (await restarted.get_task_record("old")).status == "orphaned"
-            inbox = SessionStateManager("s", db_path)
+            assert (await restarted.get_task_snapshot("old")).status == "orphaned"
+            inbox = SessionStateManager("s", SqliteFactory(db_path))
             try:
                 notices = await inbox.read_task_terminals()
                 assert [item.payload["task_id"] for item in notices] == ["old"]
@@ -656,6 +674,7 @@ def test_restart_marks_unfinished_task_orphaned_once(tmp_path) -> None:
                 await inbox.close()
         finally:
             await restarted.close()
+            await restarted.records.close()
 
     asyncio.run(scenario())
 
@@ -674,7 +693,9 @@ def test_active_turn_receives_multiple_task_terminals_at_next_model_boundary(tmp
         reached_boundary = asyncio.Event()
         continue_model = asyncio.Event()
         injected = asyncio.Event()
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=db_path)
+        supervisor_settings = configured_settings()
+        supervisor_mutations = SettingsMutationCoordinator()
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(db_path)))
         terminal_for_supervisor = TerminalHarness(supervisor, spool_dir=tmp_path / "tasks")
 
         class FakeAgent(RuntimeAgentStub):
@@ -682,7 +703,7 @@ def test_active_turn_receives_multiple_task_terminals_at_next_model_boundary(tmp
             async def run(
                 self, message, images=None, *, origin_channel="desktop",
                 inbox_input=None, turn_control=None, receive_task_notifications=False, inbox_inputs=None,
-            ):
+             emit):
                 """按场景屏障产生 Agent 事件并提交测试输入。
 
                 Args:
@@ -698,8 +719,9 @@ def test_active_turn_receives_multiple_task_terminals_at_next_model_boundary(tmp
                 Yields:
                     AgentEvent: 当前测试场景的预设分片或事件。
                 """
-                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": origin_channel, "resumed": False})
-                manager = SessionStateManager("s", db_path)
+                outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
+                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": origin_channel, "resumed": False}))
+                manager = SessionStateManager("s", SqliteFactory(db_path))
                 try:
                     state = await manager.load()
                     human_message = state.add_user_message(message, origin_channel=origin_channel)
@@ -707,28 +729,30 @@ def test_active_turn_receives_multiple_task_terminals_at_next_model_boundary(tmp
                         state, checkpoint_type="intermediate", inbox_inputs=(inbox_input,),
                     )
                     # 1. 替身遵循真实 Agent：只有事务成功后才发布输入事实。
-                    yield AgentEvent(EventType.HUMAN_INPUT_COMMITTED, {"message": human_message, "input_sequence": inbox_input.id})
+                    await emit(AgentEvent(EventType.HUMAN_INPUT_COMMITTED, {"message": human_message, "input_sequence": inbox_input.id}))
                     reached_boundary.set()
-                    yield AgentEvent(EventType.TEXT_CHUNK, "处理中")
+                    await emit(AgentEvent(EventType.TEXT_CHUNK, "处理中"))
                     await continue_model.wait()
                     await manager.deliver_pending(state)
                     assert isinstance(state.messages[-1], TaskResultMessage)
                     assert state.messages[-1].task_name == "2 个后台任务"
                     injected.set()
-                    yield AgentEvent(EventType.DONE, None)
+                    await emit(AgentEvent(EventType.DONE, None))
                 finally:
                     await manager.close()
+
+                return outcome
 
 
             async def close(self):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
-        scheduler = AgentRuntimeScheduler(runtime_queue=supervisor.runtime_queue,
+        scheduler = build_test_scheduler(runtime_queue=supervisor.runtime_queue,
            agent_factory=lambda _session, _manager: FakeAgent(),
-            session_state_manager_factory=lambda session: SessionStateManager(session, db_path),
+            session_state_manager_factory=lambda session: SessionStateManager(session, SqliteFactory(db_path)),
             task_supervisor=supervisor,
-        )
+         chat_settings_dao=supervisor_settings, mutation_coordinator=supervisor_mutations)
         await scheduler.start()
         try:
             from app.interaction.interaction_contract import ChannelCommand
@@ -742,28 +766,29 @@ def test_active_turn_receives_multiple_task_terminals_at_next_model_boundary(tmp
                 )
                 task_ids.append(result.task_id)
             for _ in range(100):
-                records = await asyncio.gather(*(supervisor.get_task_record(task_id) for task_id in task_ids))
+                records = await asyncio.gather(*(supervisor.get_task_snapshot(task_id) for task_id in task_ids))
                 if all(record is not None and record.status == "completed" for record in records):
                     break
                 await asyncio.sleep(0.02)
             continue_model.set()
             await asyncio.wait_for(injected.wait(), 2)
-            manager = SessionStateManager("s", db_path)
+            manager = SessionStateManager("s", SqliteFactory(db_path))
             try:
                 state = await manager.load()
                 assert isinstance(state.messages[-1], TaskResultMessage)
                 assert all(task_id in state.messages[-1].task_id for task_id in task_ids)
             finally:
                 await manager.close()
-            inbox = SessionStateManager("s", db_path)
+            inbox = SessionStateManager("s", SqliteFactory(db_path))
             try:
                 assert await inbox.read_next() is None
             finally:
                 await inbox.close()
         finally:
             continue_model.set()
-            await scheduler.close()
+            await close_test_runtime(scheduler)
             await supervisor.close()
+            await supervisor.records.close()
 
     asyncio.run(scenario())
 
@@ -779,7 +804,7 @@ def test_idle_task_notification_is_committed_before_pending_human_turn(tmp_path)
         """在隔离异步环境中安排并验证：空闲激活时任务通知先于同批真人消息提交。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         db_path = str(tmp_path / "state.sqlite3")
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=db_path)
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(db_path)))
         terminal_for_supervisor = TerminalHarness(supervisor, spool_dir=tmp_path / "tasks")
         done = asyncio.Event()
         result = await terminal_for_supervisor.launch_terminal(
@@ -787,7 +812,7 @@ def test_idle_task_notification_is_committed_before_pending_human_turn(tmp_path)
             cwd=str(tmp_path), yield_time_ms=0,
         )
         for _ in range(100):
-            record = await supervisor.get_task_record(result.task_id)
+            record = await supervisor.get_task_snapshot(result.task_id)
             if record is not None and record.status == "completed":
                 break
             await asyncio.sleep(0.02)
@@ -800,7 +825,7 @@ def test_idle_task_notification_is_committed_before_pending_human_turn(tmp_path)
                 self, message, images=None, *, origin_channel="desktop",
                 inbox_input=None, inbox_inputs=None, runtime_inputs=(),
                 turn_control=None, receive_task_notifications=False,
-            ):
+             emit):
                 """按场景屏障产生 Agent 事件并提交测试输入。
 
                 Args:
@@ -817,12 +842,13 @@ def test_idle_task_notification_is_committed_before_pending_human_turn(tmp_path)
                 Yields:
                     AgentEvent: 当前测试场景的预设分片或事件。
                 """
-                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": origin_channel, "resumed": False})
+                outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
+                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": origin_channel, "resumed": False}))
                 runtime_inputs = task_result_messages(tuple(item for item in inbox_inputs if item.kind == "task_terminal"))
                 assert len(runtime_inputs) == 1
                 assert isinstance(runtime_inputs[0], TaskResultMessage)
                 assert len(inbox_inputs) == 2
-                manager = SessionStateManager("s", db_path)
+                manager = SessionStateManager("s", SqliteFactory(db_path))
                 try:
                     state = await manager.load()
                     state.append_input(runtime_inputs[0])
@@ -831,13 +857,15 @@ def test_idle_task_notification_is_committed_before_pending_human_turn(tmp_path)
                         state, checkpoint_type="intermediate", inbox_inputs=inbox_inputs,
                     )
                     # 1. 替身遵循真实 Agent：只有事务成功后才发布输入事实。
-                    yield AgentEvent(EventType.HUMAN_INPUT_COMMITTED, {"message": human_message, "input_sequence": inbox_input.id})
+                    await emit(AgentEvent(EventType.HUMAN_INPUT_COMMITTED, {"message": human_message, "input_sequence": inbox_input.id}))
                 finally:
                     await manager.close()
                 done.set()
-                yield AgentEvent(EventType.DONE, None)
+                await emit(AgentEvent(EventType.DONE, None))
 
-            async def run_runtime_inputs(self, *args, **kwargs):
+                return outcome
+
+            async def run_runtime_inputs(self, *args, emit, **kwargs):
                 """验证后台通知批次并产生测试回复。
 
                 Args:
@@ -847,24 +875,26 @@ def test_idle_task_notification_is_committed_before_pending_human_turn(tmp_path)
                 Yields:
                     AgentEvent: 当前测试场景的预设分片或事件。
                 """
-                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False})
+                outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
+                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False}))
                 raise AssertionError("任务通知不应单独激活")
-                yield AgentEvent(EventType.DONE, None)
+                await emit(AgentEvent(EventType.DONE, None))
+
 
             async def close(self):
                 """完成替身清理而不访问真实服务。"""
                 pass
 
-        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
+        scheduler = build_test_scheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
            agent_factory=lambda _session, _manager: FakeAgent(),
-            session_state_manager_factory=lambda session: SessionStateManager(session, db_path),
+            session_state_manager_factory=lambda session: SessionStateManager(session, SqliteFactory(db_path)),
         )
         await scheduler.start()
         try:
             from app.interaction.interaction_contract import ChannelCommand
             await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "继续"}))
             await asyncio.wait_for(done.wait(), 2)
-            manager = SessionStateManager("s", db_path)
+            manager = SessionStateManager("s", SqliteFactory(db_path))
             try:
                 state = await manager.load()
                 assert isinstance(state.messages[-2], TaskResultMessage)
@@ -872,7 +902,8 @@ def test_idle_task_notification_is_committed_before_pending_human_turn(tmp_path)
             finally:
                 await manager.close()
         finally:
-            await scheduler.close()
+            await close_test_runtime(scheduler)
             await supervisor.close()
+            await supervisor.records.close()
 
     asyncio.run(scenario())

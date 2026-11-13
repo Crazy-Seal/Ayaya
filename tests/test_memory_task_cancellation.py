@@ -1,4 +1,8 @@
 """验证记忆具体任务直接执行业务时的取消行为。"""
+from app.crud.sqlite_factory import SqliteFactory
+
+from app.crud.task_record_dao import TaskRecordDao
+from app.services.settings_mutation import SettingsMutationCoordinator
 
 import asyncio
 from datetime import date
@@ -19,7 +23,7 @@ def test_diary_async_work_is_cancelled_without_waiting_for_unrelated_completion(
     """
     async def scenario():
         """通过正式提交、停止和等待观察异步业务的取消。"""
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / 'state.db'))
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / 'state.db'))))
         runtime = PluginRuntime('memory', 's', 'run', _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue)
         started, cancelled = asyncio.Event(), asyncio.Event()
 
@@ -47,4 +51,5 @@ def test_diary_async_work_is_cancelled_without_waiting_for_unrelated_completion(
             assert cancelled.is_set() and supervisor.active_task_count() == 0
         finally:
             await supervisor.close()
+            await supervisor.records.close()
     asyncio.run(scenario())

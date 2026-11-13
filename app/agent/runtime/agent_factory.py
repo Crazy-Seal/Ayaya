@@ -1,6 +1,10 @@
 """按会话设置和应用提供的依赖创建 Agent。"""
 
 import asyncio
+from typing import Any
+from app.crud.sqlite_factory import SqliteFactory
+from app.schemas.subagent_types import SUBAGENT_PARENT_TOOL_NAMES
+from app.schemas.tool_identity import ToolIdentity
 
 from app.agent.agent import Agent, AgentConfig
 from app.agent.runtime.requests import RuntimeRequest
@@ -29,6 +33,7 @@ def build_agent(
     plugin_mcp: dict[str, tuple[MCPConnectionConfig, ...]] | None = None,
     subagent: SubagentDefinition | None = None,
     runtime_queue: asyncio.Queue[RuntimeRequest] | None = None,
+    *, sqlite_factory: SqliteFactory,
 ) -> Agent:
     """按会话设置创建 Agent，并注入共享授权与任务启动端口。
 
@@ -45,13 +50,15 @@ def build_agent(
         subagent (SubagentDefinition | None): 子身份及固定定义；父配置仍作为授权和模型配置来源。
         runtime_queue (asyncio.Queue[RuntimeRequest] | None): 应用共享队列，用于管理工具和临时名单查询。
 
+        sqlite_factory (SqliteFactory): 应用装配提供的 SQLite 连接配置。
+
     Returns:
         Agent: 按最新会话设置装配的 Agent，尚未开始模型轮次。
     """
     # 1. 应用层已经校验参数并准备连接声明，构造入口只组装运行对象。
-    plugins = [
+    plugins: list[str | dict[str, Any]] = [
         {"name": name, "config": dict(settings.config)}
-        for name, settings in chat_settings.agent_plugins.items()
+        for name, settings in (chat_settings.agent_plugins or {}).items()
         if settings.enabled
     ]
 
@@ -69,10 +76,11 @@ def build_agent(
     )
     async def environment() -> str:
         """只捕获共享队列和父 ID，不捕获 Scheduler 或绑定方法。"""
+        assert runtime_queue is not None
         return await subagent_environment(runtime_queue, chat_settings.session_id)
 
     agent = Agent(
-        config,
+        config, sqlite_factory,
         mcp_connection_manager=mcp_connection_manager,
         chat_settings=chat_settings,
         tool_authorization=tool_authorization,
@@ -82,7 +90,8 @@ def build_agent(
         plugin_runtime_factory=plugin_runtime_factory,
         bind_plugin_mcp=bind_plugin_mcp,
         permission_session_id=chat_settings.session_id,
-        tool_whitelist=subagent.tool_whitelist if subagent else None,
+        tool_whitelist=frozenset(item for item in subagent.tool_whitelist
+            if item not in {ToolIdentity.local(name) for name in SUBAGENT_PARENT_TOOL_NAMES}) if subagent else None,
         enable_plugin_hooks=subagent is None,
         environment_provider=environment if subagent is None and runtime_queue is not None else None,
     )

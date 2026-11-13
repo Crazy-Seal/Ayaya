@@ -1,4 +1,8 @@
 """通过 HTTP 验证子身份查询归属及统一命令业务拒绝。"""
+from tests.runtime_support import runtime_hub, close_test_runtime
+from app.routes.agent import observe_runtime
+from tests.runtime_support import build_test_scheduler
+from app.crud.sqlite_factory import SqliteFactory
 
 import asyncio
 from contextlib import asynccontextmanager
@@ -24,7 +28,7 @@ def test_subagent_queries_and_invalid_controls_preserve_http_business_contract(t
     @asynccontextmanager
     async def lifespan(application):
         """在 TestClient 同一事件循环准备重启后的空闲子身份并负责清理。"""
-        dao = SubagentDao(path)
+        dao = SubagentDao(SqliteFactory(path))
         definition = SubagentDefinition("child", "parent", "代码探索助手", "检查项目", frozenset(), True, datetime.now(timezone.utc))
         await dao.create_with_command(definition, "首次工作", "create")
         await dao.close()
@@ -33,14 +37,14 @@ def test_subagent_queries_and_invalid_controls_preserve_http_business_contract(t
             """纯查询与无效控制不应启动模型。"""
             raise AssertionError("查询不应执行 Agent")
 
-        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), agent_factory=forbidden,
-            subagent_factory=forbidden, session_state_manager_factory=lambda sid: SessionStateManager(sid, path))
+        scheduler = build_test_scheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), agent_factory=forbidden,
+            subagent_factory=forbidden, session_state_manager_factory=lambda sid: SessionStateManager(sid, SqliteFactory(path)))
         application.state.scheduler = scheduler
         await scheduler.start()
         try:
             yield
         finally:
-            await scheduler.close()
+            await close_test_runtime(scheduler)
 
     application = FastAPI(lifespan=lifespan)
     application.include_router(router)

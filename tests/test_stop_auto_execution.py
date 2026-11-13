@@ -1,4 +1,15 @@
+from app.agent.state.manager import RequiredSaveError
 """验证用户停止后的通知保存与真人输入恢复执行。"""
+from tests.runtime_support import runtime_hub, close_test_runtime
+from app.routes.agent import observe_runtime
+from app.schemas.runtime_types import AgentRunOutcome, AgentRunOutcomeKind
+from tests.runtime_support import next_runtime_event
+from tests.runtime_support import build_test_scheduler
+from app.crud.sqlite_factory import SqliteFactory
+
+from tests.runtime_support import finish_task_record
+from app.crud.task_record_dao import TaskRecordDao
+from app.services.settings_mutation import SettingsMutationCoordinator
 from tests.runtime_support import RuntimeAgentStub
 
 import asyncio
@@ -30,6 +41,7 @@ def test_stop_preserves_notifications_until_human_input(tmp_path: Path, arrival:
         started = asyncio.Event()
         cleaning = asyncio.Event()
         release_cleanup = asyncio.Event()
+        cleanup_finished = asyncio.Event()
         runtime_started = asyncio.Event()
         resumed = asyncio.Event()
         calls: list[str] = []
@@ -41,7 +53,7 @@ def test_stop_preserves_notifications_until_human_input(tmp_path: Path, arrival:
                 """记录该实例是否执行被停止的旧轮。"""
                 self.old_turn = False
 
-            async def run(self, message, *, inbox_inputs, turn_control, **kwargs):
+            async def run(self, message, *, inbox_inputs, turn_control, emit, **kwargs):
                 """交付输入，旧轮等停止，新轮报告恢复。
 
                 Args:
@@ -53,9 +65,10 @@ def test_stop_preserves_notifications_until_human_input(tmp_path: Path, arrival:
                 Yields:
                     AgentEvent: 执行开始与结束事件。
                 """
+                outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
                 self.old_turn = message == "旧轮"
                 calls.append(message)
-                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False})
+                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False}))
                 await finish_test_turn(path, inbox_inputs, message=message)
                 if self.old_turn:
                     turn_control.start_llm()
@@ -67,7 +80,9 @@ def test_stop_preserves_notifications_until_human_input(tmp_path: Path, arrival:
                         pass
                 else:
                     resumed.set()
-                yield AgentEvent(EventType.DONE, None)
+                await emit(AgentEvent(EventType.DONE, None))
+
+                return outcome
 
             async def wait_for_stop(self):
                 """保持模型读取等待，由停止信号结束。
@@ -78,7 +93,7 @@ def test_stop_preserves_notifications_until_human_input(tmp_path: Path, arrival:
                 await asyncio.Event().wait()
                 yield None
 
-            async def run_runtime_inputs(self, *, inbox_inputs, **kwargs):
+            async def run_runtime_inputs(self, *, inbox_inputs, emit, **kwargs):
                 """记录意外自动执行，并真实交付其通知。
 
                 Args:
@@ -88,24 +103,30 @@ def test_stop_preserves_notifications_until_human_input(tmp_path: Path, arrival:
                 Yields:
                     AgentEvent: 通知启动的新轮事件。
                 """
+                outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
                 runtime_started.set()
-                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False})
+                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False}))
                 await finish_test_turn(path, inbox_inputs)
-                yield AgentEvent(EventType.DONE, None)
+                await emit(AgentEvent(EventType.DONE, None))
+
+                return outcome
 
             async def close(self) -> None:
                 """暂停旧轮清理，使通知和新输入能够确定性交错。"""
                 if self.old_turn:
                     cleaning.set()
                     await release_cleanup.wait()
+                    cleanup_finished.set()
 
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=path)
-        scheduler = AgentRuntimeScheduler(runtime_queue=supervisor.runtime_queue,
+        supervisor_settings = configured_settings()
+        supervisor_mutations = SettingsMutationCoordinator()
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(path)))
+        scheduler = build_test_scheduler(runtime_queue=supervisor.runtime_queue,
             agent_factory=lambda _session, _manager: RecordingAgent(),
-            session_state_manager_factory=lambda session: SessionStateManager(session, path),
+            session_state_manager_factory=lambda session: SessionStateManager(session, SqliteFactory(path)),
             task_supervisor=supervisor,
-        )
-        manager = SessionStateManager("s", path)
+         chat_settings_dao=supervisor_settings, mutation_coordinator=supervisor_mutations)
+        manager = SessionStateManager("s", SqliteFactory(path))
         try:
             await scheduler.start()
             assert (await scheduler.submit(ChannelCommand(
@@ -113,12 +134,12 @@ def test_stop_preserves_notifications_until_human_input(tmp_path: Path, arrival:
             ))).accepted
             await asyncio.wait_for(started.wait(), 2)
             run_id = (await scheduler.snapshot("s")).payload["run_id"]
-            worker = scheduler._session("s").worker
+            worker = scheduler._parent("s")._worker
             # 2. 过期停止不能撤销资格；有效停止才暂停后续自动执行。
             assert not (await scheduler.submit(ChannelCommand(
                 "s", "desktop", "stop_turn", target_run_id="过期轮次",
             ))).accepted
-            assert scheduler._session("s").activated
+            assert (await scheduler.snapshot("s")).payload["session_state"] == "enabled"
             assert (await scheduler.submit(ChannelCommand(
                 "s", "desktop", "stop_turn", target_run_id=run_id,
             ))).accepted
@@ -126,12 +147,12 @@ def test_stop_preserves_notifications_until_human_input(tmp_path: Path, arrival:
 
             if arrival == "idle":
                 release_cleanup.set()
-                await asyncio.wait_for(asyncio.shield(worker), 2)
+                await asyncio.wait_for(cleanup_finished.wait(), 2)
 
             # 3. 终态及通知真实入库，并经 Scheduler 处理记录提醒。
             await supervisor.records.insert_running("task", "s", "后台工作", 1, str(tmp_path / "out"))
-            assert await supervisor.commit_terminal_state_once("task", "completed")
-            await scheduler._handle_task_record(await supervisor.get_task_record("task"))
+            assert await finish_task_record(supervisor, "task", "completed")
+            await scheduler._handle_task_record(await supervisor.get_task_snapshot("task"))
             assert len(await manager.read_task_terminals()) == 1
             assert not runtime_started.is_set()
 
@@ -142,7 +163,7 @@ def test_stop_preserves_notifications_until_human_input(tmp_path: Path, arrival:
                 release_cleanup.set()
             else:
                 release_cleanup.set()
-                await asyncio.wait_for(asyncio.shield(worker), 2)
+                await asyncio.wait_for(cleanup_finished.wait(), 2)
                 # 4. 已存在的 worker 和后来的提醒均保持暂停，内容留待真人恢复。
                 assert len(await manager.read_task_terminals()) == 1
                 assert not runtime_started.is_set()
@@ -153,18 +174,19 @@ def test_stop_preserves_notifications_until_human_input(tmp_path: Path, arrival:
             await asyncio.wait_for(resumed.wait(), 2)
             assert calls == ["旧轮", "恢复"]
             assert await manager.read_task_terminals() == ()
-            assert scheduler._session("s").activated
+            assert (await scheduler.snapshot("s")).payload["session_state"] == "enabled"
         finally:
             release_cleanup.set()
-            await scheduler.close()
+            await close_test_runtime(scheduler)
             await supervisor.close()
+            await supervisor.records.close()
             await manager.close()
 
     asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("reported_start", [False, True])
-def test_stop_during_delivery_retry_completes_current_turn(tmp_path: Path, reported_start: bool) -> None:
+def test_save_failure_stays_paused_during_cleanup_and_only_new_input_runs(tmp_path: Path, reported_start: bool) -> None:
     """输入交付失败后在清理期间停止，结束旧轮并保留输入供真人恢复。
 
     Args:
@@ -176,6 +198,7 @@ def test_stop_during_delivery_retry_completes_current_turn(tmp_path: Path, repor
         path = str(tmp_path / "state.sqlite3")
         cleaning = asyncio.Event()
         release_cleanup = asyncio.Event()
+        cleanup_finished = asyncio.Event()
         resumed = asyncio.Event()
         calls: list[str] = []
 
@@ -190,7 +213,7 @@ def test_stop_during_delivery_retry_completes_current_turn(tmp_path: Path, repor
                 """初始化当前尝试的失败标记。"""
                 self.failed = False
 
-            async def run(self, message, *, inbox_inputs, **kwargs):
+            async def run(self, message, *, inbox_inputs, emit, **kwargs):
                 """按场景报告开始并模拟首次保存失败，后续正常交付并结束轮次。
 
                 Args:
@@ -204,28 +227,32 @@ def test_stop_during_delivery_retry_completes_current_turn(tmp_path: Path, repor
                 Raises:
                     RuntimeError: 首次尝试在交付输入前模拟保存失败。
                 """
+                outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
                 calls.append(message)
                 if reported_start or len(calls) > 1:
-                    yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False})
+                    await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False}))
                 if len(calls) == 1:
                     self.failed = True
-                    raise RuntimeError("模拟输入保存失败")
+                    raise RequiredSaveError("模拟输入保存失败")
                 await finish_test_turn(path, inbox_inputs, message=message)
-                yield AgentEvent(EventType.DONE, None)
+                await emit(AgentEvent(EventType.DONE, None))
                 if message == "恢复":
                     resumed.set()
+
+                return outcome
 
             async def close(self) -> None:
                 """暂停失败尝试的清理，让用户停止发生在下一次重试之前。"""
                 if self.failed:
                     cleaning.set()
                     await release_cleanup.wait()
+                    cleanup_finished.set()
 
-        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
+        scheduler = build_test_scheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
             agent_factory=lambda _session, _manager: FailingOnceAgent(),
-            session_state_manager_factory=lambda session: SessionStateManager(session, path),
+            session_state_manager_factory=lambda session: SessionStateManager(session, SqliteFactory(path)),
         )
-        manager = SessionStateManager("s", path)
+        manager = SessionStateManager("s", SqliteFactory(path))
         try:
             await scheduler.start()
             # 1. 首次输入已保存到 Inbox，Agent 交付失败后停在实例清理中，当前轮次可查询。
@@ -234,46 +261,32 @@ def test_stop_during_delivery_retry_completes_current_turn(tmp_path: Path, repor
             ))).accepted
             await asyncio.wait_for(cleaning.wait(), 2)
             snapshot = await scheduler.snapshot("s")
-            assert snapshot.payload["phase"] == SessionPhase.RUNNING
-            if reported_start:
-                started = await asyncio.wait_for(scheduler.next_event(), 2)
-                assert started.kind == InteractionEventKind.RUN_STARTED
-                assert started.run_id == snapshot.payload["run_id"]
-            worker = scheduler._session("s").worker
-            assert (await scheduler.submit(ChannelCommand(
-                "s", "desktop", "stop_turn", target_run_id=snapshot.payload["run_id"],
-            ))).accepted
-
-            # 2. 放行清理后停止重试；界面经开始事件或状态查询看到的旧轮都收到唯一结束事件。
+            assert snapshot.payload["phase"] == SessionPhase.IDLE
+            assert snapshot.payload["session_state"] == "paused"
+            assert snapshot.payload["save_failure"]["restored"]
+            failed_run = snapshot.payload["save_failure"]["run_id"]
+            assert not (await scheduler.submit(ChannelCommand(
+                "s", "desktop", "stop_turn", target_run_id=failed_run))).accepted
+            # 1. 保存故障立即显示错误和恢复位置，旧轮没有假成功完成事件。
+            events = []
+            while not any(event.kind == "history_restored" for event in events):
+                events.append(await asyncio.wait_for(next_runtime_event(scheduler), 2))
+            assert len([event for event in events if event.kind == "error"]) == 1
+            assert not any(event.kind == "run_completed" for event in events)
             release_cleanup.set()
-            await asyncio.wait_for(asyncio.shield(worker), 2)
-            completed = await asyncio.wait_for(scheduler.next_event(), 2)
-            assert completed.kind == InteractionEventKind.RUN_COMPLETED
-            assert completed.run_id == snapshot.payload["run_id"]
-            assert completed.origin_channel == snapshot.payload["origin_channel"]
-            assert completed.event_sequence == snapshot.event_sequence + 1
-            assert completed.payload == {"value": {"interrupted": True}}
-            assert (await scheduler.snapshot("s")).payload["phase"] == SessionPhase.IDLE
+            await asyncio.wait_for(cleanup_finished.wait(), 2)
             assert calls == ["原始输入"]
-            assert not scheduler._session("s").activated
-            pending = await manager.pending_humans()
-            assert [item.payload["message"] for item in pending] == ["原始输入"]
-
-            # 3. 新真人输入恢复执行后，原输入和新输入各交付一次，轮次完成事件保持配对。
-            assert (await scheduler.submit(ChannelCommand(
-                "s", "desktop", "human_turn", {"message": "恢复"},
-            ))).accepted
+            assert [item.payload["message"] for item in await manager.pending_humans()] == ["原始输入"]
+            # 2. 用户新的明确输入替换失败批次，原始输入始终只尝试一次。
+            assert (await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "恢复"}))).accepted
             await asyncio.wait_for(resumed.wait(), 2)
-            events = [await asyncio.wait_for(scheduler.next_event(), 2) for _ in range(4)]
-            assert [event.kind for event in events] == [
-                InteractionEventKind.RUN_STARTED, InteractionEventKind.RUN_COMPLETED,
-                InteractionEventKind.RUN_STARTED, InteractionEventKind.RUN_COMPLETED,
-            ]
-            assert calls == ["原始输入", "原始输入", "恢复"]
-            assert await manager.pending_humans() == []
+            kinds = [ (await asyncio.wait_for(next_runtime_event(scheduler), 2)).kind for _ in range(2)]
+            assert kinds == [InteractionEventKind.RUN_STARTED, InteractionEventKind.RUN_COMPLETED]
+            assert calls == ["原始输入", "恢复"]
+            assert not await manager.pending_humans()
         finally:
             release_cleanup.set()
-            await scheduler.close()
+            await close_test_runtime(scheduler)
             await manager.close()
 
     asyncio.run(scenario())

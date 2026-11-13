@@ -8,7 +8,7 @@ T = TypeVar("T")
 
 
 async def complete_owned_work(operation: Coroutine[Any, Any, T]) -> T:
-    """保持内部工作身份，重复取消外层等待也须等到实际操作完成。
+    """做完已经开始的工作，再把取消交给调用者。
 
     Args:
         operation (Coroutine[Any, Any, T]): 已开始负责的登记、清理或线程工作。

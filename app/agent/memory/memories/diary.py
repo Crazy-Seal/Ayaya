@@ -1,6 +1,7 @@
 """每日记忆：从协议日志生成和检索日记。"""
 
 from __future__ import annotations
+from app.crud.sqlite_factory import SqliteFactory
 
 from dataclasses import dataclass, field
 from datetime import date
@@ -72,6 +73,7 @@ class DiaryMemory:
         config: MemoryConfig,
         chat_settings: ChatSettings,
         chat_history_store: ChatHistoryStore,
+        *, sqlite_factory: SqliteFactory,
     ) -> None:
         """绑定会话、只读协议历史和日记存储，创建使用会话模型设置的日记生成客户端。
 
@@ -80,12 +82,13 @@ class DiaryMemory:
             config (MemoryConfig): 调用方提供的配置。
             chat_settings (ChatSettings): 当前会话的模型、角色及插件设置。
             chat_history_store (ChatHistoryStore): 只读查询已保存对话协议日志的对象。
+            sqlite_factory (SqliteFactory): 应用装配提供的 SQLite 连接配置。
         """
         self.session_id = session_id
         self.config = config
         self.chat_settings = chat_settings
         self.chat_history_store = chat_history_store
-        self.store = DiarySqliteStore(config.sqlite_path)
+        self.store = DiarySqliteStore(config.sqlite_path, sqlite_factory=sqlite_factory)
         self.llm = LLMClient(LLMConfig(
             model=chat_settings.model_name,
             api_key=chat_settings.openai_api_key,

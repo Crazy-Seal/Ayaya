@@ -1,3 +1,5 @@
+from app.agent.state.manager import RequiredSaveError
+from app.crud.sqlite_factory import SqliteFactory
 from app.agent.models.openai_message_names import MCP_TOOL_IMAGE_MESSAGE_NAME
 from tests.model_capture import result_parts
 import asyncio
@@ -52,7 +54,7 @@ def test_latest_checkpoint_query_does_not_require_temp_sort(tmp_path: Path) -> N
         """
         manager = SessionStateManager(
             "test-session",
-            db_path=str(tmp_path / "checkpoints.sqlite3"),
+            sqlite_factory=SqliteFactory(str(tmp_path / "checkpoints.sqlite3")),
         )
         try:
             db = await manager._state_dao._get_db()
@@ -77,7 +79,7 @@ def test_intermediate_checkpoint_replaces_previous_one_atomically(tmp_path: Path
     """
     async def scenario() -> None:
         """由外层测试调用，完成“中间 checkpoint 在事务中替换上一份中间记录”的异步步骤。"""
-        manager = SessionStateManager("test-session", db_path=str(tmp_path / "checkpoints.sqlite3"))
+        manager = SessionStateManager("test-session", sqlite_factory=SqliteFactory(str(tmp_path / "checkpoints.sqlite3")))
         try:
             first = AgentState.create_new("test-session")
             first.add_assistant_message("第一个中间态")
@@ -96,7 +98,7 @@ def test_intermediate_checkpoint_replaces_previous_one_atomically(tmp_path: Path
 
             failed = AgentState.from_checkpoint(first.to_checkpoint())
             failed.add_assistant_message("不应提交的中间态")
-            with pytest.raises(aiosqlite.IntegrityError, match="模拟删除旧中间态失败"):
+            with pytest.raises(RequiredSaveError, match="模拟删除旧中间态失败"):
                 await manager.save(failed, checkpoint_type="intermediate")
 
             rows_after_failure = await checkpoint_rows(manager)
@@ -125,7 +127,7 @@ def test_completed_checkpoint_removes_intermediate_and_keeps_latest_thirty(
     """
     async def scenario() -> None:
         """由外层测试调用，完成“完成保存删除中间记录并保留最近三十份完成记录”的异步步骤。"""
-        manager = SessionStateManager("test-session", db_path=str(tmp_path / "checkpoints.sqlite3"))
+        manager = SessionStateManager("test-session", sqlite_factory=SqliteFactory(str(tmp_path / "checkpoints.sqlite3")))
         try:
             state = AgentState.create_new("test-session")
             await manager.save(state, checkpoint_type="intermediate")
@@ -169,7 +171,7 @@ def test_token_baseline_is_persisted_in_checkpoint(tmp_path: Path) -> None:
     """
     async def scenario() -> None:
         """由外层测试调用，完成“真实 token 基线保存到 checkpoint”的异步步骤。"""
-        manager = SessionStateManager("test-session", db_path=str(tmp_path / "agent.sqlite3"))
+        manager = SessionStateManager("test-session", sqlite_factory=SqliteFactory(str(tmp_path / "agent.sqlite3")))
         try:
             state = AgentState.create_new("test-session")
             state.token_baseline = TokenBaseline(
@@ -198,7 +200,7 @@ def test_checkpoint_and_visible_history_are_saved_atomically(tmp_path: Path) -> 
     """
     async def scenario() -> None:
         """由外层测试调用，完成“checkpoint 与可见历史原子保存”的异步步骤。"""
-        manager = SessionStateManager("test-session", db_path=str(tmp_path / "agent.sqlite3"))
+        manager = SessionStateManager("test-session", sqlite_factory=SqliteFactory(str(tmp_path / "agent.sqlite3")))
         try:
             state = AgentState.create_new("test-session")
             state.add_user_message("你好")
@@ -226,7 +228,7 @@ def test_checkpoint_and_visible_history_are_saved_atomically(tmp_path: Path) -> 
 
             failed = AgentState.from_checkpoint(state.to_checkpoint())
             failed.add_user_message("不应提交")
-            with pytest.raises(aiosqlite.IntegrityError, match="模拟聊天记录写入失败"):
+            with pytest.raises(RequiredSaveError, match="模拟聊天记录写入失败"):
                 await manager.save(failed, checkpoint_type="intermediate")
 
             checkpoint_count = (
@@ -257,7 +259,7 @@ def test_mcp_tool_image_is_not_persisted_as_human_history(tmp_path: Path) -> Non
     """
     async def scenario() -> None:
         """由外层测试调用，完成“MCP 工具图片不会保存为真人历史”的异步步骤。"""
-        manager = SessionStateManager("test-session", db_path=str(tmp_path / "agent.sqlite3"))
+        manager = SessionStateManager("test-session", sqlite_factory=SqliteFactory(str(tmp_path / "agent.sqlite3")))
         try:
             state = AgentState.create_new("test-session")
             state.add_user_message("真实问题")
@@ -268,7 +270,7 @@ def test_mcp_tool_image_is_not_persisted_as_human_history(tmp_path: Path) -> Non
             await manager.save(state, checkpoint_type="completed")
 
             db = await manager._state_dao._get_db()
-            rows = await ChatHistoryDao(db_path=tmp_path / "agent.sqlite3").list_chat_history_async(
+            rows = await ChatHistoryDao(sqlite_factory=SqliteFactory(tmp_path / "agent.sqlite3")).list_chat_history_async(
                 "test-session"
             )
             assert [row["role"] for row in rows] == [
@@ -299,7 +301,7 @@ def test_fresh_state_database_creates_checkpoint_and_protocol_log_tables(
         """
         manager = SessionStateManager(
             "test-session",
-            db_path=str(tmp_path / "agent.sqlite3"),
+            sqlite_factory=SqliteFactory(str(tmp_path / "agent.sqlite3")),
         )
         try:
             db = await manager._state_dao._get_db()
@@ -330,7 +332,7 @@ def test_fresh_database_message_type_check_uses_shared_protocol_types(
         """
         manager = SessionStateManager(
             "test-session",
-            db_path=str(tmp_path / "agent.sqlite3"),
+            sqlite_factory=SqliteFactory(str(tmp_path / "agent.sqlite3")),
         )
         try:
             db = await manager._state_dao._get_db()
@@ -366,8 +368,8 @@ def test_chat_history_store_honors_previous_input_high_watermark(tmp_path: Path)
             tuple[int, list[str]]: 供外层用例断言使用的预设结果。
         """
         db_path = tmp_path / "agent.sqlite3"
-        manager = SessionStateManager("test-session", db_path=str(db_path))
-        store = ChatHistoryStore(db_path=db_path)
+        manager = SessionStateManager("test-session", sqlite_factory=SqliteFactory(str(db_path)))
+        store = ChatHistoryStore(sqlite_factory=SqliteFactory(db_path))
         try:
             state = AgentState.create_new("test-session")
             state.add_user_message("上一轮输入")
@@ -407,8 +409,8 @@ def test_latest_protocol_id_uses_session_scoped_monotonic_high_watermark(tmp_pat
             tuple[int, int]: 供外层用例断言使用的预设结果。
         """
         db_path = tmp_path / "agent.sqlite3"
-        first = SessionStateManager("first", db_path=str(db_path))
-        second = SessionStateManager("second", db_path=str(db_path))
+        first = SessionStateManager("first", sqlite_factory=SqliteFactory(str(db_path)))
+        second = SessionStateManager("second", sqlite_factory=SqliteFactory(str(db_path)))
         try:
             first_state = AgentState.create_new("first")
             first_state.add_user_message("first-1")
@@ -422,7 +424,7 @@ def test_latest_protocol_id_uses_session_scoped_monotonic_high_watermark(tmp_pat
             await first.save(first_state, checkpoint_type="completed")
             await first.save(first_state, checkpoint_type="completed")
 
-            store = ChatHistoryStore(db_path=db_path)
+            store = ChatHistoryStore(sqlite_factory=SqliteFactory(db_path))
             return (
                 await store.get_latest_message_id("first"),
                 await store.get_latest_message_id("second"),
@@ -448,7 +450,7 @@ def test_narrow_history_queries_do_not_use_full_row_loader(tmp_path: Path) -> No
             tuple[int, int, int]: 供外层用例断言使用的预设结果。
         """
         db_path = tmp_path / "agent.sqlite3"
-        manager = SessionStateManager("session", db_path=str(db_path))
+        manager = SessionStateManager("session", sqlite_factory=SqliteFactory(str(db_path)))
         try:
             state = AgentState.create_new("session")
             for index in range(15):
@@ -456,7 +458,7 @@ def test_narrow_history_queries_do_not_use_full_row_loader(tmp_path: Path) -> No
                 state.add_assistant_message(f"assistant-{index}")
             await manager.save(state, checkpoint_type="completed")
 
-            store = ChatHistoryStore(db_path=db_path)
+            store = ChatHistoryStore(sqlite_factory=SqliteFactory(db_path))
 
             async def reject_full_row_loader(*_args, **_kwargs):
                 """全量行读取被调用时主动失败，验证有限查询没有绕过范围。
@@ -497,6 +499,6 @@ def test_chat_history_store_constructor_does_not_initialize_schema(tmp_path: Pat
     """
     db_path = tmp_path / "agent_checkpoints.sqlite3"
 
-    ChatHistoryStore(db_path=db_path)
+    ChatHistoryStore(sqlite_factory=SqliteFactory(db_path))
 
     assert not db_path.exists()

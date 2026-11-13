@@ -1,4 +1,5 @@
 """通过业务提交与查询 Interface 验证引导事务和创建幂等。"""
+from app.crud.sqlite_factory import SqliteFactory
 
 import asyncio
 import sqlite3
@@ -20,7 +21,7 @@ def test_create_replay_returns_original_identity(tmp_path) -> None:
     """创建响应丢失后重试仍返回原身份，初始命令只保存一次。"""
     async def scenario() -> None:
         """提供不同候选编号，验证固定创建来源决定实际身份。"""
-        dao = SubagentDao(str(tmp_path / 'state.sqlite3'))
+        dao = SubagentDao(SqliteFactory(str(tmp_path / 'state.sqlite3')))
         try:
             first = SubagentDefinition('first', 'parent', '助手', '任务', frozenset(), True, datetime.now(timezone.utc))
             other = SubagentDefinition('other', 'parent', '助手', '任务', frozenset(), True, datetime.now(timezone.utc))
@@ -33,20 +34,24 @@ def test_create_replay_returns_original_identity(tmp_path) -> None:
 
 
 def test_final_response_save_retries_without_model_reexecution(tmp_path, monkeypatch) -> None:
-    """正常回答提交暂时失败时，原 Agent 重试保存，模型只执行一次。"""
+    """正常回答提交暂时失败时，DAO 重试固定材料，模型只执行一次。"""
     async def scenario() -> None:
         """通过真实会话执行观察模型次数及唯一最终报告。"""
         calls = 0
         failures = 0
-        original = SessionStateManager.complete_turn
+        from app.crud.agent_state_dao import AgentStateDao
+        from app.schemas.runtime_types import CheckpointType
+        original = AgentStateDao._write_state_in_transaction
 
-        async def complete_turn(manager, state, **kwargs):
-            """子最终回答首次保存失败，随后交给真实事务。"""
+        async def save_once(dao, db, state, **kwargs):
+            """在具名事务内部拒绝一次暂时锁冲突，随后保存相同响应。"""
             nonlocal failures
-            if manager.session_id != 'parent' and failures == 0:
+            if dao.session_id != 'parent' and kwargs.get('checkpoint_type') == CheckpointType.COMPLETED and failures == 0:
                 failures += 1
-                raise OSError('暂时无法保存')
-            return await original(manager, state, **kwargs)
+                error = sqlite3.OperationalError('暂时无法保存')
+                error.sqlite_errorcode = sqlite3.SQLITE_BUSY
+                raise error
+            return await original(dao, db, state, **kwargs)
 
         async def script(messages, tools):
             """产生完整回答，重试阶段不应再次调用。"""
@@ -54,11 +59,11 @@ def test_final_response_save_retries_without_model_reexecution(tmp_path, monkeyp
             calls += 1
             yield StreamChunk(content='已完成，保存后交还')
 
-        monkeypatch.setattr(SessionStateManager, 'complete_turn', complete_turn)
+        monkeypatch.setattr(AgentStateDao, '_write_state_in_transaction', save_once)
         async with SubagentHarness(tmp_path / 'state.sqlite3', script) as harness:
             receipt = await harness.create()
-            await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, receipt.subagent_id), 3)
-            detail = await harness.scheduler.get_subagent_details('parent', receipt.subagent_id)
+            await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, receipt.context_id), 3)
+            detail = await harness.scheduler.get_subagent_details('parent', receipt.context_id)
             assert calls == 1
             assert len(detail['results']) == 1
             assert detail['results'][0]['status'] == 'completed'
@@ -71,7 +76,7 @@ def test_steer_run_switch_rolls_back_old_end_if_new_insert_fails(tmp_path) -> No
     async def scenario() -> None:
         """用真实记录查询核对旧段与新段的原子切换。"""
         path = str(tmp_path / 'state.sqlite3')
-        dao = TaskRecordDao(path)
+        dao = TaskRecordDao(SqliteFactory(path))
         definition = SubagentDefinition('child', 'parent', '助手', '任务', frozenset(), True, datetime.now(timezone.utc))
         try:
             await dao.start_subagent_run(definition, 'old', None)
@@ -100,7 +105,7 @@ def test_authorization_steer_does_not_leave_input_without_decision(tmp_path) -> 
     async def scenario() -> None:
         """通过 Manager 的决定、状态和待交付查询接口验证事务。"""
         path = str(tmp_path / 'state.sqlite3')
-        manager = SessionStateManager('parent', path)
+        manager = SessionStateManager('parent', SqliteFactory(path))
         try:
             state = await manager.load()
             state.record_assistant_step('', (ToolCall(id='tool', name='test_tool', args={}),))

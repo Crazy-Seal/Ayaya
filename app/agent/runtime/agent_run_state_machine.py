@@ -1,168 +1,263 @@
-"""集中校验同一上下文各轮执行的阶段、轮次及等待编号转换。"""
+"""集中管理一个实际上下文的执行阶段、等待和控制请求。"""
 
-from app.schemas.runtime_types import InterruptKind, TurnPhase
+
+from app.schemas.runtime_types import ApprovalWait, CommandReceipt, CommandStatus, ExecutionPhase, ExecutionSnapshot, ExecutionWait, TurnInterruptReason
 
 
 class InvalidStateTransitionError(RuntimeError):
-    """调用方以过期轮次或错误阶段推进执行时报告程序错误。"""
-
-    def __init__(self, run_id: str, source: TurnPhase, target: TurnPhase) -> None:
-        """保留轮次及转换两端，便于定位错误调用。
-
-        Args:
-            run_id (str): 本次动作要求操作的轮次编号。
-            source (TurnPhase): 发起转换时的运行阶段。
-            target (TurnPhase): 本次动作要求进入的运行阶段。
-        """
-        self.run_id, self.source, self.target = run_id, source, target
-        super().__init__(f"运行阶段转换无效：{run_id}，{source.value} -> {target.value}")
+    """内部代码以错误阶段或轮次推进时，报告错误并保留原状态。"""
 
 
+# 每张表只校验本层阶段；请求身份和对应材料由业务方法同步维护。
+EXECUTION_EDGES: dict[ExecutionPhase, frozenset[ExecutionPhase]] = {
+    ExecutionPhase.IDLE: frozenset({ExecutionPhase.RUNNING}),
+    ExecutionPhase.RUNNING: frozenset({ExecutionPhase.WAITING, ExecutionPhase.STOPPING,
+                                     ExecutionPhase.COMMITTING, ExecutionPhase.FAULTED}),
+    ExecutionPhase.WAITING: frozenset({ExecutionPhase.RUNNING, ExecutionPhase.STOPPING, ExecutionPhase.FAULTED}),
+    ExecutionPhase.STOPPING: frozenset({ExecutionPhase.COMMITTING, ExecutionPhase.FAULTED}),
+    ExecutionPhase.COMMITTING: frozenset({ExecutionPhase.IDLE, ExecutionPhase.RUNNING, ExecutionPhase.FAULTED}),
+    ExecutionPhase.FAULTED: frozenset({ExecutionPhase.IDLE}),
+}
 class AgentRunStateMachine:
-    """由会话持有并借给各轮控制对象的唯一运行阶段。
+    """集中验证执行操作，所有耗时业务由调用者顺序执行。
 
     Attributes:
-        phase (TurnPhase): 只读的执行阶段，持久化成功后才确认暂停或结束。
-        run_id (str | None): 当前轮次身份。
-        interrupt_kind (InterruptKind | None): 当前已保存等待的类别。
-        request_id (str | None): 当前已保存等待的请求身份。
+        _context_id (str): 固定实际上下文编号。
+        _phase (ExecutionPhase): 唯一执行阶段。
+        _run_id (str | None): 当前轮次编号。
+        _wait (ExecutionWait | None): WAITING 对应的等待材料。
+        _reason (TurnInterruptReason | None): STOPPING 及其协议保存对应的控制原因。
+        _input_id (str | None): 引导对应的已保存输入编号。
+        _error (str | None): FAULTED 对应的保存故障。
     """
 
-    def __init__(self) -> None:
-        """建立尚未开始工作的上下文。"""
-        self._phase = TurnPhase.IDLE
+    def __init__(self, context_id: str) -> None:
+        """建立空闲的上下文执行对象。
+
+        Args:
+            context_id (str): 实际父或子上下文编号。
+        """
+        self._context_id = context_id
+        self._phase = ExecutionPhase.IDLE
         self._run_id: str | None = None
-        self._interrupt_kind: InterruptKind | None = None
-        self._request_id: str | None = None
+        self._wait: ExecutionWait | None = None
+        self._reason: TurnInterruptReason | None = None
+        self._input_id: str | None = None
+        self._error: str | None = None
+
+    def _change(self, target: ExecutionPhase) -> None:
+        """校验本层转换后修改唯一阶段。
+
+        Args:
+            target (ExecutionPhase): 当前操作要求的阶段。
+        Raises:
+            InvalidStateTransitionError: 来源阶段不允许该操作。
+        """
+        if target not in EXECUTION_EDGES[self._phase]:
+            raise InvalidStateTransitionError(f"执行阶段错误：{self._phase} -> {target}")
+        self._phase = target
+
+    def _require_run(self, run_id: str) -> None:
+        """校验异步完成操作归属的轮次。
+
+        Args:
+            run_id (str): 原业务调用持有的轮次编号。
+        Raises:
+            InvalidStateTransitionError: 旧调用试图推进其他轮次。
+        """
+        if run_id != self._run_id:
+            raise InvalidStateTransitionError(f"执行轮次已过期：{run_id}")
+
+    def _receipt(self, status: CommandStatus) -> CommandReceipt:
+        """返回当前控制操作的关联信息。
+
+        Args:
+            status (CommandStatus): 控制请求的处理结果。
+        Returns:
+            CommandReceipt: 当前上下文和轮次对应的回执。
+        """
+        return CommandReceipt(status, self._context_id, self._run_id)
+
+    def begin_run(self, run_id: str) -> None:
+        """空闲时开始已经受理的下一批输入。
+
+        Args:
+            run_id (str): 新轮次编号。
+        Raises:
+            InvalidStateTransitionError: 当前仍有执行或保存故障。
+        """
+        if self._phase != ExecutionPhase.IDLE:
+            raise InvalidStateTransitionError("开始新轮需要空闲执行")
+        self._change(ExecutionPhase.RUNNING)
+        self._run_id = run_id
+
+    def request_stop(self, expected_run_id: str | None = None) -> CommandReceipt:
+        """请求停止当前执行，最终保存和旧请求分别明确拒绝。
+
+        Args:
+            expected_run_id (str | None): 显式目标轮次，省略时作用于当前执行。
+        Returns:
+            CommandReceipt: accepted、stale 或 too_late。
+        """
+        return self._request_interrupt(TurnInterruptReason.STOP, None, expected_run_id)
+
+    def request_steer(self, input_id: str, expected_run_id: str | None = None) -> CommandReceipt:
+        """用已保存的明确输入引导当前执行。
+
+        Args:
+            input_id (str): 已保存的输入编号。
+            expected_run_id (str | None): 显式引导指定轮次时提供。
+        Returns:
+            CommandReceipt: 引导控制的结果；消息保存回执由 Session 单独提供。
+        """
+        return self._request_interrupt(TurnInterruptReason.STEER, input_id, expected_run_id)
+
+    def _request_interrupt(self, reason: TurnInterruptReason, input_id: str | None,
+                           expected_run_id: str | None) -> CommandReceipt:
+        """保留首个停止要求，后来的输入留给会话继续处理。
+
+        Args:
+            reason (TurnInterruptReason): 停止或引导。
+            input_id (str | None): 引导输入身份。
+            expected_run_id (str | None): 可选目标轮次。
+        Returns:
+            CommandReceipt: 本地控制受理结果。
+        """
+        if expected_run_id is not None and expected_run_id != self._run_id:
+            return self._receipt(CommandStatus.STALE)
+        if self._phase == ExecutionPhase.STOPPING:
+            status = (CommandStatus.ACCEPTED if self._reason == reason and self._input_id == input_id
+                      else CommandStatus.TOO_LATE)
+            return self._receipt(status)
+        if self._phase == ExecutionPhase.IDLE:
+            return self._receipt(CommandStatus.STALE)
+        if self._phase in {ExecutionPhase.COMMITTING, ExecutionPhase.FAULTED}:
+            return self._receipt(CommandStatus.TOO_LATE)
+        self._change(ExecutionPhase.STOPPING)
+        self._reason, self._input_id = reason, input_id
+        self._wait = None
+        return self._receipt(CommandStatus.ACCEPTED)
+
+    def wait_saved(self, run_id: str, wait: ExecutionWait) -> CommandReceipt:
+        """等待记录保存后确认请求；保存期间的停止保持有效。
+
+        Args:
+            run_id (str): 保存等待的原轮次。
+            wait (ExecutionWait): 已保存的审批或父消息等待。
+        Returns:
+            CommandReceipt: 过期、已经停止或正常进入等待的结果。
+        """
+        if run_id != self._run_id:
+            return self._receipt(CommandStatus.STALE)
+        if self._phase == ExecutionPhase.STOPPING:
+            return self._receipt(CommandStatus.TOO_LATE)
+        self._change(ExecutionPhase.WAITING)
+        self._wait = wait
+        return self._receipt(CommandStatus.ACCEPTED)
+
+    def resume_approval(self, run_id: str, request_id: str) -> CommandReceipt:
+        """匹配已保存审批后恢复原轮。
+
+        Args:
+            run_id (str): 审批原轮次编号。
+            request_id (str): 已确认决定的审批编号。
+        Returns:
+            CommandReceipt: 匹配时受理，重复或过期时 stale。
+        """
+        if (run_id != self._run_id or self._phase != ExecutionPhase.WAITING
+                or not isinstance(self._wait, ApprovalWait) or self._wait.request_id != request_id):
+            return self._receipt(CommandStatus.STALE)
+        self._change(ExecutionPhase.RUNNING)
+        self._wait = None
+        return self._receipt(CommandStatus.ACCEPTED)
+
+    def begin_commit(self, run_id: str) -> None:
+        """模型工具已经结束、材料准备完成后保护最终保存。
+
+        Args:
+            run_id (str): 开始保存的轮次。
+        """
+        self._require_run(run_id)
+        self._change(ExecutionPhase.COMMITTING)
+
+    def commit_succeeded(self, run_id: str, next_run_id: str | None = None) -> None:
+        """保存完成后回空闲，或开始引导的新轮次。
+
+        Args:
+            run_id (str): 完成保存的旧轮次。
+            next_run_id (str | None): 引导的新轮次，普通结束时为空。
+        Raises:
+            InvalidStateTransitionError: 旧保存回调或非法引导切换。
+        """
+        self._require_run(run_id)
+        if self._phase != ExecutionPhase.COMMITTING:
+            raise InvalidStateTransitionError("保存成功需要处于最终保存阶段")
+        if next_run_id is not None and (self._reason != TurnInterruptReason.STEER or next_run_id == run_id):
+            raise InvalidStateTransitionError("引导需要已受理的输入及新的轮次编号")
+        self._change(ExecutionPhase.RUNNING if next_run_id is not None else ExecutionPhase.IDLE)
+        self._run_id = next_run_id
+        self._reason, self._input_id = None, None
+
+    def commit_failed(self, run_id: str, error: str) -> None:
+        """必需保存耗尽后终止本轮，等待读取最后已保存上下文。
+
+        Args:
+            run_id (str): 保存失败的轮次。
+            error (str): 保存故障说明。
+        """
+        self._require_run(run_id)
+        self._change(ExecutionPhase.FAULTED)
+        self._wait = None
+        self._reason, self._input_id = None, None
+        self._error = error
+
+    def restore_succeeded(self, run_id: str) -> None:
+        """最后已保存上下文读取成功后回到空闲。
+
+        Args:
+            run_id (str): 本次恢复对应的故障轮次。
+        """
+        self._require_run(run_id)
+        if self._phase != ExecutionPhase.FAULTED:
+            raise InvalidStateTransitionError("恢复成功需要对应保存故障")
+        self._change(ExecutionPhase.IDLE)
+        self._run_id, self._error = None, None
+
+    def snapshot(self) -> ExecutionSnapshot:
+        """复制当前执行数据供只读查询。
+
+        Returns:
+            ExecutionSnapshot: 只包含当前阶段匹配的数据。
+        """
+        return ExecutionSnapshot(self._context_id, self._run_id, self._phase, self._wait, self._error)
+
 
     @property
-    def phase(self) -> TurnPhase:
-        """返回当前阶段。"""
+    def phase(self) -> ExecutionPhase:
+        """读取本上下文的唯一执行阶段。"""
         return self._phase
 
     @property
     def run_id(self) -> str | None:
-        """返回当前轮次身份。"""
+        """读取当前执行编号，空闲时为空。"""
         return self._run_id
 
     @property
-    def interrupt_kind(self) -> InterruptKind | None:
-        """返回已保存等待的类别。"""
-        return self._interrupt_kind
+    def reason(self) -> TurnInterruptReason | None:
+        """读取当前停止或引导所保留的首个原因。"""
+        return self._reason
 
     @property
-    def request_id(self) -> str | None:
-        """返回已保存等待的请求身份。"""
-        return self._request_id
+    def wait(self) -> ExecutionWait | None:
+        """读取与 WAITING 一起维护的已保存请求。"""
+        return self._wait
 
-    def _transition(self, run_id: str, target: TurnPhase, allowed: set[TurnPhase]) -> None:
-        """校验轮次和来源阶段，失败时保留原状态。
-
-        Args:
-            run_id (str): 发起转换的轮次。
-            target (TurnPhase): 目标阶段。
-            allowed (set[TurnPhase]): 此动作允许的来源阶段。
-
-        Raises:
-            InvalidStateTransitionError: 轮次已过期或来源阶段不合法。
-        """
-        if run_id != self._run_id or self._phase not in allowed:
-            raise InvalidStateTransitionError(run_id, self._phase, target)
-        self._phase = target
-
-    def begin_run(self, run_id: str) -> None:
-        """旧轮已收尾或上下文空闲时开始新轮次。
+    def check_running(self, run_id: str) -> None:
+        """在模型和工具启动前校验当前执行身份及运行阶段。
 
         Args:
-            run_id (str): 本次需要开始的轮次编号。
+            run_id (str): 即将执行模型或工具的轮次编号。
         """
-        if self._phase not in {TurnPhase.IDLE, TurnPhase.FINISHING}:
-            raise InvalidStateTransitionError(run_id, self._phase, TurnPhase.PREPARING)
-        self._run_id = run_id
-        self._phase = TurnPhase.PREPARING
-        self._interrupt_kind = None
-        self._request_id = None
-
-    def accepts_interrupt(self, run_id: str) -> bool:
-        """判断停止或引导是否仍可作用于该轮次。
-
-        Args:
-            run_id (str): 本次请求停止或引导的轮次编号。
-        """
-        return self._run_id == run_id and self._phase not in {
-            TurnPhase.IDLE, TurnPhase.COMMITTING, TurnPhase.FINISHING,
-        }
-
-    def start_llm(self, run_id: str) -> None:
-        """在准备、工具完成或模型重试后开始模型请求。
-
-        Args:
-            run_id (str): 本次需要进入模型阶段的轮次编号。
-        """
-        self._transition(run_id, TurnPhase.LLM, {TurnPhase.PREPARING, TurnPhase.LLM, TurnPhase.TOOL})
-
-    def start_tool(self, run_id: str) -> None:
-        """模型给出调用或审批恢复后开始工具执行。
-
-        Args:
-            run_id (str): 本次需要进入工具阶段的轮次编号。
-        """
-        self._transition(run_id, TurnPhase.TOOL, {TurnPhase.PREPARING, TurnPhase.LLM, TurnPhase.TOOL})
-
-    def interrupt_saved(self, run_id: str, kind: InterruptKind, request_id: str) -> None:
-        """完整中断提交成功后确认等待身份。
-
-        Args:
-            run_id (str): 已经完成中断保存的轮次编号。
-            kind (InterruptKind): 本次已经确定的业务类别。
-            request_id (str): 需要匹配的持久等待请求编号。
-        """
-        kind = InterruptKind(kind)
-        self._transition(run_id, TurnPhase.INTERRUPTED, {TurnPhase.TOOL})
-        self._interrupt_kind, self._request_id = kind, request_id
-
-    def prepare_resume(self, run_id: str, request_id: str) -> bool:
-        """匹配当前审批后恢复原轮，过期请求返回未受理。
-
-        Args:
-            run_id (str): 本次等待恢复的原轮次编号。
-            request_id (str): 需要匹配的持久等待请求编号。
-        """
-        if (run_id != self._run_id or request_id != self.request_id
-                or self._phase != TurnPhase.INTERRUPTED
-                or self.interrupt_kind != InterruptKind.AUTHORIZATION_REQUEST):
-            return False
-        self._transition(run_id, TurnPhase.PREPARING, {TurnPhase.INTERRUPTED})
-        self._interrupt_kind = None
-        self._request_id = None
-        return True
-
-    def begin_commit(self, run_id: str) -> None:
-        """通过最后一个安全点后保护最终回答提交。
-
-        Args:
-            run_id (str): 本次开始提交最终回答的轮次编号。
-        """
-        self._transition(run_id, TurnPhase.COMMITTING, {TurnPhase.PREPARING, TurnPhase.LLM, TurnPhase.TOOL})
-
-    def begin_finishing(self, run_id: str) -> None:
-        """回答已保存或执行失败交还后进入资源和报告收尾。
-
-        Args:
-            run_id (str): 本次开始资源与报告收尾的轮次编号。
-        """
-        self._transition(run_id, TurnPhase.FINISHING, {
-            TurnPhase.PREPARING, TurnPhase.LLM, TurnPhase.TOOL, TurnPhase.INTERRUPTED,
-            TurnPhase.COMMITTING, TurnPhase.FINISHING,
-        })
-        self._interrupt_kind = None
-        self._request_id = None
-
-    def complete(self, run_id: str) -> None:
-        """报告及本次资源交还完成后恢复空闲。
-
-        Args:
-            run_id (str): 已完成报告和资源交还的轮次编号。
-        """
-        self._transition(run_id, TurnPhase.IDLE, {TurnPhase.FINISHING})
-        self._run_id = None
+        self._require_run(run_id)
+        if self._phase != ExecutionPhase.RUNNING:
+            raise InvalidStateTransitionError(f"当前阶段不能启动模型或工具：{self._phase}")

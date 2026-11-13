@@ -6,11 +6,12 @@ import asyncio
 import json
 
 from app.agent.runtime.subagent_requests import (
-    ParentMessageRequest, SubagentReceipt, SubagentSource,
+    ParentMessageRequest, SubagentSource,
 )
 from app.agent.tools.core.base import BaseTool, ToolContext, ToolResult, InterruptEvent
 from app.agent.tools.core.runtime import ToolRuntime
-from app.schemas.runtime_types import InterruptKind
+from app.schemas.runtime_types import InterruptKind, CommandReceipt
+from dataclasses import asdict
 from app.agent.state.manager import PARENT_MESSAGE_DELIVERED
 
 
@@ -26,20 +27,16 @@ def _source(runtime: ToolRuntime) -> SubagentSource:
     return SubagentSource(runtime.session_id, runtime.run_id, runtime.tool_call_id, runtime.subagent_id)
 
 
-def _receipt_result(receipt: SubagentReceipt) -> ToolResult:
+def _receipt_result(receipt: CommandReceipt) -> ToolResult:
     """把持久受理时的回执转换成工具结果，后续执行结果通过父 Inbox 交付。
 
     Args:
-        receipt (SubagentReceipt): Scheduler 已完成持久受理的业务回执。
+        receipt (CommandReceipt): Scheduler 已完成持久受理的业务回执。
 
     Returns:
         ToolResult: 包含身份、受理动作及受理时状态的 JSON 正文。
     """
-    data: dict[str, object] = {"subagent_id": receipt.subagent_id, "accepted": receipt.accepted, "effect": receipt.effect}
-    if receipt.summary is not None:
-        data["status"] = receipt.summary.status.value
-    if receipt.result_ref is not None:
-        data["result_ref"] = receipt.result_ref
+    data = {**asdict(receipt), "accepted": receipt.accepted}
     return ToolResult.success(json.dumps(data, ensure_ascii=False))
 
 

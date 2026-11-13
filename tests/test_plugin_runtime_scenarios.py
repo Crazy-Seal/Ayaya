@@ -1,4 +1,12 @@
 """通过真实 Agent、调度器及任务验证插件组合行为，只替代外部工作。"""
+from tests.runtime_support import runtime_hub, close_test_runtime
+from app.routes.agent import observe_runtime
+from tests.runtime_support import next_runtime_event
+from tests.runtime_support import build_test_scheduler
+from app.crud.sqlite_factory import SqliteFactory
+
+from app.crud.task_record_dao import TaskRecordDao
+from app.services.settings_mutation import SettingsMutationCoordinator
 
 import asyncio
 
@@ -30,7 +38,7 @@ async def next_event_kind(scheduler: AgentRuntimeScheduler, kind: str):
         InteractionEvent: 最先到达的匹配事件。
     """
     while True:
-        event = await asyncio.wait_for(scheduler.next_event(), 3)
+        event = await asyncio.wait_for(next_runtime_event(scheduler), 3)
         if event.kind == kind:
             return event
 
@@ -47,7 +55,9 @@ def test_background_task_survives_approval_and_turn_end_until_explicit_stop(tmp_
         """通过真实审批和执行流程，确认后台任务独立运行并可显式清理。"""
         path = str(tmp_path / "state.sqlite3")
         queue = asyncio.Queue()
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=queue, db_path=path)
+        supervisor_settings = configured_settings()
+        supervisor_mutations = SettingsMutationCoordinator()
+        supervisor = TaskSupervisor(runtime_queue=queue, records=TaskRecordDao(SqliteFactory(path)))
         model_waiting, release_model = asyncio.Event(), asyncio.Event()
         task_started, release_task = asyncio.Event(), asyncio.Event()
         calls = []
@@ -126,14 +136,14 @@ def test_background_task_survives_approval_and_turn_end_until_explicit_stop(tmp_
             """
             agent = Agent(AgentConfig(session_id=session, model_name="test", api_key="test",
                 context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100)),
-                llm_client=Model(), session_state_manager=manager)
+                llm_client=Model(), session_state_manager=manager, sqlite_factory=SqliteFactory())
             agent.register_tool(GameConnectionTool())
             return agent
 
-        scheduler = AgentRuntimeScheduler(runtime_queue=queue, task_supervisor=supervisor,
+        scheduler = build_test_scheduler(runtime_queue=queue, task_supervisor=supervisor,
             agent_factory=create_agent,
-            session_state_manager_factory=lambda session: SessionStateManager(session, path))
-        manager = SessionStateManager("s", path)
+            session_state_manager_factory=lambda session: SessionStateManager(session, SqliteFactory(path)), chat_settings_dao=supervisor_settings, mutation_coordinator=supervisor_mutations)
+        manager = SessionStateManager("s", SqliteFactory(path))
         try:
             await scheduler.start()
             await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "连接游戏"}))
@@ -159,6 +169,7 @@ def test_background_task_survives_approval_and_turn_end_until_explicit_stop(tmp_
                 command = ChannelCommand("s", "desktop", "resolve_authorization", payload, request_id=pending.request_id)
             assert (await scheduler.submit(command)).accepted
             if decision == "stop":
+                await next_event_kind(scheduler, "run_completed")
                 assert (await scheduler.snapshot("s")).payload["phase"] == "idle"
                 assert len(calls) == 1
             else:
@@ -176,8 +187,9 @@ def test_background_task_survives_approval_and_turn_end_until_explicit_stop(tmp_
         finally:
             release_model.set()
             release_task.set()
-            await scheduler.close()
+            await close_test_runtime(scheduler)
             await supervisor.close()
+            await supervisor.records.close()
             await manager.close()
     asyncio.run(scenario())
 
@@ -191,7 +203,9 @@ def test_steer_storage_failure_keeps_current_model_waiting(tmp_path):
         """只用 SQLite 触发器制造写入错误，观察公开轮次和最终模型输入。"""
         path = str(tmp_path / "state.sqlite3")
         queue = asyncio.Queue()
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=queue, db_path=path)
+        supervisor_settings = configured_settings()
+        supervisor_mutations = SettingsMutationCoordinator()
+        supervisor = TaskSupervisor(runtime_queue=queue, records=TaskRecordDao(SqliteFactory(path)))
         entered, replaced, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
         calls = []
 
@@ -215,11 +229,11 @@ def test_steer_storage_failure_keeps_current_model_waiting(tmp_path):
             async def close(self):
                 """测试模型没有外部资源。"""
 
-        scheduler = AgentRuntimeScheduler(runtime_queue=queue, task_supervisor=supervisor,
+        scheduler = build_test_scheduler(runtime_queue=queue, task_supervisor=supervisor,
             agent_factory=lambda session, manager: Agent(AgentConfig(session_id=session, model_name="test", api_key="test",
-                context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100)), llm_client=Model(), session_state_manager=manager),
-            session_state_manager_factory=lambda session: SessionStateManager(session, path))
-        manager = SessionStateManager("s", path)
+                context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100)), llm_client=Model(), session_state_manager=manager, sqlite_factory=SqliteFactory()),
+            session_state_manager_factory=lambda session: SessionStateManager(session, SqliteFactory(path)), chat_settings_dao=supervisor_settings, mutation_coordinator=supervisor_mutations)
+        manager = SessionStateManager("s", SqliteFactory(path))
         try:
             await scheduler.start()
             await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "开始"}))
@@ -242,8 +256,9 @@ def test_steer_storage_failure_keeps_current_model_waiting(tmp_path):
             assert "优先处理敌人" in content and "未保存的引导" not in content
         finally:
             release.set()
-            await scheduler.close()
+            await close_test_runtime(scheduler)
             await supervisor.close()
+            await supervisor.records.close()
             await manager.close()
     asyncio.run(scenario())
 
@@ -256,7 +271,9 @@ def test_game_watch_reports_changes_controls_source_and_cleans_connection(tmp_pa
         """通过连接事件驱动具体任务，观察真实调度和最终模型请求。"""
         path = str(tmp_path / "state.sqlite3")
         queue = asyncio.Queue()
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=queue, db_path=path)
+        supervisor_settings = configured_settings()
+        supervisor_mutations = SettingsMutationCoordinator()
+        supervisor = TaskSupervisor(runtime_queue=queue, records=TaskRecordDao(SqliteFactory(path)))
         waiting, replaced, release, result_seen = (asyncio.Event() for _ in range(4))
         calls = []
 
@@ -332,10 +349,10 @@ def test_game_watch_reports_changes_controls_source_and_cleans_connection(tmp_pa
             async def close(self):
                 """外部模型替身没有连接资源。"""
 
-        scheduler = AgentRuntimeScheduler(runtime_queue=queue, task_supervisor=supervisor,
+        scheduler = build_test_scheduler(runtime_queue=queue, task_supervisor=supervisor,
             agent_factory=lambda session, manager: Agent(AgentConfig(session_id=session, model_name="test", api_key="test",
-                context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100)), llm_client=Model(), session_state_manager=manager),
-            session_state_manager_factory=lambda session: SessionStateManager(session, path))
+                context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100)), llm_client=Model(), session_state_manager=manager, sqlite_factory=SqliteFactory()),
+            session_state_manager_factory=lambda session: SessionStateManager(session, SqliteFactory(path)), chat_settings_dao=supervisor_settings, mutation_coordinator=supervisor_mutations)
         try:
             await scheduler.start()
             await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "开始游戏"}))
@@ -364,8 +381,9 @@ def test_game_watch_reports_changes_controls_source_and_cleans_connection(tmp_pa
             await asyncio.wait_for(result_seen.wait(), 2)
         finally:
             release.set()
-            await scheduler.close()
+            await close_test_runtime(scheduler)
             await supervisor.close()
+            await supervisor.records.close()
     asyncio.run(scenario())
 
 
@@ -379,7 +397,9 @@ def test_after_response_commit_notifications_start_followup_turns(tmp_path):
         """执行两个后续通知后结束测试，验证无额外真人计数和无相互等待。"""
         path = str(tmp_path / "state.sqlite3")
         queue = asyncio.Queue()
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=queue, db_path=path)
+        supervisor_settings = configured_settings()
+        supervisor_mutations = SettingsMutationCoordinator()
+        supervisor = TaskSupervisor(runtime_queue=queue, records=TaskRecordDao(SqliteFactory(path)))
         committed = []
         requests = []
 
@@ -431,12 +451,12 @@ def test_after_response_commit_notifications_start_followup_turns(tmp_path):
                 await super().initialize()
                 self.register_plugin(FollowupPlugin())
 
-        scheduler = AgentRuntimeScheduler(runtime_queue=queue, task_supervisor=supervisor,
+        scheduler = build_test_scheduler(runtime_queue=queue, task_supervisor=supervisor,
             agent_factory=lambda session, manager: AgentWithFollowups(AgentConfig(session_id=session, model_name="test", api_key="test",
                 context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100)), llm_client=Model(), session_state_manager=manager,
-                plugin_runtime_factory=lambda name, run_id: PluginRuntime(name, session, run_id, _supervisor=supervisor, _runtime_queue=queue)),
-            session_state_manager_factory=lambda session: SessionStateManager(session, path))
-        manager = SessionStateManager("s", path)
+                plugin_runtime_factory=lambda name, run_id: PluginRuntime(name, session, run_id, _supervisor=supervisor, _runtime_queue=queue), sqlite_factory=SqliteFactory(path)),
+            session_state_manager_factory=lambda session: SessionStateManager(session, SqliteFactory(path)), chat_settings_dao=supervisor_settings, mutation_coordinator=supervisor_mutations)
+        manager = SessionStateManager("s", SqliteFactory(path))
         try:
             await scheduler.start()
             await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "开始"}))
@@ -449,7 +469,8 @@ def test_after_response_commit_notifications_start_followup_turns(tmp_path):
             assert [message.text for message in messages] == ["继续处理第1项", "继续处理第2项"]
             assert await manager.read_activation_batch() == ()
         finally:
-            await scheduler.close()
+            await close_test_runtime(scheduler)
             await supervisor.close()
+            await supervisor.records.close()
             await manager.close()
     asyncio.run(scenario())

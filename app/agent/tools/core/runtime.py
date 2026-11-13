@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Callable, ClassVar
+from typing import TYPE_CHECKING, Callable
 
-from app.schemas.task_types import TaskRecord, TaskStopRequest
+from app.schemas.task_types import TaskSnapshot, TaskStopRequest
 from app.agent.runtime.requests import RuntimeRequest
 
 if TYPE_CHECKING:
@@ -38,7 +38,7 @@ class ToolRuntime:
     _runtime_queue: asyncio.Queue[RuntimeRequest] = field(repr=False)
     task_id: str | None = None
     subagent_id: str | None = None
-    plugin_name: ClassVar[None] = None
+    plugin_name: None = field(default=None, init=False)
 
     @property
     def runtime_queue(self) -> asyncio.Queue[RuntimeRequest]:
@@ -53,10 +53,6 @@ class ToolRuntime:
             TaskRecordDao: 与 Supervisor 相同的记录事务入口。
         """
         return self._supervisor.records
-
-    async def ensure_available(self) -> None:
-        """工具真正开始前核对父配置和子废弃时间，拒绝旧执行对象的迟到调用。"""
-        await self._supervisor.ensure_available(self.session_id, self.subagent_id)
 
     def bind_task(self, task_id: str) -> ToolRuntime:
         """绑定任务编号，保留工具、会话及轮次来源。
@@ -87,16 +83,16 @@ class ToolRuntime:
             notify_agent=notify_agent, background=background,
             tool_name=self.tool_name, origin_tool_call_id=self.tool_call_id)
 
-    async def get_task_record(self, task_id: str) -> TaskRecord | None:
-        """查询当前会话内的持久任务记录，允许不同工具协作。
+    async def get_task_snapshot(self, task_id: str) -> TaskSnapshot | None:
+        """查询当前会话内的任务摘要，允许不同工具协作。
 
         Args:
             task_id (str): 目标任务编号。
 
         Returns:
-            TaskRecord | None: 会话内记录，未知或其他会话编号为空。
+            TaskSnapshot | None: 会话内摘要，包含当前保存故障，未知或其他会话编号为空。
         """
-        record = await self._supervisor.get_task_record(task_id)
+        record = await self._supervisor.get_task_snapshot(task_id)
         return record if record and record.session_id == self.session_id and (
             self.subagent_id is None or record.subagent_id == self.subagent_id) else None
 
@@ -109,24 +105,24 @@ class ToolRuntime:
         Returns:
             BaseTask | None: 实际运行对象，已释放、未知或越范围时为空。
         """
-        if await self.get_task_record(task_id) is None:
+        if await self.get_task_snapshot(task_id) is None:
             return None
         return self._supervisor.get_task(task_id)
 
-    async def wait_task(self, task_id: str, *, timeout_ms: int) -> TaskRecord | None:
-        """有限等待任务收尾，等待者取消不停止具体任务。
+    async def wait_task(self, task_id: str, *, timeout_ms: int) -> TaskSnapshot | None:
+        """有限等待结果保存结束，观察者取消时具体任务继续运行。
 
         Args:
             task_id (str): 目标任务编号。
             timeout_ms (int): 等待毫秒预算。
 
         Returns:
-            TaskRecord | None: 当前已保存记录，未知或越范围时为空。
+            TaskSnapshot | None: 结果保存结束或观察超时的摘要，未知或越范围时为空。
         """
-        if await self.get_task_record(task_id) is None:
+        if await self.get_task_snapshot(task_id) is None:
             return None
         await self._supervisor.wait(task_id, timeout_ms=timeout_ms)
-        return await self.get_task_record(task_id)
+        return await self.get_task_snapshot(task_id)
 
     async def publish_task_record(self, task_id: str) -> None:
         """向共享队列发布已经保存的会话内记录。
@@ -134,7 +130,7 @@ class ToolRuntime:
         Args:
             task_id (str): 已保存的目标任务编号。
         """
-        record = await self.get_task_record(task_id)
+        record = await self.get_task_snapshot(task_id)
         if record is not None:
             self._runtime_queue.put_nowait(record)
 
@@ -147,7 +143,7 @@ class ToolRuntime:
         Raises:
             KeyError: 编号未知或属于其他会话。
         """
-        if await self.get_task_record(task_id) is None:
+        if await self.get_task_snapshot(task_id) is None:
             raise KeyError("任务不存在或不属于当前聊天")
         await self.records.mark_background(task_id)
         await self.publish_task_record(task_id)

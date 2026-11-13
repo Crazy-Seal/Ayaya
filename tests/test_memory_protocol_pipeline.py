@@ -1,3 +1,6 @@
+from app.crud.sqlite_factory import SqliteFactory
+from app.crud.task_record_dao import TaskRecordDao
+from app.services.settings_mutation import SettingsMutationCoordinator
 from tests.model_capture import result_parts
 from tests.runtime_support import configured_settings
 from tests.model_capture import capture_input
@@ -46,7 +49,7 @@ def test_protocol_store_freezes_ten_complete_turns_and_five_history_turns(tmp_pa
     async def scenario():
         """由外层测试调用，完成“协议历史按边界选十轮当前批次及五轮前情”的异步步骤。"""
         db_path = tmp_path / "agent.sqlite3"
-        manager = SessionStateManager("session", db_path=str(db_path))
+        manager = SessionStateManager("session", sqlite_factory=SqliteFactory(str(db_path)))
         try:
             state = AgentState.create_new("session")
             for index in range(15):
@@ -57,7 +60,7 @@ def test_protocol_store_freezes_ten_complete_turns_and_five_history_turns(tmp_pa
                     state.record_tool_result(call, result_parts('file-content', (), 'tool'), compressible=True)
                 state.add_assistant_message(f"assistant-{index}")
             await manager.save(state, checkpoint_type="completed")
-            store = ChatHistoryStore(db_path=db_path)
+            store = ChatHistoryStore(sqlite_factory=SqliteFactory(db_path))
             store.READ_CHUNK_SIZE = 3
             return await store.get_recent_completed_turns("session")
         finally:
@@ -77,7 +80,7 @@ def test_completed_turn_query_does_not_accept_a_chunk_head_fragment(tmp_path: Pa
     async def scenario():
         """由外层测试调用，完成“分块开头不完整轮次不会当作完整历史”的异步步骤。"""
         db_path = tmp_path / "agent.sqlite3"
-        manager = SessionStateManager("session", db_path=str(db_path))
+        manager = SessionStateManager("session", sqlite_factory=SqliteFactory(str(db_path)))
         try:
             state = AgentState.create_new("session")
             state.add_user_message("请读取文件")
@@ -86,7 +89,7 @@ def test_completed_turn_query_does_not_accept_a_chunk_head_fragment(tmp_path: Pa
             state.record_tool_result(call, text_content("file-content"))
             state.add_assistant_message("读取完成")
             await manager.save(state, checkpoint_type="completed")
-            store = ChatHistoryStore(db_path=db_path)
+            store = ChatHistoryStore(sqlite_factory=SqliteFactory(db_path))
             store.READ_CHUNK_SIZE = 2
             return await store.get_recent_completed_turns(
                 "session",
@@ -451,13 +454,13 @@ def test_memory_jobs_start_only_after_input_commit_with_frozen_history(tmp_path,
             calls.append(generation.max_history_id)
             return "日记生成成功"
 
-    monkeypatch.setattr(memory_plugin_module, "get_memory_manager", lambda session: MemoryManager())
+    monkeypatch.setattr(memory_plugin_module.MemoryPlugin, "_manager_for", lambda self, session: MemoryManager())
 
     async def scenario():
         """通过钩子提交任务，再通过正式记录和等待接口验证。"""
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "state.sqlite3"))
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "state.sqlite3"))))
         runtime = PluginRuntime("memory", "session", "r", _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue)
-        plugin = MemoryPlugin()
+        plugin = MemoryPlugin(sqlite_factory=SqliteFactory())
         state = AgentState.create_new("session")
         state.long_term_memory_turn_counter = 12
         data = {}
@@ -476,6 +479,7 @@ def test_memory_jobs_start_only_after_input_commit_with_frozen_history(tmp_path,
             assert calls == [84]
         finally:
             await supervisor.close()
+            await supervisor.records.close()
     asyncio.run(scenario())
 
 
@@ -548,7 +552,7 @@ def test_long_term_memory_uses_frozen_protocol_cutoff(tmp_path) -> None:
         from app.agent.plugins.runtime import PluginRuntime
         from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
         from app.schemas.runtime_types import TaskStatus
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "state.sqlite3"))
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "state.sqlite3"))))
         runtime = PluginRuntime("memory", "session", "r", _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue)
         try:
             task_id = await runtime.submit_task(LongTermMemoryTask(MemoryManager(), "session", 42, 12, True, True),
@@ -556,6 +560,7 @@ def test_long_term_memory_uses_frozen_protocol_cutoff(tmp_path) -> None:
             assert (await runtime.wait_task(task_id, timeout_ms=1000)).status == TaskStatus.COMPLETED
         finally:
             await supervisor.close()
+            await supervisor.records.close()
     asyncio.run(scenario())
     assert calls[0] == {
         "session_id": "session",
@@ -582,7 +587,7 @@ def test_disabled_long_term_memory_resets_reached_interval_on_next_input() -> No
             enable_diary=False,
             enable_episodic=False,
             enable_semantic=False,
-        )
+        sqlite_factory=SqliteFactory())
         state = AgentState.create_new("session")
         state.long_term_memory_turn_counter = 10
         commit_context = {}
@@ -612,7 +617,7 @@ def test_disabled_long_term_memory_resets_counter_when_diary_preparation_fails(
             enable_diary=True,
             enable_episodic=False,
             enable_semantic=False,
-        )
+        sqlite_factory=SqliteFactory())
         def fail(_state):
             """模拟日记依赖不可用。
 
@@ -647,7 +652,7 @@ def test_memory_preparation_failure_keeps_pending_turn_counter(monkeypatch) -> N
         Returns:
             tuple[AgentState, dict]: 保留到期计数的状态和空任务数据。
         """
-        plugin = MemoryPlugin(enable_diary=False)
+        plugin = MemoryPlugin(enable_diary=False, sqlite_factory=SqliteFactory())
         def fail(_state):
             """模拟长期记忆准备依赖不可用。
 
@@ -678,7 +683,7 @@ def test_memory_plugin_does_not_own_completed_turn_counting() -> None:
             enable_diary=False,
             enable_episodic=False,
             enable_semantic=False,
-        )
+        sqlite_factory=SqliteFactory())
         state = AgentState.create_new("session")
         state.add_user_message("尚未完成的真人输入")
         before = state.long_term_memory_turn_counter

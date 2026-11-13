@@ -1,4 +1,8 @@
 """验证记忆任务按需登记、并发去重及面板可读取的完成和失败结果。"""
+from app.crud.sqlite_factory import SqliteFactory
+
+from app.crud.task_record_dao import TaskRecordDao
+from app.services.settings_mutation import SettingsMutationCoordinator
 
 import asyncio
 from datetime import date
@@ -67,7 +71,7 @@ async def start_diary(manager: MemoryManager, runtime: PluginRuntime) -> None:
         manager (MemoryManager): 本轮检查使用的记忆管理器。
         runtime (PluginRuntime): 连接正式任务管理器的插件调用对象。
     """
-    plugin = MemoryPlugin(enable_episodic=False, enable_semantic=False)
+    plugin = MemoryPlugin(enable_episodic=False, enable_semantic=False, sqlite_factory=SqliteFactory())
     data = {"memory": {
         "manager": manager, "protocol_history_cutoff": 42,
         "check_diary": True, "extract_long_term_memory": False,
@@ -89,7 +93,7 @@ def test_unneeded_diary_does_not_create_task(tmp_path: Path, skip: str) -> None:
             manager.diary_memory.chat_history_store.get_last_chat_date.return_value = None
         else:
             manager.diary_memory.chat_history_store.get_messages_by_date.return_value = []
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings("diary-results", "other", "s"), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "tasks.db"))
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "tasks.db"))))
         runtime = PluginRuntime("memory", manager.session_id, "run", supervisor, supervisor.runtime_queue)
         try:
             await start_diary(manager, runtime)
@@ -97,6 +101,7 @@ def test_unneeded_diary_does_not_create_task(tmp_path: Path, skip: str) -> None:
             manager.diary_memory.generate.assert_not_awaited()
         finally:
             await supervisor.close()
+            await supervisor.records.close()
     asyncio.run(scenario())
 
 
@@ -116,7 +121,7 @@ def test_diary_deduplicates_across_manager_instances_and_returns_result(tmp_path
 
         first.diary_memory.generate.side_effect = generate
         second.diary_memory.generate.side_effect = generate
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings("diary-results", "other", "s"), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "tasks.db"))
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "tasks.db"))))
         runtime = PluginRuntime("memory", first.session_id, "run", supervisor, supervisor.runtime_queue)
         try:
             await asyncio.gather(start_diary(first, runtime), start_diary(second, runtime))
@@ -137,6 +142,7 @@ def test_diary_deduplicates_across_manager_instances_and_returns_result(tmp_path
         finally:
             release.set()
             await supervisor.close()
+            await supervisor.records.close()
     asyncio.run(scenario())
 
 
@@ -156,7 +162,7 @@ def test_diary_failure_or_stop_releases_reservation_for_retry(tmp_path: Path, st
             raise RuntimeError("模型连接失败")
 
         manager.diary_memory.generate.side_effect = generate
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings("diary-results", "other", "s"), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "tasks.db"))
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "tasks.db"))))
         runtime = PluginRuntime("memory", manager.session_id, "run", supervisor, supervisor.runtime_queue)
         try:
             await start_diary(manager, runtime)
@@ -176,6 +182,7 @@ def test_diary_failure_or_stop_releases_reservation_for_retry(tmp_path: Path, st
             assert (await runtime.wait_task(retry.task_id, timeout_ms=1000)).status == TaskStatus.COMPLETED
         finally:
             await supervisor.close()
+            await supervisor.records.close()
     asyncio.run(scenario())
 
 
@@ -189,7 +196,7 @@ def test_long_term_task_reports_counts_and_extraction_failures(tmp_path: Path, f
             manager.episodic_memory.add.side_effect = RuntimeError("情景模型失败")
         if failed in ("semantic", "both"):
             manager.semantic_memory.add.side_effect = RuntimeError("语义模型失败")
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings("diary-results", "other", "s"), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "tasks.db"))
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "tasks.db"))))
         runtime = PluginRuntime("memory", manager.session_id, "run", supervisor, supervisor.runtime_queue)
         try:
             task_id = await runtime.submit_task(
@@ -216,6 +223,7 @@ def test_long_term_task_reports_counts_and_extraction_failures(tmp_path: Path, f
             assert response["tasks"][0]["error"] == record.error
         finally:
             await supervisor.close()
+            await supervisor.records.close()
     asyncio.run(scenario())
 
 
@@ -258,7 +266,7 @@ def test_diary_generation_and_save_errors_reach_task_record(tmp_path: Path, fail
             diary.llm.ainvoke.side_effect = RuntimeError("日记模型失败")
         else:
             diary.store.add.side_effect = RuntimeError("日记保存失败")
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings("diary-results", "other", "s"), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "tasks.db"))
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "tasks.db"))))
         runtime = PluginRuntime("memory", manager.session_id, "run", supervisor, supervisor.runtime_queue)
         try:
             await start_diary(manager, runtime)
@@ -268,6 +276,7 @@ def test_diary_generation_and_save_errors_reach_task_record(tmp_path: Path, fail
             assert ("日记模型失败" if failure == "model" else "日记保存失败") in record.error
         finally:
             await supervisor.close()
+            await supervisor.records.close()
     asyncio.run(scenario())
 
 
@@ -308,7 +317,7 @@ def test_diary_submission_rejection_releases_reservation(tmp_path: Path) -> None
     async def scenario() -> None:
         """使用正式提交拒绝路径验证没有遗留无法重试的标记。"""
         manager = make_manager()
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings("diary-results", "other", "s"), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "tasks.db"))
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "tasks.db"))))
         runtime = PluginRuntime("memory", manager.session_id, "run", supervisor, supervisor.runtime_queue)
         try:
             await supervisor.begin_shutdown()
@@ -319,6 +328,7 @@ def test_diary_submission_rejection_releases_reservation(tmp_path: Path) -> None
             generation.release()
         finally:
             await supervisor.close()
+            await supervisor.records.close()
     asyncio.run(scenario())
 
 
@@ -328,7 +338,7 @@ def test_cancelled_diary_submission_keeps_registered_task_reserved(tmp_path: Pat
         """挂起任务登记，取消提交方并重复激活，确保始终只有一个任务。"""
         manager = make_manager()
         registering, allow_register, generating = asyncio.Event(), asyncio.Event(), asyncio.Event()
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings("diary-results", "other", "s"), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "tasks.db"))
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "tasks.db"))))
         runtime = PluginRuntime("memory", manager.session_id, "run", supervisor, supervisor.runtime_queue)
         original_insert = supervisor.records.insert_running
 
@@ -362,6 +372,7 @@ def test_cancelled_diary_submission_keeps_registered_task_reserved(tmp_path: Pat
             allow_register.set()
             await asyncio.gather(work, return_exceptions=True)
             await supervisor.close()
+            await supervisor.records.close()
         generation = await make_manager().prepare_diary(max_history_id=42)
         assert generation is not None
         generation.release()
@@ -462,17 +473,17 @@ def test_diary_stopped_before_run_releases_reservation(tmp_path: Path, monkeypat
     async def scenario() -> None:
         """登记后立即停止，确认没有调用模型并可重新准备同一天的日记。"""
         manager = make_manager()
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings("diary-results", "other", "s"), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "tasks.db"))
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "tasks.db"))))
         runtime = PluginRuntime("memory", manager.session_id, "run", supervisor, supervisor.runtime_queue)
         allow_run = asyncio.Event()
-        original_lifecycle = supervisor._run_task_lifecycle
+        original_lifecycle = supervisor._run_task
 
         async def lifecycle(*args) -> None:
             """暂停任务执行，让停止请求确定发生在业务启动之前。"""
             await allow_run.wait()
             await original_lifecycle(*args)
 
-        monkeypatch.setattr(supervisor, "_run_task_lifecycle", lifecycle)
+        monkeypatch.setattr(supervisor, "_run_task", lifecycle)
         generation = await manager.prepare_diary(max_history_id=42)
         try:
             task_id = await runtime.submit_task(
@@ -489,4 +500,5 @@ def test_diary_stopped_before_run_releases_reservation(tmp_path: Path, monkeypat
         finally:
             allow_run.set()
             await supervisor.close()
+            await supervisor.records.close()
     asyncio.run(scenario())

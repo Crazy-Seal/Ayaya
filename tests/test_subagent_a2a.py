@@ -1,4 +1,5 @@
 """父子显式消息、原工具回复及停止竞争的行为测试。"""
+from app.crud.sqlite_factory import SqliteFactory
 
 import asyncio
 from pathlib import Path
@@ -35,24 +36,24 @@ def test_command_replay_observes_existing_activity_without_starting_or_steering(
 
         async with SubagentHarness(tmp_path / "state.sqlite3", script) as harness:
             initial = await harness.create()
-            await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, initial.subagent_id), 3)
-            command = await harness.scheduler.interact_subagent("parent", initial.subagent_id,
+            await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, initial.context_id), 3)
+            command = await harness.scheduler.interact_subagent("parent", initial.context_id,
                 SubagentAction.COMMAND, "第二项任务", source_id="fixed-source")
             await asyncio.wait_for(started.wait(), 3)
             if not running:
                 release.set()
-                await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, command.subagent_id), 3)
-            replay = await harness.scheduler.interact_subagent("parent", initial.subagent_id,
+                await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, command.context_id), 3)
+            replay = await harness.scheduler.interact_subagent("parent", initial.context_id,
                 SubagentAction.COMMAND, "第二项任务", source_id="fixed-source")
-            assert replay.accepted and replay.effect == command.effect
+            assert replay.accepted and replay.status == command.status
             if running:
-                assert subagent_worker_running(harness.scheduler, replay.subagent_id)
+                assert subagent_worker_running(harness.scheduler, replay.context_id)
                 release.set()
-                await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, command.subagent_id), 3)
+                await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, command.context_id), 3)
             else:
-                assert not subagent_worker_running(harness.scheduler, replay.subagent_id)
-                assert replay.summary.status == SubagentPublicStatus.IDLE
-            details = await harness.scheduler.get_subagent_details("parent", initial.subagent_id)
+                assert not subagent_worker_running(harness.scheduler, replay.context_id)
+                assert (await harness.scheduler.get_subagent_details("parent", replay.context_id))["status"] == SubagentPublicStatus.IDLE
+            details = await harness.scheduler.get_subagent_details("parent", initial.context_id)
             assert len(inputs) == 2
             assert len(details["results"]) == 2
             assert all(item["status"] == "completed" for item in details["results"])
@@ -87,18 +88,18 @@ def test_a2a_wait_is_replied_or_cancelled_once(tmp_path: Path, action: SubagentA
 
         async with SubagentHarness(tmp_path / "state.sqlite3", script, retain=retain) as harness:
             receipt = await harness.create()
-            await asyncio.wait_for(wait_for_subagent_status(harness.scheduler, receipt.subagent_id, SubagentPublicStatus.WAITING_PARENT), 3)
+            await asyncio.wait_for(wait_for_subagent_status(harness.scheduler, receipt.context_id, SubagentPublicStatus.WAITING_PARENT), 3)
             summaries = await harness.scheduler.snapshot_subagents("parent")
             assert summaries[0].status == SubagentPublicStatus.WAITING_PARENT
-            assert subagent_worker_running(harness.scheduler, receipt.subagent_id)
-            response = await harness.scheduler.interact_subagent("parent", receipt.subagent_id, action,
+            assert subagent_worker_running(harness.scheduler, receipt.context_id)
+            response = await harness.scheduler.interact_subagent("parent", receipt.context_id, action,
                                                                  "处理 app.py" if action == SubagentAction.COMMAND else None)
             assert response.accepted
-            await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, receipt.subagent_id), 3)
-            detail = await harness.scheduler.get_subagent_details("parent", receipt.subagent_id)
+            await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, receipt.context_id), 3)
+            detail = await harness.scheduler.get_subagent_details("parent", receipt.context_id)
             if action == SubagentAction.COMMAND:
                 assert len(answers) == 1 and answers[0].endswith("处理 app.py")
-                assert [item["kind"] for item in detail["recent_interactions"]] == ["task", "a2a", "reply", "final"]
+                assert [item["kind"] for item in detail["recent_interactions"]] == ["task", "a2a", "task", "final"]
             else:
                 assert not answers
                 assert detail["results"][0]["status"] == "stopped"
@@ -139,13 +140,13 @@ def test_fast_parent_command_cancels_remaining_batch_and_keeps_delegation(tmp_pa
             receipt = await harness.create()
             question = await asyncio.wait_for(harness.received.get(), 3)
             assert question[0].payload['text'] == '如何继续？'
-            await harness.scheduler.interact_subagent('parent', receipt.subagent_id, SubagentAction.COMMAND, '使用新方法')
-            await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, receipt.subagent_id), 3)
-            detail = await harness.scheduler.get_subagent_details('parent', receipt.subagent_id)
+            await harness.scheduler.interact_subagent('parent', receipt.context_id, SubagentAction.COMMAND, '使用新方法')
+            await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, receipt.context_id), 3)
+            detail = await harness.scheduler.get_subagent_details('parent', receipt.context_id)
             assert len(detail['results']) == 1
             assert detail['results'][0]['result'] == '已按新方法完成'
             assert calls == []
-            reader = SessionStateManager(receipt.subagent_id, harness.path, storage_scope=AgentStorageScope.SUBAGENT)
+            reader = SessionStateManager(receipt.context_id, SqliteFactory(harness.path), storage_scope=AgentStorageScope.SUBAGENT)
             try:
                 state = await reader.load()
                 results = {item.tool_call_id: item.text for item in state.messages if isinstance(item, ToolMessage)}
@@ -186,16 +187,16 @@ def test_reply_racing_with_stop_or_destroy_records_at_most_one_reply(
 
         async with SubagentHarness(tmp_path / "state.sqlite3", script) as harness:
             receipt = await harness.create()
-            await asyncio.wait_for(wait_for_subagent_status(harness.scheduler, receipt.subagent_id, SubagentPublicStatus.WAITING_PARENT), 3)
-            reply = harness.scheduler.interact_subagent("parent", receipt.subagent_id, SubagentAction.COMMAND, "处理 app.py")
-            stop = harness.scheduler.interact_subagent("parent", receipt.subagent_id, action)
+            await asyncio.wait_for(wait_for_subagent_status(harness.scheduler, receipt.context_id, SubagentPublicStatus.WAITING_PARENT), 3)
+            reply = harness.scheduler.interact_subagent("parent", receipt.context_id, SubagentAction.COMMAND, "处理 app.py")
+            stop = harness.scheduler.interact_subagent("parent", receipt.context_id, action)
             operations = (reply, stop) if reply_first else (stop, reply)
             results = await asyncio.wait_for(asyncio.gather(*operations), 3)
             reply_receipt = results[0 if reply_first else 1]
-            await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, receipt.subagent_id), 3)
-            detail = await harness.scheduler.get_subagent_details("parent", receipt.subagent_id)
+            await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, receipt.context_id), 3)
+            detail = await harness.scheduler.get_subagent_details("parent", receipt.context_id)
             replies = [item for item in detail["recent_interactions"] if item["kind"] == "reply"]
-            assert len(replies) == int(reply_receipt.effect == "replied")
+            assert not replies
             assert len(observed) <= 1
             if observed:
                 assert observed[0].endswith("处理 app.py")

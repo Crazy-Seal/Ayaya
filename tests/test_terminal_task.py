@@ -1,4 +1,8 @@
 """通过具体任务及真实工具验证进程执行和取消收尾。"""
+from app.crud.sqlite_factory import SqliteFactory
+
+from app.crud.task_record_dao import TaskRecordDao
+from app.services.settings_mutation import SettingsMutationCoordinator
 
 import asyncio
 import sys
@@ -16,7 +20,7 @@ def test_tool_runtime_submits_and_observes_terminal_task(tmp_path):
     async def scenario():
         """通过两个公共入口观察同一个进程任务及其持久终态。"""
         queue = asyncio.Queue()
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=queue, db_path=str(tmp_path / "state.sqlite3"))
+        supervisor = TaskSupervisor(runtime_queue=queue, records=TaskRecordDao(SqliteFactory(str(tmp_path / "state.sqlite3"))))
         terminal = TerminalHarness(supervisor, spool_dir=tmp_path / "logs")
         try:
             result = await terminal.launch_terminal("s", "print('Hello, World!')",
@@ -33,6 +37,7 @@ def test_tool_runtime_submits_and_observes_terminal_task(tmp_path):
             assert await supervisor.list_tasks("s") == []
         finally:
             await supervisor.close()
+            await supervisor.records.close()
     asyncio.run(scenario())
 
 
@@ -42,13 +47,13 @@ def test_repeated_stop_keeps_process_creation_owned_until_cleanup(tmp_path, monk
     from app.agent.tools.core.base import ToolContext
     from app.agent.tools.core.runtime import ToolRuntime
     from app.agent.state.model import AgentState
-    monkeypatch.setattr("app.agent.runtime.tasks.task_supervisor.TASK_SHUTDOWN_WAIT_SECONDS", 0.01)
+
     monkeypatch.setattr("app.agent.tools.exec_command.WORKDIR", tmp_path)
 
     async def scenario():
         """替代操作系统创建入口，以线程门闩观察真实任务生命周期。"""
         queue = asyncio.Queue()
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=queue, db_path=str(tmp_path / "state.sqlite3"))
+        supervisor = TaskSupervisor(runtime_queue=queue, records=TaskRecordDao(SqliteFactory(str(tmp_path / "state.sqlite3"))))
         runtime = ToolRuntime("s", "run", "exec_command", "call", _supervisor=supervisor, _runtime_queue=queue)
         context = ToolContext("s", AgentState(session_id="s"), runtime=runtime)
         started, release = threading.Event(), threading.Event()
@@ -114,14 +119,16 @@ def test_repeated_stop_keeps_process_creation_owned_until_cleanup(tmp_path, monk
             await asyncio.sleep(0.05)
             assert supervisor.active_task_count() == 1
             assert not closing.done()
-            assert (await supervisor.get_task_record(record.task_id)).status == TaskStatus.RUNNING
+            assert (await supervisor.get_task_snapshot(record.task_id)).status == TaskStatus.RUNNING
         finally:
             release.set()
             await asyncio.gather(launching, return_exceptions=True)
             if closing is not None:
                 await closing
+                await supervisor.records.close()
             else:
                 await supervisor.close()
+                await supervisor.records.close()
         assert process.closed
         assert supervisor.active_task_count() == 0
     asyncio.run(scenario())

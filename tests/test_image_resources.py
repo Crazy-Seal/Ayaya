@@ -1,3 +1,4 @@
+from app.crud.sqlite_factory import SqliteFactory
 from app.agent.state.messages import ImageContent
 from tests.model_capture import result_parts
 import asyncio
@@ -38,7 +39,7 @@ def _make_agent(db_path: Path) -> Agent:
             api_key="test",
             context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100),
         ),
-        db_path=str(db_path),
+        sqlite_factory=SqliteFactory(str(db_path)),
         llm_client=_UnusedLLM(),
     )
 
@@ -443,7 +444,7 @@ def test_tool_image_is_externalized_for_protocol_but_kept_in_checkpoint(
         Returns:
             tuple[dict, dict, list[str]]: 供外层用例断言使用的预设结果。
         """
-        manager = agent_module.SessionStateManager("tool-image", db_path=str(tmp_path / "agent.sqlite3"))
+        manager = agent_module.SessionStateManager("tool-image", sqlite_factory=SqliteFactory(str(tmp_path / 'agent.sqlite3')))
         try:
             state = AgentState.create_new("tool-image")
             _append_tool_image(state, image)
@@ -506,7 +507,7 @@ def test_tool_image_protocol_row_upgrades_after_transient_save_failure(
         """
         manager = state_manager_module.SessionStateManager(
             "retry-tool-image",
-            db_path=str(tmp_path / "agent.sqlite3"),
+            sqlite_factory=SqliteFactory(str(tmp_path / 'agent.sqlite3')),
         )
         try:
             state = AgentState.create_new("retry-tool-image")
@@ -569,7 +570,7 @@ def test_tool_image_save_exception_preserves_base64_and_checkpoint(
         """
         manager = state_manager_module.SessionStateManager(
             "failed-tool-image",
-            db_path=str(tmp_path / "agent.sqlite3"),
+            sqlite_factory=SqliteFactory(str(tmp_path / 'agent.sqlite3')),
         )
         try:
             state = AgentState.create_new("failed-tool-image")

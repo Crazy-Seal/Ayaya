@@ -1,4 +1,3 @@
-from pathlib import Path
 import json
 import logging
 import aiosqlite
@@ -12,7 +11,7 @@ from app.agent.state.messages import (
     ToolMessage, ImageContent,
     message_from_history,
 )
-from app.environment import get_chat_history_db
+from app.crud.sqlite_factory import SqliteFactory
 
 logger = logging.getLogger(__name__)
 class ChatHistoryDao:
@@ -23,13 +22,14 @@ class ChatHistoryDao:
     """
     READ_CHUNK_SIZE = 256
 
-    def __init__(self, db_path: Path | None = None):
+    def __init__(self, sqlite_factory: SqliteFactory):
         """绑定共享协议数据库路径，构造时不读写数据库。
 
         Args:
-            db_path (Path | None): 当前环境使用的 SQLite 数据库路径。
+            sqlite_factory (SqliteFactory): 应用装配提供的 SQLite 连接配置。
         """
-        self.db_path = db_path or get_chat_history_db()
+        self._sqlite_factory = sqlite_factory
+        self.db_path = sqlite_factory.main_path
 
     @staticmethod
     def _to_local_time_text(utc_timestamp_value: object) -> str:
@@ -190,7 +190,7 @@ class ChatHistoryDao:
             result: list[dict[str, str]] = []
             visible_index = 0
             after_id: int | None = None
-            async with aiosqlite.connect(str(self.db_path)) as conn:
+            async with self._sqlite_factory.connection() as conn:
                 if not await self._protocol_table_exists(conn):
                     return []
                 while len(result) < limit:
@@ -239,7 +239,7 @@ class ChatHistoryDao:
             projected_groups: list[list[dict[str, str]]] = []
             visible_count = 0
             before_id: int | None = None
-            async with aiosqlite.connect(str(self.db_path)) as conn:
+            async with self._sqlite_factory.connection() as conn:
                 if not await self._protocol_table_exists(conn):
                     return []
                 # 1. 按会话核对查询终点，后续倒序分块查询始终排除工具完成之后的新消息。

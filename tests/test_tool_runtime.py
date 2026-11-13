@@ -1,4 +1,13 @@
+from app.agent.state.manager import SessionStateManager
 """通过工具运行时和真实 Supervisor 验证任务对象及会话归属。"""
+from tests.runtime_support import collect_agent_events
+from tests.runtime_support import runtime_hub, close_test_runtime
+from app.routes.agent import observe_runtime
+from tests.runtime_support import build_test_scheduler
+from app.crud.sqlite_factory import SqliteFactory
+
+from app.crud.task_record_dao import TaskRecordDao
+from app.services.settings_mutation import SettingsMutationCoordinator
 
 import asyncio
 
@@ -17,7 +26,7 @@ def test_tools_share_session_task_but_other_sessions_cannot_access(tmp_path):
     async def scenario():
         """提交一个有明确结束时机的任务，观察运行和完成后的公开查询。"""
         queue = asyncio.Queue()
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=queue, db_path=str(tmp_path / 'state.db'))
+        supervisor = TaskSupervisor(runtime_queue=queue, records=TaskRecordDao(SqliteFactory(str(tmp_path / 'state.db'))))
         release = asyncio.Event()
 
         class Job(BaseTask):
@@ -40,17 +49,18 @@ def test_tools_share_session_task_but_other_sessions_cannot_access(tmp_path):
             assert supervisor.get_task(task_id) is job
             assert await writer.get_task(task_id) is job
             assert await outsider.get_task(task_id) is None
-            assert await outsider.get_task_record(task_id) is None
+            assert await outsider.get_task_snapshot(task_id) is None
             assert await writer.get_task('missing') is None
-            record = await writer.get_task_record(task_id)
+            record = await writer.get_task_snapshot(task_id)
             assert record.tool_name == 'exec_command' and record.origin_tool_call_id == 'call'
             release.set()
             await writer.wait_task(task_id, timeout_ms=1000)
             assert supervisor.get_task(task_id) is None
-            assert await writer.get_task_record(task_id) is not None
+            assert await writer.get_task_snapshot(task_id) is not None
         finally:
             release.set()
             await supervisor.close()
+            await supervisor.records.close()
     asyncio.run(scenario())
 
 
@@ -70,7 +80,7 @@ def test_terminal_can_finish_between_record_and_object_lookup(tmp_path, monkeypa
 
     async def scenario():
         """真实进程等待文件，再在工具查询对象前完成并提交终态。"""
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / 'state.db'))
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / 'state.db'))))
         runtime = ToolRuntime('s', 'run', 'exec_command', 'call', _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue)
         gate = tmp_path / 'release'
         script = 'import os,time\nwhile not os.path.exists(' + repr(str(gate)) + '): time.sleep(0.01)'
@@ -103,6 +113,7 @@ def test_terminal_can_finish_between_record_and_object_lookup(tmp_path, monkeypa
         finally:
             gate.touch()
             await supervisor.close()
+            await supervisor.records.close()
     asyncio.run(scenario())
 
 
@@ -118,9 +129,11 @@ def test_stop_request_is_one_way_and_checked_by_scheduler(tmp_path):
     async def scenario():
         """真实消费请求队列，使用持久状态观察停止结果。"""
         queue = asyncio.Queue()
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=queue, db_path=str(tmp_path / 'state.db'))
-        scheduler = AgentRuntimeScheduler(runtime_queue=queue, task_supervisor=supervisor,
-            agent_factory=lambda session_id, manager: None)
+        supervisor_settings = configured_settings()
+        supervisor_mutations = SettingsMutationCoordinator()
+        supervisor = TaskSupervisor(runtime_queue=queue, records=TaskRecordDao(SqliteFactory(str(tmp_path / 'state.db'))))
+        scheduler = build_test_scheduler(runtime_queue=queue, task_supervisor=supervisor,
+            agent_factory=lambda session_id, manager: None, chat_settings_dao=supervisor_settings, mutation_coordinator=supervisor_mutations, session_state_manager_factory=lambda context: SessionStateManager(context, SqliteFactory()))
         owner = ToolRuntime('s', 'run', 'exec_command', 'call', _supervisor=supervisor, _runtime_queue=queue)
         outsider = ToolRuntime('other', 'run', 'write_stdin', 'call', _supervisor=supervisor, _runtime_queue=queue)
         started = asyncio.Event()
@@ -143,13 +156,14 @@ def test_stop_request_is_one_way_and_checked_by_scheduler(tmp_path):
             await started.wait()
             assert await outsider.stop_task(task_id) is None
             await asyncio.wait_for(queue.join(), 1)
-            assert (await owner.get_task_record(task_id)).status == TaskStatus.RUNNING
+            assert (await owner.get_task_snapshot(task_id)).status == TaskStatus.RUNNING
             assert await owner.stop_task(task_id) is None
             await asyncio.wait_for(queue.join(), 1)
             assert (await owner.wait_task(task_id, timeout_ms=1000)).status == TaskStatus.STOPPED
         finally:
-            await scheduler.close()
+            await close_test_runtime(scheduler)
             await supervisor.close()
+            await supervisor.records.close()
     asyncio.run(scenario())
 
 
@@ -168,7 +182,7 @@ def test_agent_injects_tool_runtime_and_runs_background_terminal(tmp_path, monke
 
     async def scenario():
         """只替代模型，真实执行终端和任务存储。"""
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / 'state.db'))
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / 'state.db'))))
         calls = []
 
         class Model:
@@ -195,12 +209,14 @@ def test_agent_injects_tool_runtime_and_runs_background_terminal(tmp_path, monke
                 """模型替身没有需要关闭的网络资源。"""
 
         agent = Agent(AgentConfig(session_id='s', model_name='test', api_key='test', tools=['exec_command'], plugins=[],
-            context_strategy=ContextStrategyConfig()), db_path=str(tmp_path / 'state.db'), llm_client=Model(),
+            context_strategy=ContextStrategyConfig()), sqlite_factory=SqliteFactory(str(tmp_path / 'state.db')), llm_client=Model(),
             tool_runtime_factory=lambda tool_name, run_id, tool_call_id: ToolRuntime(
                 's', run_id, tool_name, tool_call_id, _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue))
         try:
-            async for _ in agent.run('执行命令'):
+            async def receive_agent_event(_):
+                """在原事件位置执行此场景的观察和控制。"""
                 pass
+            await agent.run('执行命令', emit=receive_agent_event)
             records = await supervisor.list_tasks('s')
             assert len(records) == 1
             assert records[0].tool_name == 'exec_command'
@@ -208,5 +224,6 @@ def test_agent_injects_tool_runtime_and_runs_background_terminal(tmp_path, monke
             await supervisor.wait(records[0].task_id, timeout_ms=2000)
         finally:
             await supervisor.close()
+            await supervisor.records.close()
             await agent.close()
     asyncio.run(scenario())

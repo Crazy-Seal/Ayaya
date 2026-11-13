@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from app.agent.runtime.tasks.base import BaseTask
-from app.agent.plugins.runtime import PluginRuntime
+from app.agent.runtime.tasks.runtime import TaskRuntime
 from app.agent.state.messages import HumanMessage
 from app.agent.memory.memories.diary import DiaryGeneration
 
@@ -30,11 +30,11 @@ class DiaryTask(BaseTask):
     manager: MemoryManager
     generation: DiaryGeneration
 
-    async def run(self, runtime: PluginRuntime) -> str:
+    async def run(self, runtime: TaskRuntime) -> str:
         """生成并保存日记，成功返回摘要，失败由 Supervisor 记录错误。
 
         Args:
-            runtime (PluginRuntime): 框架绑定插件、会话、来源轮次及任务编号的调用对象。
+            runtime (TaskRuntime): 框架绑定插件、会话、来源轮次及任务编号的调用对象。
 
         Returns:
             str: 包含日记日期的成功摘要。
@@ -66,11 +66,11 @@ class LongTermMemoryTask(BaseTask):
     enable_episodic: bool
     enable_semantic: bool
 
-    async def run(self, runtime: PluginRuntime) -> str:
+    async def run(self, runtime: TaskRuntime) -> str:
         """读取固定轮次并返回提取数量，跳过返回原因，失败交给 Supervisor 保存。
 
         Args:
-            runtime (PluginRuntime): 框架绑定插件、会话、来源轮次及任务编号的调用对象。
+            runtime (TaskRuntime): 框架绑定插件、会话、来源轮次及任务编号的调用对象。
 
         Returns:
             str: 两类记忆的完成数量，或跳过本次提取的具体原因。

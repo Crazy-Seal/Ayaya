@@ -8,12 +8,11 @@ tool_call_id/tool_args/resume_state）写入 state.interrupt_data，使恢复能
 在另一个请求（甚至进程重启后）重入同一工具——无需依赖存活的协程。
 """
 from contextlib import aclosing
-from app.agent.utils.infra.owned_work import complete_owned_work
 from app.schemas.subagent_types import SUBAGENT_ROSTER_CONTEXT_KEY
 from app.agent.models.contracts import ModelFinishReason, StreamChunk
 
 import logging
-from typing import Any, AsyncIterator, Protocol, Awaitable, Callable
+from typing import Any, AsyncIterator, AsyncGenerator, Protocol, Awaitable, Callable
 from app.schemas.desktop import DesktopOperations, StopRequested
 
 from app.schemas.runtime_types import (
@@ -21,7 +20,7 @@ from app.schemas.runtime_types import (
     InterruptKind,
 )
 from app.agent.context import ModelInputCoordinator, RuntimeContext
-from app.agent.state.manager import SessionStateManager
+from app.agent.state.manager import SessionStateManager, RequiredSaveError
 from app.agent.runtime.turn_control import TurnInterrupted
 from app.agent.core.events import EventType, AgentEvent
 from app.agent.core.plugin_manager import PluginManager
@@ -112,7 +111,7 @@ class ExecutionPipeline:
         runtime_context: RuntimeContext | None = None,
         *, receive_task_notifications: bool = False,
         activation_data: dict | None = None,
-    ) -> AsyncIterator[AgentEvent]:
+    ) -> AsyncGenerator[AgentEvent, None]:
         """确定本轮真人输入标识，运行调用钩子后进入模型工具循环。
 
         Args:
@@ -149,7 +148,7 @@ class ExecutionPipeline:
         session_state_manager: SessionStateManager | None = None,
         runtime_context: RuntimeContext | None = None,
         *, receive_task_notifications: bool = False,
-    ) -> AsyncIterator[AgentEvent]:
+    ) -> AsyncGenerator[AgentEvent, None]:
         """先重入中断工具，再处理剩余调用，最后继续模型循环。
 
         Args:
@@ -258,7 +257,7 @@ class ExecutionPipeline:
         session_state_manager: SessionStateManager | None = None,
         runtime_context: RuntimeContext | None = None,
         *, receive_task_notifications: bool = False,
-    ) -> AsyncIterator[AgentEvent]:
+    ) -> AsyncGenerator[AgentEvent, None]:
         """在每次模型调用前接收内部通知，流式输出文本并依次执行工具。
 
         Args:
@@ -343,10 +342,14 @@ class ExecutionPipeline:
                         runtime_context.turn_control.append(trailing_content)
                     yield AgentEvent(EventType.TEXT_CHUNK, trailing_content)
                 raise
+            except RequiredSaveError:
+                raise
             except Exception as e:
                 trailing_content = time_prefix_filter.finish()
                 if trailing_content:
                     accumulated_content += trailing_content
+                    if runtime_context.turn_control:
+                        runtime_context.turn_control.append(trailing_content)
                     yield AgentEvent(EventType.TEXT_CHUNK, trailing_content)
                 logger.error("LLM 调用失败: %s", e)
                 await self._plugin_manager.run_hooks(
@@ -470,8 +473,8 @@ class ExecutionPipeline:
                 if prepared.state_changed:
                     await self._checkpoint(state, session_state_manager)
                 try:
-                    if session_state_manager is not None:
-                        await session_state_manager.ensure_execution_available()
+                    if runtime_context.turn_control is not None:
+                        runtime_context.turn_control.check()
                     stream = self._llm_client.astream(prepared.messages, tools=tools or None)
                     try:
                         async for chunk in stream:
@@ -618,9 +621,9 @@ class ExecutionPipeline:
         )
 
         # 5. 执行工具并把普通异常转换为 ToolResult，再统一规范化过长输出与媒体。
+        if stop_requested is not None and stop_requested():
+            raise TurnInterrupted("工具启动前收到停止或引导")
         try:
-            if context.runtime is not None:
-                await context.runtime.ensure_available()
             result = await tool.execute(tool_call.args, context)
         except Exception as e:
             logger.error("工具 '%s' 执行失败: %s", tool_call.name, e)
@@ -744,9 +747,9 @@ class ExecutionPipeline:
             stop_requested=stop_requested,
         )
         # 2. 普通工具异常转换为可展示结果，随后执行统一结果规范化。
+        if stop_requested is not None and stop_requested():
+            raise TurnInterrupted("准备完成的工具启动前收到停止或引导")
         try:
-            if context.runtime is not None:
-                await context.runtime.ensure_available()
             result = await tool.execute(tool_call.args, context)
         except Exception as exc:
             logger.error("工具 '%s' 执行失败: %s", tool_call.name, exc)
@@ -832,6 +835,7 @@ class ExecutionPipeline:
             resume_state (dict): 工具继续执行所需的私有恢复材料。
             pending_actions (list[ToolCall]): 当前中断之后尚未执行的同批工具调用。
             session_state_manager (SessionStateManager | None): 执行管道借用的会话状态业务对象。
+            runtime_context (RuntimeContext | None): 当前轮次的来源渠道、控制能力和临时输入材料。
         """
         # 1. 在候选状态准备暂停，钩子或提交失败时原执行仍保留可靠进度。
         candidate = state.model_copy(deep=True)
@@ -858,9 +862,9 @@ class ExecutionPipeline:
             state.adopt_saved_state(candidate)
             if runtime_context and runtime_context.turn_control:
                 control = runtime_context.turn_control
-                control.run_state.interrupt_saved(control.run_id, InterruptKind(interrupt.type), interrupt.request_id)
+                control.wait_saved(interrupt.type, interrupt.request_id)
 
-        await complete_owned_work(save_interrupt())
+        await save_interrupt()
         return AgentEvent(EventType.INTERRUPT, interrupt.to_client())
 
     # ==================== 助手消息 ====================

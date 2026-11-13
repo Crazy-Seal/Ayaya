@@ -1,3 +1,4 @@
+from tests.runtime_support import make_execution_control
 from tests.model_capture import image_urls, image_kind
 """屏幕工具直接返回结果，VLM 只在准备阶段定位，不依赖 Electron 回报。"""
 
@@ -193,14 +194,15 @@ def test_pipeline_screen_permissions_and_first_call_stop_port(policy, tool_name,
                 stop_requested (StopRequested | None): 当前轮次已受理停止或引导时返回 True 的只读回调。
             """
             assert stop_requested is not None and not stop_requested()
-            control.request("stop")
+            execution_state.request_stop(control.run_id)
+            control.wake_interrupt()
             assert stop_requested()
             return await super().perform_actions(actions, stop_requested=stop_requested)
 
     async def scenario():
         """执行一轮屏幕调用，ask 审批恢复后使用同一个桌面接口。"""
-        nonlocal control
-        control = TurnControl("screen-run")
+        nonlocal control, execution_state
+        execution_state, control = make_execution_control("screen-run")
         model = ScriptedModel()
         settings = ChatSettings(session_id="s", model_name="test", openai_api_key="test",
                                 openai_base_url="http://127.0.0.1:1/v1", temperature=0.1, system_prompt="test",
@@ -227,7 +229,7 @@ def test_pipeline_screen_permissions_and_first_call_stop_port(policy, tool_name,
             events = await consume(pipeline.execute(state, runtime_context=runtime))
         if policy == "ask":
             assert not desktop.actions and events[-1].data["type"] == "authorization_request"
-            assert control.run_state.prepare_resume(control.run_id, events[-1].data["request_id"])
+            assert execution_state.resume_approval(control.run_id, events[-1].data["request_id"]).accepted
             with pytest.raises(TurnInterrupted):
                 await consume(pipeline.resume_tools(state, {"kind": "approve"}, runtime_context=runtime))
         assert len(desktop.actions) == (0 if policy == "deny" else 2)
@@ -243,4 +245,5 @@ def test_pipeline_screen_permissions_and_first_call_stop_port(policy, tool_name,
         return [event async for event in stream]
 
     control = None
+    execution_state = None
     asyncio.run(scenario())

@@ -1,3 +1,8 @@
+from tests.runtime_support import runtime_hub, close_test_runtime
+from app.routes.agent import observe_runtime
+from app.schemas.runtime_types import AgentRunOutcome, AgentRunOutcomeKind
+from tests.runtime_support import build_test_scheduler
+from app.crud.sqlite_factory import SqliteFactory
 from tests.runtime_support import RuntimeAgentStub
 import asyncio
 import json
@@ -20,7 +25,7 @@ from app.interaction.interaction_event_hub import InteractionEventHub
 from app.services.channel_subscription_service import ChannelSubscriptionService
 from app.routes.agent import router as agent_router
 from app.routes.tools import router as tools_router
-from app.interaction.interaction_contract import CommandReceipt
+from app.schemas.runtime_types import CommandReceipt, CommandStatus
 from app.interaction.interaction_contract import InteractionEvent
 from app.agent.state.messages import ToolCall
 from app.agent.tools.core.base import InterruptEvent
@@ -44,7 +49,7 @@ def test_http_command_reaches_real_scheduler_and_sse_subscriber(tmp_path, delive
     class Agent(RuntimeAgentStub):
         """只替代模型执行，保留真人输入的真实保存和交付通知。"""
 
-        async def run(self, message, *, origin_channel, inbox_input, **kwargs):
+        async def run(self, message, *, origin_channel, inbox_input, emit, **kwargs):
             """保存输入后通知界面，再保存正常结果并结束。
 
             Args:
@@ -56,22 +61,24 @@ def test_http_command_reaches_real_scheduler_and_sse_subscriber(tmp_path, delive
             Yields:
                 AgentEvent: 文字及正常完成事件。
             """
-            yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": origin_channel, "resumed": False})
+            outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
+            await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": origin_channel, "resumed": False}))
             if delivery_failure:
-                raise RuntimeError("交付失败")
-            manager = SessionStateManager("s", path)
+                raise OSError("交付失败")
+            manager = SessionStateManager("s", SqliteFactory(path))
             try:
                 # 1. checkpoint 与 Inbox 交付同事务保存后，才通知显示真人消息。
                 state = await manager.load()
                 human = state.add_user_message(message, origin_channel=origin_channel)
                 await manager.save(state, checkpoint_type="intermediate", inbox_inputs=(inbox_input,))
-                yield AgentEvent(EventType.HUMAN_INPUT_COMMITTED, {"message": human, "input_sequence": inbox_input.id})
-                yield AgentEvent(EventType.TEXT_CHUNK, "收到：" + message)
-                # 2. 模拟真实 Agent 的正常完成事务，队列仅在这里放行。
+                await emit(AgentEvent(EventType.HUMAN_INPUT_COMMITTED, {"message": human, "input_sequence": inbox_input.id}))
+                await emit(AgentEvent(EventType.TEXT_CHUNK, "收到：" + message))           # 2. 模拟真实 Agent 的正常完成事务，队列仅在这里放行。
                 await manager.save(state, checkpoint_type="completed", release_queued=True)
-                yield AgentEvent(EventType.DONE, None)
+                await emit(AgentEvent(EventType.DONE, None))
             finally:
                 await manager.close()
+
+            return outcome
 
         async def close(self):
             """替身无额外资源，存储连接由 run 清理。"""
@@ -89,12 +96,12 @@ def test_http_command_reaches_real_scheduler_and_sse_subscriber(tmp_path, delive
         assert session_id == "s"
         return Agent()
 
-    subscriptions = ChannelSubscriptionService(path)
-    scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
+    subscriptions = ChannelSubscriptionService(SqliteFactory(path))
+    scheduler = build_test_scheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
         agent_factory=create_agent, subscriptions=subscriptions,
-        session_state_manager_factory=partial(SessionStateManager, db_path=path),
+        session_state_manager_factory=partial(SessionStateManager, sqlite_factory=SqliteFactory(path)),
     )
-    hub = InteractionEventHub(scheduler, subscriptions=subscriptions)
+    hub = runtime_hub(scheduler)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -107,14 +114,14 @@ def test_http_command_reaches_real_scheduler_and_sse_subscriber(tmp_path, delive
             None: 请求可进入的生命周期区间。
         """
         await scheduler.start()
-        await hub.start()
+        pass
         try:
             yield
         finally:
             try:
                 await hub.close()
             finally:
-                await scheduler.close()
+                await close_test_runtime(scheduler)
 
     app = FastAPI(lifespan=lifespan)
     app.include_router(agent_router)
@@ -192,7 +199,7 @@ def test_http_command_reaches_real_scheduler_and_sse_subscriber(tmp_path, delive
                 "payload": {"message": "你好"},
             })
             assert response.status_code == 200
-            assert response.json() == {"accepted": True, "reason": None, "run_id": None}
+            assert response.json() == {"accepted": True, "status": "accepted", "context_id": "s", "detail": None, "run_id": None}
             assert completed_sent.wait(3), "命令未通过 Scheduler 和 Hub 到达 SSE"
         finally:
             # 2. 即使断言失败也结束长连接，避免线程池等待一个永不返回的 GET。
@@ -206,7 +213,7 @@ def test_http_command_reaches_real_scheduler_and_sse_subscriber(tmp_path, delive
     assert len({frame["stream_epoch"] for frame in frames}) == 1
     if delivery_failure:
         assert [frame["kind"] for frame in frames] == ["session_snapshot", "run_started", "error"]
-        assert frames[-1]["payload"]["failed_input"] == {"input_sequence": 1, "message": "你好", "images": []}
+        assert frames[-1]["payload"]["save_failed"] is True
         assert [frame["event_sequence"] for frame in frames] == [0, 1, 2]
     else:
         assert [frame["kind"] for frame in frames] == [
@@ -231,7 +238,7 @@ def test_unknown_command_keeps_http_200_business_rejection() -> None:
         """
         raise AssertionError("未知命令不能启动 Agent")
 
-    scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),  agent_factory=unexpected_agent)
+    scheduler = build_test_scheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),  agent_factory=unexpected_agent, session_state_manager_factory=lambda context: SessionStateManager(context, SqliteFactory()))
 
     @asynccontextmanager
     async def lifespan(_app):
@@ -240,7 +247,7 @@ def test_unknown_command_keeps_http_200_business_rejection() -> None:
         try:
             yield
         finally:
-            await scheduler.close()
+            await close_test_runtime(scheduler)
 
     app = FastAPI(lifespan=lifespan)
     app.include_router(agent_router)
@@ -259,7 +266,7 @@ def test_unknown_command_keeps_http_200_business_rejection() -> None:
             "session_id": "s", "origin_channel": "desktop", "kind": "future_command", "payload": {},
         })
     assert response.status_code == 200
-    assert response.json() == {"accepted": False, "reason": "当前命令尚未接入运行时", "run_id": None}
+    assert response.json() == {"accepted": False, "status": "invalid", "context_id": "s", "detail": "未知运行命令", "run_id": None}
 
 
 def test_idle_sse_heartbeats_preserve_pending_event_and_close_source(monkeypatch) -> None:
@@ -277,64 +284,41 @@ def test_idle_sse_heartbeats_preserve_pending_event_and_close_source(monkeypatch
         cancelled = asyncio.Event()
 
         class Source:
-            """用可控屏障模拟没有业务数据的长期事件来源。"""
-            def validate_source(self, channel: str) -> None:
-                """接受测试渠道。
+            """用可控屏障模拟快照读取期间的空闲连接。"""
 
-                Args:
-                    channel (str): 测试渠道标识。
-                """
+            async def snapshot(self, session_id):
+                """等待采样放行，返回与实际 Hub 对应的水位。"""
+                await release.wait()
+                epoch, sequence = hub.watermark(session_id)
+                return InteractionEvent(session_id, "session_snapshot", {}, stream_epoch=epoch, event_sequence=sequence)
 
-            async def is_enabled(self, session_id: str, channel: str) -> bool:
-                """返回固定启用状态。
+        class Hub(InteractionEventHub):
+            """观察真实订阅句柄的回收。"""
 
-                Args:
-                    session_id (str): 测试会话标识。
-                    channel (str): 测试渠道标识。
+            def unsubscribe(self, subscriber):
+                """释放连接并通知测试清理完成。"""
+                super().unsubscribe(subscriber)
+                closed.set()
 
-                Returns:
-                    bool: 测试订阅允许建立。
-                """
-                return True
-
-            async def subscribe(self, *identity):
-                """等待测试放行才产生数据，显式观测取消和订阅清理。
-
-                Args:
-                    identity (tuple): 会话展示流的身份；执行流不需要参数。
-
-                Yields:
-                    InteractionEvent: 放行后的实际业务数据。
-                """
-                try:
-                    await release.wait()
-                    yield InteractionEvent("s", "text_chunk", {"value": "继续"})
-                    await asyncio.Event().wait()
-                except asyncio.CancelledError:
-                    cancelled.set()
-                    raise
-                finally:
-                    closed.set()
-
+        subscriptions = ChannelSubscriptionService(SqliteFactory())
+        hub = Hub(subscriptions=subscriptions)
         source = Source()
-        response = await subscribe_events("s", "desktop", source, source)
+        response = await subscribe_events("s", "desktop", hub, subscriptions, source)
         stream = response.body_iterator
         try:
-            # 1. 连续空闲周期只发送注释，不生成假事件，也不能取消来源的 queue.get。
+            # 1. 快照读取跨越心跳周期，心跳保持原查询和订阅缓冲有效。
             assert await asyncio.wait_for(anext(stream), 0.5) == ": ping\n\n"
             assert await asyncio.wait_for(anext(stream), 0.5) == ": ping\n\n"
-            assert not cancelled.is_set()
-            # 2. 放行后仍取得原本等待的数据，不因心跳丢失事件或身份。
             release.set()
-            frame = await asyncio.wait_for(anext(stream), 0.5)
-            data = json.loads(frame[6:])
-            assert data["kind"] == "text_chunk"
-            # 3. 再进入空闲后关闭响应，必须取消等待并释放来源订阅。
+            assert json.loads((await anext(stream))[6:])["kind"] == "session_snapshot"
+            # 2. 快照后的增量仍从同一个订阅缓冲读取。
+            hub.publish(InteractionEvent("s", "text_chunk", {"value": "继续"}))
+            assert json.loads((await anext(stream))[6:])["kind"] == "text_chunk"
             assert await asyncio.wait_for(anext(stream), 0.5) == ": ping\n\n"
         finally:
             await stream.aclose()
         assert closed.is_set()
-        assert cancelled.is_set()
+        assert not hub._subscribers
 
     asyncio.run(scenario())
 
@@ -350,45 +334,27 @@ def test_approval_arguments_are_json_objects_in_increment_and_snapshot() -> None
             "authorization_request", "确认命令", {"arguments": call.args},
         ).to_client()
 
+        subscriptions = ChannelSubscriptionService(SqliteFactory())
+        hub = InteractionEventHub(subscriptions=subscriptions)
+
         class Events:
-            """为路由提供有限的实时审批和重连快照，不连接生产运行时。"""
-            def validate_source(self, channel: str) -> None:
-                """接受测试的桌面渠道。
+            """只替换快照查询，线路和订阅缓冲使用真实实现。"""
 
-                Args:
-                    channel (str): 路由请求的来源渠道。
-                """
-                assert channel == "desktop"
+            async def snapshot(self, session_id):
+                """返回包含不可变参数的实际重连快照。"""
+                epoch, sequence = hub.watermark(session_id)
+                return InteractionEvent(session_id, "session_snapshot", {"interrupt": approval},
+                    stream_epoch=epoch, event_sequence=sequence)
 
-            async def is_enabled(self, session_id: str, channel: str) -> bool:
-                """返回测试渠道的固定启用状态。
-
-                Args:
-                    session_id (str): 测试会话身份。
-                    channel (str): 测试渠道身份。
-
-                Returns:
-                    bool: 测试渠道已启用。
-                """
-                return True
-
-            async def subscribe(self, session_id: str, channel: str):
-                """按线路发送重连快照和实时审批。
-
-                Args:
-                    session_id (str): 测试会话身份。
-                    channel (str): 测试渠道身份。
-
-                Yields:
-                    InteractionEvent: 包含相同不可变参数的两类事件。
-                """
-                yield InteractionEvent(session_id, "session_snapshot", {"interrupt": approval})
-                yield InteractionEvent(session_id, "interrupt", {"value": approval})
-
-        # 1. 只替换事件来源，路由和不可变消息容器使用实际实现。
-        events = Events()
-        response = await subscribe_events("s", "desktop", events, events)
-        frames = [json.loads(frame[6:]) async for frame in response.body_iterator]
+        response = await subscribe_events("s", "desktop", hub, subscriptions, Events())
+        stream = response.body_iterator
+        try:
+            frames = [json.loads((await anext(stream))[6:])]
+            hub.publish(InteractionEvent("s", "interrupt", {"value": approval}))
+            frames.append(json.loads((await anext(stream))[6:]))
+        finally:
+            await stream.aclose()
+            await hub.close()
         # 2. 实时与重连不得将参数退化为 Python 对象地址字符串。
         for frame, key in zip(frames, ("interrupt", "value"), strict=True):
             assert frame["payload"][key]["data"]["arguments"] == {
@@ -415,7 +381,7 @@ class _Scheduler:
             command (ChannelCommand): 统一渠道命令或需要执行的命令正文，类型决定其含义。
         """
         self.commands.append(command)
-        return CommandReceipt(True, run_id="run-1")
+        return CommandReceipt(CommandStatus.ACCEPTED, run_id="run-1")
 
 
 def test_command_route_requires_session_and_source() -> None:
@@ -449,7 +415,7 @@ def test_command_route_forwards_approval_identity() -> None:
         assert client.post("/tool-continuation/respond", json={}).status_code == 404
     # 2. 核对公开结果和持久状态，确保场景中的输入、通知或副作用未重复。
     assert response.status_code == 200
-    assert response.json() == {"accepted": True, "reason": None, "run_id": "run-1"}
+    assert response.json() == {"accepted": True, "status": "accepted", "context_id": None, "detail": None, "run_id": "run-1"}
     assert len(scheduler.commands) == 1
     assert scheduler.commands[0].request_id == "interrupt-123"
     assert scheduler.commands[0].payload == {"kind": "reject"}

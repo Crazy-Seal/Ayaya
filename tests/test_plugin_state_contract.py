@@ -1,3 +1,5 @@
+from tests.runtime_support import collect_agent_events
+from app.crud.sqlite_factory import SqliteFactory
 from tests.model_capture import capture_input
 import asyncio
 from dataclasses import FrozenInstanceError
@@ -254,14 +256,14 @@ def test_agent_commits_response_and_in_place_changes_after_rejected_replacement(
                 session_id="plugin-contract", model_name="test", api_key="test",
                 context_strategy=ContextStrategyConfig(),
             ),
-            db_path=str(tmp_path / "checkpoints.sqlite3"),
+            sqlite_factory=SqliteFactory(str(tmp_path / "checkpoints.sqlite3")),
             llm_client=ScriptedLLM(),
         )
         plugin = _MutatingPlugin("updated")
         agent.register_plugin(_ReplacingPlugin())
         agent.register_plugin(plugin)
         try:
-            events = [event async for event in agent.run("开始")]
+            events = [event for event in await collect_agent_events(agent.run, '开始')]
             saved = await agent.session_state_manager.load()
             assert events[-1].type == EventType.DONE
             assert [event.data for event in events if event.type == EventType.TEXT_CHUNK] == [

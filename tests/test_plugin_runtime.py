@@ -1,4 +1,12 @@
 """通过正式任务入口验证插件任务的执行、清理和结果查询。"""
+from tests.runtime_support import runtime_hub, close_test_runtime
+from app.routes.agent import observe_runtime
+from tests.runtime_support import next_runtime_event
+from tests.runtime_support import build_test_scheduler
+from app.crud.sqlite_factory import SqliteFactory
+
+from app.crud.task_record_dao import TaskRecordDao
+from app.services.settings_mutation import SettingsMutationCoordinator
 
 import asyncio
 import threading
@@ -10,7 +18,7 @@ from app.agent.runtime.tasks.base import BaseTask
 from tests.runtime_support import configured_settings
 from app.agent.plugins.runtime import PluginRuntime
 from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
-from app.schemas.runtime_types import TaskStatus
+from app.schemas.runtime_types import TaskStatus, TaskExecutionPhase
 from app.agent.state.manager import SessionStateManager
 
 
@@ -21,11 +29,11 @@ def test_shutdown_repeated_cancellation_keeps_memory_work_active(tmp_path, monke
     from app.agent.memory.manager import MemoryManager
     from app.agent.memory.memories.semantic_mem0 import Mem0SemanticMemory
     from app.agent.state.messages import HumanMessage, text_content
-    monkeypatch.setattr("app.agent.runtime.tasks.task_supervisor.TASK_SHUTDOWN_WAIT_SECONDS", 0.01)
+
 
     async def scenario():
         """通过真实线程屏障观察停止请求、关闭超时和最终保存。"""
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "state.sqlite3"))
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "state.sqlite3"))))
         runtime = PluginRuntime("memory", "s", "r", _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue)
         started, release = threading.Event(), threading.Event()
 
@@ -86,8 +94,10 @@ def test_shutdown_repeated_cancellation_keeps_memory_work_active(tmp_path, monke
             release.set()
             if closing is not None:
                 await closing
+                await supervisor.records.close()
             else:
                 await supervisor.close()
+                await supervisor.records.close()
     asyncio.run(scenario())
 
 
@@ -97,7 +107,7 @@ def test_cancel_during_committed_submission_keeps_task_owned(tmp_path, monkeypat
 
     async def scenario():
         """仅在真实提交返回处注入外层取消，使用正式查询观察结果。"""
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "state.sqlite3"))
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "state.sqlite3"))))
         runtime = PluginRuntime("game", "s", "r", _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue)
         cleaned = asyncio.Event()
         caller = asyncio.current_task()
@@ -131,6 +141,7 @@ def test_cancel_during_committed_submission_keeps_task_owned(tmp_path, monkeypat
             assert supervisor.active_task_count() == 0
         finally:
             await supervisor.close()
+            await supervisor.records.close()
     asyncio.run(scenario())
 
 
@@ -145,7 +156,7 @@ def test_cancel_during_terminal_registration_keeps_process_owned(tmp_path, monke
 
     async def scenario():
         """在真实登记返回处取消前台调用，查询后台记录的最终状态。"""
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "state.sqlite3"))
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "state.sqlite3"))))
         runtime = ToolRuntime("s", "run", "exec_command", "call", _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue)
         context = ToolContext("s", AgentState(session_id="s"), runtime=runtime)
         caller = asyncio.current_task()
@@ -166,19 +177,20 @@ def test_cancel_during_terminal_registration_keeps_process_owned(tmp_path, monke
             assert supervisor.active_task_count() == 0
         finally:
             await supervisor.close()
+            await supervisor.records.close()
     asyncio.run(scenario())
 
 
 
 
-def test_failed_terminal_persistence_remains_unfinished_without_raising_to_waiter(tmp_path, monkeypatch):
-    """终态事务永久失败时保留未完成事实，等待者只读取任务记录。"""
-    monkeypatch.setattr("app.agent.runtime.tasks.task_supervisor.TASK_SHUTDOWN_WAIT_SECONDS", 0.01)
+def test_failed_terminal_persistence_reports_save_failure_to_waiter(tmp_path, monkeypatch):
+    """终态事务永久失败时返回保存失败摘要并释放资源。"""
+
 
     async def scenario():
         """通过真实 SQLite 触发器制造持久化错误，不替换任务 DAO。"""
         path = str(tmp_path / "state.sqlite3")
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=path)
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(path)))
         runtime = PluginRuntime("game", "s", "r", _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue)
         release = asyncio.Event()
 
@@ -194,38 +206,40 @@ def test_failed_terminal_persistence_remains_unfinished_without_raising_to_waite
             with sqlite3.connect(path) as db:
                 db.execute("CREATE TRIGGER refuse_terminal BEFORE UPDATE ON task_records BEGIN SELECT RAISE(ABORT, 'terminal storage unavailable'); END")
             release.set()
-            assert (await runtime.wait_task(task_id, timeout_ms=100)).status == TaskStatus.RUNNING
+            assert (await runtime.wait_task(task_id, timeout_ms=1000)).status == TaskExecutionPhase.SAVE_FAILED
             await supervisor.close()
-            assert supervisor.active_task_count() == 1
+            await supervisor.records.close()
+            assert supervisor.active_task_count() == 0
         finally:
             release.set()
             await supervisor.close()
+            await supervisor.records.close()
     asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("fail_run, expected_status", [
     (True, TaskStatus.FAILED),
-    (False, TaskStatus.STOPPED),
+    (False, TaskStatus.COMPLETED),
 ])
 def test_shutdown_cleanup_cancellation_preserves_task_outcome(tmp_path, monkeypatch, fail_run, expected_status):
-    """关闭期间取消清理等待时，保留业务失败，并沿用成功任务的停止规则。
+    """关闭期间等待资源清理时，保留已经保存的成功或失败结果。
 
     Args:
         tmp_path (Path): Pytest 提供的隔离数据库目录。
-        monkeypatch (pytest.MonkeyPatch): 仅在本用例中缩短关闭等待时间。
+        monkeypatch (pytest.MonkeyPatch): Pytest 提供的测试补丁工具。
         fail_run (bool): 本次业务执行是否抛出异常。
         expected_status (TaskStatus): 清理完成后应保存和通知的任务状态。
     """
-    monkeypatch.setattr("app.agent.runtime.tasks.task_supervisor.TASK_SHUTDOWN_WAIT_SECONDS", 0)
+
 
     async def scenario() -> None:
         """等待任务进入清理后关闭 Supervisor，再重新读取任务记录和 Inbox。"""
         database = str(tmp_path / "state.sqlite3")
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=database)
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(database)))
         runtime = PluginRuntime("game", "s", "r", _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue)
         cleaning, cleaned = asyncio.Event(), asyncio.Event()
         inspector = None
-        inbox = SessionStateManager("s", database)
+        inbox = SessionStateManager("s", SqliteFactory(database))
 
         class OutcomeTask(BaseTask):
             """按用例完成或报告业务失败，并在关闭期间完成资源清理。"""
@@ -262,8 +276,10 @@ def test_shutdown_cleanup_cancellation_preserves_task_outcome(tmp_path, monkeypa
             assert supervisor.active_task_count() == 0
 
             # 2. 重新打开持久记录，检查关闭期间的取消处理后仍保留实际业务结果。
-            inspector = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=database)
-            record = await inspector.get_task_record(task_id)
+            inspector_settings = configured_settings()
+            inspector_mutations = SettingsMutationCoordinator()
+            inspector = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(database)))
+            record = await inspector.get_task_snapshot(task_id)
             assert record.status == expected_status
             assert record.error == ("业务执行失败" if fail_run else None)
             assert record.result == (None if fail_run else "业务结果")
@@ -276,19 +292,21 @@ def test_shutdown_cleanup_cancellation_preserves_task_outcome(tmp_path, monkeypa
             assert notifications[0].payload["result"] == (record.result or "")
         finally:
             await supervisor.close()
+            await supervisor.records.close()
             if inspector is not None:
                 await inspector.close()
+                await inspector.records.close()
             await inbox.close()
 
     asyncio.run(scenario())
 
 
 def test_task_result_is_saved_after_cleanup_and_silent_task_has_no_notice(tmp_path):
-    """静默任务完成清理后保存结果，查询与等待按插件来源过滤。"""
+    """静默任务保存结果且通知为空，查询与等待按插件来源过滤。"""
     async def scenario():
         """使用真实队列与临时数据库提交一次任务。"""
         queue = asyncio.Queue()
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=queue, db_path=str(tmp_path / "state.sqlite3"))
+        supervisor = TaskSupervisor(runtime_queue=queue, records=TaskRecordDao(SqliteFactory(str(tmp_path / "state.sqlite3"))))
         runtime = PluginRuntime("game", "s", "r", _supervisor=supervisor, _runtime_queue=queue)
         other = PluginRuntime("other", "s", "r", _supervisor=supervisor, _runtime_queue=queue)
         steps = []
@@ -314,13 +332,14 @@ def test_task_result_is_saved_after_cleanup_and_silent_task_has_no_notice(tmp_pa
             assert await other.get_task(task_id) is None
             assert await other.wait_task(task_id, timeout_ms=0) is None
             assert await runtime.wait_task("missing", timeout_ms=0) is None
-            manager = SessionStateManager("s", str(tmp_path / "state.sqlite3"))
+            manager = SessionStateManager("s", SqliteFactory(str(tmp_path / "state.sqlite3")))
             try:
                 assert await manager.read_task_terminals() == ()
             finally:
                 await manager.close()
         finally:
             await supervisor.close()
+            await supervisor.records.close()
     asyncio.run(scenario())
 
 
@@ -337,7 +356,9 @@ def test_plugin_stop_keeps_activation_and_late_control_does_not_stop_new_turn(tm
         """阻塞真实 Agent 的模型等待，通过公开事件和输入查询观察控制效果。"""
         path = str(tmp_path / "state.sqlite3")
         queue = asyncio.Queue()
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=queue, db_path=path)
+        supervisor_settings = configured_settings()
+        supervisor_mutations = SettingsMutationCoordinator()
+        supervisor = TaskSupervisor(runtime_queue=queue, records=TaskRecordDao(SqliteFactory(path)))
         first_call, second_call, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
         calls = []
 
@@ -353,15 +374,15 @@ def test_plugin_stop_keeps_activation_and_late_control_does_not_stop_new_turn(tm
             async def close(self):
                 """模型替身不持有外部资源。"""
 
-        scheduler = AgentRuntimeScheduler(runtime_queue=queue, task_supervisor=supervisor,
+        scheduler = build_test_scheduler(runtime_queue=queue, task_supervisor=supervisor,
             agent_factory=lambda session, manager: Agent(AgentConfig(session_id=session, model_name="test", api_key="test",
-                context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100)), llm_client=Model(), session_state_manager=manager),
-            session_state_manager_factory=lambda session: SessionStateManager(session, path))
+                context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100)), llm_client=Model(), session_state_manager=manager, sqlite_factory=SqliteFactory()),
+            session_state_manager_factory=lambda session: SessionStateManager(session, SqliteFactory(path)), chat_settings_dao=supervisor_settings, mutation_coordinator=supervisor_mutations)
 
         async def next_kind(kind):
             """从正式事件输出读取指定事件，跳过本场景不关心的其他事件。"""
             while True:
-                event = await asyncio.wait_for(scheduler.next_event(), 2)
+                event = await asyncio.wait_for(next_runtime_event(scheduler), 2)
                 if event.kind == kind:
                     return event
 
@@ -380,7 +401,7 @@ def test_plugin_stop_keeps_activation_and_late_control_does_not_stop_new_turn(tm
             await runtime.notify(name="battle_started", text="发现敌人")
             await asyncio.wait_for(queue.join(), 1)
             if user_stop:
-                manager = SessionStateManager("s", path)
+                manager = SessionStateManager("s", SqliteFactory(path))
                 try:
                     assert (await manager.read_activation_batch())[0].kind == "plugin_notification"
                     assert len(calls) == 1
@@ -395,18 +416,19 @@ def test_plugin_stop_keeps_activation_and_late_control_does_not_stop_new_turn(tm
             assert (await scheduler.snapshot("s")).payload["run_id"] == current
             assert (await scheduler.snapshot("s")).payload["phase"] == "running"
         finally:
-            await scheduler.close()
+            await close_test_runtime(scheduler)
             release.set()
             await supervisor.close()
+            await supervisor.records.close()
     asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("fail_cleanup", [False, True])
 def test_wait_timeout_and_cleanup_preserve_execution_and_result(tmp_path, fail_cleanup):
-    """等待超时与等待者取消不停止任务，清理结束后才暴露终态。"""
+    """等待超时与取消保留任务，保存的结果在资源关闭期间即可读取。"""
     async def scenario():
         """用执行和清理屏障检查公开查询、等待及活动任务数量。"""
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), db_path=str(tmp_path / "state.sqlite3"))
+        supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "state.sqlite3"))))
         runtime = PluginRuntime("game", "s", "r", _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue)
         run_started, release_run = asyncio.Event(), asyncio.Event()
         cleaning, release_cleanup = asyncio.Event(), asyncio.Event()
@@ -437,14 +459,14 @@ def test_wait_timeout_and_cleanup_preserve_execution_and_result(tmp_path, fail_c
                 await waiter
             release_run.set()
             await cleaning.wait()
-            assert supervisor.active_task_count() == 1
-            assert (await runtime.get_task(task_id)).status == TaskStatus.RUNNING
+            assert supervisor.active_task_count() == 0
+            assert (await runtime.wait_task(task_id, timeout_ms=1000)).status == TaskStatus.COMPLETED
             release_cleanup.set()
             record = await runtime.wait_task(task_id, timeout_ms=1000)
             assert record.result == "Hello, World!"
-            assert record.status == (TaskStatus.FAILED if fail_cleanup else TaskStatus.COMPLETED)
+            assert record.status == TaskStatus.COMPLETED
             assert supervisor.active_task_count() == 0
-            manager = SessionStateManager("s", str(tmp_path / "state.sqlite3"))
+            manager = SessionStateManager("s", SqliteFactory(str(tmp_path / "state.sqlite3")))
             try:
                 notices = await manager.read_task_terminals()
                 assert len(notices) == 1
@@ -455,6 +477,7 @@ def test_wait_timeout_and_cleanup_preserve_execution_and_result(tmp_path, fail_c
             release_run.set()
             release_cleanup.set()
             await supervisor.close()
+            await supervisor.records.close()
     asyncio.run(scenario())
 
 
@@ -472,7 +495,9 @@ def test_plugin_notification_is_persistent_and_reaches_real_model_encoding(tmp_p
         """未激活时只保存通知，真人输入到达后原子交付同批内容。"""
         path = str(tmp_path / "state.sqlite3")
         queue = asyncio.Queue()
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=queue, db_path=path)
+        supervisor_settings = configured_settings()
+        supervisor_mutations = SettingsMutationCoordinator()
+        supervisor = TaskSupervisor(runtime_queue=queue, records=TaskRecordDao(SqliteFactory(path)))
         runtime = PluginRuntime("game", "s", "old-run", _supervisor=supervisor, _runtime_queue=queue)
         captured, called = [], asyncio.Event()
 
@@ -494,11 +519,11 @@ def test_plugin_notification_is_persistent_and_reaches_real_model_encoding(tmp_p
             async def close(self):
                 """外部模型替身无资源需要释放。"""
 
-        scheduler = AgentRuntimeScheduler(runtime_queue=queue,
+        scheduler = build_test_scheduler(runtime_queue=queue,
             agent_factory=lambda session, manager: Agent(AgentConfig(session_id=session, model_name="test", api_key="test", context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100)),
-                llm_client=Model(), session_state_manager=manager),
-            task_supervisor=supervisor, session_state_manager_factory=lambda session: SessionStateManager(session, path))
-        manager = SessionStateManager("s", path)
+                llm_client=Model(), session_state_manager=manager, sqlite_factory=SqliteFactory()),
+            task_supervisor=supervisor, session_state_manager_factory=lambda session: SessionStateManager(session, SqliteFactory(path)), chat_settings_dao=supervisor_settings, mutation_coordinator=supervisor_mutations)
+        manager = SessionStateManager("s", SqliteFactory(path))
         try:
             await scheduler.start()
             task_id = await runtime.submit_task(GreetingTask(), name="greeting", title="问候", notify_agent=True)
@@ -506,7 +531,7 @@ def test_plugin_notification_is_persistent_and_reaches_real_model_encoding(tmp_p
             assert await runtime.notify(name="battle_started", text="发现两名敌人。") is None
             await asyncio.wait_for(queue.join(), 1)
             while True:
-                event = await asyncio.wait_for(scheduler.next_event(), 1)
+                event = await asyncio.wait_for(next_runtime_event(scheduler), 1)
                 if event.kind == "notice":
                     assert event.task_id == task_id
                     break
@@ -524,7 +549,8 @@ def test_plugin_notification_is_persistent_and_reaches_real_model_encoding(tmp_p
             assert "output_ref" not in model_result["content"] and "task_id" not in model_result["content"]
             assert state.long_term_memory_turn_counter == 1
         finally:
-            await scheduler.close()
+            await close_test_runtime(scheduler)
             await supervisor.close()
+            await supervisor.records.close()
             await manager.close()
     asyncio.run(scenario())

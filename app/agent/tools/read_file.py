@@ -93,7 +93,7 @@ async def read_file(
         if path.startswith(TASK_OUTPUT_URI_PREFIX):
             if context.runtime is None:
                 raise ValueError("任务日志读取器未就绪")
-            record = await context.runtime.get_task_record(path[len(TASK_OUTPUT_URI_PREFIX):])
+            record = await context.runtime.get_task_snapshot(path[len(TASK_OUTPUT_URI_PREFIX):])
             if record is None:
                 raise ValueError("任务不存在或不属于当前聊天")
             if record.output_path is None:

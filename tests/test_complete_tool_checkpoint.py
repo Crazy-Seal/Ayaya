@@ -1,4 +1,5 @@
 """验证工具图片立即参与 checkpoint 与历史原子保存。"""
+from app.crud.sqlite_factory import SqliteFactory
 
 import asyncio
 from pathlib import Path
@@ -13,7 +14,7 @@ def test_first_tool_image_is_durable_while_next_tool_remains_pending(tmp_path: P
     """第一项工具完成后可恢复其图片，后续未执行调用仍保持待处理。"""
     async def scenario() -> None:
         """使用隔离 SQLite 保存并重新载入未完成批次。"""
-        manager = SessionStateManager("session", str(tmp_path / "state.sqlite"))
+        manager = SessionStateManager("session", SqliteFactory(str(tmp_path / "state.sqlite")))
         state = AgentState.create_new("session")
         state.add_user_message("读取")
         a, b = ToolCall("a", "read_image", {}), ToolCall("b", "read_file", {})
@@ -26,7 +27,7 @@ def test_first_tool_image_is_durable_while_next_tool_remains_pending(tmp_path: P
             result = restored.messages[-1]
             assert isinstance(result, ToolMessage) and isinstance(result.content[1], ImageContent)
             assert "_deferred_tool_media" not in restored.to_checkpoint()
-            history = await ChatHistoryDao(db_path=tmp_path / "state.sqlite").list_chat_history_async("session")
+            history = await ChatHistoryDao(sqlite_factory=SqliteFactory(tmp_path / "state.sqlite")).list_chat_history_async("session")
             assert history[-1]["images"] and history[-1]["id"] == f"{result.message_id}:images"
         finally:
             await manager.close()

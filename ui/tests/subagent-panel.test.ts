@@ -41,7 +41,7 @@ async () => {
   const panel = new SubagentPanel(list as unknown as HTMLElement, refresh as unknown as HTMLButtonElement, undefined, {
     getSubagents: /** 返回本例实际可见的子身份。 */ async () => records,
     getSubagentDetails: /** 本例不打开详情。 */ async () => { throw new Error("不应读取详情"); },
-    submitInteractionCommand: /** 记录停止请求，返回已受理。 */ async (command) => { commands.push(command); return { accepted: true }; },
+    submitInteractionCommand: /** 记录停止请求，返回已受理。 */ async (command) => { commands.push(command); return { accepted: true, status: "accepted" as const }; },
   });
   await panel.render("parent");
   assert.match(list.textContent, /代码探索助手/);
@@ -107,7 +107,7 @@ for (const pollBeforeFailure of [false, true]) {
           attempts += 1;
           return attempts === 1 ? failedDetails : detail;
         },
-        submitInteractionCommand: /** 本例只读取详情。 */ async () => ({ accepted: true }),
+        submitInteractionCommand: /** 本例只读取详情。 */ async () => ({ accepted: true, status: "accepted" as const }),
       });
     try {
       await panel.render("parent");

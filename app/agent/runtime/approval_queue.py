@@ -24,5 +24,9 @@ class ApprovalQueue:
         """停止、引导或决定生效后移除匹配请求，保留其余请求的先后顺序。"""
         entries = self._pending.get(session_id)
         if entries is not None:
-            self._pending[session_id] = deque(entry for entry in entries
-                                            if entry[0] != context_id or (request_id is not None and entry[1] != request_id))
+            remaining = deque(entry for entry in entries
+                              if entry[0] != context_id or (request_id is not None and entry[1] != request_id))
+            if remaining:
+                self._pending[session_id] = remaining
+            else:
+                self._pending.pop(session_id, None)

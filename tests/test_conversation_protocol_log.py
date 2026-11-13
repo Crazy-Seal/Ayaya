@@ -1,3 +1,5 @@
+from app.agent.state.manager import RequiredSaveError
+from app.crud.sqlite_factory import SqliteFactory
 from tests.model_capture import result_parts
 import asyncio
 import json
@@ -31,7 +33,7 @@ def test_checkpoint_and_protocol_log_are_saved_atomically(tmp_path: Path) -> Non
     async def scenario() -> None:
         """由外层测试调用，完成“checkpoint 和协议日志在同一事务保存”的异步步骤。"""
         db_path = tmp_path / "agent.sqlite3"
-        manager = SessionStateManager("session", db_path=str(db_path))
+        manager = SessionStateManager("session", sqlite_factory=SqliteFactory(str(db_path)))
         try:
             state = AgentState.create_new("session")
             state.add_user_message("你好")
@@ -58,7 +60,7 @@ def test_checkpoint_and_protocol_log_are_saved_atomically(tmp_path: Path) -> Non
             await db.commit()
             failed = AgentState.from_checkpoint(state.to_checkpoint())
             failed.add_user_message("不应提交")
-            with pytest.raises(aiosqlite.IntegrityError, match="reject protocol"):
+            with pytest.raises(RequiredSaveError, match="reject protocol"):
                 await manager.save(failed, checkpoint_type="intermediate")
             count = (await db.execute_fetchall("SELECT COUNT(*) FROM checkpoints"))[0][0]
             assert count == 1
@@ -81,7 +83,7 @@ def test_history_dao_projects_visible_rows_before_pagination(tmp_path: Path) -> 
             list[dict]: 供外层用例断言使用的预设结果。
         """
         db_path = tmp_path / "agent.sqlite3"
-        manager = SessionStateManager("session", db_path=str(db_path))
+        manager = SessionStateManager("session", sqlite_factory=SqliteFactory(str(db_path)))
         try:
             state = AgentState.create_new("session")
             state.add_user_message("问题")
@@ -91,7 +93,7 @@ def test_history_dao_projects_visible_rows_before_pagination(tmp_path: Path) -> 
             state.add_tool_message("隐藏结果", "read_file", "call-1", compressible=True)
             state.add_assistant_message("回答")
             await manager.save(state, checkpoint_type="completed")
-            dao = ChatHistoryDao(db_path=db_path)
+            dao = ChatHistoryDao(sqlite_factory=SqliteFactory(db_path))
 
             async def reject_full_history_load(_session_id: str) -> list[dict]:
                 """全量历史读取被调用时主动失败，验证分页流程使用有限查询。
@@ -127,7 +129,7 @@ def test_history_dao_keeps_projection_order_across_small_query_chunks(tmp_path: 
             tuple[list[dict], list[dict]]: 供外层用例断言使用的预设结果。
         """
         db_path = tmp_path / "agent.sqlite3"
-        manager = SessionStateManager("session", db_path=str(db_path))
+        manager = SessionStateManager("session", sqlite_factory=SqliteFactory(str(db_path)))
         try:
             state = AgentState.create_new("session")
             state.add_user_message("question")
@@ -138,7 +140,7 @@ def test_history_dao_keeps_projection_order_across_small_query_chunks(tmp_path: 
             state.add_assistant_message("answer")
             await manager.save(state, checkpoint_type="completed")
 
-            dao = ChatHistoryDao(db_path=db_path)
+            dao = ChatHistoryDao(sqlite_factory=SqliteFactory(db_path))
             dao.READ_CHUNK_SIZE = 1
             return (
                 await dao.list_chat_history_async("session", start=1, limit=2),
@@ -162,7 +164,7 @@ def test_tool_image_is_archived_inside_its_tool_result(tmp_path: Path) -> None:
     """历史只保存完整工具结果，图片带文件引用并继承调用身份。"""
     async def scenario() -> None:
         """通过保存及历史接口验证图片归属，不产生独立媒体行。"""
-        manager=SessionStateManager("s",str(tmp_path/"state.sqlite"))
+        manager=SessionStateManager("s",SqliteFactory(str(tmp_path/"state.sqlite")))
         state=AgentState.create_new("s")
         call=ToolCall("c","read_image",{})
         state.record_assistant_step("",(call,))
@@ -172,7 +174,7 @@ def test_tool_image_is_archived_inside_its_tool_result(tmp_path: Path) -> None:
             restored=await manager.load()
             assert restored.messages[-1].message_id==result.message_id
             assert restored.messages[-1].content[-1].storage_ref.startswith("tool/")
-            history=await ChatHistoryDao(db_path=tmp_path/"state.sqlite").list_chat_history_async("s")
+            history=await ChatHistoryDao(sqlite_factory=SqliteFactory(tmp_path/"state.sqlite")).list_chat_history_async("s")
             assert history[-1]["id"]==f"{result.message_id}:images"
         finally:
             await manager.close()
@@ -184,14 +186,14 @@ def test_screenshot_compaction_preserves_original_history(tmp_path: Path) -> Non
     """checkpoint 图片被压缩后，历史仍保留原文件引用和图片气泡。"""
     async def scenario() -> None:
         """在隔离 SQLite 中比较压缩前后可见历史。"""
-        manager=SessionStateManager("s",str(tmp_path/"state.sqlite"))
+        manager=SessionStateManager("s",SqliteFactory(str(tmp_path/"state.sqlite")))
         state=AgentState.create_new("s")
         call=ToolCall("c","screenshot",{})
         state.record_assistant_step("",(call,))
         state.record_tool_result(call,(TextContent("完成"),ImageContent("data:image/png;base64,AA==",media_kind="screenshot")),compressible=True)
         try:
             await manager.save(state,checkpoint_type="completed")
-            dao=ChatHistoryDao(db_path=tmp_path/"state.sqlite")
+            dao=ChatHistoryDao(sqlite_factory=SqliteFactory(tmp_path/"state.sqlite"))
             before=await dao.list_chat_history_async("s")
             candidate,changed=ContextCompressionPolicy.compress_screenshots(state.messages,ttl_human_messages=0,max_screenshots=2)
             assert changed==1
@@ -219,7 +221,7 @@ def test_history_dao_raises_for_missing_message_type_but_keeps_legacy_notice(
             tuple[MessageContractError, list[dict]]: 供外层用例断言使用的预设结果。
         """
         db_path = tmp_path / "agent.sqlite3"
-        manager = SessionStateManager("session", db_path=str(db_path))
+        manager = SessionStateManager("session", sqlite_factory=SqliteFactory(str(db_path)))
         try:
             db = await manager._state_dao._get_db()
             await db.execute(
@@ -258,7 +260,7 @@ def test_history_dao_raises_for_missing_message_type_but_keeps_legacy_notice(
         finally:
             await manager.close()
 
-        dao = ChatHistoryDao(db_path=db_path)
+        dao = ChatHistoryDao(sqlite_factory=SqliteFactory(db_path))
         try:
             await dao.list_chat_history_async("broken")
         except MessageContractError as exc:

@@ -1,4 +1,5 @@
 """验证日记查询工具按日期范围筛选，并最多显示最早的五篇日记。"""
+from app.crud.sqlite_factory import SqliteFactory
 
 from datetime import date
 from pathlib import Path
@@ -10,7 +11,7 @@ from app.agent.memory import manager as memory_manager_module
 from app.agent.memory.manager import MemoryManager
 from app.agent.memory.memories.diary import DiaryMemory
 from app.agent.memory.store.diary_sqlite_store import DiarySqliteStore
-from app.agent.plugins.memory.tools.search_diary import search_diary
+from app.agent.plugins.memory.tools.search_diary import SearchDiaryTool
 from app.agent.state import AgentState
 from app.agent.tools.core.base import ToolContext
 
@@ -50,7 +51,7 @@ async def test_search_diary_returns_first_five_in_date_order(
         expected_days (list[int]): 工具应按此顺序显示的日记日期。
         hidden_count (int): 查询范围内超过显示上限的日记篇数。
     """
-    store = DiarySqliteStore(str(tmp_path / "diaries.sqlite3"))
+    store = DiarySqliteStore(str(tmp_path / "diaries.sqlite3"), sqlite_factory=SqliteFactory())
     for day in saved_days:
         await store.add("diary-query", date(2026, 1, day), f"日记正文 {day}")
     await store.add("other-session", date(2026, 1, 1), "其他会话的日记")
@@ -74,7 +75,7 @@ async def test_search_diary_returns_first_five_in_date_order(
         return manager
 
     monkeypatch.setattr(memory_manager_module, "get_memory_manager", get_manager)
-    result = await search_diary().execute(
+    result = await SearchDiaryTool(get_manager).execute(
         {
             "start": date(2026, 1, start_day).isoformat(),
             "end": date(2026, 1, end_day).isoformat(),

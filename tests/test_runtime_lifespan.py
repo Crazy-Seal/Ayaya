@@ -1,3 +1,9 @@
+from tests.runtime_support import runtime_hub, close_test_runtime
+from app.routes.agent import observe_runtime
+from tests.runtime_support import build_test_scheduler
+from app.crud.sqlite_factory import SqliteFactory
+from app.crud.task_record_dao import TaskRecordDao
+from app.services.settings_mutation import SettingsMutationCoordinator
 import asyncio
 from functools import lru_cache
 from tests.runtime_support import configured_settings
@@ -30,12 +36,14 @@ def test_shutdown_request_ends_existing_sse_before_lifespan_cleanup(tmp_path):
     async def scenario():
         """从真实 SSE 响应读取快照和结束，保持运行时消费者到最终清理。"""
         queue = asyncio.Queue()
-        subscriptions = ChannelSubscriptionService()
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=queue, db_path=str(tmp_path / "state.sqlite3"))
-        scheduler = AgentRuntimeScheduler(runtime_queue=queue, task_supervisor=supervisor,
+        subscriptions = ChannelSubscriptionService(sqlite_factory=SqliteFactory())
+        supervisor_settings = configured_settings()
+        supervisor_mutations = SettingsMutationCoordinator()
+        supervisor = TaskSupervisor(runtime_queue=queue, records=TaskRecordDao(SqliteFactory(str(tmp_path / "state.sqlite3"))))
+        scheduler = build_test_scheduler(runtime_queue=queue, task_supervisor=supervisor,
             subscriptions=subscriptions, agent_factory=lambda session, manager: None,
-            session_state_manager_factory=lambda session: SessionStateManager(session, str(tmp_path / "state.sqlite3")))
-        hub = InteractionEventHub(scheduler, subscriptions=subscriptions)
+            session_state_manager_factory=lambda session: SessionStateManager(session, SqliteFactory(str(tmp_path / "state.sqlite3"))), chat_settings_dao=supervisor_settings, mutation_coordinator=supervisor_mutations)
+        hub = runtime_hub(scheduler)
         application = FastAPI()
         application.state.runtime_scheduler = scheduler
         application.state.task_supervisor = supervisor
@@ -45,8 +53,8 @@ def test_shutdown_request_ends_existing_sse_before_lifespan_cleanup(tmp_path):
         stream = None
         try:
             await scheduler.start()
-            await hub.start()
-            response = await subscribe_events("s", "desktop", hub, subscriptions)
+            pass
+            response = await subscribe_events("s", "desktop", hub, subscriptions, scheduler)
             stream = response.body_iterator
             assert "session_snapshot" in await anext(stream)
             assert await main.internal_shutdown(Request({"type": "http", "app": application})) == {"shutting_down": True}
@@ -59,8 +67,9 @@ def test_shutdown_request_ends_existing_sse_before_lifespan_cleanup(tmp_path):
         finally:
             if stream is not None:
                 await stream.aclose()
-            await scheduler.close()
+            await close_test_runtime(scheduler)
             await supervisor.close()
+            await supervisor.records.close()
             await hub.close()
     asyncio.run(scenario())
 
@@ -132,13 +141,16 @@ def test_application_owns_resource_order_and_continues_cleanup(tmp_path, monkeyp
         """提供本次测试唯一桌面资源。"""
         return Desktop()
 
-    def create_scheduler(supervisor, queue):
-        """以真实临时存储装配消费任务。"""
-        return Scheduler(runtime_queue=queue, task_supervisor=supervisor,
-            agent_factory=lambda session, manager: None,
-            session_state_manager_factory=lambda session: SessionStateManager(session, str(tmp_path / "state.sqlite3")))
+    from app.agent.runtime import runtime_factory
+    monkeypatch.setattr(runtime_factory, "AgentRuntimeScheduler", Scheduler)
+    original_factory = main.create_runtime_scheduler
 
-    monkeypatch.setattr(main, "TaskSupervisor", lambda **kwargs: Supervisor(db_path=str(tmp_path / "state.sqlite3"), **kwargs))
+    def create_scheduler(supervisor, queue, **dependencies):
+        """使用实际应用装配函数，将生命周期观察限定在 Scheduler 子类。"""
+        return original_factory(supervisor, queue, **dependencies)
+
+    monkeypatch.setattr(main, "SqliteFactory", lambda: SqliteFactory(tmp_path / "state.sqlite3"))
+    monkeypatch.setattr(main, "TaskSupervisor", Supervisor)
     monkeypatch.setattr(main, "create_runtime_scheduler", create_scheduler)
     monkeypatch.setattr(main, "get_desktop_controller", desktop)
     monkeypatch.setattr(main, "get_mcp_connection_manager", lambda: MCP())

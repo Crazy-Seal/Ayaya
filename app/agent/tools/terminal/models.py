@@ -2,7 +2,8 @@
 
 from dataclasses import dataclass
 
-from app.schemas.runtime_types import TaskStatus
+from app.schemas.runtime_types import TaskStatus, TaskExecutionPhase
+from app.schemas.task_types import TaskSnapshotStatus
 
 
 @dataclass(frozen=True)
@@ -21,7 +22,7 @@ class TaskLaunchResult:
     task_id: str
     background: bool
     output: str
-    task_status: TaskStatus = TaskStatus.COMPLETED
+    task_status: TaskSnapshotStatus = TaskStatus.COMPLETED
     exit_code: int | None = None
     error: str | None = None
 
@@ -43,6 +44,7 @@ class TaskLaunchResult:
                 TaskStatus.FAILED: "任务执行失败",
                 TaskStatus.STOPPED: "任务已停止",
                 TaskStatus.ORPHANED: "任务已失去进程关联",
+                TaskExecutionPhase.SAVE_FAILED: "任务结果保存失败",
             }
             details = [labels[self.task_status],
                        f"退出码 {self.exit_code}" if self.exit_code is not None else "退出码未知"]

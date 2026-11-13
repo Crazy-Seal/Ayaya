@@ -1,3 +1,4 @@
+from app.crud.sqlite_factory import SqliteFactory
 import asyncio
 from contextlib import closing
 from dataclasses import replace
@@ -7,7 +8,7 @@ import sqlite3
 import pytest
 
 from app.agent.state import AgentState
-from app.agent.state.manager import SessionStateManager
+from app.agent.state.manager import SessionStateManager, RequiredSaveError
 from app.crud.task_record_dao import TaskRecordDao
 
 
@@ -22,8 +23,8 @@ def test_inbox_input_and_checkpoint_commit_as_one_delivery(tmp_path) -> None:
         """在隔离异步环境中安排并验证：输入交付与 checkpoint 在同一事务提交或回滚。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         db_path = str(tmp_path / "state.sqlite3")
-        manager = SessionStateManager("shared", db_path=db_path)
-        inbox = SessionStateManager("shared", db_path=db_path)
+        manager = SessionStateManager("shared", sqlite_factory=SqliteFactory(db_path))
+        inbox = SessionStateManager("shared", sqlite_factory=SqliteFactory(db_path))
         try:
             envelope = await inbox.submit_human("qq", "请截图")
             input_record = await inbox.read_next()
@@ -59,8 +60,8 @@ def test_later_cancelled_input_rolls_back_checkpoint_protocol_and_earlier_delive
     async def scenario() -> None:
         """通过公开读取和保存入口，检查部分交付失败后的持久状态。"""
         path = str(tmp_path / "state.sqlite3")
-        inbox = SessionStateManager("shared", path)
-        manager = SessionStateManager("shared", path)
+        inbox = SessionStateManager("shared", SqliteFactory(path))
+        manager = SessionStateManager("shared", SqliteFactory(path))
         try:
             # 1. 保存空的旧 checkpoint，然后读取两条尚未写入协议历史的真人输入。
             state = AgentState.create_new("shared")
@@ -117,8 +118,8 @@ def test_invalid_input_session_leaves_no_checkpoint(
     async def scenario() -> None:
         """分别注入非法读取元数据，核对失败和重试的公开结果。"""
         path = str(tmp_path / "state.sqlite3")
-        inbox = SessionStateManager("shared", path)
-        manager = SessionStateManager("shared", path)
+        inbox = SessionStateManager("shared", SqliteFactory(path))
+        manager = SessionStateManager("shared", SqliteFactory(path))
         try:
             # 1. 保留数据库中的有效读取，只破坏交给保存入口的快照。
             await inbox.submit_human("desktop", "合法输入")
@@ -155,8 +156,8 @@ def test_queued_release_failure_rolls_back_completed_checkpoint_and_delivery(tmp
     async def scenario() -> None:
         """使用真实 SQLite 触发器拒绝事务最后一步，核对整笔回滚。"""
         path = str(tmp_path / "state.sqlite3")
-        inbox = SessionStateManager("shared", path)
-        manager = SessionStateManager("shared", path)
+        inbox = SessionStateManager("shared", SqliteFactory(path))
+        manager = SessionStateManager("shared", SqliteFactory(path))
         try:
             # 1. 保留旧 checkpoint，安排本轮输入和等待本轮完成的下一条输入。
             state = AgentState.create_new("shared")
@@ -173,7 +174,7 @@ def test_queued_release_failure_rolls_back_completed_checkpoint_and_delivery(tmp
                 )
                 inspection.commit()
             # 2. 放行失败发生在交付更新之后，不能留下新 checkpoint 或已交付标记。
-            with pytest.raises(sqlite3.IntegrityError, match="reject release"):
+            with pytest.raises(RequiredSaveError, match="reject release") as failure:
                 await manager.save(
                     state, checkpoint_type="completed", inbox_inputs=(input_record,), release_queued=True,
                 )
@@ -219,10 +220,10 @@ def test_release_only_touches_pending_queued_humans_in_current_session(
     async def scenario() -> None:
         """安排不同会话、类别和交付阶段，并用触发器禁止更新不符合条件的记录。"""
         path = str(tmp_path / "state.sqlite3")
-        inbox = SessionStateManager("shared", path)
-        other = SessionStateManager("other", path)
-        manager = SessionStateManager("shared", path)
-        records = TaskRecordDao(path)
+        inbox = SessionStateManager("shared", SqliteFactory(path))
+        other = SessionStateManager("other", SqliteFactory(path))
+        manager = SessionStateManager("shared", SqliteFactory(path))
+        records = TaskRecordDao(SqliteFactory(path))
         try:
             # 1. 先形成已交付和已读取的排队输入，再加入仍在等待的各类输入。
             delivered = await inbox.submit_human("desktop", "已交付", queued=True)
@@ -287,15 +288,15 @@ def test_queued_input_survives_connection_reopen_and_task_terminal_does_not_rele
         """在隔离异步环境中安排并验证：同一进程重开 Inbox 连接时排队输入仍保留且不被任务通知放行。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         db_path = str(tmp_path / "state.sqlite3")
-        inbox = SessionStateManager("shared", db_path)
-        records = TaskRecordDao(db_path)
+        inbox = SessionStateManager("shared", SqliteFactory(db_path))
+        records = TaskRecordDao(SqliteFactory(db_path))
         try:
             queued = await inbox.submit_human("desktop", "稍后执行", queued=True)
             await records.insert_running("task-1", "shared", "任务", 1, str(tmp_path / "out"))
             assert await records.finish_once("task-1", "completed", 0)
             batch = await inbox.read_activation_batch()
             assert [item.kind for item in batch] == ["task_terminal"]
-            manager = SessionStateManager("shared", db_path)
+            manager = SessionStateManager("shared", SqliteFactory(db_path))
             try:
                 await manager.save(
                     AgentState.create_new("shared"), checkpoint_type="completed",
@@ -306,7 +307,7 @@ def test_queued_input_survives_connection_reopen_and_task_terminal_does_not_rele
         finally:
             await inbox.close()
             await records.close()
-        restarted = SessionStateManager("shared", db_path)
+        restarted = SessionStateManager("shared", SqliteFactory(db_path))
         try:
             assert await restarted.read_activation_batch() == ()
             assert await restarted.status(queued.id) == "pending"
@@ -330,8 +331,8 @@ def test_activation_batch_groups_later_task_terminal_before_human_projection(tmp
         """在隔离异步环境中安排并验证：同次激活的任务终态先于真人输入投影。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         db_path = str(tmp_path / "state.sqlite3")
-        inbox = SessionStateManager("shared", db_path)
-        records = TaskRecordDao(db_path)
+        inbox = SessionStateManager("shared", SqliteFactory(db_path))
+        records = TaskRecordDao(SqliteFactory(db_path))
         try:
             human = await inbox.submit_human("desktop", "用户指令")
             await records.insert_running("task-1", "shared", "任务", 1, str(tmp_path / "out"))
@@ -357,8 +358,8 @@ def test_completed_checkpoint_releases_queued_input_in_same_transaction(tmp_path
         """在隔离异步环境中安排并验证：正常完成 checkpoint 原子放行排队消息。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         db_path = str(tmp_path / "state.sqlite3")
-        inbox = SessionStateManager("shared", db_path)
-        manager = SessionStateManager("shared", db_path)
+        inbox = SessionStateManager("shared", SqliteFactory(db_path))
+        manager = SessionStateManager("shared", SqliteFactory(db_path))
         try:
             queued = await inbox.submit_human("desktop", "随后执行", queued=True)
             await manager.save(
@@ -368,7 +369,7 @@ def test_completed_checkpoint_releases_queued_input_in_same_transaction(tmp_path
         finally:
             await manager.close()
             await inbox.close()
-        restarted = SessionStateManager("shared", db_path)
+        restarted = SessionStateManager("shared", SqliteFactory(db_path))
         try:
             input_record = await restarted.read_activation_batch()
             assert len(input_record) == 1 and input_record[0].id == queued.id

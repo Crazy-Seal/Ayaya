@@ -1,4 +1,6 @@
 """验证日记存在与否均保留旧摘要，并将任务和聊天梗概交给下一次压缩。"""
+from tests.runtime_support import collect_agent_events
+from app.crud.sqlite_factory import SqliteFactory
 
 import asyncio
 import json
@@ -38,7 +40,7 @@ def test_diary_preserves_summary_and_tasks_during_model_preparation(
     async def scenario() -> None:
         """交付新输入，检查摘要模型输入、主模型输入和最终检查点。"""
         path = tmp_path / "state.sqlite3"
-        manager = SessionStateManager("session", str(path))
+        manager = SessionStateManager("session", SqliteFactory(str(path)))
         settings = ChatSettings(
             session_id="session", model_name="test", openai_api_key="test",
             openai_base_url="http://unused", temperature=0, system_prompt="测试",
@@ -49,8 +51,8 @@ def test_diary_preserves_summary_and_tasks_during_model_preparation(
         )
         memory = MemoryManager("session", MemoryConfig(
             sqlite_path=str(tmp_path / "diary.sqlite3"), timezone=ZoneInfo("Asia/Shanghai"),
-        ), settings)
-        memory.chat_history_store = ChatHistoryStore(path)
+        ), settings, sqlite_factory=SqliteFactory())
+        memory.chat_history_store = ChatHistoryStore(SqliteFactory(path))
         diary_date = date(2026, 8, 29)
         if has_diary:
             await memory.diary_memory.store.add("session", diary_date, "当天讨论了上下文整理。")
@@ -63,7 +65,7 @@ def test_diary_preserves_summary_and_tasks_during_model_preparation(
             """
 
         monkeypatch.setattr(memory, "prepare_diary", no_generation)
-        monkeypatch.setattr("app.agent.plugins.memory.memory.get_memory_manager", lambda _: memory)
+        monkeypatch.setattr(MemoryPlugin, "_manager_for", lambda _plugin, _session: memory)
         payload = {
             "active_tasks": [{
                 "topic": "整理上下文", "current_state": "已确认旧方案",
@@ -127,8 +129,8 @@ def test_diary_preserves_summary_and_tasks_during_model_preparation(
             AgentConfig(session_id="session", model_name="test", api_key="test",
                         context_strategy=settings.context_strategy),
             llm_client=Model(), session_state_manager=manager, chat_settings=settings,
-        )
-        agent.register_plugin(MemoryPlugin(enable_diary=True, enable_episodic=False, enable_semantic=False))
+         sqlite_factory=SqliteFactory())
+        agent.register_plugin(MemoryPlugin(enable_diary=True, enable_episodic=False, enable_semantic=False, sqlite_factory=SqliteFactory()))
         try:
             # 1. 保存真实原消息，再以一条摘要替换，使已有日记能对应到被压缩的历史。
             state = AgentState.create_new("session")
@@ -144,8 +146,10 @@ def test_diary_preserves_summary_and_tasks_during_model_preparation(
             await manager.save(state, checkpoint_type="completed")
 
             # 2. 新输入触发记忆召回和模型准备，旧摘要在两条执行路径中都保留。
-            async for _ in agent.run("继续"):
+            async def receive_agent_event(_):
+                """在原事件位置执行此场景的观察和控制。"""
                 pass
+            await agent.run('继续', emit=receive_agent_event)
             assert requested == [payload]
             assert summarized == ([payload] if compact else [])
             saved = await manager.load()

@@ -1,4 +1,5 @@
 """通过公开状态和输入接口验证子执行存储隔离及历史留档。"""
+from app.crud.sqlite_factory import SqliteFactory
 
 import asyncio
 import sqlite3
@@ -32,8 +33,8 @@ def test_a2a_reply_is_delivered_once_as_user_message(tmp_path: Path) -> None:
         """通过 DAO 和 Manager 的公开接口验证回复与普通命令的存储区别。"""
         path = str(tmp_path / "state.sqlite3")
         definition = SubagentDefinition("child", "parent", "代码助手", "检查代码", frozenset(), True, datetime.now(timezone.utc))
-        dao = SubagentDao(path)
-        manager = SessionStateManager("child", path, storage_scope=AgentStorageScope.SUBAGENT)
+        dao = SubagentDao(SqliteFactory(path))
+        manager = SessionStateManager("child", SqliteFactory(path), storage_scope=AgentStorageScope.SUBAGENT)
         adapter = OpenAIChatCompletionsAdapter(LLMConfig(model="test", api_key="test"))
         try:
             await dao.create_with_command(definition, "初始任务", "create")
@@ -73,8 +74,8 @@ def test_parent_and_child_state_and_inbox_are_isolated(tmp_path: Path) -> None:
     async def scenario() -> None:
         """用真实 SQLite 对父子 Manager 分别保存及重新加载。"""
         database = str(tmp_path / "state.sqlite3")
-        parent = SessionStateManager("same", database)
-        child = SessionStateManager("same", database, storage_scope=AgentStorageScope.SUBAGENT)
+        parent = SessionStateManager("same", SqliteFactory(database))
+        child = SessionStateManager("same", SqliteFactory(database), storage_scope=AgentStorageScope.SUBAGENT)
         try:
             first = await parent.submit_human("desktop", "父输入")
             second = await child.submit_human("desktop", "子输入")
@@ -109,8 +110,8 @@ def test_completed_child_history_can_be_reopened_from_database(tmp_path: Path, r
 
         async with SubagentHarness(Path(database), script, retain=retain) as harness:
             receipt = await harness.create("请保存这次任务")
-            await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, receipt.subagent_id), 3)
-            manager = SessionStateManager(receipt.subagent_id, database, storage_scope=AgentStorageScope.SUBAGENT)
+            await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, receipt.context_id), 3)
+            manager = SessionStateManager(receipt.context_id, SqliteFactory(database), storage_scope=AgentStorageScope.SUBAGENT)
             try:
                 state = await manager.load()
                 assert "请保存这次任务" in str(state.messages)
@@ -129,8 +130,8 @@ def test_wrong_inbox_scope_rolls_back_child_checkpoint(tmp_path: Path) -> None:
     async def scenario() -> None:
         """提交错误范围输入，观察两个公开持久接口均未发生变化。"""
         database = str(tmp_path / "state.sqlite3")
-        inbox = SessionInboxDao("same", database)
-        child = AgentStateDao("same", database, storage_scope=AgentStorageScope.SUBAGENT)
+        inbox = SessionInboxDao("same", SqliteFactory(database))
+        child = AgentStateDao("same", SqliteFactory(database), storage_scope=AgentStorageScope.SUBAGENT)
         try:
             item = await inbox.submit_human("desktop", "父输入")
             with pytest.raises(ValueError):
@@ -156,10 +157,10 @@ def test_retirement_keeps_history_and_blocks_late_task_inputs(tmp_path: Path, de
         """通过真实 DAO 和 Manager 观察状态、交互、结果及不同上下文的输入。"""
         path = str(tmp_path / "state.sqlite3")
         definition = SubagentDefinition("child", "parent", "助手", "测试", frozenset(), False, datetime.now(timezone.utc))
-        dao, tasks = SubagentDao(path), TaskRecordDao(path)
-        child = SessionStateManager("child", path, storage_scope=AgentStorageScope.SUBAGENT)
-        parent = SessionStateManager("child", path)
-        other = SessionStateManager("other", path, storage_scope=AgentStorageScope.SUBAGENT)
+        dao, tasks = SubagentDao(SqliteFactory(path)), TaskRecordDao(SqliteFactory(path))
+        child = SessionStateManager("child", SqliteFactory(path), storage_scope=AgentStorageScope.SUBAGENT)
+        parent = SessionStateManager("child", SqliteFactory(path))
+        other = SessionStateManager("other", SqliteFactory(path), storage_scope=AgentStorageScope.SUBAGENT)
         try:
             await dao.create_with_command(definition, "已交付任务", "create")
             initial = (await child.read_activation_batch())[0]
@@ -185,11 +186,15 @@ def test_retirement_keeps_history_and_blocks_late_task_inputs(tmp_path: Path, de
             assert record.retired_at is not None
             assert not record.context_available
             assert not await dao.list_available("parent")
-            await dao.retire("child")
-            assert (await dao.get("parent", "child")).retired_at == record.retired_at
             assert await child.status(initial.id) == InboxStatus.DELIVERED
             assert await child.status(pending.id) is None
-            assert not await child.read_activation_batch()
+            notices = await child.read_task_terminals()
+            if delivery == "after":
+                assert len(notices) == 1 and notices[0].payload["result"] == "后台结果"
+            elif delivery == "before":
+                assert not notices
+            await dao.retire("child")
+            assert (await dao.get("parent", "child")).retired_at == record.retired_at
             assert await parent.status(parent_input.id) == InboxStatus.PENDING
             assert await other.status(other_input.id) == InboxStatus.PENDING
             assert "已保存的最终回答" in str((await child.load()).messages)
@@ -213,8 +218,8 @@ def test_retirement_rolls_back_marker_when_pending_input_cannot_be_deleted(tmp_p
     async def scenario() -> None:
         """在测试库安装真实失败触发器，通过公开接口检查事务结果。"""
         path = str(tmp_path / "state.sqlite3")
-        dao = SubagentDao(path)
-        child = SessionStateManager("child", path, storage_scope=AgentStorageScope.SUBAGENT)
+        dao = SubagentDao(SqliteFactory(path))
+        child = SessionStateManager("child", SqliteFactory(path), storage_scope=AgentStorageScope.SUBAGENT)
         try:
             await dao.create_with_command(SubagentDefinition("child", "parent", "助手", "测试", frozenset(),
                 True, datetime.now(timezone.utc)), "保留待交付任务", "create")

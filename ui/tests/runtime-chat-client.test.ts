@@ -57,7 +57,7 @@ async () => {
      */
     submitInteractionCommand: async (command: { kind: string; origin_channel: string }) => {
       commands.push(command);
-      return { accepted: true, run_id: "r1" };
+      return { accepted: true, status: "accepted" as const, run_id: "r1" };
     },
     /**
      * 返回测试配置的任务列表，不查询真实存储。
@@ -290,7 +290,7 @@ async () => {
          * Returns:
          *     Promise<{ accepted: true; }>: 后端对本次用户命令的受理回执。
          */
-        submitInteractionCommand: async () => ({ accepted: true }),
+        submitInteractionCommand: async () => ({ accepted: true, status: "accepted" as const }),
         /**
          * 返回测试配置的任务列表，不查询真实存储。
          *
@@ -472,7 +472,7 @@ async () => {
          * Returns:
          *     Promise<{ accepted: true; }>: 后端对本次用户命令的受理回执。
          */
-        submitInteractionCommand: async () => ({ accepted: true }),
+        submitInteractionCommand: async () => ({ accepted: true, status: "accepted" as const }),
         /**
          * 返回测试配置的任务列表，不查询真实存储。
          *
@@ -695,7 +695,7 @@ async () => {
          */
         submitInteractionCommand: async (command) => {
           commandKind = command.kind;
-          return { accepted: true };
+          return { accepted: true, status: "accepted" as const };
         },
         /**
          * 返回测试配置的任务列表，不查询真实存储。
@@ -882,7 +882,7 @@ async () => {
            *     resolve ((value: void | PromiseLike<void>) => void): 准备成功或等待结束时完成 Promise 的函数。
            */
           (resolve) => setImmediate(resolve));
-          return { accepted: true };
+          return { accepted: true, status: "accepted" as const };
         },
         /**
          * 返回测试配置的任务列表，不查询真实存储。

@@ -1,4 +1,5 @@
 """情景记忆 - 存储事件性记忆，支持向量检索"""
+from app.crud.sqlite_factory import SqliteFactory
 
 import logging
 import uuid
@@ -108,6 +109,7 @@ class EpisodicMemory:
         session_id: str,
         config: MemoryConfig,
         chat_settings: ChatSettings,
+        *, sqlite_factory: SqliteFactory,
     ):
         """绑定会话并装配情景记忆提取模型、向量检索集合及 SQLite 正文存储；SQLite 保存完整记忆事实。
 
@@ -115,6 +117,7 @@ class EpisodicMemory:
             session_id (str): 当前操作所属的会话编号。
             config (MemoryConfig): 调用方提供的配置。
             chat_settings (ChatSettings): 当前会话的模型、角色及插件设置。
+            sqlite_factory (SqliteFactory): 应用装配提供的 SQLite 连接配置。
         """
         self.session_id = session_id
         self.config = config
@@ -136,7 +139,7 @@ class EpisodicMemory:
         self.sqlite_store = EpisodicSqliteStore(
             db_path=config.sqlite_path,
             embedding_model=config.embedding_model,
-        )
+         sqlite_factory=sqlite_factory)
 
         # 初始化 LLM
         self.llm = LLMClient(LLMConfig(

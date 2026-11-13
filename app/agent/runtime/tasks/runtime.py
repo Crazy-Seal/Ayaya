@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol, Self
+from typing import Protocol
 
 
 class TaskRuntime(Protocol):
@@ -15,19 +15,38 @@ class TaskRuntime(Protocol):
         task_id (str | None): 本次任务编号，提交前为空。
     """
 
-    session_id: str
-    run_id: str
-    plugin_name: str | None
-    task_id: str | None
-    subagent_id: str | None
+    @property
+    def session_id(self) -> str:
+        """读取固定来源父会话编号。"""
+        ...
 
-    def bind_task(self, task_id: str) -> Self:
+    @property
+    def run_id(self) -> str:
+        """读取固定来源轮次编号。"""
+        ...
+
+    @property
+    def plugin_name(self) -> str | None:
+        """读取插件来源，工具任务为空。"""
+        ...
+
+    @property
+    def task_id(self) -> str | None:
+        """读取本次任务编号。"""
+        ...
+
+    @property
+    def subagent_id(self) -> str | None:
+        """读取来源子上下文编号。"""
+        ...
+
+    def bind_task(self, task_id: str) -> TaskRuntime:
         """创建绑定本次编号的运行时，保留原调用来源。
 
         Args:
             task_id (str): Supervisor 登记的任务编号。
 
         Returns:
-            Self: 供具体任务执行使用的新运行时。
+            TaskRuntime: 供具体任务执行使用的新运行时。
         """
         ...

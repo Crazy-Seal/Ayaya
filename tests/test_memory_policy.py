@@ -1,3 +1,4 @@
+from app.crud.sqlite_factory import SqliteFactory
 from app.agent.state.messages import text_content
 import asyncio
 from datetime import date
@@ -73,7 +74,7 @@ def _capture_episodic_llm_config(monkeypatch, config: MemoryConfig):
     monkeypatch.setattr(episodic_module, "EpisodicChromaStore", FakeStore)
     monkeypatch.setattr(episodic_module, "EpisodicSqliteStore", FakeStore)
     monkeypatch.setattr(episodic_module, "LLMClient", FakeLLMClient)
-    episodic_module.EpisodicMemory("test-session", config, _chat_settings())
+    episodic_module.EpisodicMemory("test-session", config, _chat_settings(), sqlite_factory=SqliteFactory())
     return captured["config"]
 
 
@@ -192,7 +193,7 @@ def test_memory_manager_skips_disabled_memory_subsystems(monkeypatch) -> None:
         "test-session",
         MemoryConfig(),
         _chat_settings(enable_diary=False, enable_episodic=False, enable_semantic=False),
-    )
+    sqlite_factory=SqliteFactory())
 
     assert constructed == []
     assert manager.diary_memory is None
@@ -267,7 +268,7 @@ def test_memory_manager_uses_mem0_even_with_unrelated_backend_env(monkeypatch) -
         "test-session",
         MemoryConfig.from_env(),
         _chat_settings(enable_diary=False, enable_episodic=False, enable_semantic=True),
-    )
+    sqlite_factory=SqliteFactory())
 
     assert constructed == [("test-session", "test-session")]
     assert isinstance(manager.semantic_memory, FakeMem0SemanticMemory)
@@ -281,7 +282,7 @@ def test_check_diary_is_noop_when_diary_disabled() -> None:
             "test-session",
             MemoryConfig(),
             _chat_settings(enable_diary=False, enable_episodic=False, enable_semantic=False),
-        )
+        sqlite_factory=SqliteFactory())
         assert await manager.prepare_diary() is None
 
     asyncio.run(scenario())
@@ -350,7 +351,7 @@ def test_memory_manager_check_diary_uses_protocol_history_cutoff(monkeypatch) ->
         "test-session",
         MemoryConfig(),
         _chat_settings(enable_diary=True, enable_episodic=False, enable_semantic=False),
-    )
+    sqlite_factory=SqliteFactory())
     asyncio.run(manager.prepare_diary(max_history_id=17))
 
     assert checks and checks[0][1] == 17
@@ -409,7 +410,7 @@ def test_disabled_memory_subsystems_are_not_accessed(monkeypatch) -> None:
             "test-session",
             MemoryConfig(),
             _chat_settings(enable_diary=False, enable_episodic=False, enable_semantic=False),
-        )
+        sqlite_factory=SqliteFactory())
         add_result = await manager.add(
             [HumanMessage(content=text_content("近期对话"))],
             enable_episodic=False,

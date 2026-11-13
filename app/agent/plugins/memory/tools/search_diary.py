@@ -1,49 +1,64 @@
-"""由记忆插件提供日记查询，使用当前工具调用所属的会话。"""
+"""由记忆插件装配查询工具，检索当前调用上下文的已保存记忆。"""
 
+from collections.abc import Callable
 from datetime import date
-from typing import Annotated
-
-from app.agent.tools.core.base import ToolContext
-from app.agent.tools.core.decorator import tool
+from app.agent.memory.manager import MemoryManager
+from app.agent.tools.core.base import BaseTool, ToolContext, ToolResult
 
 
-@tool(
-    description=(
-        "搜索指定日期范围的日记。返回[start, end]范围内的日记内容(包括end那天的)，"
-        "按日期排序，最多显示前5篇日记，超出数量的会提示未显示的篇数。"
-    ),
-    compressible=True,
-)
-async def search_diary(
-    start: Annotated[str, "开始日期，格式 YYYY-MM-DD"],
-    end: Annotated[str, "结束日期，格式 YYYY-MM-DD"],
-    context: ToolContext,
-) -> str:
-    """搜索指定日期范围的日记。返回[start, end]范围内的日记内容(包括end那天的)，按日期排序，最多显示前5篇日记，超出数量的会提示未显示的篇数。
+class SearchDiaryTool(BaseTool):
+    """使用所属记忆插件绑定的管理器查询本会话记忆。"""
 
-    Args:
-        start (str): 开始日期，格式 YYYY-MM-DD
-        end (str): 结束日期，格式 YYYY-MM-DD
-        context (ToolContext): 执行管道提供的工具运行上下文。
+    name = 'search_diary'
+    description = '搜索指定日期范围的日记。返回[start, end]范围内的日记内容(包括end那天的)，按日期排序，最多显示前5篇日记，超出数量的会提示未显示的篇数。'
+    compressible = True
+    parameters_schema = {'type': 'object', 'properties': {'start': {'type': 'string', 'description': '开始日期，格式 YYYY-MM-DD'}, 'end': {'type': 'string', 'description': '结束日期，格式 YYYY-MM-DD'}}, 'required': ['start', 'end']}
 
-    Returns:
-        str: 指定日期范围的日记及未显示篇数、未找到日记的说明或查询错误。
-    """
-    session_id = context.session_id
-    try:
-        if session_id is None:
-            return "错误: 缺少会话id信息，无法查找日记。"
+    def __init__(self, manager_for: Callable[[str], MemoryManager]) -> None:
+        """绑定插件提供的查询入口。
 
-        from app.agent.memory.manager import get_memory_manager
+        Args:
+            manager_for (Callable[[str], MemoryManager]): 按实际会话取得记忆管理器。
+        """
+        self._manager_for = manager_for
 
-        memory_manager = get_memory_manager(session_id)
+    async def execute(self, args: dict, context: ToolContext) -> ToolResult:
+        """执行用户授权的记忆检索并返回可显示的结果。
 
-        start_date = date.fromisoformat(start)
-        end_date = date.fromisoformat(end)
+        Args:
+            args (dict): 模型提供的检索词或日期范围。
+            context (ToolContext): 提供本次调用的真实会话编号。
 
-        return await memory_manager.search_diary(start_date, end_date)
+        Returns:
+            ToolResult: 记忆检索结果或查询错误说明。
+        """
+        text = await self._search(args, context)
+        return ToolResult.success(text)
 
-    except ValueError as e:
-        return f"错误: {e}"
-    except Exception as e:
-        return f"错误: {e}"
+    async def _search(self, args: dict, context: ToolContext) -> str:
+        """查询所属会话的持久记忆，将检索异常转换为工具结果说明。
+
+        Args:
+            args (dict): 已通过工具参数校验的检索条件。
+            context (ToolContext): 当前工具的会话上下文。
+
+        Returns:
+            str: 格式化记忆内容或查询错误。
+        """
+        start, end = args.get("start", ""), args.get("end", "")
+        session_id = context.session_id
+        try:
+            if session_id is None:
+                return "错误: 缺少会话id信息，无法查找日记。"
+
+            memory_manager = self._manager_for(session_id)
+
+            start_date = date.fromisoformat(start)
+            end_date = date.fromisoformat(end)
+
+            return await memory_manager.search_diary(start_date, end_date)
+
+        except ValueError as e:
+            return f"错误: {e}"
+        except Exception as e:
+            return f"错误: {e}"

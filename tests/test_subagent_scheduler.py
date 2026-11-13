@@ -1,4 +1,12 @@
 """从公开命令、专用请求和持久详情验证 Scheduler 管理子 Agent。"""
+from tests.runtime_support import runtime_hub, close_test_runtime
+from app.routes.agent import observe_runtime
+from app.schemas.runtime_types import AgentRunOutcome, AgentRunOutcomeKind
+from tests.runtime_support import build_test_scheduler
+from app.crud.sqlite_factory import SqliteFactory
+
+from app.crud.task_record_dao import TaskRecordDao
+from app.services.settings_mutation import SettingsMutationCoordinator
 from tests.runtime_support import RuntimeAgentStub
 
 import asyncio
@@ -36,7 +44,9 @@ def test_child_final_report_and_context_retention(tmp_path: Path, retain: bool) 
         created = asyncio.Queue()
         release = asyncio.Event()
         requests: list[list] = []
-        supervisor = TaskSupervisor(chat_settings_dao=configured_settings(), runtime_queue=queue, db_path=path)
+        supervisor_settings = configured_settings()
+        supervisor_mutations = SettingsMutationCoordinator()
+        supervisor = TaskSupervisor(runtime_queue=queue, records=TaskRecordDao(SqliteFactory(path)))
 
         class ChildLLM:
             """用事件控制子模型，记录每次收到的真实业务消息。"""
@@ -64,23 +74,29 @@ def test_child_final_report_and_context_retention(tmp_path: Path, retain: bool) 
                 """
                 self.manager = manager
 
-            async def run(self, message, *, turn_control, inbox_inputs, **kwargs):
+            async def run(self, message, *, turn_control, inbox_inputs, emit, **kwargs):
                 """保存父真人输入并通过共享队列创建一个子 Agent。"""
-                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False})
+                outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
+                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False}))
                 state = await self.manager.load()
                 await self.manager.commit_human_input(state, message, None, inputs=inbox_inputs)
                 source = SubagentSource("parent", turn_control.run_id, "create-call")
                 reply = asyncio.get_running_loop().create_future()
                 await queue.put(CreateSubagentRequest(source, "测试子助手", "完成任务", "第一项任务", frozenset(), retain, reply))
                 await created.put((await reply, source))
-                yield AgentEvent(EventType.DONE, None)
+                await emit(AgentEvent(EventType.DONE, None))
 
-            async def run_runtime_inputs(self, *, inbox_inputs, **kwargs):
+                return outcome
+
+            async def run_runtime_inputs(self, *, inbox_inputs, emit, **kwargs):
                 """接收子完成报告，保持父不重新创建子 Agent。"""
-                yield AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False})
+                outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
+                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False}))
                 state = await self.manager.load()
                 await self.manager.commit_runtime_inputs(state, None, inbox_inputs)
-                yield AgentEvent(EventType.DONE, None)
+                await emit(AgentEvent(EventType.DONE, None))
+
+                return outcome
 
             async def close(self) -> None:
                 """父 worker 在执行结束后统一关闭借出的 Manager。"""
@@ -91,20 +107,20 @@ def test_child_final_report_and_context_retention(tmp_path: Path, retain: bool) 
                                     model_name="test", api_key="test",
                                     context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100)),
                          session_state_manager=manager, llm_client=ChildLLM(), enable_plugin_hooks=False,
-                         permission_session_id=definition.session_id, tool_whitelist=definition.tool_whitelist)
+                         permission_session_id=definition.session_id, tool_whitelist=definition.tool_whitelist, sqlite_factory=SqliteFactory())
 
-        scheduler = AgentRuntimeScheduler(runtime_queue=queue, agent_factory=lambda _session, manager: Parent(manager),
+        scheduler = build_test_scheduler(runtime_queue=queue, agent_factory=lambda _session, manager: Parent(manager),
             subagent_factory=child_factory, task_supervisor=supervisor,
-            session_state_manager_factory=lambda context: SessionStateManager(context, path))
+            session_state_manager_factory=lambda context: SessionStateManager(context, SqliteFactory(path)), chat_settings_dao=supervisor_settings, mutation_coordinator=supervisor_mutations)
         try:
             await scheduler.start()
             assert (await scheduler.submit(ChannelCommand("parent", "desktop", "human_turn", {"message": "开始"}))).accepted
             receipt, source = await asyncio.wait_for(created.get(), 3)
-            assert subagent_worker_running(scheduler, receipt.subagent_id)
+            assert subagent_worker_running(scheduler, receipt.context_id)
             assert len(await scheduler.snapshot_subagents("parent")) == 1
             release.set()
-            await asyncio.wait_for(wait_for_subagent_worker(scheduler, receipt.subagent_id), 3)
-            detail = await scheduler.get_subagent_details("parent", receipt.subagent_id)
+            await asyncio.wait_for(wait_for_subagent_worker(scheduler, receipt.context_id), 3)
+            detail = await scheduler.get_subagent_details("parent", receipt.context_id)
             assert detail["context_available"] == retain
             assert len(detail["results"]) == 1
             assert detail["results"][0]["result"] == "子任务已完成"
@@ -113,15 +129,16 @@ def test_child_final_report_and_context_retention(tmp_path: Path, retain: bool) 
         finally:
             release.set()
             try:
-                await scheduler.close()
+                await close_test_runtime(scheduler)
             finally:
                 await supervisor.close()
+                await supervisor.records.close()
     asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("retain", [False, True])
 def test_child_factory_failure_finishes_once_after_delivery_retries(tmp_path: Path, retain: bool) -> None:
-    """子装配重试耗尽后保存一次失败报告，保留型可在修正配置后再次明确受派。
+    """子装配失败后保存一次失败报告，保留型可在修正配置后再次明确受派。
 
     Args:
         tmp_path (Path): 隔离数据库目录。
@@ -148,9 +165,9 @@ def test_child_factory_failure_finishes_once_after_delivery_retries(tmp_path: Pa
 
         async with Harness(tmp_path / "state.sqlite3", script, retain=retain) as harness:
             receipt = await harness.create()
-            await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, receipt.subagent_id), 3)
-            assert attempts == 4
-            detail = await harness.scheduler.get_subagent_details("parent", receipt.subagent_id)
+            await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, receipt.context_id), 3)
+            assert attempts == 1
+            detail = await harness.scheduler.get_subagent_details("parent", receipt.context_id)
             assert len(detail["results"]) == 1
             assert detail["results"][0]["status"] == TaskStatus.FAILED
             assert detail["results"][0]["error"]
@@ -163,10 +180,10 @@ def test_child_factory_failure_finishes_once_after_delivery_retries(tmp_path: Pa
             if retain:
                 broken = False
                 next_task = await harness.scheduler.interact_subagent(
-                    "parent", receipt.subagent_id, SubagentAction.COMMAND, "配置已修正，开始下一项任务",
+                    "parent", receipt.context_id, SubagentAction.COMMAND, "配置已修正，开始下一项任务",
                 )
-                await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, next_task.subagent_id), 3)
-                detail = await harness.scheduler.get_subagent_details("parent", receipt.subagent_id)
-                assert attempts == 5
+                await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, next_task.context_id), 3)
+                detail = await harness.scheduler.get_subagent_details("parent", receipt.context_id)
+                assert attempts == 2
                 assert [item["status"] for item in detail["results"]] == [TaskStatus.COMPLETED, TaskStatus.FAILED]
     asyncio.run(scenario())

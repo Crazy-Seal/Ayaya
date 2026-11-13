@@ -108,6 +108,7 @@ def test_preparation_reuses_validated_config_and_mcp_declarations(tmp_path, monk
     from app import dependencies
     from app.agent.runtime import agent_factory
     from app.agent.core.tool_manager import ToolManager
+    from app.crud.sqlite_factory import SqliteFactory
 
     for name, value in {
         "get_chat_settings_dao": dao,
@@ -121,12 +122,13 @@ def test_preparation_reuses_validated_config_and_mcp_declarations(tmp_path, monk
     }.items():
         monkeypatch.setattr(dependencies, name, lambda value=value: value)
     monkeypatch.setattr(dependencies, "get_chat_settings_service", lambda **kwargs: service)
-    monkeypatch.setattr(dependencies, "AgentRuntimeScheduler", lambda **kwargs: SimpleNamespace(**kwargs))
-    monkeypatch.setattr(agent_factory, "Agent", lambda config, **kwargs: SimpleNamespace(
+    monkeypatch.setattr(dependencies, "assemble_runtime_scheduler", lambda **kwargs: SimpleNamespace(**kwargs))
+    monkeypatch.setattr(agent_factory, "Agent", lambda config, sqlite_factory, **kwargs: SimpleNamespace(
         config=config, tool_manager=ToolManager(), register_tool=lambda tool: None))
     validations.clear()
     resolutions.clear()
-    scheduler = dependencies.create_runtime_scheduler(object(), asyncio.Queue())
+    scheduler = dependencies.create_runtime_scheduler(object(), asyncio.Queue(),
+        sqlite_factory=SqliteFactory(tmp_path / "runtime.sqlite3"), hub=object(), subscriptions=object(), identity=object(), subagents=object())
     agent_config = scheduler.agent_factory(settings.session_id, object()).config
     assert validations == [" game-server "]
     assert len(resolutions) == 1

@@ -1,3 +1,4 @@
+from app.crud.sqlite_factory import SqliteFactory
 import asyncio
 import logging
 import os
@@ -21,13 +22,20 @@ from app.routes.tools import router as tools_router
 from app.routes.plugins import router as plugins_router
 from app.routes.mcp import router as mcp_router
 from app.routes.desktop import router as desktop_router
-from app.dependencies import get_mcp_connection_manager, create_runtime_scheduler, get_chat_settings_dao, get_settings_mutation_coordinator
+from app.dependencies import get_mcp_connection_manager, create_runtime_scheduler, get_chat_settings_dao
 from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
+from app.crud.task_record_dao import TaskRecordDao
+from app.crud.subagent_dao import SubagentDao
+from app.crud.chat_history_dao import ChatHistoryDao
+from app.schemas.agent_storage import AgentStorageScope
+from app.agent.state.manager import SessionStateManager
+from app.services.agent_identity_service import AgentIdentityService
+from app.services.channel_subscription_service import ChannelSubscriptionService
+from app.services.subagent_service import SubagentService
 from app.services.desktop_settings_service import DesktopSettingsService
 from app.schemas.runtime_types import RuntimePhase
 from app.interaction.interaction_event_hub import InteractionEventHub
-from app.dependencies import get_desktop_controller, get_desktop_settings_service, get_desktop_settings_dao
-from app.dependencies import get_channel_subscription_service
+from app.dependencies import get_desktop_controller, get_desktop_settings_dao
 from app.security.local_api import install_local_api_security, load_api_token
 from app.agent.tools.terminal.shell import detect_shell
 
@@ -52,7 +60,6 @@ async def begin_runtime_shutdown(application: FastAPI) -> None:
 
 def clear_runtime_dependencies() -> None:
     """共享对象关闭后释放其余配置缓存，运行时实例由 app.state 保存。"""
-    get_channel_subscription_service.cache_clear()
     get_desktop_controller.cache_clear()
     get_desktop_settings_dao.cache_clear()
 
@@ -70,32 +77,47 @@ async def lifespan(application: FastAPI):
     await get_plugin_service().discover(PROJECT_ROOT / "plugins")
     runtime_queue = asyncio.Queue()
     mcp_manager = get_mcp_connection_manager()
-    consumer_started = False
     async with AsyncExitStack() as cleanup:
         cleanup.push_async_callback(mcp_manager.close)
         cleanup.callback(clear_runtime_dependencies)
-        supervisor = TaskSupervisor(runtime_queue=runtime_queue, chat_settings_dao=get_chat_settings_dao(),
-                                    mutation_coordinator=get_settings_mutation_coordinator())
+        sqlite_factory = SqliteFactory()
+        application.state.sqlite_factory = sqlite_factory
+        subscriptions = ChannelSubscriptionService(sqlite_factory)
+        application.state.channel_subscriptions = subscriptions
+        application.state.chat_history_dao = ChatHistoryDao(sqlite_factory)
+        definitions = SubagentDao(sqlite_factory)
+        application.state.subagent_dao = definitions
+        cleanup.push_async_callback(definitions.close)
+        identity = AgentIdentityService(get_chat_settings_dao(), definitions)
+        application.state.agent_identity = identity
+        task_records = TaskRecordDao(sqlite_factory)
+        cleanup.push_async_callback(task_records.close)
+        supervisor = TaskSupervisor(runtime_queue=runtime_queue, records=task_records)
         application.state.task_supervisor = supervisor
-        scheduler = create_runtime_scheduler(supervisor, runtime_queue)
+        def child_manager(definition):
+            """启动整理借用独立子历史连接，由使用该连接的业务负责关闭。
+
+            Args:
+                definition (str): 已保存的子身份、所属父会话及保留政策。
+            """
+            return SessionStateManager(definition.subagent_id, sqlite_factory,
+                storage_scope=AgentStorageScope.SUBAGENT, parent_session_id=definition.session_id)
+
+        subagents = SubagentService(definitions, task_records, identity, manager_factory=child_manager)
+        application.state.subagent_service = subagents
+        hub = InteractionEventHub(subscriptions=subscriptions)
+        application.state.interaction_event_hub = hub
+        scheduler = create_runtime_scheduler(supervisor, runtime_queue, sqlite_factory=sqlite_factory,
+            hub=hub, subscriptions=subscriptions, identity=identity, subagents=subagents)
         application.state.runtime_scheduler = scheduler
         application.state.desktop_settings_service = DesktopSettingsService(get_desktop_settings_dao(),
             lambda: scheduler.phase not in {RuntimePhase.STOPPING, RuntimePhase.STOPPED})
         desktop = get_desktop_controller()
         application.state.desktop_controller = desktop
-        hub = InteractionEventHub(scheduler, subscriptions=get_channel_subscription_service())
-        application.state.interaction_event_hub = hub
-
-        async def finish_runtime_requests() -> None:
-            """所有生产者结束后，由应用发出唯一结束标记并等待积压请求处理。"""
-            if consumer_started:
-                await runtime_queue.put(None)
-                await runtime_queue.join()
 
         # 1. 逆序执行：封入口、等 worker、停任务、读完请求、关 Scheduler 和输出。
         cleanup.push_async_callback(hub.close)
         cleanup.push_async_callback(scheduler.close)
-        cleanup.push_async_callback(finish_runtime_requests)
         cleanup.push_async_callback(supervisor.close)
         cleanup.push_async_callback(desktop.close)
         cleanup.push_async_callback(scheduler.wait_for_workers)
@@ -105,10 +127,8 @@ async def lifespan(application: FastAPI):
         except RuntimeError:
             logging.getLogger(__name__).warning("默认 Shell 不可用，终端工具将返回环境错误")
         await scheduler.start()
-        consumer_started = True
         await supervisor.recover_orphaned()
         desktop.start()
-        await hub.start()
         preconnect_task = asyncio.create_task(mcp_manager.preconnect_enabled())
         try:
             yield
@@ -155,12 +175,12 @@ async def internal_ready():
 
 @app.get("/internal/tasks/active-summary")
 async def active_task_summary(request: Request):
-    """退出确认前查询全应用活动任务，包含静默任务和清理中的任务。
+    """退出确认前查询业务或结果保存尚未结束的任务，包含静默任务。
 
     Args:
         request (Request): 本次 HTTP 请求或绑定来源的插件请求。
     """
-    return {"active_count": request.app.state.task_supervisor.active_count()}
+    return {"active_count": request.app.state.task_supervisor.active_task_count()}
 
 
 @app.post("/internal/shutdown")

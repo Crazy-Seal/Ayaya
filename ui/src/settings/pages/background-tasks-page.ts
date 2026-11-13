@@ -1,5 +1,5 @@
 import type { BackgroundTaskRecord } from "../../types.js";
-import { CommandKind, DESKTOP_CHANNEL, TaskStatus } from "../../../shared-types.js";
+import { CommandKind, DESKTOP_CHANNEL, TaskStatus, TaskExecutionPhase } from "../../../shared-types.js";
 import { TASK_REFRESH_INTERVAL_MS } from "../../../runtime-constants.js";
 import { appendErrorMessage, type SettingsNotifier } from "../components/settings-toast.js";
 
@@ -166,9 +166,10 @@ export class BackgroundTasksPage {
       const row = document.createElement("div");
       row.className = "background-task-row";
       const title = document.createElement("span");
-      const labels: Record<TaskStatus, string> = {
+      const labels: Record<BackgroundTaskRecord["status"], string> = {
         [TaskStatus.RUNNING]: "运行中", [TaskStatus.COMPLETED]: "已完成", [TaskStatus.FAILED]: "失败",
         [TaskStatus.STOPPED]: "已停止", [TaskStatus.ORPHANED]: "已失联",
+        [TaskExecutionPhase.SAVE_FAILED]: "结果保存失败",
       };
       const seconds = Math.max(0, Math.floor((Date.parse(record.ended_at || new Date().toISOString())
         - Date.parse(record.created_at)) / 1000));
@@ -221,7 +222,7 @@ export class BackgroundTasksPage {
            *     receipt (CommandReceipt): 后端对任务操作的命令回执。
            */
           (receipt) => {
-            if (!receipt.accepted) throw new Error(receipt.reason || "无法停止任务");
+            if (!receipt.accepted) throw new Error(receipt.detail || "无法停止任务");
             void this.render(this.sessionId);
           }).catch(/**
            * 停止任务失败或被拒绝后在该任务标题显示原因。

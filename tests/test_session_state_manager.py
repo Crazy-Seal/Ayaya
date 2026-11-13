@@ -1,4 +1,6 @@
 """验证会话状态业务入口、恢复核验和借用对象的关闭责任。"""
+from tests.runtime_support import collect_agent_events
+from app.crud.sqlite_factory import SqliteFactory
 
 import asyncio
 
@@ -37,7 +39,7 @@ def test_authorization_requires_saved_first_decision_and_matching_request(tmp_pa
     """
     async def scenario():
         """通过 Manager 写入、核验并重新读取同一个审批决定。"""
-        manager = SessionStateManager("s", str(tmp_path / "state.sqlite3"))
+        manager = SessionStateManager("s", SqliteFactory(str(tmp_path / "state.sqlite3")))
         try:
             await save_authorization(manager)
             assert await manager.load_for_resume("approval") is None
@@ -84,18 +86,28 @@ def test_closing_agent_stream_waits_for_model_stream_cleanup(tmp_path) -> None:
                     released.set()
 
         agent = Agent(AgentConfig(session_id="s", model_name="probe", api_key="test",
-            context_strategy=ContextStrategyConfig()), db_path=str(tmp_path / "state.sqlite3"),
+            context_strategy=ContextStrategyConfig()), sqlite_factory=SqliteFactory(str(tmp_path / "state.sqlite3")),
             llm_client=StreamingModel())
-        stream = agent.run("开始")
+        shown = asyncio.Event()
+
+        async def receive(event):
+            """正文到达后保留执行等待，供测试取消一次真实 Agent 调用。"""
+            if event.type == EventType.TEXT_CHUNK:
+                shown.set()
+                await asyncio.Event().wait()
+
+        running = asyncio.create_task(agent.run("开始", emit=receive))
         try:
-            while (await anext(stream)).type != EventType.TEXT_CHUNK:
-                pass
-            await stream.aclose()
+            await asyncio.wait_for(shown.wait(), 2)
+            running.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await running
             assert released.is_set()
             await agent.session_state_manager.load()
             assert agent.session_state_manager.last_loaded_checkpoint_type == "intermediate"
         finally:
-            await stream.aclose()
+            running.cancel()
+            await asyncio.gather(running, return_exceptions=True)
             await agent.close()
 
     asyncio.run(scenario())
@@ -109,7 +121,7 @@ def test_steer_accepts_input_without_marking_it_delivered(tmp_path) -> None:
     """
     async def scenario():
         """检查引导决定和 Inbox 输入各自保持既有业务含义。"""
-        manager = SessionStateManager("s", str(tmp_path / "state.sqlite3"))
+        manager = SessionStateManager("s", SqliteFactory(str(tmp_path / "state.sqlite3")))
         try:
             await save_authorization(manager)
             decision = {"kind": "steer", "message": "改做另一件事"}
@@ -132,14 +144,14 @@ def test_agent_borrows_manager_and_stale_resume_does_not_start(tmp_path) -> None
     """
     async def scenario():
         """借用真实 Manager 完成一次执行并核对连接责任。"""
-        manager = SessionStateManager("s", str(tmp_path / "state.sqlite3"))
+        manager = SessionStateManager("s", SqliteFactory(str(tmp_path / "state.sqlite3")))
         model = ProbeModel()
         agent = Agent(AgentConfig(session_id="s", model_name="probe", api_key="test",
-            context_strategy=ContextStrategyConfig()), llm_client=model, session_state_manager=manager)
+            context_strategy=ContextStrategyConfig()), llm_client=model, session_state_manager=manager, sqlite_factory=SqliteFactory())
         try:
-            assert [event async for event in agent.resume("expired")] == []
+            assert [event for event in await collect_agent_events(agent.resume, 'expired')] == []
             assert model.calls == 0
-            events = [event async for event in agent.run("你好")]
+            events = [event for event in await collect_agent_events(agent.run, '你好')]
             assert events[0].type == EventType.RUN_STARTED
             assert events[1].type == EventType.HUMAN_INPUT_COMMITTED
             connection = manager._state_dao._db
@@ -162,7 +174,7 @@ def test_close_attempts_inbox_cleanup_when_state_close_fails(tmp_path, monkeypat
     """
     async def scenario():
         """关闭真实连接后报告状态关闭故障，验证 finally 中的输入清理。"""
-        manager = SessionStateManager("s", str(tmp_path / "state.sqlite3"))
+        manager = SessionStateManager("s", SqliteFactory(str(tmp_path / "state.sqlite3")))
         await manager.load()
         await manager.submit_human("desktop", "待处理")
         original = manager._state_dao.close
@@ -173,8 +185,7 @@ def test_close_attempts_inbox_cleanup_when_state_close_fails(tmp_path, monkeypat
             raise RuntimeError("close failure")
 
         monkeypatch.setattr(manager._state_dao, "close", fail_close)
-        with pytest.raises(RuntimeError, match="close failure"):
-            await manager.close()
+        await manager.close()
         assert manager._state_dao._db is None and manager._inbox_dao._db is None
 
     asyncio.run(scenario())

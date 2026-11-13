@@ -4,13 +4,125 @@ from enum import Enum, StrEnum
 from dataclasses import dataclass
 
 
+class CommandStatus(StrEnum):
+    """说明一次命令的处理结果，供调用者决定如何继续。"""
+
+    ACCEPTED = "accepted"
+    NOT_FOUND = "not_found"
+    CLOSED = "closed"
+    STALE = "stale"
+    TOO_LATE = "too_late"
+    INVALID = "invalid"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True, slots=True)
+class CommandReceipt:
+    """返回命令是否完成规定的受理操作，执行结果随后单独交付。
+
+    Attributes:
+        status (CommandStatus): 消息保存、决定保存或控制请求的处理结果。
+        context_id (str | None): 实际目标上下文，创建成功时为新子编号。
+        run_id (str | None): 本次操作关联的轮次。
+        detail (str | None): 拒绝或失败的具体说明。
+    """
+
+    status: CommandStatus
+    context_id: str | None = None
+    run_id: str | None = None
+    detail: str | None = None
+
+    @property
+    def accepted(self) -> bool:
+        """从命令处理结果推导是否受理。
+
+        Returns:
+            bool: 规定操作已完成时为 True。
+        """
+        return self.status == CommandStatus.ACCEPTED
+
+
+class ExecutionPhase(StrEnum):
+    """表示上下文执行、等待、最终保存及保存故障的互斥阶段。"""
+
+    IDLE = "idle"
+    RUNNING = "running"
+    WAITING = "waiting"
+    STOPPING = "stopping"
+    COMMITTING = "committing"
+    FAULTED = "faulted"
+
+
+class SessionState(StrEnum):
+    """表达本会话对后续输入的执行政策，执行进度由 AgentExecution 管理。"""
+
+    PAUSED = "paused"
+    ENABLED = "enabled"
+    CLOSED = "closed"
+
+
+class TaskExecutionPhase(StrEnum):
+    """表示一项普通任务从运行到结果保存结束的进展。"""
+
+    RUNNING = "running"
+    STOPPING = "stopping"
+    COMMITTING = "committing"
+    FINISHED = "finished"
+    SAVE_FAILED = "save_failed"
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalWait:
+    """标识已保存、等待用户决定的审批。
+
+    Attributes:
+        request_id (str): 审批记录编号，恢复时必须匹配。
+    """
+
+    request_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class ParentMessageWait:
+    """标识子执行已保存、等待父消息的请求。
+
+    Attributes:
+        request_id (str): 父消息等待记录编号。
+    """
+
+    request_id: str
+
+
+ExecutionWait = ApprovalWait | ParentMessageWait
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionSnapshot:
+    """提供执行状态的只读副本，供查询和重连展示。
+
+    Attributes:
+        context_id (str): 实际 Agent 上下文编号。
+        run_id (str | None): 当前轮次，空闲时为空。
+        phase (ExecutionPhase): 采样时的执行阶段。
+        wait (ExecutionWait | None): WAITING 对应的互斥等待材料。
+        error (str | None): FAULTED 对应的保存故障说明。
+    """
+
+    context_id: str
+    run_id: str | None
+    phase: ExecutionPhase
+    wait: ExecutionWait | None = None
+    error: str | None = None
+
+
 class AgentRunOutcomeKind(StrEnum):
-    """标记本次执行正常完成、被引导打断、被停止、暂停等待或失败，供调度流程决定后续操作。"""
+    """标记执行完成、引导、停止、等待、业务失败或必需保存失败。"""
     COMPLETED = "completed"
     STEERED = "steered"
     STOPPED = "stopped"
     INTERRUPTED = "interrupted"
     FAILED = "failed"
+    SAVE_FAILED = "save_failed"
 
 
 @dataclass(frozen=True)
@@ -18,15 +130,21 @@ class AgentRunOutcome:
     """交还本段 Agent 执行的正文或错误，由父子调度流程决定后续工作。
 
     Attributes:
-        kind (AgentRunOutcomeKind): 完成、引导、停止、暂停等待或失败。
+        kind (AgentRunOutcomeKind): 完成、引导、停止、等待、业务失败或保存失败。
         result (str): 已保存的执行结果正文，尚未产生正文时为空。
         final_message_id (str | None): 正常完成时最终助手消息的编号。
         error (str | None): 执行或装配失败的具体原因。
+        context_id (str | None): 执行归属的实际上下文编号。
+        run_id (str | None): 本段执行关联的轮次，审批恢复时沿用。
+        wait (ExecutionWait | None): 等待结果携带的已保存请求。
     """
     kind: AgentRunOutcomeKind
     result: str = ""
     final_message_id: str | None = None
     error: str | None = None
+    context_id: str | None = None
+    run_id: str | None = None
+    wait: ExecutionWait | None = None
 
 
 class CheckpointType(StrEnum):
@@ -165,6 +283,7 @@ class InteractionEventKind(str, Enum):
     ERROR = "error"
     SUBAGENT_STATUS = "subagent_status"
     SUBAGENT_INTERRUPT = "subagent_interrupt"
+    HISTORY_RESTORED = "history_restored"
 
 
 class InterruptKind(str, Enum):
@@ -249,9 +368,9 @@ class TaskStatus(str, Enum):
     """表示任务的持久状态，不与模型输入的汇总终态混用。
 
     Attributes:
-        RUNNING (TaskStatus): 执行、清理或终态保存尚未完成，协议值为 running。
+        RUNNING (TaskStatus): 业务执行或结果保存尚未结束，协议值为 running。
         COMPLETED (TaskStatus): 成功结束，协议值为 completed。
-        FAILED (TaskStatus): 执行或清理失败，协议值为 failed。
+        FAILED (TaskStatus): 业务执行失败，协议值为 failed。
         STOPPED (TaskStatus): 请求停止后完成收尾，协议值为 stopped。
         ORPHANED (TaskStatus): 重启后失去执行所有权，协议值为 orphaned。
     """

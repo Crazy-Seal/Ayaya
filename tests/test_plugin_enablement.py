@@ -1,3 +1,4 @@
+from app.crud.sqlite_factory import SqliteFactory
 """验证保存的插件开关能控制真实 Agent 的插件装配和钩子执行。"""
 
 import asyncio
@@ -86,7 +87,7 @@ def test_saved_plugin_switch_controls_registration_and_hooks(
 
     async def scenario() -> None:
         """使用生产工厂创建 Agent，观察真实注册和钩子分发。"""
-        agent = agent_factory.build_agent(reloaded)
+        agent = agent_factory.build_agent(reloaded, sqlite_factory=SqliteFactory())
         state = AgentState.create_new(reloaded.session_id)
         try:
             await agent.initialize()
@@ -118,7 +119,7 @@ def test_memory_plugin_can_be_assembled_without_extraction_budget(
 
     async def scenario() -> None:
         """通过生产工厂装配启用情景记忆和语义记忆的插件。"""
-        agent = agent_factory.build_agent(settings)
+        agent = agent_factory.build_agent(settings, sqlite_factory=SqliteFactory())
         try:
             await agent.initialize()
             assert agent.get_plugins() == ["memory"]

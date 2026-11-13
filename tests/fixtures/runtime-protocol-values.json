@@ -43,7 +43,8 @@
     "run_completed",
     "error",
     "subagent_status",
-    "subagent_interrupt"
+    "subagent_interrupt",
+    "history_restored"
   ],
   "InterruptKind": [
     "authorization_request",

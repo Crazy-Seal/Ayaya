@@ -137,8 +137,8 @@ flowchart TD
 | 调用 | 返回值 | 用途 |
 | --- | --- | --- |
 | `await runtime.submit_task(task, name=..., title=..., notify_agent=...)` | `str`，新任务的 `task_id` | 提交后台任务 |
-| `await runtime.get_task(task_id)` | `TaskRecord` 或 `None` | 查询当时的任务记录 |
-| `await runtime.wait_task(task_id, timeout_ms=...)` | `TaskRecord` 或 `None` | 等到终态或本次等待超时，返回当时的任务记录 |
+| `await runtime.get_task(task_id)` | `TaskSnapshot` 或 `None` | 查询当前任务进展、结果或保存故障 |
+| `await runtime.wait_task(task_id, timeout_ms=...)` | `TaskSnapshot` 或 `None` | 等到结果保存结束或本次等待超时，返回任务摘要 |
 | `await runtime.stop_task(task_id)` | `None` | 投递停止后台任务的请求 |
 | `await runtime.notify(name=..., text=...)` | `None` | 投递给 Agent 的插件通知请求 |
 | `await runtime.stop_turn()` | `None` | 投递停止来源轮次的请求 |
@@ -586,7 +586,7 @@ plugin_data["model_request_count"] = plugin_data.get("model_request_count", 0) +
 
 任务继承 `app.agent.runtime.tasks.base.BaseTask`，实现 `async run(runtime) -> str | None`。返回字符串用于记录最终结果，返回 `None` 表示本次工作没有结果正文。父类提供默认空的 `async cleanup() -> None`，需要释放资源时覆盖；生命周期流程仍由 Supervisor 负责。
 
-具体任务的 `run()` 就是受管工作的执行入口，在其中直接 `await` 业务操作。插件钩子构造具体任务后交给 runtime 提交；Supervisor 创建并持有执行协程，再统一调用清理、保存结果和终态。例如，记忆插件在 `execute()` 中直接提交 `DiaryTask` 和 `LongTermMemoryTask`，两个任务的 `run()` 分别等待日记整理和长期记忆提取。
+具体任务的 `run()` 就是受管工作的执行入口，在其中直接 `await` 业务操作。插件钩子构造具体任务后交给 runtime 提交；Supervisor 创建并持有执行协程，保存结果及配置要求的通知，交付结果后调用资源清理。例如，记忆插件在 `execute()` 中直接提交 `DiaryTask` 和 `LongTermMemoryTask`，两个任务的 `run()` 分别等待日记整理和长期记忆提取。
 
 下面的任务接收一份字符串，返回输入规模：
 
@@ -619,7 +619,7 @@ class TextStatsTask(BaseTask):
 
 `PluginRuntime` 是 `app.agent.plugins.runtime` 中的真实类型，字符串注解方便单独阅读任务定义。真实业务可以在 `run()` 中等待网络请求、处理文件或执行自己的异步流程。
 
-Supervisor 调用 `run()`，结束时调用任务提供的 `cleanup()`，保存结果和终态。执行或清理抛出的普通异常记录为失败，已取得的结果和错误摘要一并保留，日志记录错误详情。终态保存失败时记录错误并保留未完成状态，等待者读取已保存记录，框架不进行无限重试。同步线程仍在执行时的停止情况见 4.6 节。
+Supervisor 调用 `run()`，结束时固定业务结果，由 DAO 同事务保存终态和通知，随后完成结果等待并调用 `cleanup()`。业务异常保存为失败；资源关闭错误记日志，已经保存的业务结果保持原结果。SQLite 占用错误首次后最多重试三次，总预算为 5 秒；其他存储错误直接上报。保存失败时摘要的 `phase` 和 `status` 为 `save_failed`，`save_error` 提供原因，结果观察者结束等待，具体资源继续关闭。同步线程仍在执行时的停止情况见 4.6 节。
 
 ### 4.2 在一轮开始时提交任务
 
@@ -658,11 +658,11 @@ if context.hook == PluginHook.ON_INVOKE:
 
 ### 4.3 后台任务的结束方式
 
-后台任务跨回答轮次独立运行，直到任务自行完成、收到显式停止请求，或所属身份废弃及应用退出时被清理。主 Agent 和保留型子 Agent 的正常完成、停止、引导、失败及审批等待均保留正在运行的后台任务；一次性子 Agent 委派结束、子身份被销毁或父会话配置删除时，框架停止并清理对应身份所属的后台任务。
+后台任务跨回答轮次独立运行，直到任务自行完成或收到显式停止请求。主 Agent 和保留型子 Agent 的正常完成、停止、引导、失败及审批等待均保留正在运行的后台任务；一次性子 Agent 工作结束、子身份被销毁或父会话配置删除时，框架停止当时已登记的所属任务。关闭身份后迟到登记的普通任务仍可完成；应用退出封闭 Supervisor 后拒绝新的任务登记。
 
 `runtime.run_id` 记录任务的来源轮次，并用于校验停止或引导该轮次的控制请求；轮次结束后，后台任务仍可继续运行。任务提交参数见第 4.2 节。
 
-任务通过 `cleanup()` 释放自己持有的资源，Supervisor 负责等待执行结束、调用清理及保存终态。`notify_agent` 单独控制终态是否写入结果通知，静默任务同样由 Supervisor 持有和清理。
+任务通过 `cleanup()` 释放自己持有的资源，Supervisor 负责执行、保存并交付结果，随后调用一次清理。具体任务在自己的清理方法内限制总预算和尝试次数，首次后最多重试三次。输出落盘和退出码属于 `run()` 的业务工作。`notify_agent` 单独控制终态是否写入结果通知，静默任务同样由 Supervisor 持有和清理。
 
 ### 4.4 查询、等待和停止
 
@@ -678,9 +678,9 @@ else:
     result_text = record.result
 ```
 
-`TaskRecord` 从 `app.schemas.task_types` 导入，任务记录包含 `name`、`title`、`result`、`error`、来源及通知配置。非终端任务的命令、PID 和输出路径为空。
+`TaskSnapshot` 从 `app.schemas.task_types` 导入，包含 `name`、`title`、`result`、`error`、来源、通知配置，以及 `phase` 和 `save_error`。持久记录仍为 `TaskRecord`。非终端任务的命令、PID 和输出路径为空。
 
-上例使用本插件刚提交得到的编号。这里 `PluginRuntime.get_task()` 返回的是持久任务记录；工具的 `ToolRuntime.get_task()` 和框架的 `Supervisor.get_task()` 返回尚未释放的具体任务对象，二者用途不同。插件通过记录读取状态和结果。
+上例使用本插件刚提交得到的编号。`PluginRuntime.get_task()` 返回当前任务摘要；工具的 `ToolRuntime.get_task()` 和框架的 `Supervisor.get_task()` 返回尚未释放的具体任务对象。工具通过 `get_task_snapshot()` 查询摘要。插件通过摘要读取状态和结果。
 
 - `get_task()` 返回当时的任务记录，只查询同一会话内由本插件创建的任务；未知或超出该范围的任务返回 `None`。
 - `wait_task()` 未找到可访问记录时返回 None；否则等待终态或本次预算结束，超时返回仍在运行的记录，任务继续运行。
@@ -692,7 +692,7 @@ else:
 
 ### 4.5 记录结果与通知 Agent
 
-`notify_agent=True` 时，Supervisor 保存终态和唯一的 Inbox 结果通知。Agent 之后收到 `TaskResultMessage`，包含任务标题、状态及结果正文；执行或清理失败时附上错误摘要。`run()` 返回的字符串先存入 `TaskRecord.result`，再随 Inbox 通知转换成任务消息，普通任务不会被自动总结成另一段正文。相邻任务通知可能合并，组内保留各任务的编号、状态和结果。
+`notify_agent=True` 时，Supervisor 保存终态和唯一的 Inbox 结果通知。Agent 之后收到 `TaskResultMessage`，包含任务标题、状态及结果正文；业务失败时附上错误摘要。`run()` 返回的字符串先存入 `TaskRecord.result`，再随 Inbox 通知转换成任务消息。相邻任务通知可能合并，组内保留各任务的编号、状态和结果。普通任务登记和保存通知只记录固定来源，接收身份已经关闭时仍可完成；消费者按当前会话政策决定是否处理通知。
 
 因此，`run()` 应返回需要记录、并按配置告知 Agent 的业务结果；运行进度和调试信息使用日志。`cleanup()` 返回 `None`，只负责释放资源。当前 OpenAI 模型转换把任务消息作为 `role="user"`、`name="runtime_task_result"` 发送，正文带任务结束状态和标题；整条任务记录及存储 JSON 留在持久化层。
 
@@ -704,7 +704,7 @@ else:
 
 异步任务响应停止后，由 Supervisor 调用其清理实现。文件、网络连接和进程等资源按各自功能释放。独立任务所需的资料和资源由任务或应用对象持有，任务可以比创建它的插件实例活得更久。
 
-异步业务可以响应取消并进入清理；同步线程在取消外层等待后仍可能继续运行。当前记忆模块在 Mem0、Chroma 等实际同步线程调用处使用 `complete_owned_work()`，等待线程操作完成后再传播取消，包括关闭期间的重复取消；具体任务的 `run()` 直接等待业务方法。执行、清理或终态保存尚未完成时仍计入活动任务。应用进程被强制结束时，本轮提取可能不完整，重启后保留已保存结果并将未结束记录标记为 orphaned。
+异步业务可以响应取消并完成结果保存；同步线程在取消外层等待后仍可能继续运行。当前记忆模块在 Mem0、Chroma 等实际同步线程调用处使用 `complete_owned_work()`，等待线程操作完成后再传播取消，包括关闭期间的重复取消；具体任务的 `run()` 直接等待业务方法。业务执行或结果保存尚未结束时计入活动任务，结果已保存或保存失败后的资源关闭由退出流程继续等待。应用进程被强制结束时，本轮提取可能不完整，重启后保留已保存结果并将旧 running 标记为 orphaned。
 
 ## 5 消息投递
 
@@ -1075,7 +1075,7 @@ async def execute(self, context: HookContext) -> None:  # 框架调用的插件�
 | 后台任务 | `await runtime.get_task(task_id)` | 查询本插件在当前会话内创建的任务，找不到时返回 `None` | [第4章](#4-后台任务) |
 | 后台任务 | `await runtime.wait_task(task_id, timeout_ms=...)` | 有限等待任务结束，超时返回当时记录，任务继续执行 | [第4章](#4-后台任务) |
 | 后台任务 | `await runtime.stop_task(task_id)` | 请求 Supervisor 停止任务并安排清理 | [第4章](#4-后台任务) |
-| 后台任务 | `TaskRecord`、`TaskStatus` | 读取任务状态、结果和错误 | [第4章](#4-后台任务) |
+| 后台任务 | `TaskSnapshot`、`TaskExecutionPhase` | 读取任务进展、结果和保存错误 | [第4章](#4-后台任务) |
 | 消息投递 | `await runtime.notify(name=..., text=...)` | 提交保留在会话中的插件通知 | [第5章](#5-消息投递) |
 | 消息投递 | `PluginNotificationMessage` | 表示持久插件通知，保留插件来源、通知名称和正文 | [第5章](#5-消息投递) |
 | 消息投递 | `TaskResultMessage` | 表示后台任务结束后的结果通知 | [第4章](#4-后台任务)、[第5章](#5-消息投递) |
@@ -1132,8 +1132,10 @@ async def execute(self, context: HookContext) -> None:  # 框架调用的插件�
 
 ## 11 退出与数据库升级
 
-退出前，界面最多等待 2 秒查询全应用仍在执行、清理及保存终态的任务，包括静默任务和其他会话的任务。有活动任务或查询失败时，界面会请求用户确认。
+退出前，界面最多等待 2 秒查询全应用业务或结果保存尚未结束的任务，包括静默任务和其他会话的任务。有活动任务或查询失败时，界面会请求用户确认。已经交付结果的资源关闭继续由应用退出流程等待。
 
 用户确认退出后，Electron 从发起后端关闭请求开始，最多等待 5 秒供关闭接口响应和 Python 进程退出共同使用；到期仍存活时尝试强制结束后端进程树。插件任务应在 `cleanup()` 中释放自己持有的资源，遵循第4章的取消和收尾规则。
+
+2026-11-12 验收边界：关键 SQLite 保存会等待已开始的提交／回滚取得实际结果，允许超过保存重试预算；资源关闭仍有限等待。Electron 上述 5 秒强制终止与关键事务延长退出的已确认要求存在政策冲突，尚待决定，见[整体验收记录](../.scratch/runtime-architecture-redesign/acceptance-result.md)。当前模块职责见[运行模块说明](runtime-architecture.md)。
 
 已有数据库的通用任务及插件通知表通过 [migrate_plugin_runtime.py](../scripts/migrate_plugin_runtime.py) 离线升级。关闭应用后，使用 `conda run -n ayaya python -B scripts/migrate_plugin_runtime.py --db-path <数据库文件路径>` 显式指定文件。默认只检查待升级内容，添加 `--apply` 才写入；数据库升级由应用维护者完成。

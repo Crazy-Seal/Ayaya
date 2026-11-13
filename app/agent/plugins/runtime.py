@@ -6,7 +6,7 @@ import asyncio
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Callable
 
-from app.schemas.task_types import PluginRequest, PluginRequestKind, TaskRecord
+from app.schemas.task_types import PluginRequest, PluginRequestKind, TaskSnapshot
 from app.agent.runtime.requests import RuntimeRequest
 
 if TYPE_CHECKING:
@@ -62,19 +62,20 @@ class PluginRuntime:
         return await self._supervisor.submit(task, runtime=self, name=name, title=title,
                                             notify_agent=notify_agent)
 
-    async def get_task(self, task_id: str) -> TaskRecord | None:
+    async def get_task(self, task_id: str) -> TaskSnapshot | None:
         """查询本插件在当前会话中的任务，不存在或超出范围时返回 None。
 
         Args:
             task_id (str): 本次后台执行的稳定编号。
 
         Returns:
-            TaskRecord | None: 当前可访问的任务记录，不存在或超出范围时为空。
+            TaskSnapshot | None: 当前可访问的任务摘要，包含保存故障，越范围时为空。
         """
-        record = await self._supervisor.get_task_record(task_id)
-        return record if record and (record.session_id, record.plugin_name) == (self.session_id, self.plugin_name) else None
+        record = await self._supervisor.get_task_snapshot(task_id)
+        return record if record and (record.session_id, record.plugin_name, record.subagent_id) == (
+            self.session_id, self.plugin_name, self.subagent_id) else None
 
-    async def wait_task(self, task_id: str, *, timeout_ms: int) -> TaskRecord | None:
+    async def wait_task(self, task_id: str, *, timeout_ms: int) -> TaskSnapshot | None:
         """有限等待可访问任务，超时返回当前记录，取消等待不停止任务。
 
         Args:
@@ -82,7 +83,7 @@ class PluginRuntime:
             timeout_ms (int): 本次等待的毫秒预算，耗尽后任务继续运行。
 
         Returns:
-            TaskRecord | None: 终态或等待超时的当前记录，不存在或超出范围时为空。
+            TaskSnapshot | None: 结果或保存故障摘要，等待超时返回当前进展，越范围时为空。
         """
         if await self.get_task(task_id) is None:
             return None

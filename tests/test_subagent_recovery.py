@@ -1,4 +1,8 @@
 """重启只整理已受理工作，不恢复模型、审批或后台进程。"""
+from tests.runtime_support import runtime_hub, close_test_runtime
+from app.routes.agent import observe_runtime
+from tests.runtime_support import build_test_scheduler
+from app.crud.sqlite_factory import SqliteFactory
 
 import asyncio
 from datetime import datetime, timezone
@@ -23,7 +27,7 @@ def test_accepted_command_without_worker_is_reported_and_never_restarted(tmp_pat
     async def scenario() -> None:
         """直接准备崩溃前持久事实，再通过公开启动和查询验收。"""
         path = str(tmp_path / "state.sqlite3")
-        dao = SubagentDao(path)
+        dao = SubagentDao(SqliteFactory(path))
         definition = SubagentDefinition("child", "parent", "测试助手", "测试", frozenset(), retain, datetime.now(timezone.utc))
         await dao.create_with_command(definition, "已受理的初始工作", "creation")
         await dao.close()
@@ -32,8 +36,8 @@ def test_accepted_command_without_worker_is_reported_and_never_restarted(tmp_pat
             """重启不得构造父子 Agent 或调用模型。"""
             raise AssertionError("重启不应开始执行")
 
-        scheduler = AgentRuntimeScheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), agent_factory=forbidden,
-            subagent_factory=forbidden, session_state_manager_factory=lambda session: SessionStateManager(session, path))
+        scheduler = build_test_scheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), agent_factory=forbidden,
+            subagent_factory=forbidden, session_state_manager_factory=lambda session: SessionStateManager(session, SqliteFactory(path)))
         try:
             await scheduler.start()
             summaries = await scheduler.snapshot_subagents("parent")
@@ -44,13 +48,13 @@ def test_accepted_command_without_worker_is_reported_and_never_restarted(tmp_pat
             assert len(details["results"]) == 1
             assert details["results"][0]["status"] == "orphaned"
             assert details["context_available"] == retain
-            manager = SessionStateManager("parent", path)
+            manager = SessionStateManager("parent", SqliteFactory(path))
             try:
                 assert len(await manager.read_task_terminals()) == 1
             finally:
                 await manager.close()
         finally:
-            await scheduler.close()
+            await close_test_runtime(scheduler)
     asyncio.run(scenario())
 
 
@@ -69,8 +73,8 @@ def test_restart_preserves_child_progress_and_only_retires_non_reusable_identiti
     async def scenario() -> None:
         """保存工具已开始的进度，关闭全部连接后仅启动实际 Scheduler 整理。"""
         path = str(tmp_path / "state.sqlite3")
-        dao, tasks = SubagentDao(path), TaskRecordDao(path)
-        manager = SessionStateManager("child", path, storage_scope=AgentStorageScope.SUBAGENT)
+        dao, tasks = SubagentDao(SqliteFactory(path)), TaskRecordDao(SqliteFactory(path))
+        manager = SessionStateManager("child", SqliteFactory(path), storage_scope=AgentStorageScope.SUBAGENT)
         try:
             await dao.create_with_command(SubagentDefinition("child", "parent", "助手", "测试", frozenset(),
                 retain, datetime.now(timezone.utc)), "崩溃前已交付的任务", "create")
@@ -93,9 +97,9 @@ def test_restart_preserves_child_progress_and_only_retires_non_reusable_identiti
             raise AssertionError("重启不能自动执行")
 
         settings = configured_settings("parent" if parent_exists else "other")
-        scheduler = AgentRuntimeScheduler(chat_settings_dao=settings, runtime_queue=asyncio.Queue(), agent_factory=forbidden,
-            subagent_factory=forbidden, session_state_manager_factory=lambda identifier: SessionStateManager(identifier, path))
-        reader = SessionStateManager("child", path, storage_scope=AgentStorageScope.SUBAGENT)
+        scheduler = build_test_scheduler(chat_settings_dao=settings, runtime_queue=asyncio.Queue(), agent_factory=forbidden,
+            subagent_factory=forbidden, session_state_manager_factory=lambda identifier: SessionStateManager(identifier, SqliteFactory(path)))
+        reader = SessionStateManager("child", SqliteFactory(path), storage_scope=AgentStorageScope.SUBAGENT)
         try:
             await scheduler.start()
             state = await reader.load()
@@ -108,5 +112,5 @@ def test_restart_preserves_child_progress_and_only_retires_non_reusable_identiti
             assert len(await scheduler.snapshot_subagents("parent")) == int(retain and not destroy and parent_exists)
         finally:
             await reader.close()
-            await scheduler.close()
+            await close_test_runtime(scheduler)
     asyncio.run(scenario())

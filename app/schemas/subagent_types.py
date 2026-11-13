@@ -25,17 +25,6 @@ class SubagentPublicStatus(StrEnum):
     WAITING_PARENT = "waiting_parent"
 
 
-class SubagentCommandEffect(StrEnum):
-    """受理回执中已经采取的动作，与实时运行状态分开表达。"""
-    STARTED = "started"
-    STEERED = "steered"
-    REPLIED = "replied"
-    STOPPING = "stopping"
-    IDLE = "idle"
-    RELEASED = "released"
-    FINALIZING = "finalizing"
-
-
 class SubagentInteractionKind(StrEnum):
     """已受理或发出的父子显式消息类型。"""
     TASK = "task"
@@ -97,7 +86,7 @@ class SubagentSummary:
         started_at (str | None): 本次活动任务开始时间，空闲时为空。
         created_at (str | None): 子身份创建时间。
         waiting_for_approval (bool): 仅供界面显示人类审批，环境文本仍映射为运行中。
-        error (str | None): 正在由后台自动重试的资源清理失败原因。
+        error (str | None): 最近一次子执行或最终报告保存失败的原因。
     """
     subagent_id: str
     name: str

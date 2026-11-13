@@ -1,11 +1,12 @@
 """情景记忆 SQLite 存储 - 权威数据备份"""
 
 import logging
-import sqlite3
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
+from contextlib import closing
+from app.crud.sqlite_factory import SqliteFactory
 
 logger = logging.getLogger(__name__)
 
@@ -25,13 +26,15 @@ class EpisodicSqliteStore:
 
     TABLE_NAME = "episodic_memories"
 
-    def __init__(self, db_path: str, embedding_model: str):
+    def __init__(self, db_path: str, embedding_model: str, *, sqlite_factory: SqliteFactory):
         """绑定情景记忆正文数据库及向量模型名称，同步创建事实存储表。
 
         Args:
             db_path (str): 当前环境使用的 SQLite 数据库路径。
             embedding_model (str): 该记录使用的向量模型名称。
+            sqlite_factory (SqliteFactory): 应用装配提供的 SQLite 连接配置。
         """
+        self._sqlite_factory = sqlite_factory
         self.db_path = db_path
         self.embedding_model = embedding_model
         self._ensure_table()
@@ -39,9 +42,7 @@ class EpisodicSqliteStore:
     def _ensure_table(self):
         """确保表存在（同步方法，仅在初始化时调用）"""
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA busy_timeout=5000")
+        with closing(self._sqlite_factory.connect_sync(self.db_path)) as conn, conn:
 
             conn.execute(f"""
                 CREATE TABLE IF NOT EXISTS {self.TABLE_NAME} (
@@ -88,8 +89,7 @@ class EpisodicSqliteStore:
             event_date (str): 记忆描述的事件日期。
             importance (float): 模型评估的记忆重要度。
         """
-        async with aiosqlite.connect(self.db_path) as conn:
-            await conn.execute("PRAGMA busy_timeout=5000")
+        async with self._sqlite_factory.connection(self.db_path) as conn:
             await conn.execute(
                 f"""
                 INSERT OR REPLACE INTO {self.TABLE_NAME}
@@ -130,8 +130,7 @@ class EpisodicSqliteStore:
 
         params.append(record_id)
 
-        async with aiosqlite.connect(self.db_path) as conn:
-            await conn.execute("PRAGMA busy_timeout=5000")
+        async with self._sqlite_factory.connection(self.db_path) as conn:
             cursor = await conn.execute(
                 f"""
                 UPDATE {self.TABLE_NAME}
@@ -149,8 +148,7 @@ class EpisodicSqliteStore:
         Args:
             record_id (str): 当前情景记忆正文的稳定编号。
         """
-        async with aiosqlite.connect(self.db_path) as conn:
-            await conn.execute("PRAGMA busy_timeout=5000")
+        async with self._sqlite_factory.connection(self.db_path) as conn:
             cursor = await conn.execute(
                 f"DELETE FROM {self.TABLE_NAME} WHERE id = ?",
                 (record_id,),
@@ -189,8 +187,7 @@ class EpisodicSqliteStore:
         if not conditions:
             return 0
 
-        async with aiosqlite.connect(self.db_path) as conn:
-            await conn.execute("PRAGMA busy_timeout=5000")
+        async with self._sqlite_factory.connection(self.db_path) as conn:
             cursor = await conn.execute(
                 f"DELETE FROM {self.TABLE_NAME} WHERE {' AND '.join(conditions)}",
                 params,
@@ -206,8 +203,7 @@ class EpisodicSqliteStore:
         Args:
             record_id (str): 当前情景记忆正文的稳定编号。
         """
-        async with aiosqlite.connect(self.db_path) as conn:
-            await conn.execute("PRAGMA busy_timeout=5000")
+        async with self._sqlite_factory.connection(self.db_path) as conn:
             conn.row_factory = aiosqlite.Row
             cursor = await conn.execute(
                 f"""
@@ -233,8 +229,7 @@ class EpisodicSqliteStore:
             session_id (str | None): 当前操作所属的会话编号。
             limit (int): 最多返回的记录数量。
         """
-        async with aiosqlite.connect(self.db_path) as conn:
-            await conn.execute("PRAGMA busy_timeout=5000")
+        async with self._sqlite_factory.connection(self.db_path) as conn:
             conn.row_factory = aiosqlite.Row
 
             if session_id:
@@ -275,8 +270,7 @@ class EpisodicSqliteStore:
             start_date (str): 包含在内的查询起始日期。
             end_date (str): 包含在内的查询结束日期。
         """
-        async with aiosqlite.connect(self.db_path) as conn:
-            await conn.execute("PRAGMA busy_timeout=5000")
+        async with self._sqlite_factory.connection(self.db_path) as conn:
             conn.row_factory = aiosqlite.Row
             cursor = await conn.execute(
                 f"""
@@ -303,8 +297,7 @@ class EpisodicSqliteStore:
             importance_below (float): 只删除重要度低于该数值的情景记忆。
             limit (int): 最多返回的记录数量。
         """
-        async with aiosqlite.connect(self.db_path) as conn:
-            await conn.execute("PRAGMA busy_timeout=5000")
+        async with self._sqlite_factory.connection(self.db_path) as conn:
             conn.row_factory = aiosqlite.Row
             cursor = await conn.execute(
                 f"""
@@ -327,8 +320,7 @@ class EpisodicSqliteStore:
         Args:
             session_id (str | None): 当前操作所属的会话编号。
         """
-        async with aiosqlite.connect(self.db_path) as conn:
-            await conn.execute("PRAGMA busy_timeout=5000")
+        async with self._sqlite_factory.connection(self.db_path) as conn:
             if session_id:
                 cursor = await conn.execute(
                     f"SELECT COUNT(*) FROM {self.TABLE_NAME} WHERE session_id = ?",
@@ -347,8 +339,7 @@ class EpisodicSqliteStore:
         Args:
             session_id (str | None): 当前操作所属的会话编号。
         """
-        async with aiosqlite.connect(self.db_path) as conn:
-            await conn.execute("PRAGMA busy_timeout=5000")
+        async with self._sqlite_factory.connection(self.db_path) as conn:
             conn.row_factory = aiosqlite.Row
 
             # 总数
@@ -450,8 +441,7 @@ class EpisodicSqliteStore:
 
     async def get_embedding_models(self) -> list[str]:
         """获取所有使用的 embedding 模型"""
-        async with aiosqlite.connect(self.db_path) as conn:
-            await conn.execute("PRAGMA busy_timeout=5000")
+        async with self._sqlite_factory.connection(self.db_path) as conn:
             cursor = await conn.execute(
                 f"SELECT DISTINCT embedding_model FROM {self.TABLE_NAME}"
             )

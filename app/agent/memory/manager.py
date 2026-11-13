@@ -1,4 +1,5 @@
 """记忆管理器 - 核心调度层"""
+from app.crud.sqlite_factory import SqliteFactory
 
 import asyncio
 import logging
@@ -38,6 +39,7 @@ class MemoryManager:
         session_id: str,
         config: MemoryConfig | None = None,
         chat_settings: ChatSettings | None = None,
+        *, sqlite_factory: SqliteFactory,
     ):
         """读取当前会话记忆配置，仅装配启用的日记、情景和语义记忆；全部禁用时不创建历史查询对象。
 
@@ -45,6 +47,7 @@ class MemoryManager:
             session_id (str): 当前操作所属的会话编号。
             config (MemoryConfig | None): 调用方提供的配置。
             chat_settings (ChatSettings | None): 当前会话的模型、角色及插件设置。
+            sqlite_factory (SqliteFactory): 应用装配提供的 SQLite 连接配置。
         """
         self.session_id = session_id
         self.config = config or MemoryConfig.from_env()
@@ -62,21 +65,24 @@ class MemoryManager:
             ChatHistoryStore(
                 timezone=self.config.timezone,
                 day_boundary_hour=self.config.day_boundary_hour,
+                sqlite_factory=sqlite_factory,
             )
             if needs_protocol_log
             else None
         )
         if self.memory_options.get("enable_diary", True):
+            assert self.chat_history_store is not None
             self.diary_memory = DiaryMemory(
                 session_id,
                 self.config,
                 self.chat_settings,
                 self.chat_history_store,
+                sqlite_factory=sqlite_factory,
             )
         else:
             self.diary_memory = None
         self.episodic_memory = (
-            EpisodicMemory(session_id, self.config, self.chat_settings)
+            EpisodicMemory(session_id, self.config, self.chat_settings, sqlite_factory=sqlite_factory)
             if self.memory_options.get("enable_episodic", True)
             else None
         )
@@ -398,7 +404,7 @@ class MemoryManager:
         Returns:
             dict[str, Any]: 本次使用的日记、情景和语义记忆开关及配置副本。
         """
-        memory = self.chat_settings.agent_plugins.get("memory")
+        memory = (self.chat_settings.agent_plugins or {}).get("memory")
         config = dict(MEMORY_DEFAULT_CONFIG)
         if memory:
             config.update(memory.config)
@@ -411,12 +417,13 @@ class MemoryManager:
 # ==================== 工厂函数 ====================
 
 @lru_cache(maxsize=32)
-def get_memory_manager(session_id: str) -> MemoryManager:
+def get_memory_manager(session_id: str, sqlite_factory: SqliteFactory) -> MemoryManager:
     """获取或创建 MemoryManager 实例（带缓存）。
 
     Args:
         session_id (str): 当前操作所属的会话编号。
+        sqlite_factory (SqliteFactory): 应用装配提供的 SQLite 连接配置。
     """
     config = MemoryConfig.from_env()
     chat_settings = ChatSettingsDao().get_chat_settings(session_id)
-    return MemoryManager(session_id, config, chat_settings)
+    return MemoryManager(session_id, config, chat_settings, sqlite_factory=sqlite_factory)

@@ -1,3 +1,4 @@
+from app.crud.sqlite_factory import SqliteFactory
 
 from app.mcp.mcp_connection_manager import SessionFactory
 from mcp.types import CallToolResult
@@ -1640,7 +1641,7 @@ async def test_agent_builds_adapters_without_owning_connections(tmp_path: Path) 
             context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100),
             mcp=model_settings,
         ),
-        db_path=str(tmp_path / "state.sqlite3"),
+        sqlite_factory=SqliteFactory(str(tmp_path / "state.sqlite3")),
         mcp_connection_manager=manager,
         tool_authorization=ToolAuthorization(lambda _session_id: settings),
     )

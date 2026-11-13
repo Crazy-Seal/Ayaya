@@ -2,30 +2,30 @@
 
 from datetime import date
 from pathlib import Path
-import sqlite3
 
-import aiosqlite
+from contextlib import closing
+from app.crud.sqlite_factory import SqliteFactory
 
 
 class DiarySqliteStore:
     """在独立日记表中按会话和有效日期保存唯一日记，重复保存更新同一天内容。"""
     TABLE_NAME = "diaries"
 
-    def __init__(self, db_path: str) -> None:
+    def __init__(self, db_path: str, *, sqlite_factory: SqliteFactory) -> None:
         """保存日记数据库路径并同步创建目录、表和日期索引。
 
         Args:
             db_path (str): 当前环境使用的 SQLite 数据库路径。
+            sqlite_factory (SqliteFactory): 应用装配提供的 SQLite 连接配置。
         """
+        self._sqlite_factory = sqlite_factory
         self.db_path = db_path
         self._ensure_table()
 
     def _ensure_table(self) -> None:
         """初始化日记表及会话日期索引，唯一约束防止同一天产生多份记录。"""
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA busy_timeout=5000")
+        with closing(self._sqlite_factory.connect_sync(self.db_path)) as conn, conn:
             conn.execute(f"""
                 CREATE TABLE IF NOT EXISTS {self.TABLE_NAME} (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -58,7 +58,7 @@ class DiarySqliteStore:
         Returns:
             int: SQLite 游标提供的最近插入编号，未提供时为零；更新分支不保证是被更新行的编号。
         """
-        async with aiosqlite.connect(self.db_path) as conn:
+        async with self._sqlite_factory.connection(self.db_path) as conn:
             cursor = await conn.execute(f"""
                 INSERT INTO {self.TABLE_NAME} (session_id, effective_date, content)
                 VALUES (?, ?, ?)
@@ -78,7 +78,7 @@ class DiarySqliteStore:
         Returns:
             str | None: 日记正文，不存在时为空。
         """
-        async with aiosqlite.connect(self.db_path) as conn:
+        async with self._sqlite_factory.connection(self.db_path) as conn:
             row = await (await conn.execute(
                 f"SELECT content FROM {self.TABLE_NAME} WHERE session_id=? AND effective_date=?",
                 (session_id, date_obj.isoformat()),
@@ -110,7 +110,7 @@ class DiarySqliteStore:
         Returns:
             list[tuple[date, str]]: 有效日期与正文组成的记录列表。
         """
-        async with aiosqlite.connect(self.db_path) as conn:
+        async with self._sqlite_factory.connection(self.db_path) as conn:
             rows = await conn.execute_fetchall(f"""
                 SELECT effective_date, content FROM {self.TABLE_NAME}
                 WHERE session_id=? AND effective_date>=? AND effective_date<=?
@@ -133,7 +133,7 @@ class DiarySqliteStore:
         Returns:
             list[tuple[date, str]]: 按日期从晚到早排列的记录列表。
         """
-        async with aiosqlite.connect(self.db_path) as conn:
+        async with self._sqlite_factory.connection(self.db_path) as conn:
             rows = await conn.execute_fetchall(f"""
                 SELECT effective_date, content FROM {self.TABLE_NAME}
                 WHERE session_id=? AND effective_date<?
