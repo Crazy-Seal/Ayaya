@@ -99,7 +99,7 @@ def test_stopping_after_text_and_tool_keeps_one_assistant_history_message(tmp_pa
         control.wake_interrupt()
         try:
             await agent.session_state_manager.finish_interrupted_turn(
-                state, partial=control.partial, partial_persisted=control.partial_persisted,
+                state, reason=TurnInterruptReason.STOP, partial=control.partial, partial_persisted=control.partial_persisted,
                 origin_channel="desktop",
             )
             assistant = [item for item in state.messages if isinstance(item, AssistantMessage)]

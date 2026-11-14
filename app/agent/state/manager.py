@@ -8,7 +8,7 @@ from dataclasses import replace
 import json
 import logging
 
-from app.schemas.runtime_types import CheckpointType, DESKTOP_CHANNEL, InboxKind, InboxStatus, InterruptKind, TaskResultStatus, TaskStatus
+from app.schemas.runtime_types import CheckpointType, DESKTOP_CHANNEL, InboxKind, InboxStatus, InterruptKind, TaskResultStatus, TaskStatus, TurnInterruptReason
 from app.schemas.message_types import ImageContextState
 from app.agent.runtime.session_inbox import InboxEnvelope, InputNoLongerPending
 from app.agent.state.model import AgentState
@@ -30,6 +30,7 @@ USER_CANCELLED_PENDING_TOOL_RESULT = "用户发送了新的消息，本批后续
 APPLICATION_EXIT_RESULT = "应用退出，本轮已终止；本次工具调用已取消。"
 APPLICATION_EXIT_UNKNOWN_RESULT = "应用退出，本轮已终止；工具执行结果未知，本次不会自动重试。"
 PARENT_MESSAGE_DELIVERED = "消息已投递。"
+USER_STOPPED_TOOL_RESULT = "被用户取消，工具调用未完成"
 
 TASK_NOTICE_BATCH_MAX_CHARS = 8192
 
@@ -566,16 +567,17 @@ class SessionStateManager:
             state.clear_temporary_context()
             return await self.save(state, checkpoint_type=CheckpointType.COMPLETED, release_queued=release_queued)
 
-    async def finish_interrupted_turn(self, state: AgentState, *, partial: str, partial_persisted: bool,
+    async def finish_interrupted_turn(self, state: AgentState, *, reason: TurnInterruptReason, partial: str, partial_persisted: bool,
                                       origin_channel: str) -> None:
         """当前轮次被停止或引导时，保存工具取消结果及已显示的回答片段。
 
-        Agent 捕获 TurnInterrupted 后调用。为未结束的工具调用补上取消结果，
+        Agent 的执行中断和 Execution 的等待结束流程调用本方法。为未结束的工具调用补上取消结果，
         在本步骤的回答后添加打断说明，清除临时背景并保存本轮结束；排队消息
         继续等待后续明确的处理安排。
 
         Args:
             state (AgentState): 被打断的 Agent 正在使用的会话状态。
+            reason (TurnInterruptReason): 已受理的停止或引导原因，决定未完成调用的结束正文。
             partial (str): 当前模型步骤已向界面显示的正文。
             partial_persisted (bool): 当前步骤是否已经加入内存中的助手消息，需要沿用其消息编号。
             origin_channel (str): 被打断回答所属的界面或渠道。
@@ -584,7 +586,7 @@ class SessionStateManager:
             RuntimeError: 调用方声明片段已经加入助手消息，但当前状态中找不到对应消息。
         """
         # 1. 为当前尚未结束的工具调用追加取消结果，保留前面已经完成的工具结果。
-        cancelled = "用户打断，本次工具调用已取消。"
+        cancelled = USER_STOPPED_TOOL_RESULT if reason == TurnInterruptReason.STOP else "用户打断，本次工具调用已取消。"
         interrupted_result = (PARENT_MESSAGE_DELIVERED if (state.interrupt_data or {}).get("type") == InterruptKind.PARENT_MESSAGE else cancelled)
         state.close_unfinished_tools(interrupted_result, cancelled, cancelled)
         rewritten_message_id = None

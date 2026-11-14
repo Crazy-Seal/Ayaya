@@ -26,6 +26,9 @@ from app.agent.state import AgentState
 from app.agent.mcp.adapter import MCPToolAdapter, build_exposed_tool_name
 from app.mcp.identity import server_identity_fingerprint, tool_contract_fingerprint
 from app.mcp.types import MCPToolDescriptor
+import asyncio
+from app.agent.runtime.turn_control import TurnInterrupted
+from tests.runtime_support import make_execution_control
 from app.crud.mcp_settings_dao import MCPSettingsDao
 from app.crud.chat_settings_dao import ChatSettingsDao
 from app.mcp.mcp_connection_manager import (
@@ -1760,6 +1763,69 @@ async def test_mcp_service_crud_exposes_runtime_status_and_cascades_policies(tmp
     assert manager.disconnected == ["github"]
     assert MCPSettingsDao(mcp_file).load().servers == []
     assert ChatSettingsDao(chat_file).get_chat_settings("session-a").mcp.servers == {}
+
+
+@pytest.mark.asyncio
+async def test_user_stop_releases_mcp_call_and_keeps_connection_usable() -> None:
+    """用户取消本地 MCP 等待后释放调用登记，同一连接仍可调用和关闭。"""
+    entered, cleaned = asyncio.Event(), asyncio.Event()
+
+    class WaitingSession(_FakeSession):
+        """仅替代远端响应，取消传播与连接登记使用正式实现。"""
+
+        async def call_tool(self, name: str, arguments: dict):
+            """首个请求持续等待，后续请求正常返回工具结果。
+
+            Args:
+                name (str): MCP 服务中的原始工具名称。
+                arguments (dict): 本次调用参数，wait 标识需要等待取消的请求。
+
+            Returns:
+                SimpleNamespace: 正常调用的远端结果。
+            """
+            if arguments.get("wait"):
+                entered.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    cleaned.set()
+            return await super().call_tool(name, arguments)
+
+    session = WaitingSession()
+
+    @asynccontextmanager
+    async def session_factory(_config: object):
+        """提供同一个离线服务响应对象，真实连接生命周期由管理器持有。
+
+        Args:
+            _config (object): 管理器为当前测试服务解析的连接配置。
+
+        Yields:
+            WaitingSession: 用于控制远端等待及取消的离线会话。
+        """
+        yield session
+
+    config = MCPServersConfig(servers=[StdioMCPServerConfig(
+        id="cancel-test", name="取消验证", enabled=True, transport="stdio", command="python",
+    )])
+    manager = MCPConnectionManager(lambda: config, session_factory=cast(SessionFactory, session_factory))
+    machine, control = make_execution_control("run")
+    await manager.connect("cancel-test")
+    invocation = asyncio.create_task(control.run_tool(lambda: manager.call_tool("cancel-test", "read_file", {"wait": True})))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        machine.request_stop("run")
+        control.wake_interrupt()
+        with pytest.raises(TurnInterrupted, match="^stop$"):
+            await asyncio.wait_for(invocation, 2)
+        assert cleaned.is_set()
+        assert not (await manager.call_tool("cancel-test", "read_file", {})).isError
+        assert session.initialize_count == 1
+        assert manager.get_status("cancel-test")["status"] == "available"
+    finally:
+        invocation.cancel()
+        await asyncio.gather(invocation, return_exceptions=True)
+        await asyncio.wait_for(manager.close(), 3)
 
 
 @pytest.mark.asyncio

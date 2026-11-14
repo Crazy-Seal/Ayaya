@@ -213,8 +213,7 @@ class AgentExecution:
             if not permitted:
                 self.request_stop(next_run_id)
             if self._state.phase == ExecutionPhase.STOPPING:
-                reason = self._state.reason
-                await self.finish_waiting()
+                reason = await self.finish_waiting()
                 kind = AgentRunOutcomeKind.STEERED if reason == TurnInterruptReason.STEER else AgentRunOutcomeKind.STOPPED
                 return AgentRunOutcome(kind, context_id=self.context_id, run_id=next_run_id)
             if self._agent is None:
@@ -288,8 +287,12 @@ class AgentExecution:
         self._control, self._approval = None, None
         return outcome
 
-    async def finish_waiting(self) -> None:
-        """停止或新明确输入替代等待时，保存旧协议并发布等待取消。"""
+    async def finish_waiting(self) -> TurnInterruptReason | None:
+        """停止或新明确输入替代等待时，保存旧协议并交还实际结束原因。
+
+        Returns:
+            TurnInterruptReason | None: 本次保存采用的停止或引导原因；没有待结束轮次时为空。
+        """
         run_id = self._state.run_id
         if run_id is None or self._state.phase not in {ExecutionPhase.WAITING, ExecutionPhase.STOPPING}:
             return
@@ -301,14 +304,19 @@ class AgentExecution:
                 {"outcome": AuthorizationResolutionKind.CANCELLED}, origin_channel=cancelled[1], request_id=cancelled[0]))
         if self._state.phase != ExecutionPhase.COMMITTING:
             self._state.begin_commit(run_id)
+        # 1. 审批取消期间仍可接受停止，最终保存采用进入提交阶段时的控制原因。
+        reason = self._state.reason
+        assert reason is not None
         state = await self._manager.load()
         control = self._control
-        await self._manager.finish_interrupted_turn(state, partial=control.partial if control else "",
+        await self._manager.finish_interrupted_turn(state, reason=reason,
+            partial=control.partial if control else "",
             partial_persisted=control.partial_persisted if control else False, origin_channel=self._origin)
         self._state.commit_succeeded(run_id)
         self._events.put_nowait(InteractionEvent(self.context_id, InteractionEventKind.RUN_COMPLETED,
             {"value": {"interrupted": True}}, origin_channel=self._origin, run_id=run_id))
         self._control, self._approval = None, None
+        return reason
 
     async def handle_failure(self, exc: Exception) -> AgentRunOutcome:
         """把会话准备或执行错误交到本执行的最终结果出口。

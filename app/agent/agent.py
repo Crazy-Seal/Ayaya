@@ -643,12 +643,14 @@ class Agent:
         Returns:
             AgentRunOutcome: 已保存的停止或引导结果。
         """
+        reason = turn_control.reason
+        assert reason is not None
         turn_control.begin_interrupted_commit()
         await self.session_state_manager.finish_interrupted_turn(
-            state, partial=turn_control.partial, partial_persisted=turn_control.partial_persisted,
+            state, reason=reason, partial=turn_control.partial, partial_persisted=turn_control.partial_persisted,
             origin_channel=origin_channel)
         return AgentRunOutcome(
-            AgentRunOutcomeKind.STEERED if turn_control.reason == TurnInterruptReason.STEER else AgentRunOutcomeKind.STOPPED,
+            AgentRunOutcomeKind.STEERED if reason == TurnInterruptReason.STEER else AgentRunOutcomeKind.STOPPED,
             result=turn_control.partial)
 
     async def _finalize_response(

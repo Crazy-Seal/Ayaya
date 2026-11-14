@@ -114,7 +114,7 @@ class AgentRunStateMachine:
 
     def _request_interrupt(self, reason: TurnInterruptReason, input_id: str | None,
                            expected_run_id: str | None) -> CommandReceipt:
-        """保留首个停止要求，后来的输入留给会话继续处理。
+        """受理本轮停止或引导，用户停止优先于尚未结束的引导。
 
         Args:
             reason (TurnInterruptReason): 停止或引导。
@@ -126,6 +126,10 @@ class AgentRunStateMachine:
         if expected_run_id is not None and expected_run_id != self._run_id:
             return self._receipt(CommandStatus.STALE)
         if self._phase == ExecutionPhase.STOPPING:
+            # 1. 停止接管仍在等待工具边界的引导，消息正文继续由 Inbox 保存。
+            if reason == TurnInterruptReason.STOP and self._reason == TurnInterruptReason.STEER:
+                self._reason, self._input_id = TurnInterruptReason.STOP, None
+                return self._receipt(CommandStatus.ACCEPTED)
             status = (CommandStatus.ACCEPTED if self._reason == reason and self._input_id == input_id
                       else CommandStatus.TOO_LATE)
             return self._receipt(status)

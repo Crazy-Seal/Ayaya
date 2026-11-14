@@ -4,7 +4,22 @@ import pytest
 
 from app.agent.runtime.agent_run_state_machine import AgentRunStateMachine, InvalidStateTransitionError
 from app.agent.runtime.turn_control import TurnControl, TurnInterrupted
-from app.schemas.runtime_types import ApprovalWait, CommandStatus, ExecutionPhase
+from app.schemas.runtime_types import ApprovalWait, CommandStatus, ExecutionPhase, TurnInterruptReason
+
+
+def test_stop_overrides_pending_steer_and_keeps_run_identity() -> None:
+    """当前工具等待引导边界时，用户停止取得优先级且仍作用于原轮次。"""
+    machine = AgentRunStateMachine("context")
+    machine.begin_run("first")
+    assert machine.request_steer("input", "first").accepted
+    assert machine.request_stop("expired").status == CommandStatus.STALE
+    assert machine.reason == TurnInterruptReason.STEER
+    assert machine.request_stop("first").accepted
+    assert machine.reason == TurnInterruptReason.STOP
+    assert machine.phase == ExecutionPhase.STOPPING
+    assert machine.run_id == "first"
+    assert machine.request_steer("another-input", "first").status == CommandStatus.TOO_LATE
+    assert machine.reason == TurnInterruptReason.STOP
 
 
 def test_committing_rejects_stop_and_illegal_tool_execution() -> None:

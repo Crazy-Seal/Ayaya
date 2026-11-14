@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import AsyncIterator, TypeVar
 
@@ -23,13 +24,14 @@ class TurnControl:
 
     Attributes:
         run_id (str): 当前运行轮次标识。
-        reason (TurnInterruptReason | None): 已受理的首个停止或引导信号，未打断时为空。
+        reason (TurnInterruptReason | None): 状态机受理的停止或引导原因，停止可接管正在结束的引导。
         _state (AgentRunStateMachine): 执行对象借给本轮的唯一运行状态。
         phase (ExecutionPhase): 共享状态机的只读阶段，最终提交及收尾时拒绝打断。
         partial (str): 本次模型步骤已向用户展示的文本。
         partial_persisted (bool): 该片段是否已记录到 Assistant 步骤。
         partial_message_id (str | None): 当前模型步骤的 Assistant 身份，落盘状态需核对 checkpoint。
         _llm_task (asyncio.Task | None): 可单独取消的模型下一分片等待任务。
+        _tool_task (asyncio.Task | None): 当前工具执行任务，用户停止时取消并等待其清理。
     """
     run_id: str
     _state: AgentRunStateMachine = field(repr=False)
@@ -37,6 +39,7 @@ class TurnControl:
     partial_persisted: bool = False
     partial_message_id: str | None = None
     _llm_task: asyncio.Task | None = field(default=None, repr=False)
+    _tool_task: asyncio.Task[object] | None = field(default=None, repr=False)
 
     @property
     def phase(self) -> ExecutionPhase:
@@ -49,9 +52,51 @@ class TurnControl:
         return self._state.reason if self._state.run_id == self.run_id else None
 
     def wake_interrupt(self) -> None:
-        """执行对象接受控制后，唤醒当前模型分片等待。"""
+        """受理引导时唤醒模型等待，受理停止时同时取消当前工具。"""
         if self._llm_task is not None:
             self._llm_task.cancel()
+        if self.reason == TurnInterruptReason.STOP and self._tool_task is not None and not self._tool_task.cancelling():
+            self._tool_task.cancel()
+
+    async def run_tool(self, operation: Callable[[], Awaitable[T]]) -> T:
+        """执行当前工具，用户停止时等待工具清理后交还本轮收尾。
+
+        Args:
+            operation (Callable[[], Awaitable[T]]): 本次实际工具调用，启动前检查通过后才创建协程。
+
+        Returns:
+            T: 工具正常返回的真实结果，后续钩子和保存由 Pipeline 组织。
+
+        Raises:
+            TurnInterrupted: 启动前收到控制请求，或工具被用户停止取消且已完成清理。
+            asyncio.CancelledError: 外层执行被关闭，或工具自身取消，继续向调用方传播。
+        """
+        # 1. 启动前及任务实际开始时核对本轮，控制请求可阻止尚未开始的副作用。
+        self.start_tool()
+
+        async def invoke() -> T:
+            """在本次工具任务开始时检查控制，再执行工具正文。
+
+            Returns:
+                T: 工具正文返回的结果，交给 Pipeline 后续处理。
+            """
+            self.check()
+            return await operation()
+
+        task = asyncio.create_task(invoke())
+        self._tool_task = task
+        try:
+            return await task
+        except asyncio.CancelledError:
+            # 2. 用户停止只取消工具任务；外层关闭保留原取消语义。
+            owner = asyncio.current_task()
+            if self.reason == TurnInterruptReason.STOP and (owner is None or not owner.cancelling()):
+                raise TurnInterrupted(TurnInterruptReason.STOP.value) from None
+            raise
+        finally:
+            # 3. 工具返回或完成清理后交还结果，完成钩子及保存按原顺序执行。
+            if self._tool_task is task:
+                self._tool_task = None
 
     @property
     def wait(self) -> ExecutionWait | None:

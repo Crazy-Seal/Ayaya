@@ -12,8 +12,8 @@ from app.schemas.subagent_types import SUBAGENT_ROSTER_CONTEXT_KEY
 from app.agent.models.contracts import ModelFinishReason, StreamChunk
 
 import logging
-from typing import Any, AsyncIterator, AsyncGenerator, Protocol, Awaitable, Callable
-from app.schemas.desktop import DesktopOperations, StopRequested
+from typing import Any, AsyncIterator, AsyncGenerator, Protocol, Awaitable, Callable, Mapping, cast
+from app.schemas.desktop import DesktopOperations
 
 from app.schemas.runtime_types import (
     AUTHORIZATION_GRANTED_KIND, ApprovalDecisionKind, DESKTOP_CHANNEL,
@@ -21,7 +21,7 @@ from app.schemas.runtime_types import (
 )
 from app.agent.context import ModelInputCoordinator, RuntimeContext
 from app.agent.state.manager import SessionStateManager, RequiredSaveError
-from app.agent.runtime.turn_control import TurnInterrupted
+from app.agent.runtime.turn_control import TurnControl, TurnInterrupted
 from app.agent.core.events import EventType, AgentEvent
 from app.agent.core.plugin_manager import PluginManager
 from app.agent.core.response_filter import AssistantTimePrefixFilter
@@ -186,10 +186,7 @@ class ExecutionPipeline:
                 interrupted_call,
                 resume_data=resume_data,
                 resume_state=interrupt_data.get("resume_state", {}),
-                origin_run_id=runtime_context.turn_control.run_id
-                if runtime_context and runtime_context.turn_control else "",
-                stop_requested=runtime_context.turn_control.is_interrupted
-                if runtime_context and runtime_context.turn_control else None,
+                turn_control=runtime_context.turn_control if runtime_context else None,
             )
 
             # 恢复执行时又触发了新的中断
@@ -219,10 +216,7 @@ class ExecutionPipeline:
 
             result = await self._execute_tool(
                 state, tool_call,
-                origin_run_id=runtime_context.turn_control.run_id
-                if runtime_context and runtime_context.turn_control else "",
-                stop_requested=runtime_context.turn_control.is_interrupted
-                if runtime_context and runtime_context.turn_control else None,
+                turn_control=runtime_context.turn_control if runtime_context else None,
             )
             if result.interrupt:
                 yield await self._commit_interrupt(
@@ -272,6 +266,7 @@ class ExecutionPipeline:
         Raises:
             RuntimeError: 模型未返回有效文本（finish_reason={reason}）。
         """
+        runtime_context = runtime_context or RuntimeContext.capture()
         while True:
             # 1. 模型调用前交付当前后台通知，然后设置 LLM 安全点和片段缓冲。
             if receive_task_notifications and session_state_manager is not None:
@@ -291,7 +286,6 @@ class ExecutionPipeline:
             time_prefix_filter = AssistantTimePrefixFilter()
 
             try:
-                runtime_context = runtime_context or RuntimeContext.capture()
                 # 3.1. 逐项读取模型输出，等待任务可被停止，但会话收尾任务仍保留。
                 llm_stream = self._call_llm(state, runtime_context, session_state_manager)
                 try:
@@ -386,7 +380,7 @@ class ExecutionPipeline:
             if not tool_calls:
                 break
 
-            # 7. 逐个执行工具；提示事件之后再检查停止，副作用开始后只等待真实结果。
+            # 7. 逐个执行工具；停止取消当前工具，引导在结果保存后结束本轮。
             for i, tool_call in enumerate(tool_calls):
                 if runtime_context.turn_control:
                     runtime_context.turn_control.start_tool()
@@ -396,10 +390,7 @@ class ExecutionPipeline:
 
                 result = await self._execute_tool(
                     state, tool_call,
-                    stop_requested=runtime_context.turn_control.is_interrupted
-                    if runtime_context.turn_control else None,
-                    origin_run_id=runtime_context.turn_control.run_id
-                    if runtime_context.turn_control else "",
+                    turn_control=runtime_context.turn_control,
                 )
 
                 # 中断：持久化路由信息 + 剩余工具，仅发最小字段给前端
@@ -441,7 +432,7 @@ class ExecutionPipeline:
         state: AgentState,
         runtime_context: RuntimeContext,
         session_state_manager: SessionStateManager | None = None,
-    ) -> AsyncIterator[StreamChunk]:
+    ) -> AsyncGenerator[StreamChunk, None]:
         """调用 LLM，保留文本、工具调用和终止原因。
 
         Args:
@@ -475,7 +466,8 @@ class ExecutionPipeline:
                 try:
                     if runtime_context.turn_control is not None:
                         runtime_context.turn_control.check()
-                    stream = self._llm_client.astream(prepared.messages, tools=tools or None)
+                    stream = cast(AsyncGenerator[StreamChunk, None],
+                        self._llm_client.astream(prepared.messages, tools=tools or None))
                     try:
                         async for chunk in stream:
                             if chunk.usage and chunk.usage.prompt_tokens:
@@ -523,8 +515,7 @@ class ExecutionPipeline:
         tool_call: ToolCall,
         resume_data: dict | None = None,
         resume_state: dict | None = None,
-        origin_run_id: str = "",
-        stop_requested: StopRequested | None = None,
+        turn_control: TurnControl | None = None,
     ) -> ToolResult:
         """复核工具及调用授权，注入任务启动上下文并执行一次工具。
 
@@ -533,8 +524,7 @@ class ExecutionPipeline:
             tool_call (ToolCall): 当前执行的工具调用。
             resume_data (dict | None): 当前等待工具的人工审批决定。
             resume_state (dict | None): 中断前保存的工具中间状态。
-            origin_run_id (str): 发起进程任务的运行轮次标识。
-            stop_requested (StopRequested | None): 当前轮次已受理停止或引导时返回 True。
+            turn_control (TurnControl | None): 本轮控制，提供工具取消及任务来源信息。
 
         Returns:
             ToolResult: 当前工具直接执行的结果或统一授权等待。
@@ -543,7 +533,7 @@ class ExecutionPipeline:
         tool = self._tool_manager.get(tool_call.name)
         if not tool:
             logger.warning("工具 '%s' 不存在", tool_call.name)
-            return ToolResult(content=f"错误: 工具 '{tool_call.name}' 不存在")
+            return ToolResult.success(f"错误: 工具 '{tool_call.name}' 不存在")
 
         grant: dict | None = None
         prepared_action: dict | None = None
@@ -561,7 +551,7 @@ class ExecutionPipeline:
                 session_id=self._permission_session_id or state.session_id,
                 tool_call_id=tool_call.id,
                 descriptor=descriptor,
-                arguments=tool_call.args,
+                arguments=dict(tool_call.args),
                 prepared_action=prepared_action,
             )
 
@@ -605,6 +595,7 @@ class ExecutionPipeline:
             hooks_started = True
 
         # 4. 注入状态与任务端口，工具运行时按本次来源创建，任务由共享 Supervisor 持有，并记录来源 run 和工具调用。
+        origin_run_id = turn_control.run_id if turn_control else ""
         context = ToolContext(
             session_id=self._permission_session_id or state.session_id,
             state=state,
@@ -614,26 +605,14 @@ class ExecutionPipeline:
             runtime=self._tool_runtime_factory(tool_call.name, origin_run_id, tool_call.id)
             if self._tool_runtime_factory is not None else None,
             desktop=self._desktop,
-            stop_requested=stop_requested,
+            stop_requested=turn_control.is_interrupted if turn_control else None,
             origin_run_id=origin_run_id,
             origin_tool_call_id=tool_call.id,
             origin_tool_name=tool_call.name,
         )
 
-        # 5. 执行工具并把普通异常转换为 ToolResult，再统一规范化过长输出与媒体。
-        if stop_requested is not None and stop_requested():
-            raise TurnInterrupted("工具启动前收到停止或引导")
-        try:
-            result = await tool.execute(tool_call.args, context)
-        except Exception as e:
-            logger.error("工具 '%s' 执行失败: %s", tool_call.name, e)
-            result = ToolResult(content=f"错误: {e}")
-
-        result = self._tool_result_normalizer.normalize(
-            result,
-            session_id=self._permission_session_id or state.session_id,
-            persist_overflow=tool.persist_oversized_result,
-        )
+        # 5. 仅实际工具执行接入取消，返回后按原流程处理结果与完成钩子。
+        result = await self._invoke_tool(tool, tool_call.args, context, turn_control)
 
         # 6. 只读准备得到具体动作后重新授权，获准后才重入准备完毕的工具。
         if self._tool_authorization is not None and result.prepared_action is not None:
@@ -641,7 +620,7 @@ class ExecutionPipeline:
                 session_id=self._permission_session_id or state.session_id,
                 tool_call_id=tool_call.id,
                 descriptor=descriptor,
-                arguments=tool_call.args,
+                arguments=dict(tool_call.args),
                 prepared_action=result.prepared_action,
             )
             outcome = self._tool_authorization.authorize(prepared_invocation)
@@ -661,14 +640,13 @@ class ExecutionPipeline:
                 tool,
                 result.resume_state,
                 grant,
-                stop_requested=stop_requested,
-                origin_run_id=origin_run_id,
+                turn_control=turn_control,
             )
             prepared_action = prepared_invocation.prepared_action
 
         # 7. 已退役的执行中断不能重新进入等待；当前公开协议只支持统一审批。
         if result.interrupt and result.interrupt.type not in {InterruptKind.AUTHORIZATION_REQUEST, InterruptKind.PARENT_MESSAGE}:
-            return ToolResult(content="错误: 工具返回不支持的中断；准备阶段只能请求只读准备数据")
+            return ToolResult.success("错误: 工具返回不支持的中断；准备阶段只能请求只读准备数据")
 
         # 8. 只有工具实际完成才运行 AFTER_TOOL，等待中断不提前触发完成钩子。
         await self._plugin_manager.run_hooks(
@@ -697,7 +675,7 @@ class ExecutionPipeline:
             ToolResult: 仅请求审批、不产生工具副作用的中断结果。
         """
         return ToolResult(
-            content="",
+            content=(),
             interrupt=outcome.interrupt,
             resume_state={
                 "authorization_request": outcome.resume_state,
@@ -714,8 +692,7 @@ class ExecutionPipeline:
         tool: BaseTool,
         resume_state: dict,
         grant: dict | None,
-        stop_requested: StopRequested | None = None,
-        origin_run_id: str = "",
+        turn_control: TurnControl | None = None,
     ) -> ToolResult:
         """使用已准备动作和当前授权重入工具，屏幕动作由注入的共享后端桌面接口直接执行。
 
@@ -725,13 +702,13 @@ class ExecutionPipeline:
             tool (BaseTool): 当前准备或执行的工具实例。
             resume_state (dict): 中断前保存的工具中间状态。
             grant (dict | None): 绑定本次调用的授权快照。
-            stop_requested (StopRequested | None): 当前轮次的只读停止检查。
-            origin_run_id (str): 当前运行标识，保留后台任务的来源关联。
+            turn_control (TurnControl | None): 本轮控制，提供工具取消及任务来源信息。
 
         Returns:
             ToolResult: 准备后获准的工具执行结果。
         """
         # 1. 使用已获准的具体动作和中间态重入工具，仍传入共享任务端口。
+        origin_run_id = turn_control.run_id if turn_control else ""
         context = ToolContext(
             session_id=self._permission_session_id or state.session_id,
             state=state,
@@ -744,19 +721,38 @@ class ExecutionPipeline:
             origin_tool_call_id=tool_call.id,
             origin_tool_name=tool_call.name,
             desktop=self._desktop,
-            stop_requested=stop_requested,
+            stop_requested=turn_control.is_interrupted if turn_control else None,
         )
-        # 2. 普通工具异常转换为可展示结果，随后执行统一结果规范化。
-        if stop_requested is not None and stop_requested():
-            raise TurnInterrupted("准备完成的工具启动前收到停止或引导")
+        # 2. 获准动作复用同一执行入口，当前工具完成后再进行结果处理。
+        return await self._invoke_tool(tool, tool_call.args, context, turn_control)
+
+    async def _invoke_tool(
+        self, tool: BaseTool, args: Mapping[str, object], context: ToolContext, turn_control: TurnControl | None,
+    ) -> ToolResult:
+        """执行已授权工具并规范化结果，取消信号交还 Agent 保存本轮结束。
+
+        Args:
+            tool (BaseTool): 当前已获准执行或进行只读准备的工具。
+            args (Mapping[str, object]): 当前调用的只读原始参数。
+            context (ToolContext): 本次授权、恢复材料及来源端口。
+            turn_control (TurnControl | None): 本轮控制；独立调用可直接等待工具。
+
+        Returns:
+            ToolResult: 完整工具结果，普通异常转换为可保存的错误正文。
+        """
+        # 1. 沿用工具的字典入参契约，实际传入原有只读参数对象，保持审批后的内容固定。
+        call_args = cast(dict, args)
         try:
-            result = await tool.execute(tool_call.args, context)
+            result = (await turn_control.run_tool(lambda: tool.execute(call_args, context))
+                      if turn_control else await tool.execute(call_args, context))
+        except TurnInterrupted:
+            raise
         except Exception as exc:
-            logger.error("工具 '%s' 执行失败: %s", tool_call.name, exc)
-            result = ToolResult(content=f"错误: {exc}")
+            logger.error("工具 '%s' 执行失败: %s", tool.name, exc)
+            result = ToolResult.success(f"错误: {exc}")
         return self._tool_result_normalizer.normalize(
             result,
-            session_id=self._permission_session_id or state.session_id,
+            session_id=context.session_id,
             persist_overflow=tool.persist_oversized_result,
         )
 
@@ -841,7 +837,7 @@ class ExecutionPipeline:
         candidate = state.model_copy(deep=True)
         interrupt.tool_name = tool_call.name
         interrupt.tool_call_id = tool_call.id
-        interrupt.tool_args = tool_call.args
+        interrupt.tool_args = dict(tool_call.args)
         interrupt.resume_state = resume_state
         candidate.set_interrupt(
             {**interrupt.to_state(), "origin_channel": runtime_context.origin_channel if runtime_context else DESKTOP_CHANNEL},
