@@ -196,10 +196,26 @@ class ParentSession:
                     self._wake_worker()
                 return receipt
             if request.kind == PluginRequestKind.PUBLISH_EVENT:
-                if request.name != InteractionEventKind.NOTICE or not isinstance(request.payload.get("text"), str):
+                # 1. 仅接收框架支持的展示字段，事件来源使用已绑定的插件调用对象。
+                text = request.payload.get("text")
+                payload: dict[str, object]
+                if request.name == InteractionEventKind.NOTICE and isinstance(text, str):
+                    payload = {"text": text, "plugin_name": request.plugin_name}
+                elif request.name == InteractionEventKind.STATUS_NOTICE:
+                    notice_id, active = request.payload.get("id"), request.payload.get("active")
+                    if not isinstance(notice_id, str) or not notice_id.strip() or not isinstance(active, bool):
+                        return CommandReceipt(CommandStatus.INVALID, self.context_id)
+                    if active and (not isinstance(text, str) or not text.strip()):
+                        return CommandReceipt(CommandStatus.INVALID, self.context_id)
+                    payload = {"id": notice_id, "active": active, "plugin_name": request.plugin_name}
+                    if active:
+                        payload["text"] = text
+                else:
                     return CommandReceipt(CommandStatus.INVALID, self.context_id)
-                self._events.put_nowait(InteractionEvent(self.context_id, InteractionEventKind.NOTICE,
-                    {"text": request.payload["text"], "plugin_name": request.plugin_name}, task_id=request.source_task_id))
+                # 2. 持续提示随实际业务显式关闭，来源轮次结束后仍可发布更新和关闭事件。
+                self._events.put_nowait(InteractionEvent(self.context_id, request.name, payload,
+                    run_id=request.run_id if request.name == InteractionEventKind.STATUS_NOTICE else None,
+                    task_id=request.source_task_id))
                 return CommandReceipt(CommandStatus.ACCEPTED, self.context_id)
             if request.kind == PluginRequestKind.STEER_TURN and not self.matches_run(request.run_id):
                 return CommandReceipt(CommandStatus.STALE, self.context_id)

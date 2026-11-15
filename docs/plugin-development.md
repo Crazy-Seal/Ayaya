@@ -147,6 +147,30 @@ flowchart TD
 
 上述五个投递方法正常返回表示请求已入队。Scheduler 随后完成校验、保存或控制处理，拒绝及处理失败由框架统一记录。插件调用继续自己的工作，不等待受理结果或目标轮次结束。前端 HTTP 入口仍使用已有的 `CommandReceipt`，插件投递方法不返回该对象。
 
+### 1.7 持续显示的前端提示
+
+插件通过 `runtime.publish_event(InteractionEventKind.STATUS_NOTICE, payload)` 显示持续提示。它位于聊天记录上方的独立区域，适合展示连接中、正在执行等当前状态。
+
+```python
+from app.schemas.runtime_types import InteractionEventKind
+
+await runtime.publish_event(InteractionEventKind.STATUS_NOTICE, {
+    "id": "connection", "active": True, "text": "正在连接应用",
+})
+await runtime.publish_event(InteractionEventKind.STATUS_NOTICE, {
+    "id": "connection", "active": True, "text": "已连接，正在执行",
+})
+await runtime.publish_event(InteractionEventKind.STATUS_NOTICE, {
+    "id": "connection", "active": False,
+})
+```
+
+`id` 为非空字符串，`active` 必须是布尔值；开启和更新还需提供非空 `text`。同一会话中，一个插件使用同一 id 会更新原提示，其他插件的同名提示分别显示。重复关闭已经移除的提示可以完成。框架从调用对象绑定插件、会话、来源轮次和任务编号，只提取规定的展示字段。
+
+提示一直显示到显式关闭、切换会话或当前连接断开。插件负责在业务结束时关闭；后台任务可以跨轮次更新和关闭。刷新聊天历史保留当前提示，断线重连则从新事件开始显示。
+
+持续提示只更新界面，不进入聊天历史、checkpoint、临时背景或模型输入，也不会唤醒 Agent。原有 `notice` 仍按短暂提示处理。方法返回表示已入队；非法载荷由现有发布请求受理入口拒绝。
+
 ## 2 配置、工具与MCP
 
 插件页按配置 Schema 生成字段控件，复杂字段使用 JSON 编辑，保存前统一校验。插件自己的工具权限和 MCP 连接状态在同一卡片展示；连接参数由开发者定义。

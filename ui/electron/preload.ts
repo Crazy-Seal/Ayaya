@@ -123,6 +123,17 @@ const desktopPetApi: DesktopPetApi = {
   onInteractionEvent: (listener) =>
     subscribe(IpcChannel.INTERACTION_EVENT, listener),
   /**
+   * 监听当前订阅断线，将会话编号交给页面清空持续提示。
+   *
+   * Args:
+   *     listener ((sessionId: string) => void): 页面断线清理入口。
+   *
+   * Returns:
+   *     () => void: 移除本次监听的函数。
+   */
+  onInteractionDisconnected: (listener) =>
+    subscribe(IpcChannel.INTERACTION_DISCONNECTED, listener),
+  /**
    * 由聊天页调用主进程图片选择器，取得用户选择的附件。
    *
    * Returns:

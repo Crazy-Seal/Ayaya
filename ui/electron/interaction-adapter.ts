@@ -39,8 +39,19 @@ const desktopSession = new DesktopSessionController({
   log: logDesktopStream,
   /** SSE 每次连接后完整登记，外部后端重启也不能沿用已失效的确认状态。 */
   onConnected: () => desktopWindowRegistry.connect(),
-  /** 断线时只按本机进程死亡证据恢复；临时网络断开不会恢复窗口。 */
-  onDisconnected: () => desktopWindowRegistry.recoverIfBackendExited(),
+  /**
+   * 断线时检查本机恢复记录，并通知聊天页结束本连接的提示显示。
+   *
+   * Args:
+   *     sessionId (string): 已由订阅控制器核对归属的会话编号。
+   */
+  onDisconnected: (sessionId) => {
+    desktopWindowRegistry.recoverIfBackendExited();
+    const chatWindow = getChatWindow();
+    if (chatWindow && !chatWindow.isDestroyed()) {
+      chatWindow.webContents.send(IpcChannel.INTERACTION_DISCONNECTED, sessionId);
+    }
+  },
 });
 
 /**

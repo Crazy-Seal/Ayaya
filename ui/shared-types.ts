@@ -54,6 +54,7 @@ export type CommandKind = typeof CommandKind[keyof typeof CommandKind];
  *     QUEUED_MESSAGE (string): 输入已排队，协议值为 queued_message。
  *     QUEUED_CANCELLED (string): 排队输入已撤销，协议值为 queued_cancelled。
  *     TASK_STATUS (string): 后台任务状态，协议值为 task_status。
+ *     STATUS_NOTICE (string): 插件持续前端提示，协议值为 status_notice。
  *     RUN_STARTED (string): 轮次开始或恢复，协议值为 run_started。
  *     TEXT_CHUNK (string): 模型正文分片，协议值为 text_chunk。
  *     TOOL_CALL (string): 工具调用提示，协议值为 tool_call。
@@ -69,6 +70,7 @@ export const InteractionEventKind = {
   QUEUED_CANCELLED: "queued_cancelled",
   TASK_STATUS: "task_status",
   NOTICE: "notice",
+  STATUS_NOTICE: "status_notice",
   RUN_STARTED: "run_started",
   TEXT_CHUNK: "text_chunk",
   TOOL_CALL: "tool_call",
@@ -82,6 +84,20 @@ export const InteractionEventKind = {
   HISTORY_RESTORED: "history_restored",
 } as const;
 export type InteractionEventKind = typeof InteractionEventKind[keyof typeof InteractionEventKind];
+
+/**
+ * 表示已由框架绑定插件来源的持续提示，关闭时使用原编号。
+ *
+ * Attributes:
+ *     plugin_name (string): 发布提示的真实插件名称。
+ *     id (string): 当前插件在会话内使用的提示编号。
+ *     active (boolean): 开启或更新时为 true，关闭时为 false。
+ *     text (string): 开启或更新时显示的文字。
+ */
+export type PluginStatusNotice = {
+  plugin_name: string;
+  id: string;
+} & ({ active: true; text: string } | { active: false });
 
 /**
  * 工具完成并保存后提供的调用标识和历史查询终点。
@@ -727,6 +743,16 @@ export interface DesktopPetApi {
    *     () => void: 只移除该监听器的清理函数。
    */
   onInteractionEvent: (callback: (event: InteractionEvent) => void) => () => void;
+  /**
+   * 监听当前订阅断线，让聊天页清空连接内的持续提示。
+   *
+   * Args:
+   *     callback ((sessionId: string) => void): 接收断线所属会话编号的页面回调。
+   *
+   * Returns:
+   *     () => void: 移除本次监听的函数。
+   */
+  onInteractionDisconnected: (callback: (sessionId: string) => void) => () => void;
   selectImages: () => Promise<Array<{ path: string; dataUrl: string }> | null>;
   setMousePassthrough: (enabled: boolean) => void;
   setPointerInteractive: (enabled: boolean) => void;

@@ -41,6 +41,7 @@ export const IpcChannel = {
   IMPORT_LIVE2D_MODEL: "desktop-pet:import-live2d-model",
   INTERACTION_COMMAND: "desktop-pet:interaction-command",
   INTERACTION_EVENT: "desktop-pet:interaction-event",
+  INTERACTION_DISCONNECTED: "desktop-pet:interaction-disconnected",
   LOG_BATCH: "desktop-pet:log-batch",
   MINIMIZE_CURRENT_WINDOW: "desktop-pet:minimize-current-window",
   MODEL_CHANGED: "desktop-pet:model-changed",

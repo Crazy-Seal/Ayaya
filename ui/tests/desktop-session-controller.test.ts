@@ -1,3 +1,5 @@
+import { PresentationElement } from "./presentation-dom.js";
+import { PluginStatusNotices } from "../src/chat/plugin-status-notices.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { DesktopSessionController } from "../electron/desktop-session-controller.js";
@@ -111,6 +113,11 @@ class TestConnection {
   send(value: InteractionEvent): void {
     this.writer.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(value)}\n\n`));
   }
+
+  /** 模拟后端结束当前 SSE 响应，由正式控制器处理断线。 */
+  disconnect(): void {
+    this.writer.close();
+  }
 }
 
 /**
@@ -126,6 +133,7 @@ class TestConnection {
 class Harness {
   readonly connections: TestConnection[] = [];
   readonly listeners = new Set<(value: InteractionEvent) => void>();
+  readonly disconnectListeners = new Set<(sessionId: string) => void>();
   readonly received: InteractionEvent[] = [];
   readonly commands: ChannelCommand[] = [];
   readonly controller: DesktopSessionController;
@@ -170,12 +178,35 @@ class Harness {
        *  测试不写真实应用日志。
        */
       log: () => {},
+      /**
+       * 将正式控制器确认的断线交给同一页面 bridge，保持会话来源。
+       *
+       * Args:
+       *     sessionId (string): 断线所属会话。
+       */
+      onDisconnected: (sessionId) => {
+        for (const listener of this.disconnectListeners) listener(sessionId);
+      },
       reconnectDelayMs: 1,
     });
     this.bridge = {
       subscribeDesktopSession: this.controller.subscribe.bind(this.controller),
       /**
-       * 保存页面监听，并提供页面销毁时的移除函数。
+       * 登记页面断线监听，使控制器与页面使用同一条桥接链。
+       *
+       * Args:
+       *     listener ((sessionId: string) => void): 页面清理入口。
+       *
+       * Returns:
+       *     () => void: 解除本次监听。
+       */
+      onInteractionDisconnected: (listener) => {
+        this.disconnectListeners.add(listener);
+        /** 页面销毁时移除其断线监听。 */
+        return () => { this.disconnectListeners.delete(listener); };
+      },
+      /**
+       * 保存页面事件监听，并提供页面销毁时的移除函数。
        *
        * Args:
        *     listener ((event: InteractionEvent) => void): 页面事件处理入口。
@@ -239,7 +270,9 @@ const makePage = (bridge: RuntimeChatClientOptions["bridge"], history = Promise.
   let dismissed = 0;
   const button = { disabled: false, innerHTML: "send", title: "", setAttribute: noop };
   const input = { value: "新指令", style: { height: "" }, focus: noop };
+  const statusRoot = new PresentationElement();
   const client = new RuntimeChatClient({
+    statusNotices: new PluginStatusNotices(statusRoot as unknown as HTMLElement),
     sessionId: "s", bridge, sendBtn: button as unknown as HTMLButtonElement,
     input: input as unknown as HTMLTextAreaElement,
     bubble: { setText: noop },
@@ -289,7 +322,7 @@ const makePage = (bridge: RuntimeChatClientOptions["bridge"], history = Promise.
       dismiss: () => { dismissed += 1; },
     },
   });
-  return { client, button, replies, errors,
+  return { client, button, replies, errors, statusRoot,
     /**
      *  返回已打开的审批数。
      */
@@ -300,6 +333,83 @@ const makePage = (bridge: RuntimeChatClientOptions["bridge"], history = Promise.
     dismissed: () => dismissed,
   };
 };
+
+test("真实 SSE 断开清空持续提示，重连仅显示新事件", /**
+ * 使用正式订阅控制器和提示显示类验证网络结束至页面清理的完整链路。
+ *
+ * Returns:
+ *     Promise<void>: 断线与重连后的提示均完成验证。
+ */
+async () => {
+  const previousDocument = globalThis.document;
+  globalThis.document = {
+    /** 返回不存在的可选聊天控件，持续提示通过独立容器装配。 */
+    getElementById: () => null,
+    /** 为真实提示显示类创建测试 DOM 节点。 */
+    createElement: () => new PresentationElement(),
+  } as unknown as Document;
+  const harness = new Harness();
+  try {
+    const page = makePage(harness.bridge);
+    harness.connections[0].send(event("session_snapshot", 0, { phase: "idle" }));
+    await flush();
+    harness.connections[0].send(event("status_notice", 1, { plugin_name: "demo", id: "control", active: true, text: "执行中" }));
+    await flush();
+    assert.equal(page.statusRoot.textContent, "[插件 demo] 执行中");
+    harness.connections[0].disconnect();
+    await flush();
+    assert.equal(page.statusRoot.textContent, "");
+    for (let attempt = 0; attempt < 100 && harness.connections.length < 2; attempt += 1) await flush();
+    assert.equal(harness.connections.length, 2);
+    harness.connections[1].send(event("session_snapshot", 1, { phase: "idle" }));
+    await flush();
+    assert.equal(page.statusRoot.hidden, true);
+    harness.connections[1].send(event("status_notice", 2, { plugin_name: "demo", id: "control", active: true, text: "新连接任务" }));
+    await flush();
+    assert.equal(page.statusRoot.textContent, "[插件 demo] 新连接任务");
+    harness.connections[1].send(event("status_notice", 3, { plugin_name: "demo", id: "control", active: false }));
+    await flush();
+    assert.equal(page.statusRoot.hidden, true);
+  } finally {
+    harness.controller.stop();
+    globalThis.document = previousDocument;
+  }
+});
+
+test("历史读取期间收到开启再断线，清理不会被排队事件覆盖", /**
+ * 用历史读取屏障让提示积压，验证断线清理与运行事件保持接收顺序。
+ *
+ * Returns:
+ *     Promise<void>: 屏障释放后的提示区域已确认清空。
+ */
+async () => {
+  const previousDocument = globalThis.document;
+  globalThis.document = {
+    /** 测试没有额外标题栏或排队控件。 */
+    getElementById: () => null,
+    /** 为真实提示显示器创建隔离 DOM。 */
+    createElement: () => new PresentationElement(),
+  } as unknown as Document;
+  const harness = new Harness();
+  const history = deferred<void>();
+  try {
+    const page = makePage(harness.bridge, history.promise);
+    harness.connections[0].send(event("session_snapshot", 0, { phase: "idle" }));
+    await flush();
+    harness.connections[0].send(event("status_notice", 1, { plugin_name: "demo", id: "control", active: true, text: "排队的开启" }));
+    await flush();
+    harness.connections[0].disconnect();
+    await flush();
+    history.resolve();
+    await flush();
+    assert.equal(page.statusRoot.textContent, "");
+    assert.equal(page.statusRoot.hidden, true);
+  } finally {
+    history.resolve();
+    harness.controller.stop();
+    globalThis.document = previousDocument;
+  }
+});
 
 test("同会话页面重载取得新快照，历史完成前不能提交，之后等待完整回答并恢复审批", /**
  * 验证同会话页面重载取得新快照，历史完成前不能提交，之后等待完整回答并恢复审批。

@@ -22,8 +22,8 @@ export interface DesktopSessionDependencies {
   reconnectDelayMs?: number;
   /** 首次连接与重连后同步窗口身份，完成前不交付新的快照。 */
   onConnected?: () => Promise<void>;
-  /** 断线后检查本机恢复记录，网络波动不能直接显示仍在执行的窗口。 */
-  onDisconnected?: () => void;
+  /** 断线后将所属会话交给页面清理及本机恢复检查。 */
+  onDisconnected?: (sessionId: string) => void;
 }
 
 /**
@@ -149,7 +149,7 @@ export class DesktopSessionController {
         }
         if (this.isCurrent(controller, generation)) throw new Error("交互事件订阅意外结束");
       } catch (error) {
-        if (this.isCurrent(controller, generation)) this.dependencies.onDisconnected?.();
+        if (this.isCurrent(controller, generation)) this.dependencies.onDisconnected?.(sessionId);
         // 3. 同一次断线只记录首次失败；正常取消不写日志，也不取消 Agent。
         if (this.isCurrent(controller, generation) && !reconnecting) {
           this.dependencies.log("warn", "交互事件流断开，将重新订阅", error);

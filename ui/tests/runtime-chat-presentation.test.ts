@@ -1,3 +1,4 @@
+import { PresentationElement } from "./presentation-dom.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { setImmediate as flushEvents } from "node:timers/promises";
@@ -5,147 +6,9 @@ import { RuntimeChatClient, type RuntimeChatClientOptions } from "../src/chat/ru
 import { ChatHistoryManager } from "../src/chat/chat-history-manager.js";
 import { BubbleManager } from "../src/chat/bubble.js";
 import { BackgroundTasksPage } from "../src/settings/pages/background-tasks-page.js";
+import { PluginStatusNotices } from "../src/chat/plugin-status-notices.js";
 import type { BackgroundTaskRecord, ChatAttentionUpdate, ChatHistoryItem, InteractionEvent } from "../shared-types.js";
 
-/**
- * 提供真实展示类所需的最小 DOM 行为，文本可从公开容器读取。
- *
- * Attributes:
- *     children (PresentationElement[]): 当前子节点。
- *     parent (PresentationElement | null): 用于移除提示及草稿的父节点。
- *     value (string): 节点自己的正文。
- */
-class PresentationElement {
-  children: PresentationElement[] = [];
-  parent: PresentationElement | null = null;
-  private value = "";
-  className = "";
-  hidden = true;
-  disabled = false;
-  title = "";
-  src = "";
-  style: Partial<CSSStyleDeclaration> = {};
-  attributes = new Map<string, string>();
-  handlers = new Map<string, () => void>();
-  scrollHeight = 100;
-  classList = {
-    /**
-     *  提供展示器切换动画样式所需的占位方法。
-     */
-    add(): void {},
-    /**
-     *  提供展示器恢复动画样式所需的占位方法。
-     */
-    remove(): void {},
-  };
-
-  /**
-   * 返回本节点与子节点的实际可见文字。
-   *
-   * Returns:
-   *     string: 实际可见正文。
-   */
-  get textContent(): string {
-    return this.value + this.children.map(/**
-     * 由集合的 map 遍历每项数据时调用，读取 child.textContent 供当前步骤继续处理。
-     *
-     * 此定义用于：返回本节点与子节点的实际可见文字。
-     *
-     * Args:
-     *     child (PresentationElement): 本次管理的子进程。
-     */
-    (child) => child.textContent).join("");
-  }
-
-  /**
-   * 按 DOM 语义替换节点文字及子节点。
-   *
-   * Args:
-   *     text (string): 新正文。
-   */
-  set textContent(text: string) {
-    this.value = text;
-    this.children = [];
-  }
-
-  /**
-   * 清空历史重绘的容器。
-   *
-   * Args:
-   *     _html (string): 展示器设置的 HTML，测试仅需要清空行为。
-   */
-  set innerHTML(_html: string) {
-    this.value = "";
-    this.children = [];
-  }
-
-  /**
-   * 追加子节点并保存移除关系。
-   *
-   * Args:
-   *     child (PresentationElement): 新节点。
-   *
-   * Returns:
-   *     PresentationElement: 已追加节点。
-   */
-  appendChild(child: PresentationElement): PresentationElement {
-    // 1. 与真实 DOM 一致，追加已有节点表示移动，不能复制状态提示。
-    child.remove();
-    child.parent = this;
-    this.children.push(child);
-    return child;
-  }
-
-  /**
-   *  从父节点移除提示或草稿。
-   */
-  remove(): void {
-    if (this.parent) this.parent.children.splice(this.parent.children.indexOf(this), 1);
-  }
-
-  /**
-   * 返回空图片集合，当前测试只检查文字。
-   *
-   * Returns:
-   *     PresentationElement[]: 没有图片的查询结果。
-   */
-  querySelectorAll(): PresentationElement[] { return []; }
-
-  /**
-   * 记录公开 DOM 属性，供测试核对控件的无障碍名称。
-   * Args:
-   *     name (string): DOM 属性名称。
-   *     value (string): 属性值。
-   */
-  setAttribute(name: string, value: string): void { this.attributes.set(name, value); }
-
-  /**
-   *  提供展示器滚动容器所需的占位方法。
-   */
-  scrollTo(): void {}
-
-  /**
-   * 登记公开控件回调，测试可模拟真实点击。
-   *
-   * Args:
-   *     kind (string): DOM 事件类别。
-   *     callback (() => void): 当前控件处理函数。
-   */
-  addEventListener(kind: string, callback: () => void): void { this.handlers.set(kind, callback); }
-
-  /**
-   * 按真实 DOM 顺序追加任务行中的节点。
-   *
-   * Args:
-   *     children (PresentationElement[]): 当前任务行的节点。
-   */
-  append(...children: PresentationElement[]): void { for (const child of children) this.appendChild(child); }
-
-  /**
-   *  清空任务列表，让刷新后的记录替换旧行。
-   */
-  replaceChildren(): void { this.children = []; this.value = ""; }
-}
 
 test("用户消息先于输入提示，工具提示在同轮用户消息之后", /**
  * 验证用户消息先于输入提示，工具提示在同轮用户消息之后。
@@ -206,6 +69,7 @@ function createPresentation(withTaskEntry = false) {
   const previousWindow = globalThis.window;
   const previousFrame = globalThis.requestAnimationFrame;
   const root = new PresentationElement();
+  const statusRoot = new PresentationElement();
   const bubble = new PresentationElement();
   const motions: string[] = [];
   const persisted: ChatHistoryItem[] = [];
@@ -227,6 +91,13 @@ function createPresentation(withTaskEntry = false) {
    *     _event (InteractionEvent): 待投影的后端事件。
    */
   let listener = (_event: InteractionEvent): void => {};
+  /**
+   * 保存页面尚未订阅断线时的测试入口。
+   *
+   * Args:
+   *     _sessionId (string): 断线所属会话。
+   */
+  let disconnectListener = (_sessionId: string): void => {};
   globalThis.document = {
     /**
      *  返回不存在的可选任务和排队 DOM。
@@ -315,6 +186,20 @@ function createPresentation(withTaskEntry = false) {
   };
   const bridge: NonNullable<RuntimeChatClientOptions["bridge"]> = {
     /**
+     * 保存 Electron 提供的断线通知端口，供场景控制连接结束。
+     *
+     * Args:
+     *     callback ((sessionId: string) => void): 聊天客户端的监听器。
+     *
+     * Returns:
+     *     () => void: 当前场景的监听移除函数。
+     */
+    onInteractionDisconnected: (callback) => {
+      disconnectListener = callback;
+      /** 测试结束时由全局环境恢复释放本次监听。 */
+      return () => {};
+    },
+    /**
      *  模拟事件订阅已经就绪。
      */
     subscribeDesktopSession: async () => {},
@@ -361,6 +246,7 @@ function createPresentation(withTaskEntry = false) {
   const history = new ChatHistoryManager(root as unknown as HTMLDivElement);
   const client = new RuntimeChatClient({
     sessionId: "s", bridge, chatHistory: history,
+    statusNotices: new PluginStatusNotices(statusRoot as unknown as HTMLElement),
     /**
      * 记录真实聊天客户端交给窗口的未读与审批提醒，不启动系统窗口。
      * Args:
@@ -388,6 +274,7 @@ function createPresentation(withTaskEntry = false) {
   });
   return {
     root, bubble, motions, persisted, taskHeader, taskButton, taskNotice, tasks, openedPages,
+    statusRoot,
     client, history, historyReads, approvals, attention, input, submissions,
     /**
      * 从公共 bridge 注入事件并等待 Renderer 处理完成。
@@ -407,6 +294,32 @@ function createPresentation(withTaskEntry = false) {
       await flushEvents();
     },
     /**
+     * 向页面通知当前或过期会话的连接结束，等待既有事件链完成。
+     *
+     * Args:
+     *     sessionId (string): 断线来源会话，默认使用当前测试会话。
+     *
+     * Returns:
+     *     Promise<void>: 断线清理已经有机会执行。
+     */
+    async disconnect(sessionId = "s"): Promise<void> {
+      disconnectListener(sessionId);
+      await flushEvents();
+    },
+    /**
+     * 从事件入口交付指定会话、epoch 和序号的原始网络事件。
+     *
+     * Args:
+     *     event (InteractionEvent): 场景明确指定来源的事件。
+     *
+     * Returns:
+     *     Promise<void>: 当前事件已经有机会完成处理。
+     */
+    async receive(event: InteractionEvent): Promise<void> {
+      listener(event);
+      await flushEvents();
+    },
+    /**
      *  停止展示计时器并恢复测试前的全局环境。
      */
     close(): void {
@@ -417,6 +330,99 @@ function createPresentation(withTaskEntry = false) {
     },
   };
 }
+
+test("持续提示按插件和编号更新关闭，历史刷新不会删除提示", /**
+ * 通过真实聊天客户端观察持续提示区域，验证其生命周期独立于历史列表。
+ *
+ * Returns:
+ *     Promise<void>: 提示和历史事件已经处理。
+ */
+async () => {
+  const view = createPresentation();
+  try {
+    await view.emit("session_snapshot", { phase: "idle" }, 0);
+    await view.emit("status_notice", { plugin_name: "demo", id: "control", active: true, text: "连接中" }, 1);
+    assert.equal(view.statusRoot.hidden, false);
+    assert.equal(view.statusRoot.textContent, "[插件 demo] 连接中");
+    const original = view.statusRoot.children[0];
+    await view.emit("status_notice", { plugin_name: "other", id: "control", active: true, text: "另一个任务" }, 2);
+    await view.emit("status_notice", { plugin_name: "demo", id: "control", active: true, text: "执行中" }, 3);
+    assert.equal(view.statusRoot.children.length, 2);
+    assert.equal(view.statusRoot.children[0], original);
+    assert.equal(view.statusRoot.textContent, "[插件 demo] 执行中[插件 other] 另一个任务");
+    await view.emit("history_restored", { detail: "恢复已保存历史" }, 4);
+    assert.equal(view.statusRoot.children.length, 2);
+    await view.emit("status_notice", { plugin_name: "demo", id: "control", active: false }, 5);
+    assert.equal(view.statusRoot.textContent, "[插件 other] 另一个任务");
+    await view.emit("status_notice", { plugin_name: "demo", id: "control", active: false }, 6);
+    await view.emit("status_notice", { plugin_name: "other", id: "control", active: false }, 7);
+    assert.equal(view.statusRoot.hidden, true);
+    assert.equal(view.statusRoot.textContent, "");
+    assert.equal(view.persisted.length, 0);
+  } finally {
+    view.close();
+  }
+});
+
+test("断线清空持续提示，迟到的其他会话通知不清除新提示", /**
+ * 从页面公开 bridge 触发断线，验证提示清理和重新连接后的增量。
+ *
+ * Returns:
+ *     Promise<void>: 所有事件与断线通知已经处理。
+ */
+async () => {
+  const view = createPresentation();
+  try {
+    await view.emit("session_snapshot", { phase: "idle" }, 0);
+    await view.emit("status_notice", { plugin_name: "demo", id: "control", active: true, text: "执行中" }, 1);
+    await view.disconnect();
+    assert.equal(view.statusRoot.textContent, "");
+    assert.equal(view.statusRoot.hidden, true);
+    await view.emit("session_snapshot", { phase: "idle" }, 1);
+    assert.equal(view.statusRoot.textContent, "");
+    await view.emit("status_notice", { plugin_name: "demo", id: "control", active: true, text: "再次执行" }, 2);
+    await view.disconnect("other");
+    assert.equal(view.statusRoot.textContent, "[插件 demo] 再次执行");
+  } finally {
+    view.close();
+  }
+});
+
+test("持续提示遵循会话和事件水位过滤，重新订阅后从空区域开始", /**
+ * 通过公开事件入口验证旧 epoch、重复序号及跨会话事件不会改变提示。
+ *
+ * Returns:
+ *     Promise<void>: 来源过滤和会话切换已经验证。
+ */
+async () => {
+  const view = createPresentation();
+  const active = { plugin_name: "demo", id: "control", active: true, text: "当前提示" };
+  try {
+    await view.emit("session_snapshot", { phase: "idle" }, 0);
+    await view.emit("status_notice", active, 2);
+    await view.emit("status_notice", { ...active, text: "重复事件" }, 2);
+    await view.receive({ session_id: "s", kind: "status_notice", payload: { ...active, active: false },
+      stream_epoch: "old-epoch", event_sequence: 100 });
+    await view.receive({ session_id: "other", kind: "status_notice", payload: { ...active, active: false },
+      stream_epoch: "epoch", event_sequence: 100 });
+    assert.equal(view.statusRoot.textContent, "[插件 demo] 当前提示");
+    await view.emit("session_snapshot", { phase: "idle" }, 2);
+    assert.equal(view.statusRoot.hidden, true);
+    await view.emit("status_notice", active, 3);
+    view.client.setSessionId("other");
+    assert.equal(view.statusRoot.hidden, true);
+    await view.emit("status_notice", active, 4);
+    assert.equal(view.statusRoot.hidden, true);
+    await view.receive({ session_id: "other", kind: "session_snapshot", payload: { phase: "idle" },
+      stream_epoch: "new-epoch", event_sequence: 0 });
+    await view.receive({ session_id: "other", kind: "status_notice", payload: { ...active, text: "另一会话" },
+      stream_epoch: "new-epoch", event_sequence: 1 });
+    await view.disconnect("s");
+    assert.equal(view.statusRoot.textContent, "[插件 demo] 另一会话");
+  } finally {
+    view.close();
+  }
+});
 
 test("重连历史中的新回复补发提醒，首次旧历史和重复快照不误报", /**
  * 验证没有收到流式分片时仍提醒新增的持久化回复，旧历史和重复恢复不会重复提醒。

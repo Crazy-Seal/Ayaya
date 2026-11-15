@@ -25,6 +25,7 @@
     "queued_cancelled",
     "task_status",
     "notice",
+    "status_notice",
     "run_started",
     "text_chunk",
     "tool_call",

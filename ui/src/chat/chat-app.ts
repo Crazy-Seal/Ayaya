@@ -6,6 +6,7 @@ import { iconMarkup, initializeIcons } from "../ui/icons.js";
 import { BubbleManager } from "./bubble.js";
 import { RuntimeChatClient } from "./runtime-chat-client.js";
 import { ChatHistoryManager } from "./chat-history-manager.js";
+import { PluginStatusNotices } from "./plugin-status-notices.js";
 import { ImageManager } from "./image-manager.js";
 import { setupDropHandler } from "./drop-handler.js";
 import { setupWindowGestures } from "../ui/window-gestures.js";
@@ -48,6 +49,7 @@ class ChatApp {
     this.client = new RuntimeChatClient({
       bubble: this.bubble, chatHistory: this.history,
       sendBtn: this.elements.sendBtn, input: this.elements.input, sessionId: "",
+      statusNotices: new PluginStatusNotices(document.getElementById("plugin-status-notices")!),
       /** 判断纯图片草稿是否可以发送。 */
       hasAttachments: () => this.images.getDataUrls().length > 0,
       /** 命令受理后清除本次图片，失败时客户端不调用此回调。 */

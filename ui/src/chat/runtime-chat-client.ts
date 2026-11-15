@@ -6,7 +6,8 @@ import { BackgroundTaskEntry } from "./background-task-entry.js";
 import {
   CommandKind, DESKTOP_CHANNEL, InteractionEventKind, InterruptKind, SessionPhase,
 } from "../../shared-types.js";
-import type { ChatAttentionUpdate, ChatHistoryItem, FailedInteractionInput, ToolCompletedData } from "../../shared-types.js";
+import type { ChatAttentionUpdate, ChatHistoryItem, FailedInteractionInput, PluginStatusNotice, ToolCompletedData } from "../../shared-types.js";
+import type { PluginStatusNotices } from "./plugin-status-notices.js";
 import type { BubbleManager } from "./bubble.js";
 import type { ChatHistoryManager } from "./chat-history-manager.js";
 import type {
@@ -17,7 +18,7 @@ import type {
  * 限定聊天视图所需的主进程命令、订阅及任务查询端口。
  */
 type RuntimeBridge = Pick<DesktopPetApi,
-  "submitInteractionCommand" | "subscribeDesktopSession" | "onInteractionEvent" |
+  "submitInteractionCommand" | "subscribeDesktopSession" | "onInteractionEvent" | "onInteractionDisconnected" |
   "getBackgroundTasks" | "getBackgroundTaskOutput"
 >;
 
@@ -37,6 +38,7 @@ type RuntimeBridge = Pick<DesktopPetApi,
  *     sendBtn (HTMLButtonElement): 当前发送或停止按钮。
  *     input (HTMLTextAreaElement): 真人草稿输入元素。
  *     sessionId (string): 当前桌面会话标识。
+ *     statusNotices (Pick<PluginStatusNotices, "update" | "clear">): 独立于聊天历史的持续提示显示入口。
  *     hasAttachments (() => boolean): 判断纯图片草稿是否有效的回调。
  *     onChatComplete (() => void): 有效输入受理后清空附件的回调。
  *     bridge (RuntimeBridge): 可替换的主进程交互端口。
@@ -55,6 +57,7 @@ export interface RuntimeChatClientOptions {
   sendBtn: HTMLButtonElement;
   input: HTMLTextAreaElement;
   sessionId: string;
+  statusNotices: Pick<PluginStatusNotices, "update" | "clear">;
   hasAttachments?: () => boolean;
   onChatComplete?: () => void;
   /** 已核对会话与事件水位后通知窗口更新未读或审批提醒。 */
@@ -183,6 +186,19 @@ export class RuntimeChatClient {
         this.options.chatHistory.showErrorMessage(`处理运行事件失败: ${String(error)}`);
       });
     });
+    this.bridge.onInteractionDisconnected(/**
+     * 将断线清理排在已经收到的事件之后，旧会话的清理不影响当前页面。
+     *
+     * Args:
+     *     sessionId (string): Electron 确认断开的订阅所属会话。
+     */
+    (sessionId) => {
+      const revision = this.sessionRevision;
+      this.eventTail = this.eventTail.then(/** 按当前页面代次清空本连接显示的持续提示。 */
+      () => {
+        if (revision === this.sessionRevision && sessionId === this.sessionId) this.options.statusNotices.clear();
+      });
+    });
     if (this.sessionId) this.setSessionId(this.sessionId);
   }
 
@@ -193,6 +209,7 @@ export class RuntimeChatClient {
    *     sessionId (string): 共享 Ayaya 会话标识。
    */
   setSessionId(sessionId: string): void {
+    this.options.statusNotices.clear();
     // 1. 新页面或会话切换都需要新的快照；在历史与状态应用完成前不能发送或排队。
     this.sessionRevision += 1;
     this.initialized = false;
@@ -720,6 +737,7 @@ export class RuntimeChatClient {
     if (event.session_id !== this.sessionId) return;
     // 2. 重连建立事件水位和运行编号，再读历史；当前回答不恢复半段正文。
     if (event.kind === InteractionEventKind.SESSION_SNAPSHOT) {
+      this.options.statusNotices.clear();
       this.initialized = false;
       this.updateSendButton();
       const epochChanged = this.epoch !== event.stream_epoch;
@@ -866,6 +884,8 @@ export class RuntimeChatClient {
       }
     } else if (event.kind === InteractionEventKind.NOTICE) {
       this.options.chatHistory.showPluginNotice(String(event.payload.plugin_name), String(event.payload.text));
+    } else if (event.kind === InteractionEventKind.STATUS_NOTICE) {
+      this.options.statusNotices.update(event.payload as PluginStatusNotice);
     } else if (event.kind === InteractionEventKind.TASK_STATUS) {
       this.taskEntry?.onStatus(String(event.payload.task_id || ""), String(event.payload.status || ""),
           typeof event.payload.tool_name === "string" ? event.payload.tool_name : undefined);

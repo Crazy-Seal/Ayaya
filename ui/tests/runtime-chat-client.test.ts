@@ -1,8 +1,24 @@
+import { PresentationElement } from "./presentation-dom.js";
+import { PluginStatusNotices } from "../src/chat/plugin-status-notices.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { RuntimeChatClient, type RuntimeChatClientOptions } from "../src/chat/runtime-chat-client.js";
 import type { InteractionEvent } from "../shared-types.js";
+
+/**
+ * 为不涉及网络断线的场景提供完整的页面 bridge。
+ *
+ * Args:
+ *     _callback ((sessionId: string) => void): 当前客户端的断线监听。
+ *
+ * Returns:
+ *     () => void: 当前场景的监听清理函数。
+ */
+const subscribeWithoutDisconnect = (_callback: (sessionId: string) => void): (() => void) => {
+  /** 当前场景没有创建断线源，结束时直接完成。 */
+  return () => {};
+};
 
 test("桌面 Adapter 接收渠道消息，执行失败后显示错误并恢复发送", /**
  * 验证桌面 Adapter 接收渠道消息、提交输入，以及失败后的历史同步和发送恢复。
@@ -28,6 +44,7 @@ async () => {
      *     Promise<void>: 当前异步处理完成的等待结果。
      */
     subscribeDesktopSession: async (_sessionId: string) => {},
+    onInteractionDisconnected: subscribeWithoutDisconnect,
     /**
      * 保存事件注入回调，并返回测试清理占位函数。
      *
@@ -96,6 +113,7 @@ async () => {
       setAttribute: () => {},
     } as unknown as HTMLButtonElement;
     const client = new RuntimeChatClient({
+      statusNotices: new PluginStatusNotices(new PresentationElement() as unknown as HTMLElement),
       sessionId: "s", bridge,
       bubble: { /**
        * 记录气泡正文更新，供检查流式和历史显示顺序。
@@ -260,6 +278,7 @@ async () => {
   getElementById: () => null } as unknown as Document;
   try {
     new RuntimeChatClient({
+      statusNotices: new PluginStatusNotices(new PresentationElement() as unknown as HTMLElement),
       sessionId: "s",
       bridge: {
         /**
@@ -269,6 +288,7 @@ async () => {
          *     Promise<void>: 当前异步处理完成的等待结果。
          */
         subscribeDesktopSession: async () => {},
+        onInteractionDisconnected: subscribeWithoutDisconnect,
         /**
          * 保存事件注入回调，并返回测试清理占位函数。
          *
@@ -442,6 +462,7 @@ async () => {
   getElementById: () => null } as unknown as Document;
   try {
     new RuntimeChatClient({
+      statusNotices: new PluginStatusNotices(new PresentationElement() as unknown as HTMLElement),
       sessionId: "s",
       bridge: {
         /**
@@ -451,6 +472,7 @@ async () => {
          *     Promise<void>: 当前异步处理完成的等待结果。
          */
         subscribeDesktopSession: async () => {},
+        onInteractionDisconnected: subscribeWithoutDisconnect,
         /**
          * 保存事件注入回调，并返回测试清理占位函数。
          *
@@ -655,6 +677,7 @@ async () => {
   } as unknown as Document;
   try {
     const client = new RuntimeChatClient({
+      statusNotices: new PluginStatusNotices(new PresentationElement() as unknown as HTMLElement),
       sessionId: "s", /**
        * 返回当前测试草稿是否包含图片。
        *
@@ -669,6 +692,7 @@ async () => {
          *     Promise<void>: 当前异步处理完成的等待结果。
          */
         subscribeDesktopSession: async () => {},
+        onInteractionDisconnected: subscribeWithoutDisconnect,
         /**
          * 保存事件注入回调，并返回测试清理占位函数。
          *
@@ -840,6 +864,7 @@ async () => {
   getElementById: () => null } as unknown as Document;
   try {
     const client = new RuntimeChatClient({
+      statusNotices: new PluginStatusNotices(new PresentationElement() as unknown as HTMLElement),
       sessionId: "s",
       bridge: {
         /**
@@ -849,6 +874,7 @@ async () => {
          *     Promise<void>: 当前异步处理完成的等待结果。
          */
         subscribeDesktopSession: async () => {},
+        onInteractionDisconnected: subscribeWithoutDisconnect,
         /**
          * 保存事件注入回调，并返回测试清理占位函数。
          *

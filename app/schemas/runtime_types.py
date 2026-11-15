@@ -237,6 +237,7 @@ class InteractionEventKind(str, Enum):
         QUEUED_CANCELLED (InteractionEventKind): 排队输入已撤销，协议值为 queued_cancelled。
         TASK_STATUS (InteractionEventKind): 后台任务状态，协议值为 task_status。
         NOTICE (InteractionEventKind): 插件短暂前端提示，协议值为 notice。
+        STATUS_NOTICE (InteractionEventKind): 插件持续前端提示，协议值为 status_notice。
         RUN_STARTED (InteractionEventKind): 轮次开始或恢复，协议值为 run_started。
         TEXT_CHUNK (InteractionEventKind): 模型正文分片，协议值为 text_chunk。
         TOOL_CALL (InteractionEventKind): 工具调用提示，协议值为 tool_call。
@@ -252,6 +253,7 @@ class InteractionEventKind(str, Enum):
     QUEUED_CANCELLED = "queued_cancelled"
     TASK_STATUS = "task_status"
     NOTICE = "notice"
+    STATUS_NOTICE = "status_notice"
     RUN_STARTED = "run_started"
     TEXT_CHUNK = "text_chunk"
     TOOL_CALL = "tool_call"

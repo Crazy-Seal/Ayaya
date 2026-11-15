@@ -15,7 +15,8 @@ const uiRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const output = path.join(uiRoot, ".test-dist", "desktop-smoke");
 const restoreCheck = process.argv.includes("--restore-check");
 const focusedCheck = process.argv.includes("--native-drag") || process.argv.includes("--composer-check")
-  || process.argv.includes("--message-paragraphs") || process.argv.includes("--plugin-capabilities") || process.argv.includes("--subagents");
+  || process.argv.includes("--message-paragraphs") || process.argv.includes("--plugin-capabilities") || process.argv.includes("--subagents")
+  || process.argv.includes("--status-notices");
 const previousRun = restoreCheck ? JSON.parse(fs.readFileSync(path.join(output, "results.json"), "utf8")) : null;
 const isolated = fs.mkdtempSync(path.join(os.tmpdir(), "ayaya-ui-windows-"));
 let originalSavedBounds = null;
@@ -331,6 +332,44 @@ try {
   const chat = windows.openChatWindow();
   await desktopWindowRegistry.connect();
   await waitFor(chat, "document.querySelectorAll('.message-item').length >= 2 && !document.getElementById('send-btn').disabled");
+  if (process.argv.includes("--status-notices")) {
+    const { InteractionEventKind } = await import("../dist-electron/shared-types.js");
+    const notice = { id: "connection", plugin_name: "demo", active: true, text: "正在连接应用" };
+    // 1. 事件经过正式订阅、IPC 和 preload；提示区域与历史列表分别显示。
+    emit(event(InteractionEventKind.STATUS_NOTICE, notice));
+    await waitFor(chat, "document.getElementById('plugin-status-notices').textContent.includes('正在连接应用')");
+    assert.equal(await chat.webContents.executeJavaScript("document.getElementById('chat-history-list').textContent.includes('正在连接应用')"), false);
+    await capture(chat, "status-notice-open");
+    emit(event(InteractionEventKind.STATUS_NOTICE, { ...notice, text: "已连接，正在执行" }));
+    await waitFor(chat, "document.getElementById('plugin-status-notices').textContent.includes('已连接，正在执行')");
+    assert.equal(await chat.webContents.executeJavaScript("document.getElementById('plugin-status-notices').children.length"), 1);
+    await capture(chat, "status-notice-update");
+    // 2. 历史刷新与另一插件的同名提示都保留当前显示。
+    emit(event(InteractionEventKind.STATUS_NOTICE, { ...notice, plugin_name: "other", text: "另一个插件的任务" }));
+    emit(event(InteractionEventKind.HISTORY_RESTORED, {}));
+    await waitFor(chat, "document.getElementById('plugin-status-notices').children.length === 2");
+    emit(event(InteractionEventKind.STATUS_NOTICE, { id: notice.id, plugin_name: "demo", active: false }));
+    emit(event(InteractionEventKind.STATUS_NOTICE, { id: notice.id, plugin_name: "other", active: false }));
+    await waitFor(chat, "document.getElementById('plugin-status-notices').hidden");
+    await capture(chat, "status-notice-closed");
+    // 3. 关闭 SSE 验证真实断线 IPC，重连快照不恢复提示，后续新事件仍可显示。
+    emit(event(InteractionEventKind.STATUS_NOTICE, notice));
+    await waitFor(chat, "!document.getElementById('plugin-status-notices').hidden");
+    stream.close();
+    await waitFor(chat, "document.getElementById('plugin-status-notices').hidden");
+    for (let attempt = 0; attempt < 40 && subscriptions < 2; attempt += 1) await pause(100);
+    assert.ok(subscriptions >= 2);
+    await waitFor(chat, "!document.getElementById('send-btn').disabled");
+    assert.equal(await chat.webContents.executeJavaScript("document.getElementById('plugin-status-notices').hidden"), true);
+    emit(event(InteractionEventKind.STATUS_NOTICE, { ...notice, text: "新连接开始的任务" }));
+    await waitFor(chat, "document.getElementById('plugin-status-notices').textContent.includes('新连接开始的任务')");
+    await capture(chat, "status-notice-reconnected");
+    emit(event(InteractionEventKind.STATUS_NOTICE, { id: notice.id, plugin_name: "demo", active: false }));
+    await waitFor(chat, "document.getElementById('plugin-status-notices').hidden");
+    fs.writeFileSync(path.join(output, "status-notice-results.json"), JSON.stringify({ passed: true, subscriptions, isolated, errors, requests }, null, 2));
+    console.log("持续提示验证通过：开启、更新、关闭、历史刷新及真实断线重连。");
+    return;
+  }
   if (process.argv.includes("--subagents")) {
     // 1. 经真实 preload 和 IPC 从聊天名单入口打开独立面板，空闲保留型仍可见。
     await waitFor(chat, "!document.getElementById('subagent-entry').hidden");

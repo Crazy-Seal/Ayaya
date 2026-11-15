@@ -133,8 +133,8 @@ class PluginRuntime:
         """投递框架支持的前端事件，复制载荷以保留投递时内容。
 
         Args:
-            name (str): 供查询或识别本次内容用途的稳定名称。
-            payload (dict[str, Any]): 前端事件的结构化内容，发送前复制为独立对象。
+            name (str): 框架支持的前端事件名称，notice 为短暂提示，status_notice 为持续提示。
+            payload (dict[str, Any]): 发送前复制的展示载荷；持续提示使用 id、active 及开启时的 text。
         """
         from copy import deepcopy
         await self._send(PluginRequestKind.PUBLISH_EVENT, name=name, payload=deepcopy(payload))
