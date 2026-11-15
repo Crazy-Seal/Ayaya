@@ -7,6 +7,7 @@ from app.agent.runtime.subagent_requests import CreateSubagentRequest
 from app.agent.tools.core.base import BaseTool, ToolContext, ToolResult
 from app.agent.tools._subagent_support import _runtime, _source, _receipt_result
 from app.schemas.tool_identity import ToolIdentity
+from app.schemas.tool_types import REPL_TOOL_NAMES
 
 
 class CreateSubagentTool(BaseTool):
@@ -46,7 +47,7 @@ class CreateSubagentTool(BaseTool):
             ToolResult: 子身份、受理动作及受理时状态。
 
         Raises:
-            ValueError: 名称、系统提示词或初始任务为空，或白名单包含当前不可见的公开名称。
+            ValueError: 必填文本为空、白名单工具不可见，或请求授予子 Agent 原生 Python 工具。
         """
         # 1. 校验创建参数，在投递请求前拒绝空白名称、系统提示词或初始任务。
         if not args["name"].strip() or not args["system_prompt"].strip() or not args["prompt"].strip():
@@ -57,6 +58,8 @@ class CreateSubagentTool(BaseTool):
             whitelist = frozenset(self._visible_tool_identities[name] for name in args.get("tool_whitelist", []))
         except KeyError as exc:
             raise ValueError(f"白名单工具不在当前可见目录中，请填写完整公开名称：{exc.args[0]}") from exc
+        if whitelist & {ToolIdentity.local(name) for name in REPL_TOOL_NAMES}:
+            raise ValueError("子 Agent 无法使用原生 Python REPL 工具，请由主 Agent 执行")
         # 3. 队列及持久化继续使用稳定身份，公开名称只用于模型填写参数。
         reply = asyncio.get_running_loop().create_future()
         request = CreateSubagentRequest(_source(runtime), args["name"], args["system_prompt"], args["prompt"],

@@ -335,10 +335,11 @@ def test_creation_uses_current_tool_identities_after_catalog_changes(tmp_path: P
     asyncio.run(scenario())
 
 
-def test_factory_wires_creation_tool_to_its_agent_catalog(tmp_path: Path) -> None:
+def test_factory_wires_creation_tool_to_its_agent_catalog(tmp_path: Path, repl_service) -> None:
     """应用工厂装配创建工具后，实际调用能解析随后注册的工具身份。
 
     Args:
+        repl_service (ReplService): 测试 fixture 提供的懒启动原生 Python 资源。
         tmp_path (Path): 本次测试独占的任务数据库目录。
     """
     async def scenario() -> None:
@@ -352,7 +353,7 @@ def test_factory_wires_creation_tool_to_its_agent_catalog(tmp_path: Path) -> Non
             agent_plugins={"memory": AgentPluginSettings(enabled=False)},
             tool_permissions={"local:create_subagent": ToolPolicy.ALLOW, "local:operation": ToolPolicy.ALLOW})
         agent = agent_factory.build_agent(settings, tool_authorization=ToolAuthorization(lambda _: settings), runtime_queue=queue,
-            tool_runtime_factory=lambda name, run, call: ToolRuntime("parent", run, name, call, supervisor, queue), sqlite_factory=SqliteFactory())
+            tool_runtime_factory=lambda name, run, call: ToolRuntime("parent", run, name, call, supervisor, queue), sqlite_factory=SqliteFactory(), repl_service=repl_service)
         invocation = None
         try:
             agent.register_tool(OperationTool())

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import time
 
 
 class WindowsJob:
@@ -104,6 +105,69 @@ class WindowsJob:
         """结束 Job 内进程树，非 Windows 实例不执行系统调用。"""
         if self._handle is not None:
             self._kernel.TerminateJobObject(self._handle, 1)
+
+    def terminate_and_wait(self) -> None:
+        """REPL 回收时等待整棵进程树结束，再允许调用方释放 Job 句柄。
+
+        Raises:
+            OSError: Windows 无法终止进程树或查询实际存活数量。
+        """
+        if self._handle is None:
+            return
+        from ctypes import wintypes
+
+        class Accounting(ctypes.Structure):
+            """读取 Windows Job 中已经结束和仍在运行的进程数量。"""
+
+            _fields_ = [
+                ("TotalUserTime", ctypes.c_longlong), ("TotalKernelTime", ctypes.c_longlong),
+                ("ThisPeriodTotalUserTime", ctypes.c_longlong), ("ThisPeriodTotalKernelTime", ctypes.c_longlong),
+                ("TotalPageFaultCount", wintypes.DWORD), ("TotalProcesses", wintypes.DWORD),
+                ("ActiveProcesses", wintypes.DWORD), ("TotalTerminatedProcesses", wintypes.DWORD),
+            ]
+
+        self._kernel.QueryInformationJobObject.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p,
+                                                         wintypes.DWORD, ctypes.c_void_p]
+        self._kernel.QueryInformationJobObject.restype = wintypes.BOOL
+        self._kernel.WaitForSingleObject.argtypes = [ctypes.c_void_p, wintypes.DWORD]
+        self._kernel.WaitForSingleObject.restype = wintypes.DWORD
+        # 1. 先保留现有成员的同步句柄，退出码及 Job 计数更新可能早于句柄结束信号。
+        capacity = 16
+        while True:
+            buffer = ctypes.create_string_buffer(8 + capacity * ctypes.sizeof(ctypes.c_size_t))
+            if self._kernel.QueryInformationJobObject(self._handle, 3, buffer, len(buffer), None):
+                break
+            error = ctypes.get_last_error()
+            if error != 234:
+                raise ctypes.WinError(error)
+            capacity *= 2
+        count = (wintypes.DWORD * 2).from_buffer(buffer)[1]
+        handles = []
+        try:
+            for pid in (ctypes.c_size_t * count).from_buffer(buffer, 8):
+                handle = self._kernel.OpenProcess(0x00100000, False, pid)
+                if handle:
+                    handles.append(handle)
+                elif ctypes.get_last_error() != 87:
+                    raise ctypes.WinError(ctypes.get_last_error())
+            # 2. 停止整棵树，等待成员数量归零，覆盖查询后仍短暂派生的进程。
+            if not self._kernel.TerminateJobObject(self._handle, 1):
+                raise ctypes.WinError(ctypes.get_last_error())
+            accounting = Accounting()
+            while True:
+                if not self._kernel.QueryInformationJobObject(self._handle, 1, ctypes.byref(accounting),
+                                                              ctypes.sizeof(accounting), None):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                if accounting.ActiveProcesses == 0:
+                    break
+                time.sleep(0.01)
+            # 3. 现有成员的内核退出已完成，应用才能交还进程回收结果。
+            for handle in handles:
+                if self._kernel.WaitForSingleObject(handle, 0xFFFFFFFF) != 0:
+                    raise ctypes.WinError(ctypes.get_last_error())
+        finally:
+            for handle in handles:
+                self._kernel.CloseHandle(handle)
 
     @staticmethod
     def resume_suspended_process(pid: int) -> None:

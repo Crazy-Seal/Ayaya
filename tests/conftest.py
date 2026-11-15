@@ -1,9 +1,11 @@
 """在导入应用模块前，强制所有后端测试使用一次性存储目录。"""
 
 import logging
+import asyncio
 import os
 import tempfile
 from pathlib import Path
+import pytest
 
 
 _TEST_STORAGE = tempfile.TemporaryDirectory(prefix="ayaya-tests-")
@@ -23,6 +25,22 @@ for variable in (
     "MEM0_QDRANT_PATH",
 ):
     os.environ.pop(variable, None)
+
+
+@pytest.fixture
+def repl_service(tmp_path):
+    """为需要真实应用装配的测试提供懒启动 REPL，并在结束后关闭。
+
+    Args:
+        tmp_path (Path): 本次测试独立工作目录。
+
+    Yields:
+        ReplService: 尚未启动子进程的应用资源。
+    """
+    from app.repl.repl_service import ReplService
+    service = ReplService(workdir=tmp_path)
+    yield service
+    asyncio.run(service.close())
 
 
 def pytest_sessionfinish(session, exitstatus) -> None:

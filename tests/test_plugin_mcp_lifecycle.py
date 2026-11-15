@@ -29,8 +29,12 @@ from app.mcp.types import MCPToolDescriptor
 
 
 @pytest.mark.asyncio
-async def test_plugin_mcp_binds_permissions_and_disconnects_on_parameter_change(tmp_path, monkeypatch) -> None:
-    """真实工厂连接服务、绑定工具身份，修改参数后清除旧 allow 并关闭旧连接。"""
+async def test_plugin_mcp_binds_permissions_and_disconnects_on_parameter_change(tmp_path, monkeypatch, repl_service) -> None:
+    """真实工厂连接服务、绑定工具身份，修改参数后清除旧 allow 并关闭旧连接。
+
+    Args:
+        repl_service (ReplService): 测试 fixture 提供的懒启动原生 Python 资源。
+    """
     class Config(BaseModel):
         """声明由插件参数提供的连接程序。"""
         command: str = "first-server"
@@ -90,7 +94,7 @@ async def test_plugin_mcp_binds_permissions_and_disconnects_on_parameter_change(
     authorization = ToolAuthorization(dao.get_chat_settings)
     prepared = service.prepare(saved)
     agent = agent_factory.build_agent(prepared.settings, manager, authorization, bind_plugin_mcp=plugins.bind_mcp,
-                                      plugin_mcp={"lifecycle": prepared.plugins["lifecycle"].mcp_servers}, sqlite_factory=SqliteFactory())
+                                      plugin_mcp={"lifecycle": prepared.plugins["lifecycle"].mcp_servers}, sqlite_factory=SqliteFactory(), repl_service=repl_service)
     try:
         await agent.initialize()
         assert opened == ["first-server"]

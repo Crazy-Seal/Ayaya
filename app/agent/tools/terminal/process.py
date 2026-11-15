@@ -12,7 +12,7 @@ import subprocess
 import sys
 from typing import Protocol
 
-from app.agent.tools.terminal.windows_job import WindowsJob
+from app.processes.windows_job import WindowsJob
 
 logger = logging.getLogger(__name__)
 

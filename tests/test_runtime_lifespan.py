@@ -173,3 +173,32 @@ def test_application_owns_resource_order_and_continues_cleanup(tmp_path, monkeyp
     assert calls.index("supervisor.close") < calls.index("scheduler.close") < calls.index("mcp.close")
     assert calls.count("supervisor.close") == 1
     assert desktop.cache_info().currsize == 0
+
+
+def test_application_lifespan_reaps_repl_process_tree(tmp_path, monkeypatch) -> None:
+    """真实应用退出清理会回收已启动的 REPL 及其派生进程。
+
+    Args:
+        tmp_path (Path): 代码初始目录和进程报告位置。
+        monkeypatch (pytest.MonkeyPatch): 将应用工作区指向临时目录。
+    """
+    import main
+    from fastapi import FastAPI
+    from app.repl.contracts import ReplCallContext, ReplText
+    from tests.test_repl_service import process_is_running
+
+    monkeypatch.setattr(main, "WORKDIR", tmp_path)
+
+    async def scenario() -> None:
+        """借用应用资源创建真实进程，退出 lifespan 后检查操作系统。"""
+        application = FastAPI()
+        pids = []
+        async with main.lifespan(application):
+            result = await application.state.repl_service.execute(
+                "import subprocess, sys, os\nchild = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], creationflags=subprocess.CREATE_NO_WINDOW)\nprint(os.getpid(), child.pid)",
+                ReplCallContext("lifespan", "run", "call", ()))
+            text = "".join(item.text for item in result.outputs if isinstance(item, ReplText))
+            pids = [int(value) for value in text.split()]
+            assert len(pids) == 2 and all(process_is_running(pid) for pid in pids)
+        assert not any(process_is_running(pid) for pid in pids)
+    asyncio.run(scenario())

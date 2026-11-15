@@ -18,10 +18,11 @@ from app.schemas.chat_settings import ChatSettings
 @pytest.mark.parametrize("enabled", [False, True])
 def test_saved_plugin_switch_controls_registration_and_hooks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, enabled: bool,
-) -> None:
+ repl_service) -> None:
     """普通插件的配置经过保存和读取后，只有开启的插件会注册并执行钩子。
 
     Args:
+        repl_service (ReplService): 测试 fixture 提供的懒启动原生 Python 资源。
         tmp_path (Path): Pytest 创建的隔离目录。
         monkeypatch (pytest.MonkeyPatch): 注入测试插件和记忆依赖。
         enabled (bool): 本轮保存的插件总开关。
@@ -87,7 +88,7 @@ def test_saved_plugin_switch_controls_registration_and_hooks(
 
     async def scenario() -> None:
         """使用生产工厂创建 Agent，观察真实注册和钩子分发。"""
-        agent = agent_factory.build_agent(reloaded, sqlite_factory=SqliteFactory())
+        agent = agent_factory.build_agent(reloaded, sqlite_factory=SqliteFactory(), repl_service=repl_service)
         state = AgentState.create_new(reloaded.session_id)
         try:
             await agent.initialize()
@@ -103,10 +104,11 @@ def test_saved_plugin_switch_controls_registration_and_hooks(
 
 def test_memory_plugin_can_be_assembled_without_extraction_budget(
     monkeypatch: pytest.MonkeyPatch,
-) -> None:
+ repl_service) -> None:
     """未设置提取预算时，Agent 仍可完成记忆插件装配。
 
     Args:
+        repl_service (ReplService): 测试 fixture 提供的懒启动原生 Python 资源。
         monkeypatch (pytest.MonkeyPatch): 移除测试环境默认提供的记忆提取预算。
     """
     monkeypatch.delenv("MEMORY_EXTRACTION_MAX_CONTEXT_TOKENS", raising=False)
@@ -119,7 +121,7 @@ def test_memory_plugin_can_be_assembled_without_extraction_budget(
 
     async def scenario() -> None:
         """通过生产工厂装配启用情景记忆和语义记忆的插件。"""
-        agent = agent_factory.build_agent(settings, sqlite_factory=SqliteFactory())
+        agent = agent_factory.build_agent(settings, sqlite_factory=SqliteFactory(), repl_service=repl_service)
         try:
             await agent.initialize()
             assert agent.get_plugins() == ["memory"]

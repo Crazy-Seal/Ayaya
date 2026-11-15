@@ -2,6 +2,7 @@ from app.crud.sqlite_factory import SqliteFactory
 from app.agent.context import ContextStrategyConfig
 from app.schemas.chat_settings import AgentPluginSettings, ChatSettings
 from app.agent.runtime import agent_factory
+from types import SimpleNamespace
 
 
 def _settings(agent_plugins=None, context_strategy=None):
@@ -28,21 +29,22 @@ def _settings(agent_plugins=None, context_strategy=None):
     )
 
 
-def test_memory_plugin_owns_image_processing(monkeypatch) -> None:
+def test_memory_plugin_owns_image_processing(monkeypatch, repl_service) -> None:
     """验证图片处理由记忆插件负责。
 
     Args:
+        repl_service (ReplService): 测试 fixture 提供的懒启动原生 Python 资源。
         monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
     """
     captured = {}
     monkeypatch.setattr(
         agent_factory,
         "Agent",
-        lambda config, sqlite_factory, **kwargs: captured.update(kwargs) or config,
+        lambda config, sqlite_factory, **kwargs: captured.update(kwargs) or SimpleNamespace(config=config, register_tool=lambda _: None),
     )
     settings = _settings()
 
-    config = agent_factory.build_agent(settings, sqlite_factory=SqliteFactory())
+    config = agent_factory.build_agent(settings, sqlite_factory=SqliteFactory(), repl_service=repl_service).config
 
     assert config.context_strategy.compression_trigger_tokens_k == 100
     assert captured["chat_settings"] is settings
@@ -54,13 +56,14 @@ def test_memory_plugin_owns_image_processing(monkeypatch) -> None:
     }}]
 
 
-def test_agent_factory_uses_top_level_context_strategy(monkeypatch) -> None:
+def test_agent_factory_uses_top_level_context_strategy(monkeypatch, repl_service) -> None:
     """验证Agent 工厂使用会话顶层上下文策略。
 
     Args:
+        repl_service (ReplService): 测试 fixture 提供的懒启动原生 Python 资源。
         monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
     """
-    monkeypatch.setattr(agent_factory, "Agent", lambda config, sqlite_factory, **kwargs: config)
+    monkeypatch.setattr(agent_factory, "Agent", lambda config, sqlite_factory, **kwargs: SimpleNamespace(config=config, register_tool=lambda _: None))
 
     settings = _settings(
         context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100),
@@ -77,7 +80,7 @@ def test_agent_factory_uses_top_level_context_strategy(monkeypatch) -> None:
         }
     )
 
-    config = agent_factory.build_agent(settings, sqlite_factory=SqliteFactory())
+    config = agent_factory.build_agent(settings, sqlite_factory=SqliteFactory(), repl_service=repl_service).config
 
     assert config.context_strategy.compression_trigger_tokens_k == 100
     assert config.plugins[0]["config"] == {
@@ -88,13 +91,14 @@ def test_agent_factory_uses_top_level_context_strategy(monkeypatch) -> None:
     }
 
 
-def test_agent_factory_loads_enabled_memory_when_all_memory_types_are_disabled(monkeypatch) -> None:
+def test_agent_factory_loads_enabled_memory_when_all_memory_types_are_disabled(monkeypatch, repl_service) -> None:
     """验证插件开启但全部记忆类别关闭时，仍按插件总开关装配。
 
     Args:
+        repl_service (ReplService): 测试 fixture 提供的懒启动原生 Python 资源。
         monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
     """
-    monkeypatch.setattr(agent_factory, "Agent", lambda config, sqlite_factory, **kwargs: config)
+    monkeypatch.setattr(agent_factory, "Agent", lambda config, sqlite_factory, **kwargs: SimpleNamespace(config=config, register_tool=lambda _: None))
 
     settings = _settings(
         agent_plugins={
@@ -111,7 +115,7 @@ def test_agent_factory_loads_enabled_memory_when_all_memory_types_are_disabled(m
 
     from app.crud.chat_settings_dao import ChatSettingsDao
     from app.services.chat_settings_service import ChatSettingsService
-    config = agent_factory.build_agent(ChatSettingsService(ChatSettingsDao()).normalize(settings), sqlite_factory=SqliteFactory())
+    config = agent_factory.build_agent(ChatSettingsService(ChatSettingsDao()).normalize(settings), sqlite_factory=SqliteFactory(), repl_service=repl_service).config
 
     assert config.plugins[0]["config"] == {
         "enable_diary": False,

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
+import json
+import keyword
 from typing import Any
 from pathlib import Path
 
@@ -20,6 +22,8 @@ from app.mcp.types import PluginMCPKey, MCPToolDescriptor
 from app.mcp.identity import server_identity_fingerprint
 from app.services.settings_mutation import SettingsMutationCoordinator
 from app.agent.tools.core.base import BaseTool
+from app.repl.repl_api import ReplCapability
+from app.repl.contracts import PreparedReplCapability
 
 
 class PluginConfigurationError(ValueError):
@@ -44,11 +48,13 @@ class PreparedPlugin:
         name (str): 插件的稳定名称。
         config (dict[str, Any]): 已整理的参数；宽松读取时可保留待修正输入。
         mcp_servers (tuple[MCPConnectionConfig, ...]): 启用插件严格校验后生成的连接声明。
+        repl_capabilities (tuple[PreparedReplCapability, ...]): 已绑定插件来源的 REPL 能力。
     """
 
     name: str
     config: dict[str, Any]
     mcp_servers: tuple[MCPConnectionConfig, ...]
+    repl_capabilities: tuple[PreparedReplCapability, ...]
 
 
 class PluginService:
@@ -194,7 +200,7 @@ class PluginService:
         plugin = PluginRegistry.get(plugin_name)
         config = deepcopy(item.config)
         if plugin is None:
-            return PreparedPlugin(plugin_name, config, ())
+            return PreparedPlugin(plugin_name, config, (), ())
         # 1. 校验并填入默认值；读取设置时保留无效输入，方便用户继续修正。
         if plugin.config_model is not None:
             try:
@@ -208,9 +214,45 @@ class PluginService:
                              "msg": error["msg"], "type": error["type"]}
                             for error in errors
                         ], message=str(exc)) from exc
-        # 2. 只在严格准备已启用插件时解析 MCP，解析函数直接使用本次校验结果。
+        # 2. 严格准备已启用插件时，分别使用参数副本解析连接和 REPL 能力。
         servers = self._resolve_mcp_servers(plugin, config) if item.enabled and validate_enabled else ()
-        return PreparedPlugin(plugin_name, config, servers)
+        capabilities = self._resolve_repl_capabilities(plugin, config) if item.enabled and validate_enabled else ()
+        return PreparedPlugin(plugin_name, config, servers, capabilities)
+
+    def _resolve_repl_capabilities(self, plugin: type[BasePlugin], config: dict[str, Any]) -> tuple[PreparedReplCapability, ...]:
+        """检查能力模块和初始化配置，绑定父端可信插件来源。
+
+        Args:
+            plugin (type[BasePlugin]): 提供能力声明的插件类。
+            config (dict[str, Any]): 已校验的会话插件配置。
+
+        Returns:
+            tuple[PreparedReplCapability, ...]: 可直接交给原生 REPL 的独立声明快照。
+
+        Raises:
+            ValueError: 模块位置、暴露名或初始化配置无效。
+        """
+        result = []
+        for declaration in plugin.resolve_repl_capabilities(deepcopy(config)):
+            root = declaration.module_root.resolve()
+            parts = declaration.module_name.split(".")
+            if not declaration.module_root.is_absolute() or not root.is_dir() or any(
+                    not part.isidentifier() or keyword.iskeyword(part) for part in parts):
+                raise ValueError(f"插件 {plugin.name} 的 REPL 模块目录或模块名无效")
+            module = root.joinpath(*parts)
+            candidates = (module.with_suffix(".py"), module / "__init__.py")
+            if not any(path.is_file() and path.resolve().is_relative_to(root) for path in candidates):
+                raise ValueError(f"插件 {plugin.name} 的 REPL 模块不在声明目录内")
+            name = declaration.export_name
+            if not name.isidentifier() or keyword.iskeyword(name) or name in {"display_image", "__name__", "__builtins__"}:
+                raise ValueError(f"插件 {plugin.name} 的 REPL 暴露名无效或占用原生名称：{name}")
+            try:
+                json.dumps(declaration.config, allow_nan=False)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"插件 {plugin.name} 的 REPL config 必须可序列化为 JSON") from exc
+            normalized = ReplCapability(root, declaration.module_name, name, deepcopy(declaration.config))
+            result.append(PreparedReplCapability(plugin.name, normalized))
+        return tuple(result)
 
     def _resolve_mcp_servers(self, plugin: type[BasePlugin], config: dict[str, Any]) -> tuple[MCPConnectionConfig, ...]:
         """用已经校验的参数计算并检查 MCP 声明，保持插件参数副本独立。

@@ -6,6 +6,7 @@ import asyncio
 
 from app.agent.plugins.runtime import PluginRuntime
 from functools import lru_cache
+from app.repl.repl_service import ReplService
 import os
 
 from app.crud.chat_history_dao import ChatHistoryDao
@@ -210,7 +211,7 @@ def get_channel_subscription_service(request: Request) -> ChannelSubscriptionSer
 
 def create_runtime_scheduler(supervisor: TaskSupervisor, runtime_queue: asyncio.Queue, *,
     sqlite_factory: SqliteFactory, hub: InteractionEventHub, subscriptions: ChannelSubscriptionService,
-    identity: AgentIdentityService, subagents: SubagentService) -> AgentRuntimeScheduler:
+    identity: AgentIdentityService, subagents: SubagentService, repl_service: ReplService) -> AgentRuntimeScheduler:
     """借用应用共享依赖装配独立父子会话，向既有 Hub 注入单向发布能力。
 
     Returns:
@@ -224,6 +225,7 @@ def create_runtime_scheduler(supervisor: TaskSupervisor, runtime_queue: asyncio.
         subscriptions (ChannelSubscriptionService): 命令与输出共用的渠道设置。
         identity (AgentIdentityService): 显式 Agent 命令使用的身份核验服务。
         subagents (SubagentService): 子定义、交互和最终报告的持久业务。
+        repl_service (ReplService): 应用提供的唯一原生 Python 执行组件。
     """
     settings_dao = get_chat_settings_dao()
     mcp_manager = get_mcp_connection_manager()
@@ -260,6 +262,7 @@ def create_runtime_scheduler(supervisor: TaskSupervisor, runtime_queue: asyncio.
             plugin_mcp={name: plugin.mcp_servers for name, plugin in prepared.plugins.items()
                         if (prepared.settings.agent_plugins or {})[name].enabled},
             runtime_queue=runtime_queue, sqlite_factory=sqlite_factory,
+            repl_service=repl_service, repl_capabilities=prepared.repl_capabilities,
         )
 
     def create_subagent(definition: SubagentDefinition, session_state_manager: SessionStateManager) -> Agent:
@@ -280,6 +283,7 @@ def create_runtime_scheduler(supervisor: TaskSupervisor, runtime_queue: asyncio.
             plugin_mcp={name: plugin.mcp_servers for name, plugin in prepared.plugins.items()
                         if (prepared.settings.agent_plugins or {})[name].enabled},
             subagent=definition, runtime_queue=runtime_queue, sqlite_factory=sqlite_factory,
+            repl_service=repl_service,
         )
 
     def create_manager(context_id: str) -> SessionStateManager:

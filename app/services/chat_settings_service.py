@@ -12,6 +12,7 @@ from app.schemas.tool_permissions import ToolPolicy
 from app.mcp.mcp_connection_manager import MCPConnectionManager
 from app.services.settings_mutation import SettingsMutationCoordinator
 from app.services.plugin_service import PluginService, PreparedPlugin, PluginConfigurationError
+from app.repl.contracts import PreparedReplCapability
 
 
 @dataclass(frozen=True)
@@ -21,10 +22,12 @@ class PreparedChatSettings:
     Attributes:
         settings (ChatSettings): 参数已整理、工具权限已补齐的会话设置副本。
         plugins (dict[str, PreparedPlugin]): 按插件名称保存本次准备的参数和连接声明。
+        repl_capabilities (tuple[PreparedReplCapability, ...]): 启用插件提供的能力，暴露名唯一。
     """
 
     settings: ChatSettings
     plugins: dict[str, PreparedPlugin]
+    repl_capabilities: tuple[PreparedReplCapability, ...]
 
 
 class ChatSettingsService:
@@ -83,10 +86,18 @@ class ChatSettingsService:
         """
         result = chat_settings.model_copy(deep=True)
         plugins = {}
+        capabilities: list[PreparedReplCapability] = []
+        export_names: set[str] = set()
         # 1. 每个插件只准备一次，直接使用插件准备层报告的参数字段错误。
         for name, item in result.agent_plugins.items():
             try:
                 prepared = self.plugin_service.prepare_plugin(name, item, validate_enabled=validate_enabled)
+                for capability in prepared.repl_capabilities:
+                    export = capability.declaration.export_name
+                    if export in export_names:
+                        raise ValueError(f"REPL 能力暴露名重复：{export}")
+                    export_names.add(export)
+                    capabilities.append(capability)
             except PluginConfigurationError:
                 raise
             except ValueError as exc:
@@ -104,7 +115,7 @@ class ChatSettingsService:
                 continue
             for tool in tools:
                 item.tool_permissions.setdefault(f"{LOCAL_TOOL_KEY_PREFIX}{tool.name}", ToolPolicy.ASK)
-        return PreparedChatSettings(result, plugins)
+        return PreparedChatSettings(result, plugins, tuple(sorted(capabilities, key=lambda item: item.declaration.export_name)))
 
     async def add_chat_settings(self, chat_settings: ChatSettings) -> ChatSettings:
         """新增模型配置并正规化 MCP 权限，保存成功后让记忆装配使用新配置。

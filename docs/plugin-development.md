@@ -19,6 +19,7 @@ Ayaya 是运行在用户电脑上的桌面智能体应用。插件可以给它�
 | 完成一个游戏观察插件 | [9 开发示例](#9-开发示例) |
 | 查找接口、验证自己的插件 | [10 附录](#10-附录) |
 | 了解退出时的任务处理和数据库升级 | [11 退出与数据库升级](#11-退出与数据库升级) |
+| 给原生 Python 预装插件能力 | [12 原生 Python REPL 能力](#12-原生-python-repl-能力) |
 
 ## 1 规约
 
@@ -1163,3 +1164,97 @@ async def execute(self, context: HookContext) -> None:  # 框架调用的插件�
 2026-11-12 验收边界：关键 SQLite 保存会等待已开始的提交／回滚取得实际结果，允许超过保存重试预算；资源关闭仍有限等待。Electron 上述 5 秒强制终止与关键事务延长退出的已确认要求存在政策冲突，尚待决定，见[整体验收记录](../.scratch/runtime-architecture-redesign/acceptance-result.md)。当前模块职责见[运行模块说明](runtime-architecture.md)。
 
 已有数据库的通用任务及插件通知表通过 [migrate_plugin_runtime.py](../scripts/migrate_plugin_runtime.py) 离线升级。关闭应用后，使用 `conda run -n ayaya python -B scripts/migrate_plugin_runtime.py --db-path <数据库文件路径>` 显式指定文件。默认只检查待升级内容，添加 `--apply` 才写入；数据库升级由应用维护者完成。
+
+## 12 原生 Python REPL 能力
+
+主 Agent 的 `python(intent, code)` 和 `python_reset()` 属于应用原生功能。`intent` 说明执行目的，与代码一起进入现有审批。子 Agent 无法取得这两个工具。
+
+应用首次执行代码时，使用后端的 `sys.executable` 启动唯一 Python 子进程。同会话的变量、函数、导入及代码主动切换的工作目录跨调用保留；普通代码异常也保留已经完成的修改。切换到另一会话执行、能力声明变化或主动 reset 会清空进程状态。初始目录为现有 `agent_workspace`。
+
+能力初始化预算为 30 秒，每次代码和执行清理的总预算为 120 秒。超时或进程崩溃会清空状态，下次调用重新初始化，已经执行的代码不会自动重放。这个环境可使用后端解释器中的包，属于本机执行环境，不是安全沙箱；插件开关决定是否预装能力。
+
+### 12.1 在插件中声明能力
+
+能力代码放在插件自己的 `repl/` 目录，模块名称应使用插件独有的包名。插件通过以下类方法返回声明：
+
+```python
+from pathlib import Path
+from app.agent.plugins.base import BasePlugin
+from app.repl.repl_api import ReplCapability
+
+
+class SamplePlugin(BasePlugin):
+    """提供示例业务能力，实际插件另行声明名称和所需钩子。"""
+
+    @classmethod
+    def resolve_repl_capabilities(cls, config):
+        """选择要交给子进程能力的初始化设置。
+
+        Args:
+            config (dict): 已校验的会话插件设置副本。
+
+        Returns:
+            tuple[ReplCapability, ...]: 启用插件时预装的能力声明。
+        """
+        return (ReplCapability(
+            module_root=Path(__file__).resolve().parent / "repl",
+            module_name="ayaya_sample.api",
+            export_name="sample",
+            config={"value": config["value"]},
+        ),)
+```
+
+声明字段由插件作者配置。`module_name` 是导入目标，`export_name` 是返回对象在模型代码里的变量名。`config` 只供能力工厂初始化业务对象使用，须能序列化为 JSON。没有初始化设置时传 `{}`。
+
+框架在会话准备阶段校验模块位置和暴露名冲突，绑定来源插件；此时不会导入能力模块。runner 初始化时导入 `ayaya_sample.api`，调用 `create(config, host)`，然后把对象放入 `sample`。模型直接使用 `sample`，无需手动 import。暴露名须为有效 Python 标识符，并避开其他能力及 `display_image`、`__name__`、`__builtins__`。
+
+### 12.2 能力工厂与图片输出
+
+子进程能力不导入 `app.*`。需要类型标注时使用 runner 提供的标准库契约模块 `repl_api`：
+
+```python
+from repl_api import JsonValue, ReplHost
+
+
+def create(config: dict[str, JsonValue], host: ReplHost) -> object:
+    """创建模型直接使用的业务对象。
+
+    Args:
+        config (dict[str, JsonValue]): 声明提供的初始化配置。
+        host (ReplHost): runner 提供的输出和执行控制接口。
+
+    Returns:
+        object: 插件自己的能力对象。
+    """
+    return SampleCapability(config, host)
+```
+
+`SampleCapability` 由插件自己实现。能力对象可以跨调用存在，`host.execution_id` 则属于当前这次执行。启动异步监听时必须捕获该编号，回调使用捕获值，避免迟到回调作用于后一次代码。
+
+| 接口 | 插件用法 |
+| --- | --- |
+| `host.emit_image(image_bytes)` | 输出已编码的 PNG/JPEG bytes，例如观察方法内部捕获后编码并输出 |
+| `host.publish_event(execution_id, name, payload)` | 通过框架的插件事件通路发布提示 |
+| `host.request_interrupt(execution_id)` | 请求中断匹配编号的当前执行 |
+| `host.raise_if_interrupted(execution_id)` | 业务方法进入和返回时检查已受理中断 |
+| `host.defer_cleanup(execution_id, callback)` | 登记解除监听、释放按键等同步清理，执行结束时逆序尝试全部回调 |
+
+模型可以直接调用 `display_image(pil_image)`，也可以传 PNG/JPEG bytes；PIL 编码由 REPL 完成。插件使用 `host.emit_image` 时自行编码。两个入口共用图片输出链，观察方法已经输出的图片不需再次 display。文字使用 `print()`，普通表达式不自动回显。工具结果沿既有普通工具图片保存及压缩流程处理。
+
+### 12.3 提示与中断收尾
+
+控制类能力可以在本次第一次实际操作前发布 `status_notice`：
+
+```python
+execution_id = host.execution_id
+notice_id = f"{execution_id}:control"
+host.publish_event(execution_id, "status_notice", {
+    "id": notice_id, "active": True, "text": "操作进行中",
+})
+```
+
+同一编号更新文字或发布 `active=False` 即可更新、关闭提示。事件经应用接入代码调用既有 `PluginRuntime.publish_event`，会话、插件及来源轮次由框架绑定；原生 REPL 没有 Supervisor 后台任务编号。发布返回表示子进程已排队，前端展示仍由后端事件链处理。
+
+能力通过 `defer_cleanup` 登记本次资源释放。正常、异常或中断结束时，runner 尝试全部清理，再报告结束；清理错误随工具结果返回。应用端随后将本次尚未关闭的提示关闭入队，再释放 REPL 占用。进程崩溃或超时时，应用端也会关闭已经收到的提示。提示仍遵循第 7 章的非持久化和断线清空规则。
+
+能力请求中断会在代码入口捕获为 `KeyboardInterrupt`，清理后返回用户终止结果，保留进程和已有状态。聊天停止沿同一代码中断方法执行，随后继续传播工具取消，由现有运行时结束 Agent。原生阻塞可能延迟中断，能力应在业务方法边界调用 `raise_if_interrupted`。本步只提供这些通用接口；真实桌面能力和物理 ESC 监听由对应插件实现。

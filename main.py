@@ -38,6 +38,9 @@ from app.interaction.interaction_event_hub import InteractionEventHub
 from app.dependencies import get_desktop_controller, get_desktop_settings_dao
 from app.security.local_api import install_local_api_security, load_api_token
 from app.agent.tools.terminal.shell import detect_shell
+from app.agent.utils.infra.safe_path import WORKDIR
+from app.repl.repl_service import ReplService
+from app.services.repl_plugin_events import create_repl_plugin_event_handler
 
 # 控制台日志基础配置：让 Agent 的收发日志在本地启动时可见
 logging.basicConfig(
@@ -107,8 +110,10 @@ async def lifespan(application: FastAPI):
         application.state.subagent_service = subagents
         hub = InteractionEventHub(subscriptions=subscriptions)
         application.state.interaction_event_hub = hub
+        repl = ReplService(workdir=WORKDIR, on_event=create_repl_plugin_event_handler(supervisor, runtime_queue))
+        application.state.repl_service = repl
         scheduler = create_runtime_scheduler(supervisor, runtime_queue, sqlite_factory=sqlite_factory,
-            hub=hub, subscriptions=subscriptions, identity=identity, subagents=subagents)
+            hub=hub, subscriptions=subscriptions, identity=identity, subagents=subagents, repl_service=repl)
         application.state.runtime_scheduler = scheduler
         application.state.desktop_settings_service = DesktopSettingsService(get_desktop_settings_dao(),
             lambda: scheduler.phase not in {RuntimePhase.STOPPING, RuntimePhase.STOPPED})
@@ -120,6 +125,7 @@ async def lifespan(application: FastAPI):
         cleanup.push_async_callback(scheduler.close)
         cleanup.push_async_callback(supervisor.close)
         cleanup.push_async_callback(desktop.close)
+        cleanup.push_async_callback(repl.close)
         cleanup.push_async_callback(scheduler.wait_for_workers)
         cleanup.push_async_callback(begin_runtime_shutdown, application)
         try:

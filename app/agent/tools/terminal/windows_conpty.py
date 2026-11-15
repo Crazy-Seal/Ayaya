@@ -7,7 +7,7 @@ import ctypes
 from ctypes import wintypes
 import subprocess
 
-from app.agent.tools.terminal.windows_job import WindowsJob
+from app.processes.windows_job import WindowsJob
 
 
 class Coord(ctypes.Structure):

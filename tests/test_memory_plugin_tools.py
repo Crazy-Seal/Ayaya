@@ -64,10 +64,11 @@ def test_memory_query_permissions_and_catalog_belong_to_plugin(tmp_path: Path) -
                                              (True, ToolPolicy.ALLOW), (True, ToolPolicy.DENY)])
 async def test_memory_queries_follow_plugin_switch_and_permissions(
     monkeypatch: pytest.MonkeyPatch, enabled: bool, policy: ToolPolicy,
-) -> None:
+ repl_service) -> None:
     """真实 Agent 装配查询工具，执行使用会话编号，审批和停用继续检查插件权限。
 
     Args:
+        repl_service (ReplService): 测试 fixture 提供的懒启动原生 Python 资源。
         monkeypatch (pytest.MonkeyPatch): 替换记忆服务以保持测试离线且不访问生产存储。
         enabled (bool): 当前会话是否启用记忆插件。
         policy (ToolPolicy): 两个查询工具在插件卡片中保存的权限。
@@ -98,7 +99,7 @@ async def test_memory_queries_follow_plugin_switch_and_permissions(
                                 "tool_permissions": {f"local:{name}": policy for name in MEMORY_TOOL_NAMES},
                             }})
     authorization = ToolAuthorization(lambda _: settings)
-    agent = agent_factory.build_agent(settings, tool_authorization=authorization, sqlite_factory=SqliteFactory())
+    agent = agent_factory.build_agent(settings, tool_authorization=authorization, sqlite_factory=SqliteFactory(), repl_service=repl_service)
     try:
         await agent.initialize()
         queries = {tool.identity.name: tool for tool in agent.tool_manager.get_all()

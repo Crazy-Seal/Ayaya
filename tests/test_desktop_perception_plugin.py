@@ -248,10 +248,11 @@ async def test_failed_capture_drops_stale_desktop_and_keeps_tool_observation(
 @pytest.mark.asyncio
 async def test_plugin_switch_controls_capture(
     desktop_plugin: type[BasePlugin], monkeypatch: pytest.MonkeyPatch, enabled: bool,
-) -> None:
+ repl_service) -> None:
     """真实 Agent 装配仅在会话启用插件时获取桌面。
 
     Args:
+        repl_service (ReplService): 测试 fixture 提供的懒启动原生 Python 资源。
         desktop_plugin (type[BasePlugin]): 通过项目自带插件目录发现并登记的类。
         monkeypatch (pytest.MonkeyPatch): 替换截图和记忆依赖。
         enabled (bool): 当前会话的插件开关。
@@ -278,7 +279,7 @@ async def test_plugin_switch_controls_capture(
                             openai_base_url="http://localhost", temperature=0.7, system_prompt="test",
                             context_strategy={}, agent_plugins={"memory": {"enabled": False},
                             desktop_plugin.name: {"enabled": enabled}})
-    agent = agent_factory.build_agent(settings, sqlite_factory=SqliteFactory())
+    agent = agent_factory.build_agent(settings, sqlite_factory=SqliteFactory(), repl_service=repl_service)
     state = AgentState.create_new(settings.session_id)
     try:
         await agent.initialize()

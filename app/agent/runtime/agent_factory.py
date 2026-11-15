@@ -19,6 +19,8 @@ from app.agent.tools.core.runtime import ToolRuntimeFactory
 from app.schemas.desktop import DesktopOperations
 from app.schemas.mcp import MCPConnectionConfig
 from app.mcp.types import PluginMCPBinder
+from app.repl.repl_service import ReplService
+from app.repl.contracts import PreparedReplCapability
 
 
 def build_agent(
@@ -34,6 +36,8 @@ def build_agent(
     subagent: SubagentDefinition | None = None,
     runtime_queue: asyncio.Queue[RuntimeRequest] | None = None,
     *, sqlite_factory: SqliteFactory,
+    repl_service: ReplService,
+    repl_capabilities: tuple[PreparedReplCapability, ...] = (),
 ) -> Agent:
     """按会话设置创建 Agent，并注入共享授权与任务启动端口。
 
@@ -51,6 +55,8 @@ def build_agent(
         runtime_queue (asyncio.Queue[RuntimeRequest] | None): 应用共享队列，用于管理工具和临时名单查询。
 
         sqlite_factory (SqliteFactory): 应用装配提供的 SQLite 连接配置。
+        repl_service (ReplService): 应用持有的唯一 Python 执行组件。
+        repl_capabilities (tuple[PreparedReplCapability, ...]): 已准备的启用插件能力。
 
     Returns:
         Agent: 按最新会话设置装配的 Agent，尚未开始模型轮次。
@@ -95,6 +101,11 @@ def build_agent(
         enable_plugin_hooks=subagent is None,
         environment_provider=environment if subagent is None and runtime_queue is not None else None,
     )
+    if subagent is None:
+        from app.agent.tools.python import PythonTool
+        from app.agent.tools.python_reset import PythonResetTool
+        agent.register_tool(PythonTool(repl_service, repl_capabilities))
+        agent.register_tool(PythonResetTool(repl_service))
     if tool_runtime_factory is not None:
         from app.agent.tools.create_subagent import CreateSubagentTool
         from app.agent.tools.interact_subagent import InteractSubagentTool

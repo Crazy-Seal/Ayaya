@@ -124,8 +124,12 @@ def test_disabling_automatic_hooks_keeps_plugin_registered() -> None:
     asyncio.run(scenario())
 
 
-def test_factory_assembles_child_mcp_with_parent_identity_and_current_permissions(tmp_path: Path) -> None:
-    """通过真实工厂和 MCP 适配器调用，验证父身份贯穿目录、身份绑定和调用前复核。"""
+def test_factory_assembles_child_mcp_with_parent_identity_and_current_permissions(tmp_path: Path, repl_service) -> None:
+    """通过真实工厂和 MCP 适配器调用，验证父身份贯穿目录、身份绑定和调用前复核。
+
+    Args:
+        repl_service (ReplService): 测试 fixture 提供的懒启动原生 Python 资源。
+    """
     async def scenario() -> None:
         """只替换远程 MCP 连接，子装配和适配器执行保留生产流程。"""
         from mcp.types import CallToolResult, TextContent
@@ -174,7 +178,7 @@ def test_factory_assembles_child_mcp_with_parent_identity_and_current_permission
             True, datetime.now(timezone.utc))
         manager = SessionStateManager("child", SqliteFactory(str(tmp_path / "state.sqlite3")), storage_scope=AgentStorageScope.SUBAGENT)
         agent = build_agent(settings, mcp_connection_manager=Connection(), tool_authorization=ToolAuthorization(lambda sid: settings if sid == "parent" else None),
-            session_state_manager=manager, subagent=definition, sqlite_factory=SqliteFactory())
+            session_state_manager=manager, subagent=definition, sqlite_factory=SqliteFactory(), repl_service=repl_service)
         try:
             await agent.initialize()
             available = agent.tool_manager.get_tools()

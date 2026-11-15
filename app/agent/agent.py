@@ -201,10 +201,11 @@ class Agent:
         logger.info(f"Agent 初始化完成: {self.config.session_id}")
 
     async def _setup_tools(self) -> None:
-        """按工具权限和会话配置加载普通工具，委派管理工具由应用工厂装配依赖。"""
+        """加载普通工具，带应用依赖的委派及 Python 工具由工厂预装。"""
         # 从工具注册表加载
         from app.agent.tools.core.registry import ToolRegistry
         from app.schemas.subagent_types import SUBAGENT_PARENT_TOOL_NAMES
+        from app.schemas.tool_types import REPL_TOOL_NAMES
 
         tool_names = (
             ToolRegistry.list_tools()
@@ -212,7 +213,7 @@ class Agent:
             else list(self.config.tools or [])
         )
         for tool_name in tool_names:
-            if tool_name in SUBAGENT_PARENT_TOOL_NAMES or self.tool_manager.has(tool_name):
+            if tool_name in SUBAGENT_PARENT_TOOL_NAMES | REPL_TOOL_NAMES or self.tool_manager.has(tool_name):
                 continue
             tool_class = ToolRegistry.get(tool_name)
             if tool_class:

@@ -12,10 +12,11 @@ from app.services.chat_settings_service import ChatSettingsService
 from app.services.plugin_service import PluginConfigurationError
 
 
-def test_preparation_reuses_validated_config_and_mcp_declarations(tmp_path, monkeypatch) -> None:
+def test_preparation_reuses_validated_config_and_mcp_declarations(tmp_path, monkeypatch, repl_service) -> None:
     """同次准备只校验和解析一次，返回完整装配数据，读取继续使用宽松规则。
 
     Args:
+        repl_service (ReplService): 测试 fixture 提供的懒启动原生 Python 资源。
         tmp_path (Path): Pytest 提供的隔离配置目录。
         monkeypatch (pytest.MonkeyPatch): 注册本次使用的插件声明。
     """
@@ -128,7 +129,7 @@ def test_preparation_reuses_validated_config_and_mcp_declarations(tmp_path, monk
     validations.clear()
     resolutions.clear()
     scheduler = dependencies.create_runtime_scheduler(object(), asyncio.Queue(),
-        sqlite_factory=SqliteFactory(tmp_path / "runtime.sqlite3"), hub=object(), subscriptions=object(), identity=object(), subagents=object())
+        sqlite_factory=SqliteFactory(tmp_path / "runtime.sqlite3"), hub=object(), subscriptions=object(), identity=object(), subagents=object(), repl_service=repl_service)
     agent_config = scheduler.agent_factory(settings.session_id, object()).config
     assert validations == [" game-server "]
     assert len(resolutions) == 1

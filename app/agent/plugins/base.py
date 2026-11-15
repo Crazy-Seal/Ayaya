@@ -10,6 +10,7 @@ from app.agent.plugins.runtime import PluginRuntime
 from app.agent.state.model import AgentState
 from app.agent.tools.core.base import BaseTool
 from app.schemas.mcp import MCPConnectionConfig
+from app.repl.repl_api import ReplCapability
 
 
 class PluginHook(str, Enum):
@@ -104,6 +105,18 @@ class BasePlugin(ABC):
             tuple[MCPConnectionConfig, ...]: 随插件启用的服务连接参数。
         """
         return cls.mcp_servers
+
+    @classmethod
+    def resolve_repl_capabilities(cls, config: dict[str, Any]) -> tuple[ReplCapability, ...]:
+        """声明插件启用时向原生 Python REPL 预装的能力。
+
+        Args:
+            config (dict[str, Any]): 已校验的会话插件配置副本。
+
+        Returns:
+            tuple[ReplCapability, ...]: 由 runner 导入并调用 create 的能力声明。
+        """
+        return ()
 
     @property
     @abstractmethod
