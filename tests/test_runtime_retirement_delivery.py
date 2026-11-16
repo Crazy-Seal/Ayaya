@@ -1,11 +1,10 @@
 """验证子身份废弃失败和普通任务状态展示各自遵守业务事实。"""
 
 import asyncio
-import sqlite3
 from collections.abc import AsyncIterator, Sequence
-from contextlib import closing
 from pathlib import Path
 
+import aiosqlite
 import pytest
 
 from app.agent.models.contracts import StreamChunk, ToolDefinition
@@ -125,8 +124,8 @@ def test_one_shot_retirement_failure_keeps_paused_identity_and_stops_tasks(
                 harness.queue, subagent_id=child.context_id)
             task_id = await runtime.submit_task(work, name="work", title="一次性子后台任务", notify_agent=True)
             await asyncio.wait_for(work.started.wait(), 3)
-            with closing(sqlite3.connect(harness.path)) as db:
-                db.execute("CREATE TRIGGER refuse_retirement BEFORE UPDATE OF retired_at ON subagents "
+            async with aiosqlite.connect(harness.path) as db:
+                await db.execute("CREATE TRIGGER refuse_retirement BEFORE UPDATE OF retired_at ON subagents "
                     "BEGIN SELECT RAISE(ABORT,'retirement rejected'); END")
             try:
                 if ending == "stop":
@@ -165,8 +164,9 @@ def test_one_shot_retirement_failure_keeps_paused_identity_and_stops_tasks(
                 assert len(await harness.scheduler.snapshot_subagents("parent")) == 1
             finally:
                 release.set()
-                with closing(sqlite3.connect(harness.path)) as db:
-                    db.execute("DROP TRIGGER refuse_retirement")
+                # 1. 异步等待测试故障清理，让父会话仍能完成同库中的保存事务。
+                async with aiosqlite.connect(harness.path) as db:
+                    await db.execute("DROP TRIGGER refuse_retirement")
 
             # 3. 修复存储后由明确销毁结束原会话，模型和已交付报告均保持一次。
             assert (await harness.scheduler.interact_subagent(
@@ -236,8 +236,8 @@ def test_retired_child_task_status_reaches_hub_without_reactivating_child(
             await asyncio.wait_for(work.started.wait(), 3)
             await asyncio.wait_for(task_events_through(harness, task_id, TaskStatus.RUNNING), 3)
             if save_failed:
-                with closing(sqlite3.connect(harness.path)) as db:
-                    db.execute("CREATE TRIGGER refuse_task_result BEFORE UPDATE OF status ON task_records "
+                async with aiosqlite.connect(harness.path) as db:
+                    await db.execute("CREATE TRIGGER refuse_task_result BEFORE UPDATE OF status ON task_records "
                         "WHEN OLD.kind='ordinary' BEGIN SELECT RAISE(ABORT,'task result rejected'); END")
             try:
                 if ending == "one_shot":
@@ -274,7 +274,7 @@ def test_retired_child_task_status_reaches_hub_without_reactivating_child(
                 release.set()
                 work.release.set()
                 if save_failed:
-                    with closing(sqlite3.connect(harness.path)) as db:
-                        db.execute("DROP TRIGGER refuse_task_result")
+                    async with aiosqlite.connect(harness.path) as db:
+                        await db.execute("DROP TRIGGER refuse_task_result")
 
     asyncio.run(scenario())
