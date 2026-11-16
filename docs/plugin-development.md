@@ -895,7 +895,9 @@ context.agent_state.set_temporary_context(
 )
 ```
 
-图片随临时条目进入 checkpoint。每次请求组装一条环境消息，按条目键排序后将每组标题、正文和图片放在一起；派生消息不进入聊天记录库。
+保存 checkpoint 前，框架会将临时条目中的内联图片保存到 `environment/`，并将图片转换为只有 `storage_ref` 的文件引用。插件已自行保存图片时，可以直接构造 `ImageContent(storage_ref="environment/example.png", media_kind=MediaKind.ENVIRONMENT)`。模型请求前由 `LLMClient` 统一读取引用；文件缺失时，该次请求会收到缺图说明，原始引用保持。
+
+每次请求组装一条环境消息，按条目键排序后将每组标题、正文和图片放在一起；派生消息只进入本次模型输入。图片保存失败会使必需的状态保存失败。需要在捕获失败时移除旧画面的插件，应先删除上一条背景，再进行捕获和保存。
 
 当前框架使用 `core.current_time` 刷新请求时间，记忆插件使用 `memory.recalled` 保存本轮召回内容。插件使用自己定义的键，避免覆盖其他功能的内容。
 

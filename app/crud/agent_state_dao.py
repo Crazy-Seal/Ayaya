@@ -21,7 +21,7 @@ from app.schemas.agent_storage import AgentStorageScope
 from app.crud.agent_storage_sql import agent_state_schema
 from app.schemas.message_types import MessageType
 from app.agent.state.messages import BaseMessage
-from app.agent.state.model import AgentState
+from app.agent.state.model import AgentState, CHECKPOINT_SCHEMA_VERSION
 from app.agent.state.time import utc_now
 from app.agent.runtime.session_inbox import InboxEnvelope
 from app.crud.session_inbox_dao import (
@@ -128,10 +128,16 @@ class AgentStateDao:
                 raise
 
     async def _init_tables(self) -> None:
-        """初始化 v3 业务历史和 checkpoint；旧表必须先离线迁移。"""
+        """初始化 v4 业务历史和 checkpoint；旧库在写入前进入离线迁移出口。"""
         db = self._db
         assert db is not None
         async with sqlite_transaction(db):
+            version = list(await db.execute_fetchall("PRAGMA user_version"))[0][0]
+            existing = await db.execute_fetchall(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+                "('checkpoints','subagent_checkpoints','conversation_messages','subagent_conversation_messages')")
+            if version != CHECKPOINT_SCHEMA_VERSION and (version != 0 or existing):
+                raise RuntimeError("数据库需要先执行 scripts/migrate_image_storage_v4.py 离线迁移到 v4")
             # 1. 在任何初始化写入之前识别旧格式，禁止运行时自动迁移生产记录。
             columns = {str(row[1]) for row in list(await db.execute_fetchall(f"PRAGMA table_info({self.storage_scope.messages_table})"))}
             if columns and ("role" in columns or "domain_json" in columns):
@@ -140,22 +146,9 @@ class AgentStateDao:
                 await ensure_inbox_schema(db, storage_scope=scope)
             for statement in agent_state_schema(self.storage_scope):
                 await db.execute(statement)
-            await db.execute("PRAGMA user_version=3")
+            await db.execute(f"PRAGMA user_version={CHECKPOINT_SCHEMA_VERSION}")
 
 
-
-    @staticmethod
-    def _protocol_payload(message: BaseMessage) -> dict[str, Any]:
-        """编码完整业务历史；已落盘图片在历史中使用本地引用。
-
-        Args:
-            message (BaseMessage): 待读取或转换的业务消息。
-        """
-        payload = message.to_storage_format()
-        for part in payload.get("content", []) if isinstance(payload.get("content"), list) else []:
-            if part.get("type") == "image_url" and part.get("storage_ref"):
-                part["image_url"]["url"] = part["storage_ref"]
-        return payload
 
     @classmethod
     def _protocol_rows(cls, state: AgentState) -> list[tuple[Any, ...]]:
@@ -166,42 +159,8 @@ class AgentStateDao:
         """
         return [(state.session_id, message.message_id, message.created_at.isoformat(),
                  "protocol", "exact", None, message.message_type,
-                 json.dumps(cls._protocol_payload(message), ensure_ascii=False, separators=(",", ":")))
+                 json.dumps(message.to_storage_format(), ensure_ascii=False, separators=(",", ":")))
                 for message in state.messages if message.enters_protocol_log]
-
-    @staticmethod
-    async def _upgrade_image_refs(db: aiosqlite.Connection, rows: list[tuple[Any, ...]],
-                                  storage_scope: AgentStorageScope = AgentStorageScope.MAIN) -> None:
-        """仅补历史原始图片的文件引用，不覆盖后续压缩文字或图片状态。
-
-        Args:
-            db (aiosqlite.Connection): 调用方已经开启事务的 SQLite 连接。
-            rows (list[tuple[Any, ...]]): 待归档的完整业务历史行。
-            storage_scope (AgentStorageScope): 本上下文使用的父表或子表范围。
-        """
-        for row in rows:
-            incoming = json.loads(row[7])
-            image_parts = [part for part in incoming.get("content", []) if isinstance(part, dict)
-                           and part.get("type") == "image_url" and part.get("storage_ref")] if isinstance(incoming.get("content"), list) else []
-            if not image_parts:
-                continue
-            found = list(await db.execute_fetchall(f"SELECT message_json FROM {storage_scope.messages_table} WHERE session_id=? AND message_id=?", (row[0], row[1])))
-            if not found:
-                continue
-            original = json.loads(found[0][0])
-            original_images = [part for part in original.get("content", []) if part.get("type") == "image_url"]
-            if len(original_images) != len(image_parts):
-                continue
-            changed = False
-            # 1. 只修改未外置的图片地址与引用，原文字与来源保持初次归档值。
-            for old, new in zip(original_images, image_parts, strict=True):
-                if not old.get("storage_ref"):
-                    old["storage_ref"] = new["storage_ref"]
-                    old["image_url"]["url"] = new["storage_ref"]
-                    changed = True
-            if changed:
-                await db.execute(f"UPDATE {storage_scope.messages_table} SET message_json=? WHERE session_id=? AND message_id=?",
-                    (json.dumps(original, ensure_ascii=False, separators=(",", ":")), row[0], row[1]))
 
     async def load(self) -> AgentState | None:
         """读取本会话编号最大的 checkpoint 并校验恢复材料，没有历史时返回空值。
@@ -328,7 +287,6 @@ class AgentStateDao:
             await db.executemany(f"""INSERT INTO {self.storage_scope.messages_table} (
                 session_id,message_id,created_at,record_kind,fidelity,legacy_source_id,message_type,message_json)
                 VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(session_id,message_id) DO NOTHING""", protocol_rows)
-            await self._upgrade_image_refs(db, protocol_rows, self.storage_scope)
         # 3. 打断后缀重写已有 Assistant 行，保留 message_id，避免历史出现重复气泡。
         if rewritten_message_id is not None:
             rewritten = next(

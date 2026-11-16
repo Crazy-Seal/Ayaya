@@ -33,7 +33,7 @@ def to_interaction_event(value: ExecutionEvent | InteractionEvent) -> Interactio
     if event.type == EventType.HUMAN_INPUT_COMMITTED:
         message = event.data["message"]
         return InteractionEvent(value.context_id, InteractionEventKind.HUMAN_MESSAGE,
-            {"message": message.text, "images": [part.url for part in message.content if isinstance(part, ImageContent)],
+            {"message": message.text, "images": [part.storage_ref or part.url for part in message.content if isinstance(part, ImageContent)],
              "input_sequence": event.data["input_sequence"], "message_id": message.message_id},
             origin_channel=message.origin_channel)
     if event.type == EventType.RUN_STARTED:

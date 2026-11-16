@@ -23,7 +23,7 @@ from app.agent.models.llm_client import StreamChunk
 from app.agent.plugins.base import BasePlugin, PluginHook
 
 from app.agent.state.manager import SessionStateManager, RequiredSaveError
-from app.agent.state.messages import TaskResultMessage
+from app.agent.state.messages import ImageContent, TaskResultMessage
 from app.crud.task_record_dao import TaskRecordDao
 from app.interaction.interaction_contract import ChannelCommand
 from app.interaction.interaction_event_hub import InteractionEventHub
@@ -334,7 +334,7 @@ def test_hub_preserves_human_payload_before_blocked_on_invoke(tmp_path, with_ima
 
     Args:
         tmp_path (Path): 隔离会话和消息数据库目录。
-        with_image (bool): 是否同时验证真人附件的原始图片地址。
+        with_image (bool): 是否同时验证已保存真人附件的文件引用。
     """
     async def scenario():
         """用真实 Agent、Scheduler 和 Hub 接通提交事件，模型与 ON_INVOKE 钩子由测试控制。"""
@@ -383,11 +383,16 @@ def test_hub_preserves_human_payload_before_blocked_on_invoke(tmp_path, with_ima
             await asyncio.wait_for(hooks.entered.wait(), 1)
             assert human.kind == "human_message" and human.origin_channel == "desktop"
             assert human.run_id is None
+            saved_message = (await agent.session_state_manager.load()).messages[-1]
+            references = [part.storage_ref for part in saved_message.content if isinstance(part, ImageContent)]
             assert human.payload == {
-                "message": "立即显示", "images": images,
-                "message_id": (await agent.session_state_manager.load()).messages[-1].message_id,
+                "message": "立即显示", "images": references,
+                "message_id": saved_message.message_id,
                 "input_sequence": human.payload["input_sequence"],
             }
+            if with_image:
+                from app.agent.utils.domain.images import load_image_data_url
+                assert load_image_data_url(references[0]) == images[0]
             assert await observer.status(human.payload["input_sequence"]) == "delivered"
             assert model.calls == 0
             hooks.release.set()

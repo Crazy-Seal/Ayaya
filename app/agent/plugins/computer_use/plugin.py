@@ -85,7 +85,7 @@ class ComputerUsePlugin(BasePlugin):
         """捕获当前主屏幕并沿通用图片保存入口写入环境目录。
 
         Returns:
-            ImageContent: 带内联编码及环境文件引用的图片。
+            ImageContent: 已保存到环境目录的文件引用图片。
 
         Raises:
             OSError: 捕获或保存失败，调用方已移除旧画面。
@@ -95,4 +95,4 @@ class ComputerUsePlugin(BasePlugin):
         reference = save_image_to_disk(url, category=MediaKind.ENVIRONMENT)
         if reference is None:
             raise OSError("环境图片保存失败")
-        return ImageContent(url=url, media_kind=MediaKind.ENVIRONMENT, storage_ref=reference)
+        return ImageContent(media_kind=MediaKind.ENVIRONMENT, storage_ref=reference)

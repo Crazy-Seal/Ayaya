@@ -22,7 +22,7 @@ from app.agent.state.messages import (
     ImageContent, TextContent, ToolCall, ProviderData, PROTOCOL_MESSAGE_TYPES,
     message_from_storage_format, notification_text,
 )
-from app.agent.state.model import AgentState
+from app.agent.state.model import AgentState, CHECKPOINT_SCHEMA_VERSION
 
 
 class MigrationError(ValueError):
@@ -205,7 +205,7 @@ def convert_checkpoint(value: dict, owner: dict | None = None, *, history_remap:
         dict: 通过运行时恢复校验的 v3 状态。
     """
     if value.get("schema_version") == 3:
-        AgentState.from_checkpoint(value)
+        AgentState.from_checkpoint({**value, "schema_version": CHECKPOINT_SCHEMA_VERSION})
         return value
     if value.get("schema_version") != 2:
         raise MigrationError("仅支持 v2 到 v3 迁移")
@@ -242,8 +242,8 @@ def convert_checkpoint(value: dict, owner: dict | None = None, *, history_remap:
     result.update(schema_version=3, messages=messages, token_baseline=None)
     for field in ("pending_tool_calls", "pending_actions"):
         result[field] = [convert_call(call, owner) for call in result.get(field) or []]
-    # 3. 在提交前通过运行时恢复接口检查配对与审批状态，不丢弃非法记录。
-    AgentState.from_checkpoint(result)
+    # 3. 按当前结构检查配对和审批状态，离线阶段的输出版本保持 v3。
+    AgentState.from_checkpoint({**result, "schema_version": CHECKPOINT_SCHEMA_VERSION})
     return result
 
 

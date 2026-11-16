@@ -90,9 +90,9 @@ def test_deferred_image_is_merged_before_pending_batch_recovers(tmp_path: Path) 
     state["pending_tool_calls"] = [state["messages"][0]["tool_calls"][-1]]
     state["_deferred_tool_media"] = [{"tool_call_id": "call", "tool_name": "screenshot", "associated_message_id": "tool",
         "image_message_name": "system_tool_image", "image_urls": [media["content"][1]["image_url"]["url"]]}]
-    restored = AgentState.from_checkpoint(convert_checkpoint(state))
-    assert restored.pending_tool_calls[0].id == "next"
-    assert restored.messages[-1].content[-1].media_kind == "tool"
+    restored = convert_checkpoint(state)
+    assert restored["pending_tool_calls"][0]["id"] == "next"
+    assert restored["messages"][-1]["content"][-1]["media_kind"] == "tool"
 
 
 def test_summary_of_removed_image_maps_identity_without_restoring_messages(tmp_path: Path) -> None:
@@ -111,9 +111,9 @@ def test_summary_of_removed_image_maps_identity_without_restoring_messages(tmp_p
         db.execute("UPDATE checkpoints SET state_json=?", (json.dumps(state),))
     migrate(path, apply=True)
     with sqlite3.connect(path) as db:
-        restored = AgentState.from_checkpoint(json.loads(db.execute("SELECT state_json FROM checkpoints").fetchone()[0]))
-    assert len(restored.messages) == 1
-    assert restored.messages[0].covered_through_message_id == "tool"
+        restored = json.loads(db.execute("SELECT state_json FROM checkpoints").fetchone()[0])
+    assert len(restored["messages"]) == 1
+    assert restored["messages"][0]["covered_through_message_id"] == "tool"
 
 
 def test_deferred_image_with_wrong_call_aborts_migration(tmp_path: Path) -> None:

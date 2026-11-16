@@ -6,13 +6,14 @@ from typing import Any, AsyncIterator, Sequence, TYPE_CHECKING
 from types import TracebackType
 from app.agent.models.contracts import OPENAI_CHAT_COMPLETIONS, InputMessage, LLMConfig, LLMResponse, StreamChunk, TokenUsage, ToolDefinition, ModelAdapter, ModelContextOverflowError
 from app.agent.state.messages import BaseMessage
+from app.agent.models.image_projection import resolve_message_images
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI
 
 
 class LLMClient:
-    """按协议装配模型模块，允许测试通过同一接口替换适配器。
+    """解析本地图片并按协议装配模型模块，测试可通过同一接口替换适配器。
 
     Attributes:
         config (LLMConfig): 本实例固定使用的调用配置。
@@ -59,7 +60,7 @@ class LLMClient:
         Returns:
             int: 当前适配器实际请求结构的输入 token 估算。
         """
-        return self._adapter.estimate_input(messages, tools)
+        return self._adapter.estimate_input(resolve_message_images(messages), tools)
 
     async def astream(self, messages: Sequence[InputMessage], tools: Sequence[ToolDefinition] | None = None, **options: Any) -> AsyncIterator[StreamChunk]:
         """产生业务流片段，取消等待时也关闭底层生成器。
@@ -73,7 +74,7 @@ class LLMClient:
             AsyncIterator[StreamChunk]: 供调用方即时消费的正文、完整调用、结束状态和用量片段。
         """
         self._check_options(options)
-        stream = self._adapter.astream(messages, tools, **options)
+        stream = self._adapter.astream(resolve_message_images(messages), tools, **options)
         try:
             async for chunk in stream:
                 yield chunk
@@ -92,7 +93,7 @@ class LLMClient:
             LLMResponse: 正文、工具调用、结束原因与可用恢复材料。
         """
         self._check_options(options)
-        return await self._adapter.ainvoke(messages, tools, **options)
+        return await self._adapter.ainvoke(resolve_message_images(messages), tools, **options)
 
     async def ainvoke_structured(self, messages: Sequence[InputMessage], schema: dict, **options: Any) -> dict:
         """按业务 schema 请求对象，重试与响应校验由适配器执行。
@@ -106,7 +107,7 @@ class LLMClient:
             dict: 解析并校验后的业务 JSON 输出。
         """
         self._check_options(options)
-        return await self._adapter.ainvoke_structured(messages, schema, **options)
+        return await self._adapter.ainvoke_structured(resolve_message_images(messages), schema, **options)
 
     def invoke(self, messages: Sequence[InputMessage], tools: Sequence[ToolDefinition] | None = None, **options: Any) -> LLMResponse:
         """同步请求不运行异步事件循环或复用其 HTTP 客户端。
@@ -120,7 +121,7 @@ class LLMClient:
             LLMResponse: 同步请求得到的业务响应。
         """
         self._check_options(options)
-        return self._adapter.invoke(messages, tools, **options)
+        return self._adapter.invoke(resolve_message_images(messages), tools, **options)
 
     async def close(self) -> None:
         """释放适配器的请求资源。"""

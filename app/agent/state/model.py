@@ -28,7 +28,7 @@ from app.agent.state.messages import (
 from app.agent.state.time import normalize_utc, utc_now
 
 
-CHECKPOINT_SCHEMA_VERSION = 3
+CHECKPOINT_SCHEMA_VERSION = 4
 
 
 class TokenBaseline(BaseModel):
@@ -533,7 +533,7 @@ class AgentState(BaseModel):
             "pending_actions": [call.to_dict() for call in self.pending_actions],
             "extra": to_json_value(self.extra),
             "temporary_context": {
-                key: item.model_dump() for key, item in self.temporary_context.items()
+                key: item.model_dump(exclude_none=True) for key, item in self.temporary_context.items()
             },
             "created_at": normalize_utc(self.created_at).isoformat(),
             "updated_at": normalize_utc(self.updated_at).isoformat(),

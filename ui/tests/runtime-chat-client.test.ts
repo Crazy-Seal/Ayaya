@@ -30,7 +30,7 @@ async () => {
    */
   let listener: (event: InteractionEvent) => void = () => {};
   const commands: Array<{ kind: string; origin_channel: string }> = [];
-  const added: Array<{ content: string; origin_channel?: string }> = [];
+  const added: Array<{ content: string; origin_channel?: string; images?: string[] }> = [];
   const errors: string[] = [];
   let historyLoads = 0;
   const bridge = {
@@ -128,7 +128,7 @@ async () => {
          * Args:
          *     message ({ content: string; origin_channel?: string }): 当前真人草稿正文。
          */
-        addMessage: (message: { content: string; origin_channel?: string }) => { added.push(message); },
+        addMessage: (message: { content: string; origin_channel?: string; images?: string[] }) => { added.push(message); },
         /**
          * 提供测试占位回调，不产生额外副作用。
          */
@@ -203,7 +203,7 @@ async () => {
     });
     listener({ session_id: "s", kind: "session_snapshot", payload: { phase: "idle" },
       stream_epoch: "epoch", event_sequence: 0 });
-    listener({ session_id: "s", kind: "human_message", payload: { message: "QQ 消息" },
+    listener({ session_id: "s", kind: "human_message", payload: { message: "QQ 消息", images: ["attachment.png"] },
       origin_channel: "qq", stream_epoch: "epoch", event_sequence: 1 });
     await new Promise<void>(/**
      * 由 Promise 构造器立即调用，取得本用例指定的条目或响应，供外层断言处理结果。
@@ -217,6 +217,7 @@ async () => {
     assert.equal(added.length, 1);
     assert.equal(added[0].content, "QQ 消息");
     assert.equal(added[0].origin_channel, "qq");
+    assert.deepEqual(added[0].images, ["attachment.png"]);
     await client.sendMessage();
     assert.equal(commands.length, 1);
     assert.equal(commands[0].kind, "human_turn");

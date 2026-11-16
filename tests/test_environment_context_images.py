@@ -127,18 +127,20 @@ def test_environment_images_restore_without_entering_history_and_clear_on_end(
             # 1. 模拟轮内保存进度和审批恢复，经过 JSON 与数据库往返后仍可发送原图片。
             await manager.save_progress(state)
             restored = await manager.load()
-            assert restored.temporary_context["plugin.screen"] == item
+            saved_image = restored.temporary_context["plugin.screen"].images[0]
+            assert saved_image.url is None and saved_image.storage_ref.startswith("environment/")
             assert restored.temporary_context["plugin.screen"].images[0].media_kind is MediaKind.ENVIRONMENT
-            assert adapter.encode_messages(append_transient_context(restored))[-1]["content"][-1] == {
-                "type": "image_url", "image_url": {"url": image.url},
-            }
+            from app.agent.models.llm_client import LLMClient
+            assert LLMClient(LLMConfig("test", "test"), adapter=adapter).estimate_input(
+                append_transient_context(restored)) == adapter.estimate_input(append_transient_context(state))
             # 2. 背景只保存在 checkpoint 的临时条目，协议历史中没有环境消息和图片数据。
             with closing(sqlite3.connect(db_path)) as connection:
                 history = connection.execute("SELECT message_type, message_json FROM conversation_messages").fetchall()
                 assert [row[0] for row in history] == ["human"]
                 assert image.url not in history[0][1] and "环境背景" not in history[0][1]
                 checkpoint = json.loads(connection.execute("SELECT state_json FROM checkpoints").fetchone()[0])
-                assert checkpoint["temporary_context"]["plugin.screen"]["images"][0]["url"] == image.url
+                assert checkpoint["temporary_context"]["plugin.screen"]["images"][0]["storage_ref"] == saved_image.storage_ref
+                assert "base64" not in json.dumps(checkpoint)
 
             # 3. 三种结束路径均清理临时图片，并删除数据库中的旧中间态。
             if ending == "complete":

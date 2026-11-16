@@ -3,6 +3,7 @@ from app.agent.state.messages import ImageContent
 from tests.model_capture import result_parts
 import asyncio
 import json
+import pytest
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,6 +14,19 @@ from app.agent.context import ContextStrategyConfig
 from app.agent.state import AgentState
 from app.agent.state.messages import HumanMessage, ToolCall
 from app.agent.utils.domain import images as image_utils
+
+
+def test_saved_image_roundtrips_with_reference_only() -> None:
+    """已保存的工具图片通过消息协议往返时只保留文件引用。"""
+    from app.agent.state.messages import content_from_json
+
+    image = ImageContent(storage_ref="tool/example.png", media_kind="tool", detail="low")
+    payload = image.to_dict()
+    assert payload == {"type": "image_url", "image_url": {"detail": "low"},
+                       "media_kind": "tool", "storage_ref": "tool/example.png"}
+    assert content_from_json([payload]) == (image,)
+    with pytest.raises(ValueError):
+        ImageContent()
 
 
 class _UnusedLLM:
@@ -205,7 +219,8 @@ def test_user_image_is_saved_before_first_protocol_commit(
     assert isinstance(message, HumanMessage)
     assert tuple(part.storage_ref for part in message.content if isinstance(part, ImageContent) and part.storage_ref) == ("stored.png",)
     assert "image_filenames" not in payload
-    assert payload["content"][1]["image_url"]["url"] == "stored.png"
+    assert payload["content"][1]["storage_ref"] == "stored.png"
+    assert "url" not in payload["content"][1]["image_url"]
     assert json.loads(row[1]) == ["stored.png"]
 
 
@@ -259,237 +274,92 @@ def test_text_input_does_not_save_images(monkeypatch, tmp_path: Path) -> None:
     assert tuple(part.storage_ref for part in state.messages[-1].content if isinstance(part, ImageContent) and part.storage_ref) == ()
 
 
-def test_image_save_failure_does_not_block_user_commit(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    """验证图片保存失败不阻止真人输入提交。
+@pytest.mark.parametrize("source", ["human", "tool"])
+@pytest.mark.parametrize("raises", [False, True])
+def test_image_save_failure_blocks_database_commit(monkeypatch, tmp_path: Path, source: str, raises: bool) -> None:
+    """附件或工具图片保存失败时，当前轮次进入必需保存故障出口。
 
     Args:
-        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
-        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+        monkeypatch (pytest.MonkeyPatch): 替换文件写入以制造故障。
+        tmp_path (Path): 隔离数据库目录。
+        source (str): 当前验证真人附件或工具图片。
+        raises (bool): 文件写入是否抛出异常。
     """
-    called = False
-
-    def fail_save(images: list[str]) -> list[str]:
-        """主动制造图片保存异常，验证提交和历史保留的降级行为。
-
-        该定义仅用于外层用例：验证图片保存失败不阻止真人输入提交。
+    def fail_save(images: list[str], *, category=None) -> list[str]:
+        """模拟磁盘写入失败，覆盖返回空结果与抛异常两种出口。
 
         Args:
-            images (list[str]): 当前需要模拟保存的图片集合。
-        """
-        nonlocal called
-        called = True
-        raise OSError("disk unavailable")
-
-    monkeypatch.setattr(
-        state_manager_module,
-        "save_multiple_images",
-        fail_save,
-        raising=False,
-    )
-
-    async def scenario() -> tuple[AgentState, tuple[str, str | None]]:
-        """由外层测试调用，完成“图片保存失败不阻止真人输入提交”的异步步骤。
-
+            images (list[str]): 本次待写入的图片。
+            category (MediaKind | None): 图片来源目录。
         Returns:
-            tuple[AgentState, tuple[str, str | None]]: 供外层用例断言使用的预设结果。
+            list[str]: 文件保存失败的空结果。
+        Raises:
+            OSError: 用例要求模拟磁盘异常。
         """
-        agent = _make_agent(tmp_path / "agent.sqlite3")
-        try:
-            state = AgentState.create_new("image-test")
-            async for _ in agent._commit_user_input(
-                state,
-                "继续聊天",
-                ["data:image/png;base64,AA=="],
-                activation_data={},
-            ):
-                pass
-            db = await agent.session_state_manager._state_dao._get_db()
-            row = (await db.execute_fetchall(
-                "SELECT message_json, CASE WHEN json_extract(message_json,'$.content[1].storage_ref') IS NULL THEN NULL ELSE json_array(json_extract(message_json,'$.content[1].storage_ref')) END FROM conversation_messages"
-            ))[0]
-            return state, row
-        finally:
-            await agent.session_state_manager.close()
-
-    state, row = asyncio.run(scenario())
-    payload = json.loads(row[0])
-
-    assert called is True
-    assert payload["content"][0]["text"] == "继续聊天"
-    assert payload["content"][1]["image_url"]["url"] == "data:image/png;base64,AA=="
-    assert isinstance(state.messages[-1], HumanMessage)
-    assert tuple(part.storage_ref for part in state.messages[-1].content if isinstance(part, ImageContent) and part.storage_ref) == ()
-    assert row[1] is None
-
-
-def test_tool_image_is_externalized_for_protocol_but_kept_in_checkpoint(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    """验证工具图片协议日志外置但 checkpoint 保留模型地址。
-
-    Args:
-        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
-        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
-    """
-    image = "data:image/png;base64,AA=="
-    monkeypatch.setattr(image_utils, "get_images_dir", lambda: tmp_path / "images")
-
-    async def scenario() -> tuple[dict, dict, list[str]]:
-        """由外层测试调用，完成“工具图片协议日志外置但 checkpoint 保留模型地址”的异步步骤。
-
-        Returns:
-            tuple[dict, dict, list[str]]: 供外层用例断言使用的预设结果。
-        """
-        manager = agent_module.SessionStateManager("tool-image", sqlite_factory=SqliteFactory(str(tmp_path / 'agent.sqlite3')))
-        try:
-            state = AgentState.create_new("tool-image")
-            _append_tool_image(state, image)
-            await manager.save(state, checkpoint_type="completed")
-            db = await manager._state_dao._get_db()
-            protocol_raw, attachments_raw = (await db.execute_fetchall(
-                "SELECT message_json, CASE WHEN json_extract(message_json,'$.content[1].storage_ref') IS NULL THEN NULL ELSE json_array(json_extract(message_json,'$.content[1].storage_ref')) END FROM conversation_messages WHERE message_type='tool'"
-            ))[0]
-            checkpoint_raw = (await db.execute_fetchall(
-                "SELECT state_json FROM checkpoints ORDER BY id DESC LIMIT 1"
-            ))[0][0]
-            return json.loads(protocol_raw), json.loads(checkpoint_raw), json.loads(attachments_raw)
-        finally:
-            await manager.close()
-
-    protocol, checkpoint, attachments = asyncio.run(scenario())
-
-    assert attachments[0].startswith("tool/")
-    assert protocol["content"][1]["media_kind"] == "tool"
-    assert protocol["content"][1]["image_url"]["url"] == attachments[0]
-    assert checkpoint["messages"][-1]["content"][1]["image_url"]["url"] == image
-    assert (tmp_path / "images" / Path(attachments[0])).read_bytes() == b"\x00"
-
-
-def test_tool_image_protocol_row_upgrades_after_transient_save_failure(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    """验证临时保存失败后的图片协议行可升级为文件引用。
-
-    Args:
-        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
-        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
-    """
-    attempts = 0
-
-    def save_images(images: list[str], *, category=None) -> list[str]:
-        """模拟图片保存并记录调用，用于检查消息提交先后顺序。
-
-        该定义仅用于外层用例：验证临时保存失败后的图片协议行可升级为文件引用。
-
-        Args:
-            images (list[str]): 当前需要模拟保存的图片集合。
-            category (Any): 真人、截图、本地工具或 MCP 图片的保存分类。
-
-        Returns:
-            list[str]: 供外层用例断言使用的预设结果。
-        """
-        nonlocal attempts
-        attempts += 1
-        return [] if attempts == 1 else ["tool/recovered.png"]
-
-    monkeypatch.setattr(state_manager_module, "save_multiple_images", save_images)
-
-    async def scenario() -> tuple[dict, str | None, dict, str | None]:
-        """由外层测试调用，完成“临时保存失败后的图片协议行可升级为文件引用”的异步步骤。
-
-        Returns:
-            tuple[dict, str | None, dict, str | None]: 供外层用例断言使用的预设结果。
-        """
-        manager = state_manager_module.SessionStateManager(
-            "retry-tool-image",
-            sqlite_factory=SqliteFactory(str(tmp_path / 'agent.sqlite3')),
-        )
-        try:
-            state = AgentState.create_new("retry-tool-image")
-            _append_tool_image(state, "data:image/png;base64,AA==")
-            await manager.save(state, checkpoint_type="completed")
-            db = await manager._state_dao._get_db()
-            first_raw, first_attachments = (await db.execute_fetchall(
-                "SELECT message_json, CASE WHEN json_extract(message_json,'$.content[1].storage_ref') IS NULL THEN NULL ELSE json_array(json_extract(message_json,'$.content[1].storage_ref')) END FROM conversation_messages WHERE message_type='tool'"
-            ))[0]
-
-            await manager.save(state, checkpoint_type="completed")
-            second_raw, second_attachments = (await db.execute_fetchall(
-                "SELECT message_json, CASE WHEN json_extract(message_json,'$.content[1].storage_ref') IS NULL THEN NULL ELSE json_array(json_extract(message_json,'$.content[1].storage_ref')) END FROM conversation_messages WHERE message_type='tool'"
-            ))[0]
-            return (
-                json.loads(first_raw),
-                first_attachments,
-                json.loads(second_raw),
-                second_attachments,
-            )
-        finally:
-            await manager.close()
-
-    first, first_attachments, second, second_attachments = asyncio.run(scenario())
-
-    assert first["content"][1]["image_url"]["url"].startswith("data:image/")
-    assert first_attachments is None
-    assert second["content"][1]["image_url"]["url"] == "tool/recovered.png"
-    assert json.loads(second_attachments) == ["tool/recovered.png"]
-
-
-def test_tool_image_save_exception_preserves_base64_and_checkpoint(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    """验证工具图片外置异常时保留 Base64 和 checkpoint。
-
-    Args:
-        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
-        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
-    """
-    def fail_save(_images: list[str], *, category=None) -> list[str]:
-        """主动制造图片保存异常，验证提交和历史保留的降级行为。
-
-        该定义仅用于外层用例：验证工具图片外置异常时保留 Base64 和 checkpoint。
-
-        Args:
-            _images (list[str]): 当前需要模拟保存的图片集合。
-            category (Any): 真人、截图、本地工具或 MCP 图片的保存分类。
-        """
-        raise OSError("disk unavailable")
+        if raises:
+            raise OSError("disk unavailable")
+        return []
 
     monkeypatch.setattr(state_manager_module, "save_multiple_images", fail_save)
 
-    async def scenario() -> tuple[dict, dict, str | None]:
-        """由外层测试调用，完成“工具图片外置异常时保留 Base64 和 checkpoint”的异步步骤。
-
-        Returns:
-            tuple[dict, dict, str | None]: 供外层用例断言使用的预设结果。
-        """
-        manager = state_manager_module.SessionStateManager(
-            "failed-tool-image",
-            sqlite_factory=SqliteFactory(str(tmp_path / 'agent.sqlite3')),
-        )
-        try:
-            state = AgentState.create_new("failed-tool-image")
+    async def scenario() -> None:
+        """通过公开保存入口确认失败后没有历史和 checkpoint 提交。"""
+        manager = state_manager_module.SessionStateManager("failure", SqliteFactory(tmp_path / "state.sqlite3"))
+        state = AgentState.create_new("failure")
+        if source == "human":
+            state.add_user_message("附件", image_urls=("data:image/png;base64,AA==",))
+        else:
             _append_tool_image(state, "data:image/png;base64,AA==")
-            await manager.save(state, checkpoint_type="completed")
-            db = await manager._state_dao._get_db()
-            protocol_raw, attachments = (await db.execute_fetchall(
-                "SELECT message_json, CASE WHEN json_extract(message_json,'$.content[1].storage_ref') IS NULL THEN NULL ELSE json_array(json_extract(message_json,'$.content[1].storage_ref')) END FROM conversation_messages WHERE message_type='tool'"
-            ))[0]
-            checkpoint_raw = (await db.execute_fetchall(
-                "SELECT state_json FROM checkpoints ORDER BY id DESC LIMIT 1"
-            ))[0][0]
-            return json.loads(protocol_raw), json.loads(checkpoint_raw), attachments
+        try:
+            with pytest.raises(state_manager_module.RequiredSaveError):
+                await manager.save_progress(state)
+            assert (await manager.load()).messages == ()
         finally:
             await manager.close()
 
-    protocol, checkpoint, attachments = asyncio.run(scenario())
+    asyncio.run(scenario())
 
-    expected = "data:image/png;base64,AA=="
-    assert protocol["content"][1]["image_url"]["url"] == expected
-    assert checkpoint["messages"][-1]["content"][1]["image_url"]["url"] == expected
-    assert attachments is None
+
+def test_image_save_can_retry_before_first_history_commit(monkeypatch, tmp_path: Path) -> None:
+    """首次图片写入失败后，重试保存仍将完整原始观察归档为文件引用。
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): 仅让首次磁盘保存失败。
+        tmp_path (Path): 隔离数据库和图片目录。
+    """
+    original = image_utils.save_multiple_images
+    attempts = 0
+
+    def save_images(images: list[str], *, category=None) -> list[str]:
+        """第一次写入失败，后续使用真实文件保存流程。
+
+        Args:
+            images (list[str]): 当前待保存图片。
+            category (MediaKind | None): 图片来源目录。
+        Returns:
+            list[str]: 文件引用，首次失败时为空。
+        """
+        nonlocal attempts
+        attempts += 1
+        return [] if attempts == 1 else original(images, category=category)
+
+    monkeypatch.setattr(state_manager_module, "save_multiple_images", save_images)
+
+    async def scenario() -> None:
+        """先失败再保存，并通过恢复入口核验引用图片。"""
+        manager = state_manager_module.SessionStateManager("retry", SqliteFactory(tmp_path / "state.sqlite3"))
+        state = AgentState.create_new("retry")
+        _append_tool_image(state, "data:image/png;base64,AA==")
+        try:
+            with pytest.raises(state_manager_module.RequiredSaveError):
+                await manager.save_progress(state)
+            assert (await manager.load()).messages == ()
+            await manager.save_progress(state)
+            restored = await manager.load()
+            picture = restored.messages[-1].content[-1]
+            assert isinstance(picture, ImageContent)
+            assert picture.storage_ref.startswith("tool/") and picture.url is None
+        finally:
+            await manager.close()
+
+    asyncio.run(scenario())

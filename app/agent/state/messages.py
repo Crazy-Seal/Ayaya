@@ -223,12 +223,12 @@ class ImageContent:
     """保存消息图片及其本地文件引用。
 
     Attributes:
-        url (str): 图片地址、data URL 或历史中的相对文件路径。
+        url (str | None): 尚未落盘的图片编码，或本次模型请求解析出的 data URL。
         detail (str | None): 图片处理提示，模型适配器决定如何使用。
         media_kind (MediaKind): 真人附件、工具图片、MCP 图片或临时环境背景图片。
         storage_ref (str | None): 已保存的本地相对路径。
     """
-    url: str
+    url: str | None = None
     detail: str | None = None
     media_kind: MediaKind = MediaKind.HUMAN
     storage_ref: str | None = None
@@ -238,10 +238,12 @@ class ImageContent:
         if self.media_kind not in set(MediaKind):
             raise ValueError("未知图片类别")
         object.__setattr__(self, "media_kind", MediaKind(self.media_kind))
-        if not isinstance(self.url, str) or not self.url:
-            raise ValueError("可用图片必须有地址")
+        if self.url is not None and (not isinstance(self.url, str) or not self.url):
+            raise ValueError("图片编码必须是非空字符串")
         if self.storage_ref is not None and (not isinstance(self.storage_ref, str) or not self.storage_ref):
             raise ValueError("图片文件引用必须是非空字符串")
+        if self.url is None and self.storage_ref is None:
+            raise ValueError("图片必须有编码或文件引用")
         if self.detail is not None and not isinstance(self.detail, str):
             raise ValueError("图片 detail 必须是字符串")
 
@@ -251,7 +253,7 @@ class ImageContent:
         Returns:
             dict[str, Any]: 供下一处理阶段使用的独立 JSON 对象。
         """
-        image = {"url": self.url}
+        image = {"url": self.url} if self.url is not None else {}
         if self.detail is not None:
             image["detail"] = self.detail
         return {"type": "image_url", "image_url": image, "media_kind": self.media_kind.value,
@@ -290,8 +292,8 @@ def content_from_json(value: object) -> tuple[ContentPart, ...]:
         if block.get("type") == "text":
             parts.append(TextContent(_require_string(block.get("text"), "content[].text")))
         elif block.get("type") == "image_url":
-            image = _require_mapping(block.get("image_url"), "content[].image_url")
-            parts.append(ImageContent(url=_require_string(image.get("url"), "image_url.url"),
+            image = _require_mapping(block.get("image_url", {}), "content[].image_url")
+            parts.append(ImageContent(url=image.get("url"),
                 detail=image.get("detail"), media_kind=block.get("media_kind", MediaKind.HUMAN),
                 storage_ref=block.get("storage_ref")))
         else:

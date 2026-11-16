@@ -11,7 +11,7 @@ from app.schemas.runtime_types import CheckpointType, DESKTOP_CHANNEL, InboxKind
 from app.agent.runtime.session_inbox import InboxEnvelope, InputNoLongerPending
 from app.agent.state.model import AgentState
 from app.agent.state.messages import (
-    AssistantMessage, HumanMessage, ImageContent, RuntimeInputMessage, ToolMessage,
+    AssistantMessage, ContentPart, HumanMessage, ImageContent, RuntimeInputMessage, ToolMessage,
     TaskResultMessage, PluginNotificationMessage, SubagentMessage, text_content, with_text,
 )
 from app.agent.utils.domain.images import save_multiple_images
@@ -388,19 +388,13 @@ class SessionStateManager:
         # 1. 先把同批任务结果和插件通知加入对话，这些内部消息不增加真人计数。
         for notice in runtime_input_messages(inputs):
             state.append_input(notice)
-        filenames = []
-        # 2. 保存用户附件；文件保存失败时记录日志，后续仍保留用户传入的图片地址。
-        if images:
-            try:
-                filenames = await asyncio.to_thread(save_multiple_images, images)
-            except Exception as exc:
-                logger.warning("[SessionStateManager] 用户图片保存失败: %s", exc)
-        # 3. 创建真人消息并增加计数，将本轮输入和执行进度一起提交。
-        human = state.add_user_message(message, image_urls=images or (), image_filenames=filenames,
+        # 2. 将真人附件加入本轮输入，由统一保存入口落盘并提交执行进度。
+        human = state.add_user_message(message, image_urls=images or (),
                                        origin_channel=origin_channel)
         state.increment_long_term_memory_turn_counter()
         await self.save(state, checkpoint_type=CheckpointType.INTERMEDIATE, inbox_inputs=inputs)
-        return human
+        return next(item for item in state.messages
+                    if isinstance(item, HumanMessage) and item.message_id == human.message_id)
 
     async def commit_runtime_inputs(self, state: AgentState, messages: tuple[HumanMessage | RuntimeInputMessage, ...] | None,
                                     inputs: tuple[InboxEnvelope, ...]) -> None:
@@ -709,7 +703,7 @@ class SessionStateManager:
                    release_queued: bool = False) -> int:
         """将会话状态保存为可恢复的快照，并同步保存对话历史和输入处理结果。
 
-        输入保存、执行中保存、审批决定和轮次结束都通过这里写入。先准备工具结果
+        输入保存、执行中保存、审批决定和轮次结束都通过这里写入。先准备消息和临时背景
         中的图片文件，再由 DAO 在同一数据库事务内保存快照、对话历史、Inbox
         已交付标记和按需执行的排队放行。数据库任一步失败时整笔事务回滚。
 
@@ -726,7 +720,7 @@ class SessionStateManager:
         Raises:
             Exception: 输入已失效或数据库提交失败，错误返回给调用方；已写出的图片文件不随数据库回滚。
         """
-        # 1. 在线程中保存工具图片并补上文件引用，随后数据库可以记录这些图片的位置。
+        # 1. 在线程中保存消息和临时背景图片，将内容替换为可持久化的文件引用。
         await asyncio.to_thread(self._externalize_images, state)
         # 2. 由同一个数据库事务保存会话进度、消息历史和输入状态，成功后返回快照编号。
         try:
@@ -739,39 +733,51 @@ class SessionStateManager:
 
     @classmethod
     def _externalize_images(cls, state: AgentState) -> None:
-        """保存会话快照前，将工具结果中仍需保存的图片写入本地文件。
-
-        按消息和图片类别分组保存，成功后为对应图片补充 storage_ref 文件引用。
-        某组写入失败时记录日志并保留原图片地址，其他消息继续处理。
+        """保存会话前将附件、工具结果和临时背景的图片转换为文件引用。
 
         Args:
-            state (AgentState): 待保存的会话状态，工具消息中的图片会补上本地文件引用。
+            state (AgentState): 文件落盘成功后替换对应内容，保持消息身份和顺序。
+
+        Raises:
+            RequiredSaveError: 图片写入失败，本次数据库保存终止。
         """
-        # 1. 逐条检查工具结果，按图片类别收集尚无文件引用且当前仍可用的图片。
-        for message in state.messages:
-            if not isinstance(message, ToolMessage):
-                continue
+        def save_content(content: tuple[ContentPart, ...]) -> tuple[ContentPart, ...]:
+            """按图片来源保存同一消息或背景条目的图片。
+
+            Args:
+                content (tuple[ContentPart, ...]): 按显示顺序排列的图文。
+            Returns:
+                tuple[ContentPart, ...]: 清除内联编码、保留文件引用的图文。
+            """
             groups: dict[MediaKind, list[tuple[int, ImageContent]]] = {}
-            for index, part in enumerate(message.content):
+            parts = list(content)
+            for index, part in enumerate(content):
                 if isinstance(part, ImageContent) and not part.storage_ref:
                     groups.setdefault(part.media_kind, []).append((index, part))
-            parts = list(message.content)
-            changed = False
-            # 2. 每组图片写入文件；该组写入失败时保留原地址，继续尝试后面的图片组。
+                elif isinstance(part, ImageContent) and part.url is not None:
+                    parts[index] = replace(part, url=None)
             for kind, group in groups.items():
                 try:
-                    filenames = save_multiple_images([part.url for _, part in group], category=kind)
+                    urls = [part.url for _, part in group if part.url is not None]
+                    filenames = (save_multiple_images(urls) if kind is MediaKind.HUMAN
+                                 else save_multiple_images(urls, category=kind))
                 except Exception as exc:
-                    logger.warning("[SessionStateManager] 图片外置失败，保留原地址: %s", exc)
-                    filenames = []
-                # 2.1. 该组全部保存成功后，为每个图片块补上对应文件引用。
-                if len(filenames) == len(group):
-                    for (index, part), filename in zip(group, filenames, strict=True):
-                        parts[index] = replace(part, storage_ref=filename)
-                    changed = True
-            # 3. 用补充过文件引用的内容替换原消息，保留原图片地址及消息身份。
-            if changed:
-                state.replace_message(replace(message, content=tuple(parts)))
+                    raise RequiredSaveError("图片文件保存失败") from exc
+                if len(filenames) != len(group):
+                    raise RequiredSaveError("图片文件保存失败")
+                for (index, part), filename in zip(group, filenames, strict=True):
+                    parts[index] = replace(part, url=None, storage_ref=filename)
+            return tuple(parts)
+
+        # 1. 消息和临时背景共用落盘规则，数据库事务随后保存引用。
+        for message in state.messages:
+            if isinstance(message, (HumanMessage, AssistantMessage, ToolMessage)):
+                content = save_content(message.content)
+                if content != message.content:
+                    state.replace_message(replace(message, content=content))
+        for key, item in tuple(state.temporary_context.items()):
+            images = save_content(item.images)
+            state.set_temporary_context(key, item.model_copy(update={"images": images}))
 
     #=====================清除执行快照和释放资源======================
 
