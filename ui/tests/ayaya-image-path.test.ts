@@ -12,9 +12,9 @@ test("历史图片路径允许旧根文件和三个受限子目录", /**
 () => {
   assert.equal(normalizeImageRelativePath("legacy.png"), "legacy.png");
   assert.equal(normalizeImageRelativePath("tool/result.png"), "tool/result.png");
-  assert.equal(normalizeImageRelativePath("screenshot/shot.png"), "screenshot/shot.png");
+  assert.equal(normalizeImageRelativePath("environment/shot.png"), "environment/shot.png");
   assert.equal(normalizeImageRelativePath("mcp/chart.webp"), "mcp/chart.webp");
-  assert.equal(buildImageBackendPath("screenshot/shot 1.png"), "/images/screenshot/shot%201.png");
+  assert.equal(buildImageBackendPath("environment/shot 1.png"), "/images/environment/shot%201.png");
 });
 
 test("历史图片路径拒绝越权目录和路径穿越", /**
@@ -26,6 +26,7 @@ test("历史图片路径拒绝越权目录和路径穿越", /**
     "../secret.png",
     "screenshot/../secret.png",
     "unknown/image.png",
+    "screenshot/shot.png",
     "tool/nested/image.png",
     "C:\\secret.png",
     "/absolute.png",

@@ -162,8 +162,8 @@ def test_diary_format_skips_system_injected_tool_images() -> None:
     memory.chat_settings = SimpleNamespace(address="主人", name="Ayaya")
     messages = [
         HumanMessage(content=text_content("请看一下屏幕")),
-        ToolMessage(content=text_content("截屏成功"), tool_name="screenshot", tool_call_id="call-shot"),
-        ToolMessage(tool_name="screenshot", tool_call_id="image-screenshot", content=(ImageContent("data:image/png;base64,QUFB", media_kind="screenshot"),)),
+        ToolMessage(content=text_content("观察成功"), tool_name="python", tool_call_id="call-shot"),
+        ToolMessage(tool_name="python", tool_call_id="image-python", content=(ImageContent("data:image/png;base64,QUFB", media_kind="tool"),)),
         ToolMessage(tool_name="draw", tool_call_id="image-mcp", content=(ImageContent("data:image/png;base64,QkJC", media_kind="mcp"),)),
         ToolMessage(tool_name="draw", tool_call_id="image-tool", content=(ImageContent("data:image/png;base64,Q0ND", media_kind="tool"),)),
     ]

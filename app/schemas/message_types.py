@@ -35,28 +35,16 @@ class MediaKind(StrEnum):
     Attributes:
         HUMAN (MediaKind): 真人发送的附件。
         TOOL (MediaKind): 本地工具返回的图片。
-        SCREENSHOT (MediaKind): 可从活跃上下文压缩的截图。
         MCP (MediaKind): MCP 工具返回的图片。
         ENVIRONMENT (MediaKind): 框架或插件提供的本轮临时环境背景图片。
     """
 
     HUMAN = "human"
     TOOL = "tool"
-    SCREENSHOT = "screenshot"
     MCP = "mcp"
     ENVIRONMENT = "environment"
 
 
-class ImageContextState(StrEnum):
-    """表示当前上下文能否向模型发送图片。
-
-    Attributes:
-        AVAILABLE (ImageContextState): 保留可发送的图片地址。
-        COMPACTED (ImageContextState): 旧截图已经压缩，模型只读取占位说明。
-    """
-
-    AVAILABLE = "available"
-    COMPACTED = "compacted"
 
 
 class HistoryRole(StrEnum):
@@ -76,4 +64,3 @@ class HistoryRole(StrEnum):
 
 
 LEGACY_TOOL_NOTICE_KIND = "legacy_tool_notice"
-COMPRESSED_SCREENSHOT_PLACEHOLDER = "[系统消息]已被压缩的旧截图"

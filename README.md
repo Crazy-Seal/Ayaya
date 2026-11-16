@@ -13,7 +13,7 @@ The app is built for personal desktop use. It is not a hosted service, and it do
 - Streams replies as they are generated.
 - Saves local chat history and long-term memory.
 - Supports image messages for vision-capable chat models.
-- Can search memories, search diaries, browse the web, read or edit local files, run PowerShell commands, and request a screenshot with your confirmation.
+- Can search memories and diaries, browse the web, edit local files, run PowerShell and persistent Python, and observe or control Windows through the computer_use plugin with tool approval.
 - Lets you configure the model, prompt, tools, memory behavior, Live2D model, model position, cursor tracking, and motion labels from the settings window.
 
 ## Requirements

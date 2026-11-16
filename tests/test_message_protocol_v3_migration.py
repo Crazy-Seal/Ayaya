@@ -16,10 +16,11 @@ def legacy_fixture(path: Path, *, invalid: bool = False, compacted: bool = False
     base = {"_created_at": timestamp}
     assistant = {**base, "_message_id": "assistant", "_message_type": "assistant", "role": "assistant", "content": "", "tool_calls": [{"id": "call", "type": "function", "function": {"name": "screenshot", "arguments": "{}"}}], "_assistant": {"origin_channel": "desktop"}}
     tool = {**base, "_message_id": "tool", "_message_type": "tool", "role": "tool", "name": "screenshot", "tool_call_id": "call", "content": "截图成功", "_tool": {"compressible": True}}
-    image = {**base, "_message_id": "image", "_message_type": "tool_media", "role": "user", "content": [{"type": "text", "text": "图片"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}}], "_tool_media": {"tool_name": "screenshot", "media_kind": "screenshot", "associated_message_id": "missing" if invalid else "tool", "payload": {"kind": "available", "storage_refs": ["screenshot/a.png"]}}}
+    image = {**base, "_message_id": "image", "_message_type": "tool_media", "role": "user", "content": [{"type": "text", "text": "图片"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}}], "_tool_media": {"tool_name": "screenshot", "media_kind": "tool", "associated_message_id": "missing" if invalid else "tool", "payload": {"kind": "available", "storage_refs": ["tool/a.png"]}}}
     checkpoint_image = json.loads(json.dumps(image))
     if compacted:
         checkpoint_image["_tool_media"]["payload"]["kind"] = "compacted"
+        checkpoint_image["_tool_media"]["media_kind"] = "screenshot"
         checkpoint_image["content"] = "[系统消息]已被压缩的旧截图"
     state = {"schema_version": 2, "session_id": "s", "messages": [assistant, tool, checkpoint_image], "pending_tool_calls": [], "pending_actions": [], "_deferred_tool_media": [], "created_at": timestamp, "updated_at": timestamp}
     with sqlite3.connect(path) as db:
@@ -29,8 +30,8 @@ def legacy_fixture(path: Path, *, invalid: bool = False, compacted: bool = False
         for index, raw in enumerate((assistant, tool, image), 1):
             wire = {key: value for key, value in raw.items() if not key.startswith('_')}
             meta = raw.get('_tool_media')
-            domain = {"tool_name": "screenshot", "media_kind": "screenshot", "payload_kind": "available"} if meta else {key[1:]: value for key, value in raw.items() if key in {'_tool', '_assistant'}}
-            db.execute("INSERT INTO conversation_messages VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", (index,'s',raw['_message_id'],timestamp,raw['role'],json.dumps(wire),'tool_image' if meta else 'protocol','exact',meta['associated_message_id'] if meta else None,json.dumps(['screenshot/a.png']) if meta else None,None,raw['_message_type'],json.dumps(domain)))
+            domain = {"tool_name": "screenshot", "media_kind": "tool", "payload_kind": "available"} if meta else {key[1:]: value for key, value in raw.items() if key in {'_tool', '_assistant'}}
+            db.execute("INSERT INTO conversation_messages VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", (index,'s',raw['_message_id'],timestamp,raw['role'],json.dumps(wire),'tool_image' if meta else 'protocol','exact',meta['associated_message_id'] if meta else None,json.dumps(['tool/a.png']) if meta else None,None,raw['_message_type'],json.dumps(domain)))
         db.execute("UPDATE sqlite_sequence SET seq=100 WHERE name='conversation_messages'")
     return state
 
@@ -46,7 +47,7 @@ def test_check_is_read_only_and_apply_merges_with_ids_preserved(tmp_path: Path) 
     with sqlite3.connect(path) as db:
         rows = db.execute("SELECT id,message_id,message_json FROM conversation_messages ORDER BY id").fetchall()
         assert [(row[0], row[1]) for row in rows] == [(1, "assistant"), (2, "tool")]
-        assert json.loads(rows[1][2])["content"][1]["storage_ref"] == "screenshot/a.png"
+        assert json.loads(rows[1][2])["content"][1]["storage_ref"] == "tool/a.png"
         assert db.execute("SELECT seq FROM sqlite_sequence WHERE name='conversation_messages'").fetchone()[0] == 100
     assert migrate(path, apply=True)["pending_checkpoints"] == 0
 
@@ -61,14 +62,12 @@ def test_missing_association_aborts_without_schema_or_data_changes(tmp_path: Pat
     assert path.read_bytes() == before
 
 
-def test_compacted_checkpoint_does_not_rehydrate_original_history(tmp_path: Path) -> None:
-    """历史仍有原图，checkpoint 压缩图片不能通过迁移重载。"""
+def test_old_migration_rejects_retired_screenshot_contract(tmp_path: Path) -> None:
+    """旧脚本拒绝已退出的截图契约，存量截图转换留给新的图片迁移。"""
     path = tmp_path / "compact.sqlite"
     state = legacy_fixture(path, compacted=True)
-    restored = AgentState.from_checkpoint(convert_checkpoint(state))
-    image = restored.messages[-1].content[-1]
-    assert image.context_state == "compacted" and image.url == ""
-    migrate(path, apply=True)
+    with pytest.raises(MigrationError, match="旧截图"):
+        convert_checkpoint(state)
 
 
 def test_checkpoint_update_failure_rolls_back_rebuilt_history(tmp_path: Path) -> None:
@@ -90,10 +89,10 @@ def test_deferred_image_is_merged_before_pending_batch_recovers(tmp_path: Path) 
     state["messages"][0]["tool_calls"].append({"id": "next", "function": {"name": "read_file", "arguments": "{}"}})
     state["pending_tool_calls"] = [state["messages"][0]["tool_calls"][-1]]
     state["_deferred_tool_media"] = [{"tool_call_id": "call", "tool_name": "screenshot", "associated_message_id": "tool",
-        "image_message_name": "system_screenshot", "image_urls": [media["content"][1]["image_url"]["url"]]}]
+        "image_message_name": "system_tool_image", "image_urls": [media["content"][1]["image_url"]["url"]]}]
     restored = AgentState.from_checkpoint(convert_checkpoint(state))
     assert restored.pending_tool_calls[0].id == "next"
-    assert restored.messages[-1].content[-1].media_kind == "screenshot"
+    assert restored.messages[-1].content[-1].media_kind == "tool"
 
 
 def test_summary_of_removed_image_maps_identity_without_restoring_messages(tmp_path: Path) -> None:
@@ -126,7 +125,7 @@ def test_deferred_image_with_wrong_call_aborts_migration(tmp_path: Path) -> None
     state = legacy_fixture(tmp_path / "wrong_call.sqlite")
     media = state["messages"].pop()
     state["_deferred_tool_media"] = [{"tool_call_id": "wrong", "tool_name": "screenshot",
-        "associated_message_id": "tool", "image_message_name": "system_screenshot",
+        "associated_message_id": "tool", "image_message_name": "system_tool_image",
         "image_urls": [media["content"][1]["image_url"]["url"]]}]
     with pytest.raises(MigrationError, match="关联"):
         convert_checkpoint(state)

@@ -13,7 +13,6 @@ from app.agent.models.contracts import ModelFinishReason, StreamChunk
 
 import logging
 from typing import Any, AsyncIterator, AsyncGenerator, Protocol, Awaitable, Callable, Mapping, cast
-from app.schemas.desktop import DesktopOperations
 
 from app.schemas.runtime_types import (
     AUTHORIZATION_GRANTED_KIND, ApprovalDecisionKind, DESKTOP_CHANNEL,
@@ -74,7 +73,6 @@ class ExecutionPipeline:
         model_input: ModelInputCoordinator,
         tool_authorization: ToolAuthorization | None = None,
         tool_runtime_factory: ToolRuntimeFactory | None = None,
-        desktop: DesktopOperations | None = None,
         permission_session_id: str | None = None,
         environment_provider: Callable[[], Awaitable[str]] | None = None,
     ) -> None:
@@ -88,7 +86,6 @@ class ExecutionPipeline:
             model_input (ModelInputCoordinator): 模型消息投影、上下文压缩和溢出恢复协调器。
             tool_authorization (ToolAuthorization | None): 工具单次授权验证器。
             tool_runtime_factory (ToolRuntimeFactory | None): 按工具、轮次及调用编号创建运行时。
-            desktop (DesktopOperations | None): 应用共享桌面接口，管道只注入、不负责关闭。
         """
         self._prompt_source = prompt_source
         self._llm_client = llm_client
@@ -100,7 +97,6 @@ class ExecutionPipeline:
         self._permission_session_id = permission_session_id
         self._environment_provider = environment_provider
         self._tool_runtime_factory = tool_runtime_factory
-        self._desktop = desktop
 
     # ==================== 主入口 ====================
 
@@ -604,8 +600,6 @@ class ExecutionPipeline:
             authorization_grant=grant,
             runtime=self._tool_runtime_factory(tool_call.name, origin_run_id, tool_call.id)
             if self._tool_runtime_factory is not None else None,
-            desktop=self._desktop,
-            stop_requested=turn_control.is_interrupted if turn_control else None,
             origin_run_id=origin_run_id,
             origin_tool_call_id=tool_call.id,
             origin_tool_name=tool_call.name,
@@ -720,8 +714,6 @@ class ExecutionPipeline:
             origin_run_id=origin_run_id,
             origin_tool_call_id=tool_call.id,
             origin_tool_name=tool_call.name,
-            desktop=self._desktop,
-            stop_requested=turn_control.is_interrupted if turn_control else None,
         )
         # 2. 获准动作复用同一执行入口，当前工具完成后再进行结果处理。
         return await self._invoke_tool(tool, tool_call.args, context, turn_control)

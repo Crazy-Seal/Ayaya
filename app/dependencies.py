@@ -7,16 +7,10 @@ import asyncio
 from app.agent.plugins.runtime import PluginRuntime
 from functools import lru_cache
 from app.repl.repl_service import ReplService
-import os
 
 from app.crud.chat_history_dao import ChatHistoryDao
 from app.crud.chat_settings_dao import ChatSettingsDao
 from app.crud.mcp_settings_dao import MCPSettingsDao
-from app.crud.desktop_settings_dao import DesktopSettingsDao
-from app.services.desktop_settings_service import DesktopSettingsService
-from app.desktop.desktop_controller import DesktopController
-from app.desktop.driver import DesktopDriver
-from app.environment import get_data_dir
 from app.agent.runtime.runtime_factory import assemble_runtime_scheduler
 from app.schemas.agent_storage import AgentStorageScope
 from app.services.agent_identity_service import AgentIdentityService
@@ -45,53 +39,10 @@ from app.agent.tools.authorization.catalog import (
 )
 
 
-@lru_cache(maxsize=1)
-def get_desktop_settings_dao() -> DesktopSettingsDao:
-    """提供进程内共享桌面配置 DAO，测试路径由 environment 模块校验。
-
-    Returns:
-        DesktopSettingsDao: 当前进程唯一的 YAML 原子存储对象。
-    """
-    return DesktopSettingsDao()
 
 
-@lru_cache(maxsize=1)
-def get_desktop_controller() -> DesktopController:
-    """装配应用唯一的桌面模块，不在工具执行时临时创建线程或锁。
-
-    Returns:
-        DesktopController: 由应用生命周期统一启动与关闭的共享实例。
-    """
-    def create_driver() -> DesktopDriver:
-        """由控制器工作线程调用，按当前平台创建一次原生驱动。
-
-        Returns:
-            DesktopDriver: 使用当前环境数据目录及 Electron 进程身份的驱动。
-        Raises:
-            RuntimeError: 当前平台尚未提供桌面驱动。
-        """
-        if os.name != "nt":
-            raise RuntimeError("屏幕操作仅支持 Windows")
-        from app.desktop.windows_desktop_driver import WindowsDesktopDriver
-
-        return WindowsDesktopDriver(
-            restore_path=get_data_dir() / "desktop" / "window_restore.json",
-            owner_pid=int(os.getenv("AYAYA_PARENT_PID") or 0),
-        )
-
-    return DesktopController(get_desktop_settings_dao().load, driver_factory=create_driver)
 
 
-def get_desktop_settings_service(request: Request) -> DesktopSettingsService:
-    """路由复用应用装配的桌面设置对象，其关闭检查指向同一个 Scheduler。
-
-    Args:
-        request (Request): 本次 HTTP 请求或绑定来源的插件请求。
-
-    Returns:
-        DesktopSettingsService: 应用持有的桌面设置对象。
-    """
-    return request.app.state.desktop_settings_service
 
 
 def get_chat_history_dao(request: Request) -> ChatHistoryDao:
@@ -230,7 +181,6 @@ def create_runtime_scheduler(supervisor: TaskSupervisor, runtime_queue: asyncio.
     settings_dao = get_chat_settings_dao()
     mcp_manager = get_mcp_connection_manager()
     authorization = get_tool_authorization()
-    desktop = get_desktop_controller()
     settings_service = get_chat_settings_service(
         chat_settings_dao=settings_dao,
         mcp_settings_dao=get_mcp_settings_dao(),
@@ -254,7 +204,6 @@ def create_runtime_scheduler(supervisor: TaskSupervisor, runtime_queue: asyncio.
             authorization,
             lambda tool_name, run_id, tool_call_id: ToolRuntime(
                 session_id, run_id, tool_name, tool_call_id, _supervisor=supervisor, _runtime_queue=runtime_queue),
-            desktop,
             session_state_manager=session_state_manager,
             plugin_runtime_factory=lambda plugin_name, run_id: PluginRuntime(
                 plugin_name, session_id, run_id, _supervisor=supervisor, _runtime_queue=runtime_queue),
@@ -278,7 +227,7 @@ def create_runtime_scheduler(supervisor: TaskSupervisor, runtime_queue: asyncio.
             lambda tool_name, run_id, tool_call_id: ToolRuntime(
                 definition.session_id, run_id, tool_name, tool_call_id,
                 _supervisor=supervisor, _runtime_queue=runtime_queue, subagent_id=definition.subagent_id),
-            desktop, session_state_manager=session_state_manager,
+            session_state_manager=session_state_manager,
             bind_plugin_mcp=get_plugin_service().bind_mcp,
             plugin_mcp={name: plugin.mcp_servers for name, plugin in prepared.plugins.items()
                         if (prepared.settings.agent_plugins or {})[name].enabled},

@@ -696,28 +696,6 @@
 
 
 
-/* ==================== Multimodal Panel ==================== */
-
-.multimodal-section {
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-md);
-  padding: var(--spacing-lg);
-}
-
-.multimodal-section-title {
-  font-size: var(--font-size-section-title);
-  font-weight: 600;
-  font-family: "Fredoka", "Microsoft YaHei", sans-serif;
-  color: var(--color-text-primary);
-}
-
-.multimodal-hint {
-  font-size: var(--font-size-helper);
-  color: var(--color-text-secondary);
-  margin-top: var(--spacing-xs);
-}
-
 /* ==================== Motion Panel ==================== */
 
 .motion-table-wrap {

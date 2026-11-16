@@ -14,35 +14,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PRODUCTION_DATA_DIR = PROJECT_ROOT / "memory"
 PRODUCTION_CHAT_SETTINGS_FILE = PROJECT_ROOT / "config" / "chat_settings.yaml"
 PRODUCTION_MCP_SETTINGS_FILE = PROJECT_ROOT / "config" / "mcp_servers.yaml"
-PRODUCTION_DESKTOP_SETTINGS_FILE = PROJECT_ROOT / "config" / "desktop_settings.yaml"
 
 
-def get_desktop_settings_file() -> Path:
-    """选择桌面 YAML，测试覆盖路径也必须位于隔离数据目录。
-
-    Returns:
-        Path: 生产配置路径或本次测试配置路径。
-    """
-    configured = os.getenv("AYAYA_DESKTOP_SETTINGS_FILE", "").strip()
-    path = Path(configured) if configured else (
-        get_data_dir() / "config" / "desktop_settings.yaml"
-        if is_test_environment() else PRODUCTION_DESKTOP_SETTINGS_FILE
-    )
-    return require_test_storage_path(path, "AYAYA_DESKTOP_SETTINGS_FILE") if is_test_environment() else _resolved(path)
 
 
-def get_legacy_frontend_settings_file() -> Path:
-    """只在迁移时选择前端 JSON，测试不得回退到生产 ui/user_data。
-
-    Returns:
-        Path: 现有前端数据根目录中的旧配置文件。
-    """
-    configured = os.getenv("AYAYA_UI_DATA_DIR", "").strip()
-    directory = Path(configured) if configured else (
-        get_data_dir() / "ui" if is_test_environment() else PROJECT_ROOT / "ui" / "user_data"
-    )
-    path = directory / "frontend_settings.json"
-    return require_test_storage_path(path, "AYAYA_UI_DATA_DIR") if is_test_environment() else _resolved(path)
 
 
 def get_environment() -> str:

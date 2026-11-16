@@ -10,10 +10,9 @@ import path from "node:path";
 
 import { FRONTEND_SETTINGS_PATH } from "./config.js";
 import { readFrontendSettings, saveFrontendSettings } from "./frontend-settings-store.js";
-import { getDesktopSettings, updateDesktopSettings } from "./desktop-settings.js";
 import { backendFetch } from "./backend-client.js";
 import { submitInteractionCommand, subscribeDesktopSession } from "./interaction-adapter.js";
-import type { ChannelCommand, ChatAttentionUpdate, DesktopSettings } from "../shared-types.js";
+import type { ChannelCommand, ChatAttentionUpdate } from "../shared-types.js";
 import { DESKTOP_CHANNEL } from "../shared-types.js";
 import type {
   ChatSettingsData,
@@ -1131,13 +1130,6 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
   () => {
     return readFrontendSettings();
   });
-
-  /** 可信设置页读取已保存后端配置，退出门禁由统一 IPC 入口检查。 */
-  trustedIpc.handle(IpcChannel.GET_DESKTOP_SETTINGS, /** 返回后端 YAML 配置。 */
-  () => getDesktopSettings());
-  /** 可信设置页只提交后端定义的完整桌面设置。 */
-  trustedIpc.handle(IpcChannel.UPDATE_DESKTOP_SETTINGS, /** 保存配置并返回后端确认值。 */
-  (_event, settings: DesktopSettings) => updateDesktopSettings(settings));
 
   // 获取模型动作配置
   trustedIpc.handle(IpcChannel.GET_MOTION_CONFIG, /**

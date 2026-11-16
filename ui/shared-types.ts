@@ -329,8 +329,6 @@ export type MCPTestResult = {
 
 export type ContextStrategyConfig = {
   compression_trigger_tokens_k: number;
-  max_screenshots_in_context: number;
-  screenshot_ttl_human_messages: number;
 };
 
 export type AgentPluginSettings = {
@@ -613,8 +611,6 @@ export type FrontendSettings = {
   chat_window_pinned?: boolean;
 };
 
-/** 全部会话共享的后端桌面 YAML 配置。 */
-export type DesktopSettings = { hide_on_screenshot: boolean };
 
 export type LogSide = "frontend" | "backend";
 
@@ -907,8 +903,6 @@ export interface DesktopPetApi {
   onAiNameChanged?: (callback: (payload: AiNameChangedPayload) => void) => () => void;
   onModelTransformChanged?: (callback: (data: ModelTransformData) => void) => () => void;
   getFrontendSettings: () => Promise<FrontendSettings>;
-  getDesktopSettings: () => Promise<DesktopSettings>;
-  updateDesktopSettings: (settings: DesktopSettings) => Promise<DesktopSettings>;
   getMotionConfig: (modelId: string) => Promise<MotionConfig[]>;
   updateModelMotionConfig: (payload: { modelId: string; motionConfig: MotionConfig[] }) => Promise<void>;
   playMotion: (motionName: string) => void;
@@ -970,7 +964,6 @@ export type HistoryRole = typeof HistoryRole[keyof typeof HistoryRole] | Lowerca
 export const MediaKind = {
   HUMAN: "human",
   TOOL: "tool",
-  SCREENSHOT: "screenshot",
   MCP: "mcp",
   ENVIRONMENT: "environment",
 } as const;

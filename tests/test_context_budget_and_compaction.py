@@ -1,4 +1,4 @@
-from app.agent.models.openai_message_names import CONTEXT_SUMMARY_MESSAGE_NAME, MCP_TOOL_IMAGE_MESSAGE_NAME, SCREENSHOT_COMPRESSED_NAME, SCREENSHOT_MESSAGE_NAME
+from app.agent.models.openai_message_names import CONTEXT_SUMMARY_MESSAGE_NAME, MCP_TOOL_IMAGE_MESSAGE_NAME
 from tests.model_capture import capture_input
 from app.agent.state.messages import text_content
 import asyncio
@@ -13,7 +13,6 @@ from app.agent.context._budget import (
 )
 from app.agent.context._compaction import (
     COMPRESSED_TOOL_RESULT,
-    COMPRESSED_SCREENSHOT_PLACEHOLDER,
     ContextCompressionPolicy,
 )
 from app.agent.context._projection import append_transient_context
@@ -26,9 +25,6 @@ from app.agent.context.coordinator import (
     ModelInputCoordinator,
 )
 from app.agent.state import AgentState, TemporaryContextItem, TokenBaseline
-from app.agent.tools.control_screen import control_screen
-from app.agent.tools.control_screen_with_vlm import control_screen_with_vlm
-from app.agent.tools.screenshot import screenshot
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -129,25 +125,8 @@ def _state(session_id: str, messages) -> AgentState:
     return AgentState.from_checkpoint(checkpoint)
 
 
-def test_screenshot_policy_expires_group_without_rehydrating_files() -> None:
-    """TTL 只计真人输入，同一结果图片共同压缩并保留历史引用。"""
-    result = _tool_result(0)
-    result = replace(result, content=(*result.content, ImageContent("data:image/png;base64,AAAA", media_kind="screenshot", storage_ref="screenshot/a.png")))
-    messages = (result, _human(1), _human(2))
-    candidate, changed = ContextCompressionPolicy.compress_screenshots(messages, ttl_human_messages=2, max_screenshots=2)
-    assert changed == 1 and candidate[0].content[-1].context_state == "compacted"
-    assert candidate[0].content[-1].url == "" and candidate[0].content[-1].storage_ref == "screenshot/a.png"
-    assert result.content[-1].url.startswith("data:")
-    assert ContextCompressionPolicy.compress_screenshots(candidate, ttl_human_messages=2, max_screenshots=2)[1] == 0
 
 
-def test_screenshot_policy_counts_results_and_keeps_latest_two() -> None:
-    """同一工具返回多图仍是一个观察，保留最近两组截图。"""
-    messages = [replace(_tool_result(i), content=(*text_content("图"), *(ImageContent("data:image/png;base64,AAAA", media_kind="screenshot") for _ in range(2)))) for i in range(3)]
-    candidate, changed = ContextCompressionPolicy.compress_screenshots(messages, ttl_human_messages=20, max_screenshots=2)
-    assert changed == 1
-    assert all(part.context_state == "compacted" for part in candidate[0].content if isinstance(part, ImageContent))
-    assert candidate[-1].content[-1].context_state == "available"
 
 
 def test_first_layer_protects_pending_batch_and_keeps_latest_five() -> None:
@@ -166,11 +145,6 @@ def test_first_layer_preserves_short_text_and_removes_only_own_images(text, expe
     candidate, changed = ContextCompressionPolicy.compress_old_tool_results((result,), keep_latest=0)
     assert changed == 1 and candidate[0].text == expected
     assert len(candidate[0].content) == 1
-
-
-def test_screen_tools_allow_old_results_to_be_compacted() -> None:
-    """截图和屏幕工具仍标记为可压缩旧观察。"""
-    assert screenshot().compressible and control_screen().compressible and control_screen_with_vlm().compressible
 
 
 def test_context_budget_uses_actual_prompt_as_baseline_for_net_rough_delta() -> None:

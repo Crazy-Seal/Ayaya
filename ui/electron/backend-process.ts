@@ -42,6 +42,7 @@ interface BackendProcessDependencies {
   createToken: () => string;
   resolvePythonExecutable: (signal?: AbortSignal) => Promise<ResolvedBackendPython>;
   fetchBackend: (path: string, init?: RequestInit) => Promise<Response>;
+  isProcessAlive: (pid: number) => boolean;
   terminateProcess: (child: ChildProcess) => Promise<void>;
   pollIntervalMs: number;
   startupTimeoutMs: number;
@@ -71,6 +72,14 @@ type BackendUnexpectedExitListener = (event: BackendUnexpectedExit) => void;
  *  Electron 后端进程控制器。
  */
 export interface BackendProcessController {
+  /**
+   * 当前 SSE 连接建立前刷新外部后端身份。
+   * Args:
+   *     signal (AbortSignal): 当前订阅的取消信号，旧请求随订阅失效。
+   */
+  refreshExternalBackendIdentity(signal: AbortSignal): Promise<void>;
+  /** SSE 断线时确认已连接的外部进程是否退出，存活进程继续使用普通重连。 */
+  checkExternalBackendExit(): void;
   /**
    *  启动受管后端，或连接已由外部启动的后端。
    */
@@ -215,6 +224,17 @@ const defaultDependencies: BackendProcessDependencies = {
   createToken: () => randomBytes(32).toString("base64url"),
   resolvePythonExecutable: createBackendPythonResolver().resolve,
   fetchBackend: backendFetch,
+  /**
+   * 查询本机进程是否存在，权限不足时保留其存活判断。
+   * Args:
+   *     pid (number): 成功就绪时由本机后端提供的进程编号。
+   * Returns:
+   *     boolean: 仅进程明确不存在时返回 false。
+   */
+  isProcessAlive: (pid) => {
+    try { process.kill(pid, 0); return true; }
+    catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
+  },
   terminateProcess: terminateProcessTree,
   pollIntervalMs: DEFAULT_POLL_INTERVAL_MS,
   startupTimeoutMs: DEFAULT_STARTUP_TIMEOUT_MS,
@@ -272,6 +292,7 @@ export const createBackendProcessController = (
     completion: Promise<void>;
   } | null = null;
   let managed = false;
+  let externalPid: number | null = null;
   let stopping: Promise<void> | null = null;
   let forcing: Promise<void> | null = null;
 
@@ -304,8 +325,11 @@ export const createBackendProcessController = (
   const waitForReady = async (signal: AbortSignal): Promise<void> => {
     while (!signal.aborted) {
       try {
-        const response = await dependencies.fetchBackend("/internal/ready");
-        if (response.ok) return;
+        const response = await dependencies.fetchBackend("/internal/ready", { signal });
+        if (response.ok) {
+          if (!managed) await rememberExternalIdentity(response, signal);
+          return;
+        }
         if (response.status === 401) {
           throw new Error("端口上的服务不接受当前 API Token");
         }
@@ -317,6 +341,40 @@ export const createBackendProcessController = (
       await delay(dependencies.pollIntervalMs, signal);
     }
     throw new BackendStartupCancelledError();
+  };
+
+  /**
+   * 接受当前订阅仍有效的就绪响应，记录准确外部进程身份。
+   * Args:
+   *     response (Response): 当前本机后端的就绪响应。
+   *     signal (AbortSignal): 对应启动或订阅的取消信号。
+   */
+  const rememberExternalIdentity = async (response: Response, signal: AbortSignal): Promise<void> => {
+    const body = await response.json() as { ready: boolean; pid: number };
+    if (signal.aborted) return;
+    if (body.ready !== true || !Number.isSafeInteger(body.pid) || body.pid <= 0) {
+      throw new Error("后端就绪响应缺少有效进程编号");
+    }
+    externalPid = body.pid;
+  };
+
+  /**
+   * SSE 首次连接或重连前刷新外部进程身份，受管进程沿已有子进程事件处理。
+   * Args:
+   *     signal (AbortSignal): 当前连接取消信号。
+   */
+  const refreshExternalBackendIdentity = async (signal: AbortSignal): Promise<void> => {
+    if (managed || signal.aborted) return;
+    const response = await dependencies.fetchBackend("/internal/ready", { signal });
+    if (!response.ok) throw new Error(`读取外部后端身份失败: ${response.status}`);
+    await rememberExternalIdentity(response, signal);
+  };
+
+  /** 断线时仅确认当前外部进程死亡后发布一次现有恢复通知。 */
+  const checkExternalBackendExit = (): void => {
+    if (managed || externalPid === null || dependencies.isProcessAlive(externalPid)) return;
+    externalPid = null;
+    publishUnexpectedExit({ exitCode: null, signal: null, message: "外部后端进程意外退出" });
   };
 
   /**
@@ -336,6 +394,7 @@ export const createBackendProcessController = (
 
     // 1. 每次受管启动使用新令牌；外部后端模式要求调用方已提供令牌，再配置统一请求客户端。
     managed = dependencies.env.AYAYA_MANAGE_BACKEND !== "false";
+    externalPid = null;
     const token = managed
       ? dependencies.createToken()
       : (dependencies.env.AYAYA_API_TOKEN ?? "");
@@ -555,6 +614,7 @@ export const createBackendProcessController = (
    *     Promise<void>: 本次停止过程结束后完成。
    */
   const performStop = async (): Promise<void> => {
+    externalPid = null;
     // 1. 启动尚未结束时先取消并等其清理完成，再检查是否还有受管进程需要停止。
     const startup = activeStartup;
     if (startup) {
@@ -625,10 +685,22 @@ export const createBackendProcessController = (
     return () => unexpectedExitListeners.delete(listener);
   };
 
-  return { startBackend, stopBackend, forceStopBackend, onUnexpectedExit };
+  return { startBackend, stopBackend, forceStopBackend, onUnexpectedExit,
+           refreshExternalBackendIdentity, checkExternalBackendExit };
 };
 
 const defaultController = createBackendProcessController();
+
+/**
+ * 为当前展示连接刷新外部后端身份。
+ * Args:
+ *     signal (AbortSignal): 订阅控制器持有的连接取消信号。
+ */
+export const refreshExternalBackendIdentity = (signal: AbortSignal): Promise<void> =>
+  defaultController.refreshExternalBackendIdentity(signal);
+
+/** 将外部后端的真实退出交给已有恢复通路。 */
+export const checkExternalBackendExit = (): void => defaultController.checkExternalBackendExit();
 
 /**
  *  启动或连接受认证保护的本地后端。

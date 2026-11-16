@@ -116,7 +116,6 @@ def test_preparation_reuses_validated_config_and_mcp_declarations(tmp_path, monk
         "get_mcp_settings_dao": object(),
         "get_mcp_connection_manager": SimpleNamespace(disconnect_plugin=lambda session_id: None),
         "get_tool_authorization": object(),
-        "get_desktop_controller": object(),
         "get_settings_mutation_coordinator": service.mutation_coordinator,
         "get_channel_subscription_service": object(),
         "get_plugin_service": service.plugin_service,

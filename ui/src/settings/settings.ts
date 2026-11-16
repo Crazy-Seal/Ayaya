@@ -17,7 +17,6 @@ import { LlmPage } from "./pages/llm-page.js";
 import { ToolsPage } from "./pages/tools-page.js";
 import { PluginsPage } from "./pages/plugins-page.js";
 import { ContextStrategyPage } from "./pages/context-strategy-page.js";
-import { MultimodalPage } from "./pages/multimodal-page.js";
 import { authorizeBaseUrlChange } from "./url-security.js";
 import { MotionPage } from "./pages/motion-page.js";
 import { McpPage } from "./pages/mcp-page.js";
@@ -53,7 +52,6 @@ class SettingsApp {
   private toolsPage: ISettingsPage;
   private pluginsPage: ISettingsPage;
   private contextStrategyPage: ISettingsPage;
-  private multimodalPage: MultimodalPage;
   private motionPage: ISettingsPage;
   private mcpPage: ISettingsPage;
   private channelsPage: ChannelSubscriptionsPage;
@@ -147,16 +145,10 @@ class SettingsApp {
     this.contextStrategyPage = new ContextStrategyPage(
       {
         compression_trigger_tokens_k: this.getElement("#context-compression-trigger-tokens-k"),
-        max_screenshots_in_context: this.getElement("#context-max-screenshots"),
-        screenshot_ttl_human_messages: this.getElement("#context-screenshot-ttl"),
       },
       this.getElement("#context-strategy-confirm-btn")
     );
 
-    // 初始化多模态配置页面
-    this.multimodalPage = new MultimodalPage(
-      this.getElement("#checkbox-hide-on-screenshot"), this.toast
-    );
 
     // 初始化动作控制页面
     this.motionPage = new MotionPage(
@@ -390,8 +382,6 @@ class SettingsApp {
       // model 页面特殊处理
       if (pageName === "model") {
         void this.modelPage.refreshModelConfig();
-      } else if (pageName === "multimodal") {
-        void this.multimodalPage.render();
       // 1. 渠道和任务页按当前保存会话查询，不修改模型设置的保存流程。
       } else if (pageName === "channels") {
         await this.channelsPage.render(this.savedState.session_id);
@@ -890,7 +880,6 @@ class SettingsApp {
     await Promise.all([
       this.modelPage.refreshModelConfig(),
       this.initChatSettings(),
-      this.multimodalPage.render(),
     ]);
 
     // 获取模型配置

@@ -30,7 +30,6 @@ import {
 import { fitChatBounds, stabilizeChatBounds } from "./chat-window-state.js";
 import { readFrontendSettings, saveFrontendSettings } from "./frontend-settings-store.js";
 import { installNavigationGuards } from "./navigation-guards.js";
-import { updateDesktopWindowReferences } from "./desktop-window-runtime.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -312,7 +311,6 @@ export const openChatWindow = (): BrowserWindow => {
     },
   });
   chatWindow = win;
-  updateDesktopWindowReferences({ pet: mainWindow, chat: chatWindow });
   installWindowGestures(win);
   protectApplicationWindow(win, "chat-window");
   // 4. 位置保存、关闭转最小化和工作区适配都由主进程处理，页面不自行模拟窗口。
@@ -374,7 +372,6 @@ export const openChatWindow = (): BrowserWindow => {
     if (persistTimer) clearTimeout(persistTimer);
     screen.removeListener("display-removed", fitToDisplay); screen.removeListener("display-metrics-changed", fitToDisplay);
     if (chatWindow === win) chatWindow = null;
-    updateDesktopWindowReferences({ pet: mainWindow, chat: chatWindow });
   });
   win.webContents.on("did-finish-load", /** 聊天监听安装完毕后补送模型加载错误。 */
   () => { if (modelError) win.webContents.send(IpcChannel.MODEL_ERROR, modelError); });
@@ -419,7 +416,6 @@ export const getLogWindow = (): BrowserWindow | null => logWindow;
  */
 export const setMainWindow = (win: BrowserWindow | null): void => {
   mainWindow = win;
-  updateDesktopWindowReferences({ pet: mainWindow, chat: chatWindow });
 };
 
 /**
@@ -469,7 +465,6 @@ export const createMainWindow = (): BrowserWindow => {
   win.setIgnoreMouseEvents(true, { forward: true });
   requestedPetInteractive = false; appliedPetInteractive = false;
   mainWindow = win;
-  updateDesktopWindowReferences({ pet: mainWindow, chat: chatWindow });
 
   if (rendererPolicy.mode === "development") {
     win.loadURL(rendererPolicy.origin);
@@ -709,7 +704,6 @@ export const initWindowEventListeners = (): void => {
     () => {
       if (mainWindow === win) {
         mainWindow = null;
-        updateDesktopWindowReferences({ pet: mainWindow, chat: chatWindow });
       }
       if (settingsWindow === win) {
         settingsWindow = null;

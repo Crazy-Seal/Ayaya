@@ -31,12 +31,12 @@ def test_message_round_trip_preserves_created_at() -> None:
     assert restored.created_at == FIXED_TIME
 
 
-def test_time_projection_covers_dialogue_and_screenshot_without_mutation() -> None:
-    """验证时间投影覆盖对话和截图且不改原消息。"""
+def test_time_projection_covers_dialogue_and_tool_image_without_mutation() -> None:
+    """验证时间投影覆盖对话和工具图片且保留原消息。"""
     messages = (
         HumanMessage(content=text_content("你好"), created_at=FIXED_TIME),
         AssistantMessage(content=text_content("你好呀"), created_at=FIXED_TIME),
-        ToolMessage(tool_name="screenshot", tool_call_id="shot", content=(ImageContent("data:image/png;base64,eA==", media_kind="screenshot"),), created_at=FIXED_TIME),
+        ToolMessage(tool_name="python", tool_call_id="shot", content=(ImageContent("data:image/png;base64,eA==", media_kind="tool"),), created_at=FIXED_TIME),
         ToolMessage(
             content=text_content("结果"),
             tool_name="read_file",

@@ -1,5 +1,4 @@
 from tests.runtime_support import checkpoint_probe
-from app.agent.models.openai_message_names import SCREENSHOT_COMPRESSED_NAME, SCREENSHOT_MESSAGE_NAME
 from tests.model_capture import result_parts
 from app.agent.state.messages import ProviderData
 """agent 引擎回归测试（离线，无需网络）。
@@ -58,9 +57,9 @@ def _tc_delta(index, id=None, name=None, arguments=None):
     return types.SimpleNamespace(index=index, id=id, function=fn)
 
 
-class _FakeScreenshotTool(BaseTool):
+class _FakeImageTool(BaseTool):
     """提供用例指定的工具响应、中断或异常，验证执行管道的结果保存与恢复。"""
-    name = "screenshot"
+    name = "read_image"
     description = "截屏"
     parameters_schema = {"type": "object", "properties": {}}
 
@@ -74,7 +73,7 @@ class _FakeScreenshotTool(BaseTool):
         return ToolResult.success(
             "截屏成功",
             image_url="data:image/png;base64,iVBORw0KGgpwYXlsb2Fk",
-            media_kind="screenshot",
+            media_kind="tool",
         )
 
 
@@ -192,7 +191,7 @@ def test_astream_emits_each_tool_call_once():
                 该定义仅用于外层用例：验证每次流式工具调用只产出一次。
                 """
                 yield _delta(content="好的")
-                yield _delta(tool_calls=[_tc_delta(0, id="call_1", name="screenshot", arguments="")])
+                yield _delta(tool_calls=[_tc_delta(0, id="call_1", name="read_image", arguments="")])
                 yield _delta(tool_calls=[_tc_delta(0, arguments="{}")])
                 yield _delta(finish_reason="tool_calls")
             return gen()
@@ -207,7 +206,7 @@ def test_astream_emits_each_tool_call_once():
     texts = [c.content for c in chunks if c.content]
     assert texts == ["好的"]
     assert len(tool_calls) == 1, f"工具调用应只产出一次，实际 {len(tool_calls)}"
-    assert tool_calls[0].name == "screenshot"
+    assert tool_calls[0].name == "read_image"
     assert tool_calls[0].id == "call_1"
     assert tool_calls[0].args == {}
 
@@ -290,7 +289,7 @@ def test_astream_separates_different_calls_that_reuse_index():
                 screenshot = _tc_delta(
                     0,
                     id="call_screenshot",
-                    name="screenshot",
+                    name="read_image",
                     arguments="",
                 )
                 screenshot.extra_content = {
@@ -326,7 +325,7 @@ def test_astream_separates_different_calls_that_reuse_index():
     chunks = asyncio.run(run())
     tool_calls = [chunk.tool_call for chunk in chunks if chunk.tool_call is not None]
     assert [(call.id, call.name, call.args) for call in tool_calls] == [
-        ("call_screenshot", "screenshot", {}),
+        ("call_screenshot", "read_image", {}),
         (
             "call_diary",
             "search_diary",
@@ -397,11 +396,11 @@ def test_assistant_message_with_tools_serializes():
     """验证带工具请求的助手消息可序列化。"""
     msg = AssistantMessage(
         content=text_content(""),
-        tool_calls=(ToolCall(id="c1", name="screenshot", args={}),),
+        tool_calls=(ToolCall(id="c1", name="read_image", args={}),),
     )
     d = msg.to_storage_format()
     assert d["message_type"] == "assistant"
-    assert d["tool_calls"][0]["name"] == "screenshot"
+    assert d["tool_calls"][0]["name"] == "read_image"
 
 
 def test_tool_call_extra_content_roundtrips_into_followup_request():
@@ -453,17 +452,17 @@ def test_tool_call_extra_content_roundtrips_into_followup_request():
 
 # ==================== 可恢复工具与图片注入 ====================
 
-def test_direct_screenshot_roundtrip():
+def test_direct_tool_image_roundtrip():
     """验证直接截图结果在一次模型工具循环中提交并形成截图消息。"""
     async def run():
         """从统一 Pipeline 入口消费截图与后续回复，确认不产生执行等待。"""
         llm = _FakeLLM(scripts=[
             # 第 1 次：模型请求截屏
-            [StreamChunk(tool_call=ToolCall(id="c1", name="screenshot", args={}))],
+            [StreamChunk(tool_call=ToolCall(id="c1", name="read_image", args={}))],
             # 恢复后第 2 次：模型基于截图作答
             [StreamChunk(content="我看到一只猫")],
         ])
-        agent = _PipelineHarness(llm, tools=[_FakeScreenshotTool()])
+        agent = _PipelineHarness(llm, tools=[_FakeImageTool()])
         state = AgentState.create_new("t")
         state.add_user_message("看看我的屏幕")
 
@@ -481,7 +480,7 @@ def test_direct_screenshot_roundtrip():
     # 截图类别保存在结果内容块中
     shot = [
         m for m in msgs
-        if isinstance(m, ToolMessage) and any(isinstance(part, ImageContent) and part.media_kind == "screenshot" for part in m.content)
+        if isinstance(m, ToolMessage) and any(isinstance(part, ImageContent) and part.media_kind == "tool" for part in m.content)
     ]
     assert shot, "应保留截图内容块"
     assert "image_url" in str(shot[0].to_storage_format()["content"])
@@ -494,59 +493,6 @@ def test_direct_screenshot_roundtrip():
 
 # ==================== 核心上下文策略 ====================
 
-def test_pipeline_checkpoints_screenshot_compaction_before_llm_call():
-    """验证截图压缩先保存 checkpoint 再调用模型。"""
-    async def run():
-        """由外层测试调用，完成“截图压缩先保存 checkpoint 再调用模型”的异步步骤。"""
-        llm = _FakeLLM(scripts=[[StreamChunk(content="完成")]])
-        agent = _PipelineHarness(llm, tools=[])
-        state = AgentState.create_new("t")
-        for index in range(3):
-            call = ToolCall(id=f"shot-{index}", name="screenshot", args={})
-            state.record_assistant_step("", (call,))
-            state.record_tool_result(call, result_parts('完成', ('data:image/png;base64,c2hvdA==',), 'screenshot'))
-        state.add_user_message("继续")
-        snapshots: list[dict] = []
-
-        async def checkpoint(current, *, checkpoint_type):
-            """记录当前状态保存类型和执行顺序，供用例确认先保存再调用模型或发布事件。
-
-            该定义仅用于外层用例：验证截图压缩先保存 checkpoint 再调用模型。
-
-            Args:
-                current (Any): 回调收到的当前 AgentState。
-                checkpoint_type (Any): 本次保存中间执行进度或完整轮次的类型。
-            """
-            assert checkpoint_type == "intermediate"
-            snapshots.append(deepcopy(current.to_checkpoint()))
-            return len(snapshots)
-
-        events = await _drain(agent.pipeline.execute(state, session_state_manager=checkpoint_probe(checkpoint)))
-        return llm, snapshots, events
-
-    llm, snapshots, events = asyncio.run(run())
-
-    assert events[-1].data == "完成"
-    assert len(snapshots) == 1
-    checkpoint_messages = snapshots[0]["messages"]
-    checkpoint_screenshots = [
-        message for message in checkpoint_messages
-        if message.get("message_type") == "tool" and any(part.get("context_state")=="compacted" for part in message.get("content",[]))
-    ]
-    assert checkpoint_screenshots[0]["content"][-1]["context_state"] == "compacted"
-    assert "base64" not in str(checkpoint_screenshots[0]["content"])
-    assert [
-        message.get("name")
-        for message in llm.messages[0]
-        if message.get("name") in {
-            SCREENSHOT_MESSAGE_NAME,
-            SCREENSHOT_COMPRESSED_NAME,
-        }
-    ] == [
-        SCREENSHOT_COMPRESSED_NAME,
-        SCREENSHOT_MESSAGE_NAME,
-        SCREENSHOT_MESSAGE_NAME,
-    ]
 
 def test_context_strategy_builds_without_temporary_state():
     """验证上下文策略不依赖临时 Agent 状态。"""

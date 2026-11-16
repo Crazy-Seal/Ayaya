@@ -1,4 +1,4 @@
-/** 保存聊天窗口位置与置顶状态，迁移完成后截图开关由后端 YAML 保存。 */
+/** 保存聊天窗口位置、尺寸和置顶状态。 */
 import fs from "node:fs";
 import path from "node:path";
 import { FRONTEND_SETTINGS_PATH } from "./config.js";
@@ -16,7 +16,7 @@ export const readFrontendSettings = (): FrontendSettings => {
 };
 
 /**
- * 对当前完整 JSON 原子保存，窗口更新与迁移字段清理共用同一写入步骤。
+ * 对当前完整 JSON 原子保存，多个窗口设置入口使用同一写入步骤。
  * Args:
  *     settings (FrontendSettings): 已合并或移除旧字段的完整窗口配置。
  */
@@ -40,12 +40,4 @@ export const saveFrontendSettings = (changes: Partial<FrontendSettings>): Fronte
   // 2. 同目录临时文件写完后替换，异常时保留原文件。
   writeFrontendSettings(settings);
   return settings;
-};
-
-/** 后端已经确认迁移成功后，重新读取当前 JSON，只删除截图旧字段。 */
-export const removeLegacyScreenshotSetting = (): void => {
-  const current = readFrontendSettings() as FrontendSettings & { hide_on_screenshot?: boolean };
-  if (!("hide_on_screenshot" in current)) return;
-  delete current.hide_on_screenshot;
-  writeFrontendSettings(current);
 };

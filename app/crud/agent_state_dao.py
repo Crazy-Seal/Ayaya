@@ -19,7 +19,7 @@ from app.crud.sqlite_save import run_sqlite_save, sqlite_transaction, SqliteRoll
 from app.schemas.runtime_types import ApprovalDecisionKind, CheckpointType, InboxKind, InterruptKind
 from app.schemas.agent_storage import AgentStorageScope
 from app.crud.agent_storage_sql import agent_state_schema
-from app.schemas.message_types import ImageContextState, MessageType
+from app.schemas.message_types import MessageType
 from app.agent.state.messages import BaseMessage
 from app.agent.state.model import AgentState
 from app.agent.state.time import utc_now
@@ -182,8 +182,7 @@ class AgentStateDao:
         for row in rows:
             incoming = json.loads(row[7])
             image_parts = [part for part in incoming.get("content", []) if isinstance(part, dict)
-                           and part.get("type") == "image_url" and part.get("storage_ref")
-                           and part.get("context_state") == ImageContextState.AVAILABLE] if isinstance(incoming.get("content"), list) else []
+                           and part.get("type") == "image_url" and part.get("storage_ref")] if isinstance(incoming.get("content"), list) else []
             if not image_parts:
                 continue
             found = list(await db.execute_fetchall(f"SELECT message_json FROM {storage_scope.messages_table} WHERE session_id=? AND message_id=?", (row[0], row[1])))
@@ -194,9 +193,9 @@ class AgentStateDao:
             if len(original_images) != len(image_parts):
                 continue
             changed = False
-            # 1. 只修改未外置的图片地址与引用，原文字、来源和压缩状态保持初次归档值。
+            # 1. 只修改未外置的图片地址与引用，原文字与来源保持初次归档值。
             for old, new in zip(original_images, image_parts, strict=True):
-                if not old.get("storage_ref") and old.get("context_state") == ImageContextState.AVAILABLE:
+                if not old.get("storage_ref"):
                     old["storage_ref"] = new["storage_ref"]
                     old["image_url"]["url"] = new["storage_ref"]
                     changed = True

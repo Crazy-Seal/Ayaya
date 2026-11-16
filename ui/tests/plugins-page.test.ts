@@ -127,7 +127,7 @@ test("所有插件均可开关，保存时保留未显示的配置字段", /**
         session_id: "plugins", model_name: "test", openai_api_key: "test",
         openai_base_url: "http://127.0.0.1:1/v1", temperature: 0.1, system_prompt: "测试",
         tool_permissions: {}, tool_permissions_schema_version: 1, mcp: { servers: {} },
-        context_strategy: { compression_trigger_tokens_k: 100, max_screenshots_in_context: 2, screenshot_ttl_human_messages: 2 },
+        context_strategy: { compression_trigger_tokens_k: 100 },
         agent_plugins: {
           memory: { enabled: true, config: { long_term_memory_every_human_messages: 12 } },
           sample: { enabled: false, config: { endpoint: "用户地址" } },

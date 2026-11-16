@@ -180,7 +180,7 @@ await runtime.publish_event(InteractionEventKind.STATUS_NOTICE, {
 
 | 位置 | 用途 | 发现和加载方式 |
 | --- | --- | --- |
-| `app/agent/plugins/<插件名>/` | 随 Ayaya 一起维护和发布的插件，例如 `memory`、`desktop_perception` | 框架扫描直接子模块和包，按目录名登记延迟加载目标，使用 `app.agent.plugins.<插件名>` 导入 |
+| `app/agent/plugins/<插件名>/` | 随 Ayaya 一起维护和发布的插件，例如 `memory`、`computer_use` | 框架扫描直接子模块和包，按目录名登记延迟加载目标，使用 `app.agent.plugins.<插件名>` 导入 |
 | 根目录 `plugins/<插件目录>/` | 独立安装、更新或分发的插件包，保存在框架实现目录之外 | 应用启动时加载包的 `__init__.py`，以插件类的 `name` 登记，支持包内相对导入 |
 
 两处使用同一个 `BasePlugin` 接口，都按会话启停，遵循相同的配置、工具权限及生命周期流程；插件名称在全部目录中保持唯一。
@@ -198,11 +198,14 @@ app/agent/plugins/
 │   ├── memory.py             记忆插件配置和钩子
 │   ├── tools/                长期记忆和日记查询工具
 │   └── tasks/                记忆插件自己的后台任务
-└── desktop_perception/
-    ├── __init__.py           导出 DesktopPerceptionPlugin
-    ├── plugin.py            协调每次模型请求前的钩子
-    ├── capture.py           捕获当前主屏幕
-    └── compression.py       压缩工具返回的截图
+└── computer_use/
+    ├── __init__.py           导出 ComputerUsePlugin
+    ├── plugin.py            配置、REPL 声明和环境钩子
+    ├── docs/api.md          Agent 通过 cua.help() 读取的完整说明
+    └── repl/ayaya_computer_use/
+        ├── api.py           模型直接使用的 cua 和窗口对象
+        ├── capture.py       后端钩子与 runner 共用的纯捕获代码
+        └── screen_helper.py 准确窗口、UIA 和输入的系统边界
 ```
 
 独立插件包则集中放在根目录 `plugins/`。下面以独立分发的游戏插件为例，将文件放在 `plugins/game-helper/`：
@@ -239,7 +242,7 @@ from .tools.game_help import game_help
 
 应用启动时扫描 `app/agent/plugins/` 和根目录 `plugins/`。独立包入口必须导出唯一插件类，目录内相对导入可用；安装、更新和移除后重启应用生效。
 
-桌面感知插件 `desktop_perception` 随项目提供。启用后，它在每次主模型请求前直接捕获主屏幕，保留前端窗口的当前显隐状态，将画面写入第8章的环境条目；工具返回的截图按 TTL=0、数量上限=0 的效果即时压缩，文字、其他图片和历史文件引用继续保留。停用插件后，后续 Agent 使用会话原有的截图保留配置。
+屏幕插件 `computer_use` 随项目提供。启用后，原生 Python REPL 预装 `cua`，Agent 可显式读取控件树、截图和操作桌面。`inject_screen_state` 默认关闭；开启后每次主模型请求前提供当前主屏画面，环境图保存在 `environment/`。窗口保持当前显隐。显式观察按普通 Python 工具图片保存与压缩，使用方式见[插件帮助](../app/agent/plugins/computer_use/docs/api.md)。
 
 ### 2.2 定义用户可以修改的参数
 
@@ -1148,7 +1151,7 @@ async def execute(self, context: HookContext) -> None:  # 框架调用的插件�
 | 记忆插件的具体任务 | [memory_tasks.py](../app/agent/plugins/memory/tasks/memory_tasks.py) |
 | 长期记忆查询工具 | [search_memory.py](../app/agent/plugins/memory/tools/search_memory.py) |
 | 日记查询工具 | [search_diary.py](../app/agent/plugins/memory/tools/search_diary.py) |
-| 桌面感知插件 | [plugin.py](../app/agent/plugins/desktop_perception/plugin.py) |
+| 屏幕操作插件 | [plugin.py](../app/agent/plugins/computer_use/plugin.py) |
 | 工具运行时 | [runtime.py](../app/agent/tools/core/runtime.py) |
 | 输入与控制调度 | [agent_runtime_scheduler.py](../app/agent/runtime/agent_runtime_scheduler.py) |
 | 业务消息 | [messages.py](../app/agent/state/messages.py) |
@@ -1257,4 +1260,6 @@ host.publish_event(execution_id, "status_notice", {
 
 能力通过 `defer_cleanup` 登记本次资源释放。正常、异常或中断结束时，runner 尝试全部清理，再报告结束；清理错误随工具结果返回。应用端随后将本次尚未关闭的提示关闭入队，再释放 REPL 占用。进程崩溃或超时时，应用端也会关闭已经收到的提示。提示仍遵循第 7 章的非持久化和断线清空规则。
 
-能力请求中断会在代码入口捕获为 `KeyboardInterrupt`，清理后返回用户终止结果，保留进程和已有状态。聊天停止沿同一代码中断方法执行，随后继续传播工具取消，由现有运行时结束 Agent。原生阻塞可能延迟中断，能力应在业务方法边界调用 `raise_if_interrupted`。本步只提供这些通用接口；真实桌面能力和物理 ESC 监听由对应插件实现。
+能力请求中断会在代码入口捕获为 `KeyboardInterrupt`，清理后返回用户终止结果，保留进程和已有状态。聊天停止沿同一代码中断方法执行，随后继续传播工具取消，由现有运行时结束 Agent。原生阻塞可能延迟中断，能力应在业务方法边界调用 `raise_if_interrupted`。
+
+`computer_use` 在本次第一次改变桌面状态前创建尚未安装的 ESC 监听，先登记清理，再安装钩子及发布提示。同一执行内共享一次监听，计算和等待期间保持提示。回调固定使用创建时的执行编号，注入的 Escape 会继续交给目标窗口。清理解除监听和释放输入，已有应用接入代码负责关闭剩余提示。

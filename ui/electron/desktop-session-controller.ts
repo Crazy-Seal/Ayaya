@@ -20,8 +20,8 @@ export interface DesktopSessionDependencies {
   /** 记录当前订阅的断线或恢复，不记录心跳。 */
   log: (level: "info" | "warn", message: string, error?: unknown) => void;
   reconnectDelayMs?: number;
-  /** 首次连接与重连后同步窗口身份，完成前不交付新的快照。 */
-  onConnected?: () => Promise<void>;
+  /** 首次连接与重连前刷新外部后端身份，随当前订阅取消。 */
+  onConnected?: (signal: AbortSignal) => Promise<void>;
   /** 断线后将所属会话交给页面清理及本机恢复检查。 */
   onDisconnected?: (sessionId: string) => void;
 }
@@ -126,8 +126,8 @@ export class DesktopSessionController {
     let reconnecting = false;
     while (this.isCurrent(controller, generation)) {
       try {
-        // 1.1. 登记先于建立 SSE；登记失败重试不能留下无人消费的后端订阅。
-        if (this.dependencies.onConnected) await this.dependencies.onConnected();
+        // 1.1. 连接准备先于 SSE；取消旧订阅时，其身份请求也随之取消。
+        if (this.dependencies.onConnected) await this.dependencies.onConnected(controller.signal);
         if (!this.isCurrent(controller, generation)) return;
         // 1. 请求完成和每次读取后都核对归属，旧连接迟到的快照与文字一律不转发。
         const response = await this.dependencies.fetchBackend(

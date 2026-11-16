@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 from app.schemas.tool_types import AuthorizationTiming
 from app.schemas.message_types import MediaKind
-from app.schemas.desktop import DesktopOperations, StopRequested
 
 from app.schemas.runtime_types import (
     InterruptKind,
@@ -40,7 +39,7 @@ class InterruptEvent:
     tool_name: str = ""          # 被中断的工具名
     tool_call_id: str = ""       # 被中断的工具调用 id
     tool_args: dict = field(default_factory=dict)  # 工具原始参数
-    resume_state: dict = field(default_factory=dict)  # 工具中间态（如 VLM 坐标）
+    resume_state: dict = field(default_factory=dict)  # 工具中间态（如外部操作回执）
 
     def __post_init__(self) -> None:
         """已知中断归一化为枚举，扩展值继续沿既有工具恢复路径处理。"""
@@ -118,8 +117,6 @@ class ToolContext:
         origin_run_id (str): 发起进程任务的运行轮次标识。
         origin_tool_call_id (str): 发起任务的工具调用标识。
         origin_tool_name (str): Pipeline 注入的实际调用工具名。
-        desktop (DesktopOperations | None): 应用共享桌面接口，单个工具与 Agent 不关闭它。
-        stop_requested (StopRequested | None): 当前轮次已受理停止或引导的只读检查。
     """
     session_id: str
     state: AgentState
@@ -130,8 +127,6 @@ class ToolContext:
     origin_run_id: str = ""
     origin_tool_call_id: str = ""
     origin_tool_name: str = ""
-    desktop: DesktopOperations | None = None
-    stop_requested: StopRequested | None = None
 
 
 @dataclass
@@ -163,7 +158,7 @@ class ToolResult:
             state_updates (dict | None): 随结果交给状态的更新。
             image_url (str | None): 一张工具图片。
             image_urls (list[str] | None): 多张工具图片。
-            media_kind (MediaKind): tool、screenshot 或 mcp。
+            media_kind (MediaKind): tool 或 mcp。
         Returns:
             ToolResult: 完整有序内容，尚未规范化或保存。
         """

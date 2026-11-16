@@ -12,7 +12,7 @@ from app.environment import get_images_dir
 
 logger = logging.getLogger(__name__)
 
-IMAGE_CATEGORIES = frozenset({MediaKind.TOOL, MediaKind.SCREENSHOT, MediaKind.MCP})
+IMAGE_CATEGORIES = frozenset({MediaKind.TOOL, MediaKind.MCP, MediaKind.ENVIRONMENT})
 
 
 def save_image_to_disk(

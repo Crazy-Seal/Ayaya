@@ -4,7 +4,7 @@ import { backendFetch } from "./backend-client.js";
 import { getChatWindow, getSettingsWindow } from "./window-manager.js";
 import { appendFrontendLog } from "./logging/app-logger.js";
 import { DesktopSessionController } from "./desktop-session-controller.js";
-import { desktopWindowRegistry } from "./desktop-window-runtime.js";
+import { refreshExternalBackendIdentity, checkExternalBackendExit } from "./backend-process.js";
 import type {
   ChannelCommand, CommandReceipt, DesktopSessionSubscriptionOptions, InteractionEvent,
 } from "../shared-types.js";
@@ -37,16 +37,16 @@ const desktopSession = new DesktopSessionController({
   fetchBackend: backendFetch,
   deliverEvent: deliverDesktopEvent,
   log: logDesktopStream,
-  /** SSE 每次连接后完整登记，外部后端重启也不能沿用已失效的确认状态。 */
-  onConnected: () => desktopWindowRegistry.connect(),
+  /** 每次连接前刷新外部后端进程身份，迟到请求受订阅取消信号约束。 */
+  onConnected: (signal) => refreshExternalBackendIdentity(signal),
   /**
-   * 断线时检查本机恢复记录，并通知聊天页结束本连接的提示显示。
+   * 断线时检查已连接的外部后端进程，并通知聊天页结束本连接的提示显示。
    *
    * Args:
    *     sessionId (string): 已由订阅控制器核对归属的会话编号。
    */
   onDisconnected: (sessionId) => {
-    desktopWindowRegistry.recoverIfBackendExited();
+    checkExternalBackendExit();
     const chatWindow = getChatWindow();
     if (chatWindow && !chatWindow.isDestroyed()) {
       chatWindow.webContents.send(IpcChannel.INTERACTION_DISCONNECTED, sessionId);
@@ -64,8 +64,6 @@ const desktopSession = new DesktopSessionController({
  *     Promise<CommandReceipt>: 后端命令受理回执。
  */
 export const submitInteractionCommand = async (command: ChannelCommand): Promise<CommandReceipt> => {
-  // 1. 首次真人输入必须等待准确窗口身份，停止命令不能被正在等待的登记阻塞。
-  if (command.kind === "human_turn") await desktopWindowRegistry.ensureReady();
   const response = await backendFetch("/agent/commands", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(command),
   });

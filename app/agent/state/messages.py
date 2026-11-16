@@ -10,7 +10,7 @@ from types import MappingProxyType
 from typing import Any, ClassVar, Iterator, Mapping, Sequence
 from uuid import uuid4
 
-from app.schemas.message_types import MessageType, MediaKind, ImageContextState
+from app.schemas.message_types import MessageType, MediaKind
 from app.schemas.runtime_types import DESKTOP_CHANNEL, TaskResultStatus
 from app.agent.state.time import normalize_utc, utc_now
 
@@ -220,33 +220,26 @@ class TextContent:
 
 @dataclass(frozen=True, slots=True)
 class ImageContent:
-    """保存图片及其在本地历史和当前上下文中的状态。
+    """保存消息图片及其本地文件引用。
 
     Attributes:
         url (str): 图片地址、data URL 或历史中的相对文件路径。
         detail (str | None): 图片处理提示，模型适配器决定如何使用。
-        media_kind (MediaKind): 真人附件、工具图片、截图、MCP 图片或临时环境背景图片。
+        media_kind (MediaKind): 真人附件、工具图片、MCP 图片或临时环境背景图片。
         storage_ref (str | None): 已保存的本地相对路径。
-        context_state (ImageContextState): available 表示可以发送；compacted 表示不能重载图片。
     """
     url: str
     detail: str | None = None
     media_kind: MediaKind = MediaKind.HUMAN
     storage_ref: str | None = None
-    context_state: ImageContextState = ImageContextState.AVAILABLE
 
     def __post_init__(self) -> None:
-        """检查图片来源和压缩状态，已压缩截图不得保留可发送地址。"""
+        """校验图片来源、地址与文件引用，供通用图片保存和模型投影使用。"""
         if self.media_kind not in set(MediaKind):
             raise ValueError("未知图片类别")
-        if self.context_state not in set(ImageContextState):
-            raise ValueError("未知图片上下文状态")
         object.__setattr__(self, "media_kind", MediaKind(self.media_kind))
-        object.__setattr__(self, "context_state", ImageContextState(self.context_state))
-        if not isinstance(self.url, str) or self.context_state == ImageContextState.AVAILABLE and not self.url:
+        if not isinstance(self.url, str) or not self.url:
             raise ValueError("可用图片必须有地址")
-        if self.context_state == ImageContextState.COMPACTED and (self.media_kind != MediaKind.SCREENSHOT or self.url):
-            raise ValueError("压缩截图不能保留模型图片地址")
         if self.storage_ref is not None and (not isinstance(self.storage_ref, str) or not self.storage_ref):
             raise ValueError("图片文件引用必须是非空字符串")
         if self.detail is not None and not isinstance(self.detail, str):
@@ -262,7 +255,7 @@ class ImageContent:
         if self.detail is not None:
             image["detail"] = self.detail
         return {"type": "image_url", "image_url": image, "media_kind": self.media_kind.value,
-                "storage_ref": self.storage_ref, "context_state": self.context_state.value}
+                "storage_ref": self.storage_ref}
 
 
 ContentPart = TextContent | ImageContent
@@ -300,7 +293,7 @@ def content_from_json(value: object) -> tuple[ContentPart, ...]:
             image = _require_mapping(block.get("image_url"), "content[].image_url")
             parts.append(ImageContent(url=_require_string(image.get("url"), "image_url.url"),
                 detail=image.get("detail"), media_kind=block.get("media_kind", MediaKind.HUMAN),
-                storage_ref=block.get("storage_ref"), context_state=block.get("context_state", ImageContextState.AVAILABLE)))
+                storage_ref=block.get("storage_ref")))
         else:
             raise MessageContractError("未知内容块类型")
     return tuple(parts)
@@ -886,16 +879,6 @@ def is_real_human_message(message: BaseMessage) -> bool:
     return isinstance(message, HumanMessage)
 
 
-def is_screenshot_message(message: BaseMessage) -> bool:
-    """识别包含屏幕截图的工具结果，包括已压缩截图。
-
-    Args:
-        message (BaseMessage): 待读取或转换的业务消息。
-
-    Returns:
-        bool: 满足该业务条件时返回 True。
-    """
-    return isinstance(message, ToolMessage) and any(isinstance(part, ImageContent) and part.media_kind == MediaKind.SCREENSHOT for part in message.content)
 
 
 def with_text(message: HumanMessage | AssistantMessage | ToolMessage, text: str) -> BaseMessage:

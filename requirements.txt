@@ -12,3 +12,5 @@ mem0ai==1.0.11
 mcp==1.28.1
 PyAutoGUI==0.9.54
 Pillow==12.3.0
+uiautomation==2.0.29
+windows-capture==2.0.1

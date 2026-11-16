@@ -532,7 +532,7 @@ async () => {
   }
 });
 
-test("每次 SSE 重连先登记窗口，登记失败不创建额外订阅", /** 验证窗口身份更新与订阅重试的顺序。 */
+test("每次 SSE 重连先刷新连接身份，准备失败不创建额外订阅", /** 验证窗口身份更新与订阅重试的顺序。 */
 async () => {
   let registrations = 0, requests = 0, disconnections = 0;
   const controller = new DesktopSessionController({

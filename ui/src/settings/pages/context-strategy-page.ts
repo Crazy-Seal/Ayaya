@@ -11,12 +11,10 @@ type ContextStrategyKey = keyof ChatSettingsState["context_strategy"];
 
 export const CONTEXT_STRATEGY_FIELDS: ContextStrategyKey[] = [
   "compression_trigger_tokens_k",
-  "max_screenshots_in_context",
-  "screenshot_ttl_human_messages",
 ];
 
 /**
- * 提供本页数字输入下限：压缩阈值至少为十千 token，截图数量和保留次数允许为零。
+ * 提供上下文压缩阈值的数字输入下限。
  *
  * Args:
  *     key (ContextStrategyKey): 当前配置字段或索引名称。
@@ -25,11 +23,11 @@ export const CONTEXT_STRATEGY_FIELDS: ContextStrategyKey[] = [
  *     number: 输入框应使用的最小数值。
  */
 export const getContextStrategyMinimum = (key: ContextStrategyKey): number => (
-  key === "compression_trigger_tokens_k" ? 10 : 0
+  10
 );
 
 /**
- * 展示和收集会话的压缩阈值及截图保留设置，保存由设置页主控制器完成。
+ * 展示和收集会话的压缩阈值，保存由设置页主控制器完成。
  */
 export class ContextStrategyPage implements ISettingsPage {
   private inputs: Record<ContextStrategyKey, HTMLInputElement>;
@@ -80,15 +78,13 @@ export class ContextStrategyPage implements ISettingsPage {
    * 从输入框收集用户正在编辑的上下文策略，尚未保存到后端。
    *
    * Returns:
-   *     PageEditingData: 本页编辑中的压缩和截图保留配置。
+   *     PageEditingData: 本页编辑中的上下文压缩配置。
    */
   getEditingData(): PageEditingData {
     return {
       contextStrategy: {
         context_strategy: {
           compression_trigger_tokens_k: Number(this.inputs.compression_trigger_tokens_k.value),
-          max_screenshots_in_context: Number(this.inputs.max_screenshots_in_context.value),
-          screenshot_ttl_human_messages: Number(this.inputs.screenshot_ttl_human_messages.value),
         },
       },
     };

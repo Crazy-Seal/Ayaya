@@ -401,7 +401,6 @@ class ModelInputCoordinator:
     Attributes:
         budget (ContextBudgetService): 当前会话的预算估算器。
         compaction (ContextCompactionCoordinator): 工具结果和历史摘要的压缩协调器。
-        screenshot_policy (ContextCompressionPolicy): 截图过期及数量限制规则。
         accounting_key (str): 当前模型配置的用量计量标识。
     """
 
@@ -427,7 +426,6 @@ class ModelInputCoordinator:
             summary_client,
             chat_settings=chat_settings,
         )
-        self.screenshot_policy = ContextCompressionPolicy()
         self.accounting_key = accounting_key
         self.model_client = summary_client
 
@@ -483,7 +481,7 @@ class ModelInputCoordinator:
         tools: Sequence[ToolDefinition],
         turn_context: RuntimeContext,
     ) -> PreparedModelInput:
-        """先压缩旧截图，再按预算逐层缩短历史，给执行管道返回可发送的模型输入。
+        """按预算逐层压缩普通工具结果和历史，给执行管道返回可发送的模型输入。
 
         Args:
             state (AgentState): 当前会话的内存状态，成功压缩后会更新其中的消息。
@@ -498,15 +496,8 @@ class ModelInputCoordinator:
             ContextOverflowError: 没有安全压缩范围，或两次摘要尝试后仍达到压缩阈值。
             ValueError: 工具协议或模型返回的摘要结构不合法。
         """
-        # 1. 截图按自身保留规则压缩，即使总输入尚未达到 token 阈值也执行。
-        screenshot_candidate, screenshot_count = self.screenshot_policy.compress_screenshots(
-            state.messages,
-            ttl_human_messages=self.budget.config.screenshot_ttl_human_messages,
-            max_screenshots=self.budget.config.max_screenshots_in_context,
-        )
-        changed = bool(screenshot_count)
-        if changed:
-            state.commit_compaction(screenshot_candidate)
+        # 1. 先估算本次完整模型输入，达到预算阈值时再进入通用压缩。
+        changed = False
         messages, assessment = self._view(state, system_prompt, tools, turn_context)
         if not self.budget.should_compact(assessment.estimated_prompt_tokens):
             return PreparedModelInput(messages, assessment, state_changed=changed)

@@ -8,20 +8,19 @@ chat_models:
   tool_permissions:
     local:access_the_internet: allow
     local:apply_patch: deny
-    local:control_screen: deny
-    local:control_screen_with_vlm: deny
     local:read_file: deny
     local:read_image: deny
     local:exec_command: deny
     local:write_stdin: deny
-    local:screenshot: ask
     local:update_plan: deny
   tool_permissions_schema_version: 1
   context_strategy:
     compression_trigger_tokens_k: 100
-    max_screenshots_in_context: 2
-    screenshot_ttl_human_messages: 2
   agent_plugins:
+    computer_use:
+      enabled: false
+      config:
+        inject_screen_state: false
     memory:
       enabled: true
       config:

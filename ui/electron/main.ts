@@ -19,7 +19,6 @@ import {
 } from "./window-manager.js";
 import { startCursorTracking, stopCursorTracking } from "./cursor-tracker.js";
 import { registerIpcHandlers } from "./ipc-handlers.js";
-import { desktopWindowRegistry, setDesktopBackendExitListener } from "./desktop-window-runtime.js";
 import { stopDesktopSession } from "./interaction-adapter.js";
 import { clearChatSettingsCache } from "./chat-settings.js";
 import { initAyayaImageProtocolHandler } from "./ayaya-image-protocol.js";
@@ -72,10 +71,9 @@ const showBackendRecoveryDialog = async (
 };
 
 const backendRecoveryCoordinator = createBackendRecoveryCoordinator({
-  /** 重启后端后重新登记两个存活窗口，旧请求回报不能推进本次连接。 */
+  /** 按已有进程启动流程重新连接后端。 */
   startBackend: async () => {
     await startBackendProcess();
-    if (!applicationShutdownCoordinator.isShuttingDown()) await desktopWindowRegistry.connect();
   },
   showDialog: showBackendRecoveryDialog,
   clearSettingsCache: clearChatSettingsCache,
@@ -125,20 +123,14 @@ onBackendUnexpectedExit(/**
  *     event (BackendUnexpectedExit): 调用方或浏览器触发的当前事件。
  */
 (event) => {
-  desktopWindowRegistry.disconnect();
-  desktopWindowRegistry.recoverWindows();
   backendRecoveryCoordinator.handleUnexpectedExit(event);
 });
-
-setDesktopBackendExitListener(/** 外部后端死亡已确认并尝试恢复窗口后，沿用相同的恢复对话框。 */
-() => backendRecoveryCoordinator.handleUnexpectedExit({ exitCode: null, signal: null, message: "外部后端进程意外退出" }));
 
 /**
  * 先关闭界面操作并通知页面，再停止两条桌面订阅，最后由统一协调器释放应用资源。
  */
 const requestApplicationShutdown = (): void => {
   beginWindowShutdown();
-  desktopWindowRegistry.disconnect();
   stopDesktopSession();
   void applicationShutdownCoordinator.requestShutdown();
 };
@@ -223,11 +215,6 @@ async () => {
   initAyayaImageProtocolHandler();
 
   openChatWindow();
-  try {
-    await desktopWindowRegistry.connect();
-  } catch (error) {
-    appendFrontendLog("error", "desktop-windows", "首次窗口登记失败", error);
-  }
 
   // 开始光标追踪
   startCursorTracking();

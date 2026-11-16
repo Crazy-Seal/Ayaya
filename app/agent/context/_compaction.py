@@ -3,12 +3,11 @@
 from collections.abc import Iterable, Sequence
 from dataclasses import replace
 
-from app.schemas.message_types import COMPRESSED_SCREENSHOT_PLACEHOLDER, MediaKind, ImageContextState
 from app.agent.state.messages import (
     AssistantMessage,
     BaseMessage,
     HumanMessage,
-    ImageContent, text_content, is_screenshot_message,
+    text_content,
     ToolMessage,
 )
 from app.agent.utils.domain.token_estimation import RoughTokenEstimator
@@ -26,59 +25,6 @@ class ContextCompressionPolicy:
     本类不写数据库，也不直接修改 AgentState；调用方确认候选结果后再更新状态。
     """
 
-    @staticmethod
-    def compress_screenshots(
-        messages: Sequence[BaseMessage],
-        *,
-        ttl_human_messages: int,
-        max_screenshots: int,
-    ) -> tuple[tuple[BaseMessage, ...], int]:
-        """按后续真人输入数和截图总数，把旧截图替换为保留历史文件引用的占位内容。
-
-        Args:
-            messages (Sequence[BaseMessage]): 按对话顺序排列的领域消息。
-            ttl_human_messages (int): 截图后达到多少条真人消息时压缩该截图。
-            max_screenshots (int): 模型上下文中最多保留多少张未压缩截图。
-
-        Returns:
-            tuple[tuple[BaseMessage, ...], int]: 替换后的消息及本次压缩的截图数量；原消息不变。
-        """
-        targets: set[int] = set()
-        # 1. 从最新消息往前数真人输入；工具结果和后台通知不会消耗截图保留次数。
-        human_count_after = 0
-        for index in range(len(messages) - 1, -1, -1):
-            message = messages[index]
-            if (
-                is_screenshot_message(message)
-                and any(isinstance(part, ImageContent) and part.context_state == ImageContextState.AVAILABLE for part in message.content)
-                and human_count_after >= ttl_human_messages
-            ):
-                targets.add(index)
-            if isinstance(message, HumanMessage):
-                human_count_after += 1
-
-        # 2. 过期截图之外，仍超出数量上限时优先压缩最旧的截图。
-        remaining = [
-            index
-            for index, message in enumerate(messages)
-            if index not in targets
-            and is_screenshot_message(message)
-            and any(isinstance(part, ImageContent) and part.context_state == ImageContextState.AVAILABLE for part in message.content)
-        ]
-        excess = max(len(remaining) - max_screenshots, 0)
-        targets.update(remaining[:excess])
-
-        # 3. 新建截图消息只保留历史文件引用；原消息不变，由调用方提交替换结果。
-        candidate = list(messages)
-        for index in targets:
-            message = candidate[index]
-            assert isinstance(message, ToolMessage)
-            candidate[index] = replace(
-                message,
-                content=tuple(replace(part, url="", context_state=ImageContextState.COMPACTED)
-                    if isinstance(part, ImageContent) and part.media_kind == MediaKind.SCREENSHOT else part for part in message.content),
-            )
-        return tuple(candidate), len(targets)
 
     @staticmethod
     def compress_old_tool_results(
@@ -229,7 +175,6 @@ class ContextCompressionPolicy:
 
 
 __all__ = [
-    "COMPRESSED_SCREENSHOT_PLACEHOLDER",
     "COMPRESSED_TOOL_RESULT",
     "CONTEXT_SUMMARY_PREFIX",
     "ContextCompressionPolicy",

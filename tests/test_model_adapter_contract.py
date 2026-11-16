@@ -50,8 +50,8 @@ def test_openai_batch_places_images_after_all_tool_results() -> None:
 
     sdk = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
     messages = (
-        AssistantMessage(tool_calls=(ToolCall("a", "screenshot", {}), ToolCall("b", "read_file", {}))),
-        ToolMessage(content=(TextContent("截图成功"), ImageContent("data:image/png;base64,AA==", media_kind="screenshot")), tool_name="screenshot", tool_call_id="a"),
+        AssistantMessage(tool_calls=(ToolCall("a", "python", {}), ToolCall("b", "read_file", {}))),
+        ToolMessage(content=(TextContent("观察成功"), ImageContent("data:image/png;base64,AA==", media_kind="tool")), tool_name="python", tool_call_id="a"),
         ToolMessage(content=(TextContent("文件内容"),), tool_name="read_file", tool_call_id="b"),
     )
     client = LLMClient(LLMConfig("test", "test"), sdk_client=cast(AsyncOpenAI, sdk))

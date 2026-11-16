@@ -40,7 +40,6 @@
           <button class="settings-tab ui-nav-item" type="button" data-page="contextStrategy">上下文策略</button>
           <button class="settings-tab ui-nav-item" type="button" data-page="tools">工具权限</button>
           <button class="settings-tab ui-nav-item" type="button" data-page="mcp">MCP服务器</button>
-          <button class="settings-tab ui-nav-item" type="button" data-page="multimodal">多模态</button>
           <button class="settings-tab ui-nav-item" type="button" data-page="channels">交互方式</button>
           <button class="settings-tab ui-nav-item" type="button" data-page="tasks">后台任务</button>
           <button class="settings-tab ui-nav-item" type="button" data-page="subagents">子 Agent</button>
@@ -203,14 +202,6 @@
                 <span>上下文压缩触发阈值（K Token）</span>
                 <input id="context-compression-trigger-tokens-k" class="ui-control" type="number" min="10" step="1" placeholder="例如 100" />
               </label>
-              <label class="llm-field">
-                <span>上下文最大截图数</span>
-                <input id="context-max-screenshots" class="ui-control" type="number" min="0" step="1" placeholder="例如 2" />
-              </label>
-              <label class="llm-field">
-                <span>截图 TTL（真实用户消息数）</span>
-                <input id="context-screenshot-ttl" class="ui-control" type="number" min="0" step="1" placeholder="例如 2" />
-              </label>
               <button id="context-strategy-confirm-btn" type="button" class="llm-confirm-btn ui-button ui-button--primary ui-button--medium">保存上下文策略</button>
             </div>
           </div>
@@ -281,20 +272,6 @@
               <button id="mcp-policy-save-btn" type="button" class="mcp-policy-save-btn mcp-primary-btn ui-button ui-button--primary ui-button--medium" hidden>保存当前模型权限</button>
             </div>
           </div>
-          <div class="settings-page" data-page="multimodal">
-            <div class="settings-page-layout multimodal-panel">
-              <h2>多模态</h2>
-              <div class="multimodal-section ui-surface">
-                <div class="multimodal-section-title">截图设置</div>
-                <label class="checkbox-row" for="checkbox-hide-on-screenshot">
-                  <span>操作屏幕或截屏时隐藏界面</span>
-                  <input id="checkbox-hide-on-screenshot" class="ui-checkbox" type="checkbox" checked />
-                </label>
-                <div class="multimodal-hint">开启后，截屏和屏幕操作时会暂时隐藏角色窗口和聊天窗口；已最小化的窗口保持原状态。</div>
-              </div>
-            </div>
-          </div>
-          <!-- 当前会话的渠道配置和任务记录分别查询，不复用模型设置提交。 -->
           <div class="settings-page" data-page="channels">
             <div class="settings-page-layout">
               <h2>交互方式</h2>

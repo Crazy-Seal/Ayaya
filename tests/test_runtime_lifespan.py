@@ -5,7 +5,6 @@ from app.crud.sqlite_factory import SqliteFactory
 from app.crud.task_record_dao import TaskRecordDao
 from app.services.settings_mutation import SettingsMutationCoordinator
 import asyncio
-from functools import lru_cache
 from tests.runtime_support import configured_settings
 from types import SimpleNamespace
 
@@ -48,7 +47,6 @@ def test_shutdown_request_ends_existing_sse_before_lifespan_cleanup(tmp_path):
         application.state.runtime_scheduler = scheduler
         application.state.task_supervisor = supervisor
         application.state.interaction_event_hub = hub
-        application.state.desktop_controller = SimpleNamespace(begin_shutdown=lambda: None)
         application.state.uvicorn_server = SimpleNamespace(should_exit=False)
         stream = None
         try:
@@ -74,7 +72,7 @@ def test_shutdown_request_ends_existing_sse_before_lifespan_cleanup(tmp_path):
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("failure", [None, "desktop", "supervisor", "startup"])
+@pytest.mark.parametrize("failure", [None, "repl", "supervisor", "startup"])
 def test_application_owns_resource_order_and_continues_cleanup(tmp_path, monkeypatch, failure) -> None:
     """真实消费者在应用拥有的队列上运行，关闭失败仍继续清理其他资源。"""
     import main
@@ -84,20 +82,16 @@ def test_application_owns_resource_order_and_continues_cleanup(tmp_path, monkeyp
     from app.agent.state.manager import SessionStateManager
     calls = []
 
-    class Desktop:
-        """替代外部桌面资源，仅记录应用生命周期动作。"""
-        def start(self):
-            """记录桌面启动。"""
-            calls.append("desktop.start")
+    from app.repl.repl_service import ReplService
 
-        def begin_shutdown(self):
-            """记录桌面停止受理。"""
-            calls.append("desktop.stop")
+    class Repl(ReplService):
+        """保留原生 REPL 的真实关闭行为，观察应用资源顺序。"""
 
         async def close(self):
-            """报告指定的资源关闭故障。"""
-            calls.append("desktop.close")
-            if failure == "desktop":
+            """回收真实资源后按用例注入关闭故障。"""
+            calls.append("repl.close")
+            await super().close()
+            if failure == "repl":
                 raise RuntimeError("关闭失败")
 
     class MCP:
@@ -136,11 +130,6 @@ def test_application_owns_resource_order_and_continues_cleanup(tmp_path, monkeyp
             calls.append("scheduler.close")
             await super().close()
 
-    @lru_cache(maxsize=1)
-    def desktop():
-        """提供本次测试唯一桌面资源。"""
-        return Desktop()
-
     from app.agent.runtime import runtime_factory
     monkeypatch.setattr(runtime_factory, "AgentRuntimeScheduler", Scheduler)
     original_factory = main.create_runtime_scheduler
@@ -152,7 +141,7 @@ def test_application_owns_resource_order_and_continues_cleanup(tmp_path, monkeyp
     monkeypatch.setattr(main, "SqliteFactory", lambda: SqliteFactory(tmp_path / "state.sqlite3"))
     monkeypatch.setattr(main, "TaskSupervisor", Supervisor)
     monkeypatch.setattr(main, "create_runtime_scheduler", create_scheduler)
-    monkeypatch.setattr(main, "get_desktop_controller", desktop)
+    monkeypatch.setattr(main, "ReplService", Repl)
     monkeypatch.setattr(main, "get_mcp_connection_manager", lambda: MCP())
     monkeypatch.setattr(main, "detect_shell", lambda: None)
 
@@ -169,10 +158,10 @@ def test_application_owns_resource_order_and_continues_cleanup(tmp_path, monkeyp
             asyncio.run(scenario())
     else:
         asyncio.run(scenario())
-    assert calls.index("scheduler.stop") < calls.index("desktop.close") < calls.index("supervisor.close")
+    assert calls.index("scheduler.stop") < calls.index("repl.close") < calls.index("supervisor.close")
     assert calls.index("supervisor.close") < calls.index("scheduler.close") < calls.index("mcp.close")
     assert calls.count("supervisor.close") == 1
-    assert desktop.cache_info().currsize == 0
+    assert calls.count("repl.close") == 1
 
 
 def test_application_lifespan_reaps_repl_process_tree(tmp_path, monkeypatch) -> None:

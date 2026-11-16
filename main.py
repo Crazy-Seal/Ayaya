@@ -21,7 +21,6 @@ from app.routes.chat_history import router as memory_router
 from app.routes.tools import router as tools_router
 from app.routes.plugins import router as plugins_router
 from app.routes.mcp import router as mcp_router
-from app.routes.desktop import router as desktop_router
 from app.dependencies import get_mcp_connection_manager, create_runtime_scheduler, get_chat_settings_dao
 from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
 from app.crud.task_record_dao import TaskRecordDao
@@ -32,10 +31,8 @@ from app.agent.state.manager import SessionStateManager
 from app.services.agent_identity_service import AgentIdentityService
 from app.services.channel_subscription_service import ChannelSubscriptionService
 from app.services.subagent_service import SubagentService
-from app.services.desktop_settings_service import DesktopSettingsService
 from app.schemas.runtime_types import RuntimePhase
 from app.interaction.interaction_event_hub import InteractionEventHub
-from app.dependencies import get_desktop_controller, get_desktop_settings_dao
 from app.security.local_api import install_local_api_security, load_api_token
 from app.agent.tools.terminal.shell import detect_shell
 from app.agent.utils.infra.safe_path import WORKDIR
@@ -58,13 +55,8 @@ async def begin_runtime_shutdown(application: FastAPI) -> None:
     # 1. 先结束网络订阅，服务器才能进入 lifespan 清理；内部消费者仍继续读取。
     application.state.interaction_event_hub.begin_shutdown()
     await application.state.task_supervisor.begin_shutdown()
-    application.state.desktop_controller.begin_shutdown()
 
 
-def clear_runtime_dependencies() -> None:
-    """共享对象关闭后释放其余配置缓存，运行时实例由 app.state 保存。"""
-    get_desktop_controller.cache_clear()
-    get_desktop_settings_dao.cache_clear()
 
 
 @asynccontextmanager
@@ -82,7 +74,6 @@ async def lifespan(application: FastAPI):
     mcp_manager = get_mcp_connection_manager()
     async with AsyncExitStack() as cleanup:
         cleanup.push_async_callback(mcp_manager.close)
-        cleanup.callback(clear_runtime_dependencies)
         sqlite_factory = SqliteFactory()
         application.state.sqlite_factory = sqlite_factory
         subscriptions = ChannelSubscriptionService(sqlite_factory)
@@ -115,16 +106,11 @@ async def lifespan(application: FastAPI):
         scheduler = create_runtime_scheduler(supervisor, runtime_queue, sqlite_factory=sqlite_factory,
             hub=hub, subscriptions=subscriptions, identity=identity, subagents=subagents, repl_service=repl)
         application.state.runtime_scheduler = scheduler
-        application.state.desktop_settings_service = DesktopSettingsService(get_desktop_settings_dao(),
-            lambda: scheduler.phase not in {RuntimePhase.STOPPING, RuntimePhase.STOPPED})
-        desktop = get_desktop_controller()
-        application.state.desktop_controller = desktop
 
         # 1. 逆序执行：封入口、等 worker、停任务、读完请求、关 Scheduler 和输出。
         cleanup.push_async_callback(hub.close)
         cleanup.push_async_callback(scheduler.close)
         cleanup.push_async_callback(supervisor.close)
-        cleanup.push_async_callback(desktop.close)
         cleanup.push_async_callback(repl.close)
         cleanup.push_async_callback(scheduler.wait_for_workers)
         cleanup.push_async_callback(begin_runtime_shutdown, application)
@@ -134,7 +120,6 @@ async def lifespan(application: FastAPI):
             logging.getLogger(__name__).warning("默认 Shell 不可用，终端工具将返回环境错误")
         await scheduler.start()
         await supervisor.recover_orphaned()
-        desktop.start()
         preconnect_task = asyncio.create_task(mcp_manager.preconnect_enabled())
         try:
             yield
@@ -154,7 +139,6 @@ app.include_router(memory_router)
 app.include_router(tools_router)
 app.include_router(plugins_router)
 app.include_router(mcp_router)
-app.include_router(desktop_router)
 
 # 静态文件服务：用于访问保存的图片
 IMAGES_DIR = get_images_dir()
@@ -174,9 +158,13 @@ async def root():
 
 
 @app.get("/internal/ready")
-async def internal_ready():
-    """返回仅供 Electron 主进程使用的后端就绪状态。"""
-    return {"ready": True}
+async def internal_ready() -> dict[str, bool | int]:
+    """向 Electron 交付就绪状态及当前进程编号，用于断线后的退出核对。
+
+    Returns:
+        dict[str, bool | int]: 就绪标记和当前后端 PID。
+    """
+    return {"ready": True, "pid": os.getpid()}
 
 
 @app.get("/internal/tasks/active-summary")

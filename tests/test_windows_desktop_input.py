@@ -1,14 +1,12 @@
 """通过真实桌面模块和 Windows adapter 验证剪贴板，替代底层系统调用。"""
 
-import asyncio
+import sys
 import ctypes
 from ctypes import wintypes
 
 import pytest
 
-from app.schemas.desktop import DesktopSettings, ScreenAction
-from app.desktop.desktop_controller import DesktopController
-from app.desktop.windows_desktop_driver import WindowsDesktopDriver
+from app.agent.plugins.computer_use.repl.ayaya_computer_use.native_input import NativeInput
 
 
 class ClipboardSystem:
@@ -222,110 +220,126 @@ class ClipboardSystem:
         return True
 
 
-def native_adapter(system, restore_path):
-    """把操作系统测试替身接到生产 adapter，不替换其剪贴板处理方法。
+def native_adapter(system, monkeypatch):
+    """在系统调用边界替换 DLL 和输入库，正常构造真实剪贴板实现。
 
     Args:
-        system (ClipboardSystem): 提供 Win32 剪贴板和键盘调用的隔离替身。
-        restore_path (Path): 独立测试目录的窗口恢复文件位置。
+        system (ClipboardSystem): 剪贴板和原生内存替身。
+        monkeypatch (pytest.MonkeyPatch): 隔离 Win32 和输入库。
+
+    Returns:
+        NativeInput: 由真实构造函数创建的插件输入对象。
     """
-    native = WindowsDesktopDriver.__new__(WindowsDesktopDriver)
-    native._restore_path = restore_path
-    native._owner_pid = 0
-    native._registration = None
-    native._user = native._kernel = native._ole = native._gdi = native._input = system
-    native._w = wintypes
-    native._clipboard_window = 99
-    native._previous_dpi = None
-    native._clipboard_written_sequence = native._snapshot_sequence = None
-    native._pressed = set()
-    return native
+    class Function:
+        """允许生产构造函数为测试系统调用声明 ctypes 签名。"""
+
+        def __init__(self, function):
+            """保存系统边界操作。"""
+            self.function = function
+
+        def __call__(self, *args):
+            """交付真实实现传给 Win32 的参数。"""
+            return self.function(*args)
+
+    class Library:
+        """提供剪贴板 DLL 及无桌面副作用的初始化函数。"""
+
+        def __getattr__(self, name):
+            """读取模拟 Win32 函数并保留其类型声明。"""
+            result = Function((lambda *args: 99) if name == "CreateWindowExW" else getattr(system, name, lambda *args: 1))
+            setattr(self, name, result)
+            return result
+
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *args, **kwargs: Library())
+    monkeypatch.setitem(sys.modules, "pyautogui", system)
+    return NativeInput()
+
+
+def test_interrupt_while_importing_input_library_restores_thread_dpi(monkeypatch):
+    """输入库加载被 ESC 打断时，尚未交付的输入对象也会恢复线程 DPI。"""
+    import builtins
+    system = ClipboardSystem({})
+    contexts = []
+
+    def set_dpi(context):
+        """记录系统线程设置并返回原设置。"""
+        contexts.append(context)
+        return 17
+
+    original_import = builtins.__import__
+
+    def load_module(name, *args, **kwargs):
+        """只在输入库实际导入时交付用户中断。"""
+        if name == "pyautogui":
+            raise KeyboardInterrupt()
+        return original_import(name, *args, **kwargs)
+
+    system.SetThreadDpiAwarenessContext = set_dpi
+    monkeypatch.setattr(builtins, "__import__", load_module)
+    with pytest.raises(KeyboardInterrupt):
+        native_adapter(system, monkeypatch)
+    assert contexts[-1] == 17
 
 
 @pytest.mark.parametrize("fault", ["none", "paste", "write", "new-copy", "files"])
-def test_chinese_input_and_clipboard_protection(tmp_path, monkeypatch, fault):
-    """真实模块调用验证中文、富格式恢复、未知文件拒绝以及键盘故障清理。
+def test_chinese_input_and_clipboard_protection(monkeypatch, fault):
+    """中文粘贴结束或失败后恢复支持的格式，保留用户新复制内容。
 
     Args:
-        tmp_path (Path): Pytest 为本用例创建的独立目录，不访问生产存储。
-        monkeypatch (pytest.MonkeyPatch): 替换操作系统或环境依赖，用例结束后自动恢复。
-        fault (str): 本次模拟的输入、写入、用户新复制或文件格式故障。
+        monkeypatch (pytest.MonkeyPatch): 替换系统边界。
+        fault (str): 模拟的输入故障或用户操作。
     """
-    from PIL import Image, ImageGrab
     original = {13: "原文本\0".encode("utf-16-le"), 500: b"<b>HTML</b>\0", 501: b"{rtf}\0", 8: b"image-bytes"}
     if fault == "files":
         original[15] = b"files"
     system = ClipboardSystem(original)
-    system.fail_v = fault == "paste"
-    system.fail_write = fault == "write"
+    system.fail_v, system.fail_write = fault == "paste", fault == "write"
     system.new_user_copy = fault == "new-copy"
-    monkeypatch.setattr(ImageGrab, "grab", lambda **_kwargs: Image.new("RGB", (20, 10)))
-
-    async def scenario():
-        """通过公开动作接口输入中文，确认只清理本次输入的资源。"""
-        desktop = DesktopController(lambda: DesktopSettings(hide_on_screenshot=False), driver_factory=lambda: native_adapter(system, tmp_path / "restore.json"))
-        desktop.start()
-        try:
-            result = await desktop.perform_actions((ScreenAction(0.5, 0.5, "click", text="中文输入测试", press_enter=True, wait_seconds=0),))
-            assert not system.keys
-            if fault == "new-copy":
-                assert system.content == {13: "用户新复制内容\0".encode("utf-16-le")}
-            else:
-                assert system.content == original
-            if fault in {"none", "new-copy"}:
-                assert result.status == "completed" and system.pasted == "中文输入测试"
-                assert result.screenshot.width == 20
-            elif fault == "files":
-                assert result.status == "not_started" and system.clicks == 0
-            else:
-                assert result.status == "partial_or_unknown" and result.error
-        finally:
-            await desktop.close()
-    asyncio.run(scenario())
+    driver = native_adapter(system, monkeypatch)
+    try:
+        if fault in {"paste", "write", "files"}:
+            with pytest.raises(RuntimeError):
+                with driver.input_guard("中文输入测试"):
+                    driver.paste("中文输入测试", lambda: None)
+        else:
+            with driver.input_guard("中文输入测试"):
+                driver.paste("中文输入测试", lambda: None)
+            assert system.pasted == "中文输入测试"
+        assert not system.keys
+        assert system.content == ({13: "用户新复制内容\0".encode("utf-16-le")} if fault == "new-copy" else original)
+    finally:
+        driver.close()
 
 
 @pytest.mark.parametrize("fault", ["none", "new-copy", "files"])
-def test_batch_text_input_reuses_clipboard_snapshot(tmp_path, monkeypatch, fault):
-    """整批连续粘贴使用同一原始快照，同时拒绝覆盖用户在动作间新复制的内容。
+def test_batch_text_input_reuses_clipboard_snapshot(monkeypatch, fault):
+    """连续粘贴复用同一快照，用户中途复制会阻止后续覆盖。
 
     Args:
-        tmp_path (Path): 独立窗口恢复记录目录。
-        monkeypatch (pytest.MonkeyPatch): 用空白图片替代真实截图。
-        fault (str): 正常批次、用户新复制或初始剪贴板含不支持文件格式。
+        monkeypatch (pytest.MonkeyPatch): 替换系统边界。
+        fault (str): 正常输入、用户复制或不支持格式。
     """
-    from PIL import Image, ImageGrab
-
     original = {13: "原始文字\0".encode("utf-16-le"), 500: b"<b>HTML</b>\0"}
     if fault == "files":
         original[15] = b"files"
     system = ClipboardSystem(original)
     system.new_user_copy = fault == "new-copy"
-    monkeypatch.setattr(ImageGrab, "grab", lambda **_kwargs: Image.new("RGB", (20, 10)))
+    driver = native_adapter(system, monkeypatch)
 
-    async def scenario():
-        """通过生产批量控制器和剪贴板驱动，观察三步输入与最终清理。"""
-        desktop = DesktopController(lambda: DesktopSettings(hide_on_screenshot=False), driver_factory=lambda: native_adapter(system, tmp_path / "restore.json"))
-        desktop.start()
-        try:
-            actions = (
-                ScreenAction(0.5, 0.5, "click", wait_seconds=0),
-                ScreenAction(0.5, 0.5, "click", text="第一段中文", press_enter=False, wait_seconds=0),
-                ScreenAction(0.5, 0.5, "click", text="第二段中文", press_enter=False, wait_seconds=0),
-            )
-            result = await desktop.perform_actions(actions)
-            assert not system.keys and result.total_actions == 3
-            if fault == "none":
-                assert result.status == "completed" and result.completed_actions == 3
-                assert system.pasted == "第二段中文" and system.content == original
-                assert system.clicks == 3
-            elif fault == "files":
-                assert result.status == "not_started" and result.completed_actions == 0
-                assert system.clicks == 0 and system.content == original
-            else:
-                assert result.status == "partial_or_unknown" and result.completed_actions == 2
-                assert system.pasted == "第一段中文"
-                assert system.content == {13: "用户新复制内容\0".encode("utf-16-le")}
-        finally:
-            await desktop.close()
+    def paste_twice():
+        """通过真实上下文管理器执行两段 Unicode 粘贴。"""
+        with driver.input_guard("第一段中文"):
+            driver.paste("第一段中文", lambda: None)
+            driver.paste("第二段中文", lambda: None)
 
-    asyncio.run(scenario())
+    try:
+        if fault == "none":
+            paste_twice()
+            assert system.pasted == "第二段中文" and system.content == original
+        else:
+            with pytest.raises(RuntimeError):
+                paste_twice()
+            assert system.content == ({13: "用户新复制内容\0".encode("utf-16-le")} if fault == "new-copy" else original)
+        assert not system.keys
+    finally:
+        driver.close()

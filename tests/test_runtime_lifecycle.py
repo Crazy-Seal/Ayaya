@@ -177,7 +177,7 @@ def test_restart_reset_preserves_humans_when_deletion_fails(tmp_path) -> None:
 
 
 def test_abandoned_result_preserves_media_and_commit_failure_is_retryable(tmp_path) -> None:
-    """验证已有回报和延迟媒体保留，收尾事务失败可重试且不重复结果。
+    """验证已有回报和已完成工具图片保留，收尾事务失败可重试且不重复结果。
 
     Args:
         tmp_path (Path): 隔离数据库目录。
@@ -188,16 +188,15 @@ def test_abandoned_result_preserves_media_and_commit_failure_is_retryable(tmp_pa
         manager = SessionStateManager("s", SqliteFactory(path))
         try:
             state = AgentState.create_new("s")
-            calls = [ToolCall(id=str(index), name="screenshot", args={}) for index in range(3)]
+            calls = [ToolCall(id=str(index), name="draw", args={}) for index in range(3)]
             state.record_assistant_step("正文", calls)
             image = "data:image/png;base64,iVBORw0KGgpwYXlsb2Fk"
             first = state.record_tool_result(calls[0], result_parts('已完成', (image,), 'tool'))
             state.clear_pending_tool_calls()
             state.set_interrupt({
-                "type": "continuation_request", "request_id": "r",
+                "type": "authorization_request", "request_id": "r",
                 "tool_call_id": calls[1].id, "tool_name": calls[1].name,
-                "resume_state": {"continuation_claimed": True},
-                "desktop_result": {"screenshot_data": image, "width": 800, "height": 600},
+                "resume_state": {},
             }, (calls[2],))
             await manager.save(state, checkpoint_type="intermediate")
             db = await manager._state_dao._get_db()
@@ -214,9 +213,8 @@ def test_abandoned_result_preserves_media_and_commit_failure_is_retryable(tmp_pa
             results = [item for item in closed.messages if isinstance(item, ToolMessage)]
             media = [item for item in closed.messages if isinstance(item, ToolMessage) and any(isinstance(part, ImageContent) for part in item.content)]
             assert len(results) == 3 and results[0].message_id == first.message_id
-            assert len(media) == 2
+            assert len(media) == 1
             assert all(item.tool_call_id in {result.tool_call_id for result in results} for item in media)
-            assert '"width": 800' in results[1].text
             assert not await manager.finalize_abandoned_turn()
             assert (await manager.load()).messages == closed.messages
         finally:
@@ -255,7 +253,7 @@ def test_shutdown_preserves_partial_once_and_keeps_message_identity(tmp_path, pe
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("case", ["approval", "approved", "unclaimed", "unknown", "result", "ordinary", "human"])
+@pytest.mark.parametrize("case", ["approval", "approved", "ordinary", "human"])
 def test_start_finalizes_abandoned_checkpoint_without_execution(tmp_path, case) -> None:
     """验证各种遗留 checkpoint 启动后闭合，快照及重复启动不执行工具。
 
@@ -269,22 +267,20 @@ def test_start_finalizes_abandoned_checkpoint_without_execution(tmp_path, case) 
         state = AgentState.create_new("s")
         human = state.add_user_message("旧任务")
         if case != "human":
-            first = ToolCall(id="first", name="control_screen", args={})
+            first = ToolCall(id="first", name="read_file", args={})
             later = ToolCall(id="later", name="write_file", args={})
             state.record_assistant_step("已保存正文", (first, later))
             if case != "ordinary":
                 state.clear_pending_tool_calls()
                 interrupt = {
-                    "type": "authorization_request" if case in {"approval", "approved"} else "continuation_request",
+                    "type": "authorization_request",
                     "request_id": "old-request", "tool_call_id": first.id,
                     "tool_name": first.name, "tool_args": {}, "origin_channel": "desktop",
-                    "resume_state": {"continuation_claimed": case in {"unknown", "result"}},
-                    "data": {"kind": "perform_screen_action", "payload": {}},
+                    "resume_state": {},
+                    "data": {"arguments": {}},
                 }
                 if case == "approved":
                     interrupt["runtime_decision"] = {"kind": "approve"}
-                if case == "result":
-                    interrupt["desktop_result"] = {"executed": True, "error": "原始回报"}
                 state.set_interrupt(interrupt, (later,))
         manager = SessionStateManager("s", SqliteFactory(path))
         await manager.save(state, checkpoint_type="intermediate")
@@ -315,10 +311,6 @@ def test_start_finalizes_abandoned_checkpoint_without_execution(tmp_path, case) 
                 assert closed.interrupt_data is None and not closed.pending_tool_calls
                 results = [item for item in closed.messages if isinstance(item, ToolMessage)]
                 assert len(results) == (0 if case == "human" else 2)
-                if case == "unknown":
-                    assert "未知" in results[0].text
-                if case == "result":
-                    assert "原始回报" in results[0].text
                 original = closed.to_checkpoint()
                 assert not await manager.finalize_abandoned_turn()
                 assert (await manager.load()).to_checkpoint() == original

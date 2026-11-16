@@ -10,12 +10,12 @@ from openai.types import CompletionUsage
 from openai.types.chat import ChatCompletion, ChatCompletionChunk, ChatCompletionMessageCustomToolCall
 from openai.types.chat.chat_completion_chunk import ChoiceDeltaToolCall
 from app.agent.models.contracts import ModelFinishReason, InputMessage, LLMConfig, LLMResponse, StreamChunk, TokenUsage, ToolDefinition, ModelContextOverflowError, ProjectedMessage
-from app.schemas.message_types import COMPRESSED_SCREENSHOT_PLACEHOLDER, MediaKind, ImageContextState
+from app.schemas.message_types import MediaKind
 from app.agent.state.messages import (BaseMessage, HumanMessage, AssistantMessage, ToolMessage, SystemMessage,
     ContextSummaryMessage, PluginNotificationMessage, TaskResultMessage, EnvironmentPerceptionMessage, SubagentMessage, RuntimeInputMessage,
     ImageContent, TextContent, ToolCall, ProviderData, text_content, notification_text, to_json_value)
-from app.agent.models.openai_message_names import (SCREENSHOT_MESSAGE_NAME, TOOL_IMAGE_MESSAGE_NAME, MCP_TOOL_IMAGE_MESSAGE_NAME,
-    SCREENSHOT_COMPRESSED_NAME, CONTEXT_SUMMARY_MESSAGE_NAME)
+from app.agent.models.openai_message_names import (TOOL_IMAGE_MESSAGE_NAME, MCP_TOOL_IMAGE_MESSAGE_NAME,
+    CONTEXT_SUMMARY_MESSAGE_NAME)
 from app.agent.tools.core.schema import normalize_tool_schema_for_model
 from app.agent.utils.domain.token_estimation import RoughTokenEstimator
 
@@ -512,14 +512,14 @@ class OpenAIChatCompletionsAdapter:
 
     @staticmethod
     def _encode_content(content: Sequence[TextContent | ImageContent]) -> list[dict]:
-        """去除业务图片元数据，压缩图片不读取文件、不重新加载 Base64。
+        """将完整文字和图片转换为供应商输入，业务来源元数据由消息层持有。
 
         Args:
             content (Sequence[TextContent | ImageContent]): 按顺序排列的业务文字或图片内容块。
         """
         return [part.to_dict() if isinstance(part, TextContent) else {
             "type": "image_url", "image_url": {"url": part.url, **({"detail": part.detail} if part.detail else {})}}
-            for part in content if isinstance(part, TextContent) or part.context_state == ImageContextState.AVAILABLE]
+            for part in content]
 
     def encode_messages(self, messages: Sequence[InputMessage]) -> list[dict]:
         """把业务消息投影为完整请求，整批工具结果之后再发送图片。
@@ -548,14 +548,9 @@ class OpenAIChatCompletionsAdapter:
                 result.append({"role": "tool", "name": message.tool_name, "tool_call_id": message.tool_call_id, "content": message.text})
                 images = [part for part in message.content if isinstance(part, ImageContent)]
                 if images:
-                    available = [part for part in images if part.context_state == ImageContextState.AVAILABLE]
-                    if available:
-                        kind = available[0].media_kind
-                        name = {MediaKind.SCREENSHOT: SCREENSHOT_MESSAGE_NAME, MediaKind.MCP: MCP_TOOL_IMAGE_MESSAGE_NAME}.get(kind, TOOL_IMAGE_MESSAGE_NAME)
-                        deferred.append({"role": "user", "name": name, "content": [
-                            {"type": "text", "text": f"[系统消息]工具 {message.tool_name} 返回图片: "}, *self._encode_content(available)]})
-                    if any(part.context_state == ImageContextState.COMPACTED for part in images):
-                        deferred.append({"role": "user", "name": SCREENSHOT_COMPRESSED_NAME, "content": COMPRESSED_SCREENSHOT_PLACEHOLDER})
+                    name = MCP_TOOL_IMAGE_MESSAGE_NAME if images[0].media_kind == MediaKind.MCP else TOOL_IMAGE_MESSAGE_NAME
+                    deferred.append({"role": "user", "name": name, "content": [
+                        {"type": "text", "text": f"[系统消息]工具 {message.tool_name} 返回图片: "}, *self._encode_content(images)]})
                 # 1.1. 一批结果齐全后才展开图片，避免图片打断 SDK 工具协议。
                 if not expected:
                     result.extend(deferred)

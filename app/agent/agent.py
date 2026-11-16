@@ -38,7 +38,6 @@ from app.crud.sqlite_save import SqliteRollbackError
 from app.agent.utils.infra.bounded_operation import OperationTimeoutError
 from app.agent.state.manager import RequiredSaveError
 from app.agent.utils.infra.bounded_operation import close_resources
-from app.schemas.desktop import DesktopOperations
 from app.agent.state.messages import RuntimeInputMessage, AssistantMessage, HumanMessage
 from app.schemas.tool_identity import ToolIdentity
 from app.schemas.runtime_types import AgentRunOutcome, AgentRunOutcomeKind, TurnInterruptReason
@@ -98,7 +97,6 @@ class Agent:
         chat_settings: "ChatSettings | None" = None,
         tool_authorization: ToolAuthorization | None = None,
         tool_runtime_factory: ToolRuntimeFactory | None = None,
-        desktop: DesktopOperations | None = None,
         session_state_manager: SessionStateManager | None = None,
         plugin_runtime_factory: PluginRuntimeFactory | None = None,
         bind_plugin_mcp: PluginMCPBinder | None = None,
@@ -116,7 +114,6 @@ class Agent:
             chat_settings (ChatSettings | None): 会话模型和插件配置。
             tool_authorization (ToolAuthorization | None): 工具单次授权验证器。
             tool_runtime_factory (ToolRuntimeFactory | None): 按工具、轮次及调用编号创建运行时。
-            desktop (DesktopOperations | None): 应用所有的共享桌面接口，Agent 仅传给 Pipeline。
             session_state_manager (SessionStateManager | None): worker 借给本次执行的对象；省略时由 Agent 创建并关闭。
             plugin_runtime_factory (PluginRuntimeFactory | None): 按插件名称和来源轮次创建 PluginRuntime 的注入工厂。
             bind_plugin_mcp (PluginMCPBinder | None): 连接成功后由应用层保存身份与工具默认权限。
@@ -176,7 +173,6 @@ class Agent:
             tool_runtime_factory=tool_runtime_factory,
             permission_session_id=self._permission_session_id,
             environment_provider=environment_provider,
-            desktop=desktop,
         )
 
         # 初始化标志

@@ -5,11 +5,9 @@ from app.schemas.message_types import MediaKind
 
 import asyncio
 from dataclasses import replace
-import json
 import logging
 
 from app.schemas.runtime_types import CheckpointType, DESKTOP_CHANNEL, InboxKind, InboxStatus, InterruptKind, TaskResultStatus, TaskStatus, TurnInterruptReason
-from app.schemas.message_types import ImageContextState
 from app.agent.runtime.session_inbox import InboxEnvelope, InputNoLongerPending
 from app.agent.state.model import AgentState
 from app.agent.state.messages import (
@@ -664,24 +662,12 @@ class SessionStateManager:
             state.interrupt_data or state.pending_tool_calls
         ):
             return False
-        # 2. 为遗留工具准备结果：已有桌面回报时保存回报内容，否则说明取消或结果未知。
+        # 2. 按既有中断类型结束遗留调用，通用工具结果保持原有保存流程。
         interrupt = state.interrupt_data or {}
-        receipt = interrupt.get("desktop_result")
         content = APPLICATION_EXIT_RESULT
-        images: tuple[str, ...] = ()
-        if receipt is not None:
-            # 2.1. 截图作为图片保存，其他回报字段写入工具结果正文。
-            screenshot = receipt.get("screenshot_data")
-            images = (screenshot,) if isinstance(screenshot, str) and screenshot else ()
-            facts = {key: value for key, value in receipt.items() if key != "screenshot_data"}
-            content = "应用退出，本轮已终止；已保存桌面执行回报：" + json.dumps(facts, ensure_ascii=False)
-        elif (interrupt.get("resume_state") or {}).get("continuation_claimed"):
-            # 2.2. 桌面动作已开始但未保存回报时，保留结果未知的说明。
-            content = APPLICATION_EXIT_UNKNOWN_RESULT
         if interrupt.get("type") == InterruptKind.PARENT_MESSAGE:
             content = PARENT_MESSAGE_DELIVERED
-        state.close_unfinished_tools(content, APPLICATION_EXIT_RESULT, APPLICATION_EXIT_UNKNOWN_RESULT,
-                                     interrupted_images=images)
+        state.close_unfinished_tools(content, APPLICATION_EXIT_RESULT, APPLICATION_EXIT_UNKNOWN_RESULT)
         # 3. 保存退出前已显示的回答；数据库中已有同一步骤时修改原消息，否则新增消息。
         rewritten_message_id = None
         if partial.strip():
@@ -767,7 +753,7 @@ class SessionStateManager:
                 continue
             groups: dict[MediaKind, list[tuple[int, ImageContent]]] = {}
             for index, part in enumerate(message.content):
-                if isinstance(part, ImageContent) and part.context_state == ImageContextState.AVAILABLE and not part.storage_ref:
+                if isinstance(part, ImageContent) and not part.storage_ref:
                     groups.setdefault(part.media_kind, []).append((index, part))
             parts = list(message.content)
             changed = False

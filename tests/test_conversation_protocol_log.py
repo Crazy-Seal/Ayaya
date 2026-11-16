@@ -16,10 +16,6 @@ from app.agent.state.messages import (
     MessageContractError,
     ToolCall, ToolMessage, ImageContent, TextContent, text_content,
 )
-from app.agent.models.openai_message_names import (
-    SCREENSHOT_COMPRESSED_NAME,
-    SCREENSHOT_MESSAGE_NAME,
-)
 from app.crud.chat_history_dao import ChatHistoryDao
 from app.routes.chat_history import list_chat_history, list_chat_history_last_n
 
@@ -168,7 +164,7 @@ def test_tool_image_is_archived_inside_its_tool_result(tmp_path: Path) -> None:
         state=AgentState.create_new("s")
         call=ToolCall("c","read_image",{})
         state.record_assistant_step("",(call,))
-        result=state.record_tool_result(call,(TextContent("完成"),ImageContent("data:image/png;base64,AA==",media_kind="tool")))
+        result=state.record_tool_result(call,(TextContent("完整观察结果" * 100),ImageContent("data:image/png;base64,AA==",media_kind="tool")))
         try:
             await manager.save(state,checkpoint_type="completed")
             restored=await manager.load()
@@ -182,7 +178,7 @@ def test_tool_image_is_archived_inside_its_tool_result(tmp_path: Path) -> None:
 
 
 
-def test_screenshot_compaction_preserves_original_history(tmp_path: Path) -> None:
+def test_tool_result_compaction_preserves_original_history(tmp_path: Path) -> None:
     """checkpoint 图片被压缩后，历史仍保留原文件引用和图片气泡。"""
     async def scenario() -> None:
         """在隔离 SQLite 中比较压缩前后可见历史。"""
@@ -190,17 +186,17 @@ def test_screenshot_compaction_preserves_original_history(tmp_path: Path) -> Non
         state=AgentState.create_new("s")
         call=ToolCall("c","screenshot",{})
         state.record_assistant_step("",(call,))
-        state.record_tool_result(call,(TextContent("完成"),ImageContent("data:image/png;base64,AA==",media_kind="screenshot")),compressible=True)
+        state.record_tool_result(call,(TextContent("完整观察结果" * 100),ImageContent("data:image/png;base64,AA==",media_kind="tool")),compressible=True)
         try:
             await manager.save(state,checkpoint_type="completed")
             dao=ChatHistoryDao(sqlite_factory=SqliteFactory(tmp_path/"state.sqlite"))
             before=await dao.list_chat_history_async("s")
-            candidate,changed=ContextCompressionPolicy.compress_screenshots(state.messages,ttl_human_messages=0,max_screenshots=2)
+            candidate,changed=ContextCompressionPolicy.compress_old_tool_results(state.messages,keep_latest=0)
             assert changed==1
             state.commit_compaction(candidate)
             await manager.save(state,checkpoint_type="intermediate")
             assert await dao.list_chat_history_async("s")==before
-            assert (await manager.load()).messages[-1].content[-1].context_state=="compacted"
+            assert not any(isinstance(part, ImageContent) for part in (await manager.load()).messages[-1].content)
         finally:
             await manager.close()
     asyncio.run(scenario())

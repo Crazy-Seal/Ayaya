@@ -142,7 +142,7 @@ def convert_message(raw: dict, owner: dict | None = None) -> dict:
 
 
 def media_parts(raw: dict) -> tuple[str, list[dict]]:
-    """读取旧工具图片和明确结果关联，压缩图片保持不可重载状态。
+    """读取普通工具图片和明确结果关联，旧截图交给图片存储迁移处理。
 
     Args:
         raw (dict): 包含旧业务元数据的 v2 消息。
@@ -157,9 +157,8 @@ def media_parts(raw: dict) -> tuple[str, list[dict]]:
     payload = meta.get("payload") or {}
     refs = payload.get("storage_refs") or []
     kind = meta.get("media_kind")
-    if payload.get("kind") == "compacted":
-        return associated, [ImageContent("", media_kind=kind, storage_ref=ref, context_state="compacted").to_dict()
-                            for ref in refs or [None]]
+    if kind == "screenshot" or payload.get("kind") == "compacted":
+        raise MigrationError("旧截图契约已退出当前运行时，请通过图片存储迁移处理")
     if payload.get("kind") != "available":
         raise MigrationError("未知图片状态")
     converted = convert_content(raw.get("content"), kind=kind, refs=refs)

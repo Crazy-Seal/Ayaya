@@ -10,7 +10,6 @@ from app.agent import agent as agent_module
 from app.agent.state import manager as state_manager_module
 from app.agent.agent import Agent, AgentConfig
 from app.agent.context import ContextStrategyConfig
-from app.agent.models import vlm
 from app.agent.state import AgentState
 from app.agent.state.messages import HumanMessage, ToolCall
 from app.agent.utils.domain import images as image_utils
@@ -56,109 +55,10 @@ def _append_tool_image(state: AgentState, image: str) -> None:
     state.record_tool_result(call, result_parts('done', (image,), 'tool'))
 
 
-def test_vlm_default_config(monkeypatch) -> None:
-    """验证定位模型使用声明的默认配置。
-
-    Args:
-        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
-    """
-    monkeypatch.setenv("VLM_API_KEY", "test-key")
-    monkeypatch.delenv("VLM_BASE_URL", raising=False)
-    monkeypatch.delenv("VLM_MODEL", raising=False)
-
-    assert vlm._vlm_config() == (
-        "test-key",
-        "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "qwen3-vl-plus",
-    )
 
 
-def test_vlm_environment_overrides_defaults(monkeypatch) -> None:
-    """验证定位模型环境设置覆盖默认值。
-
-    Args:
-        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
-    """
-    monkeypatch.setenv("VLM_API_KEY", "test-key")
-    monkeypatch.setenv("VLM_BASE_URL", "http://vlm.test/v1")
-    monkeypatch.setenv("VLM_MODEL", "test-vlm")
-
-    assert vlm._vlm_config() == (
-        "test-key",
-        "http://vlm.test/v1",
-        "test-vlm",
-    )
 
 
-def test_vlm_locate_client_is_closed(monkeypatch) -> None:
-    """验证定位完成后关闭模型客户端。
-
-    Args:
-        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
-    """
-    clients = []
-    requests = []
-
-    class FakeCompletions:
-        """提供当前用例所需的 FakeCompletions 测试替身，执行记录仅供外层断言使用。
-
-        该定义仅用于外层用例：验证定位完成后关闭模型客户端。
-        """
-        async def create(self, **kwargs):
-            """按用例脚本返回响应，并记录请求参数供外层断言。
-
-            该定义仅用于外层用例：验证定位完成后关闭模型客户端。
-
-            Args:
-                kwargs (dict[str, Any]): 传递给被调用函数的其他关键字参数。
-            """
-            requests.append(kwargs)
-            message = SimpleNamespace(content='{"bboxes_2d":[[1,2,3,4],[5,6,7,8]]}')
-            return SimpleNamespace(choices=[SimpleNamespace(message=message)])
-
-    class FakeClient:
-        """提供当前用例所需的 FakeClient 测试替身，执行记录仅供外层断言使用。
-
-        该定义仅用于外层用例：验证定位完成后关闭模型客户端。
-        """
-        def __init__(self, **kwargs):
-            """保存本用例的脚本输入和依赖，初始化测试对象的执行记录。
-
-            该定义仅用于外层用例：验证定位完成后关闭模型客户端。
-
-            Args:
-                kwargs (dict[str, Any]): 传递给被调用函数的其他关键字参数。
-            """
-            self.chat = SimpleNamespace(completions=FakeCompletions())
-            self.closed = False
-            clients.append(self)
-
-        async def close(self):
-            """接收测试对象的关闭请求，不释放任何生产资源。
-
-            该定义仅用于外层用例：验证定位完成后关闭模型客户端。
-            """
-            self.closed = True
-
-    from app.agent.models import openai_chat
-    monkeypatch.setattr(openai_chat, "AsyncOpenAI", FakeClient)
-    monkeypatch.setenv("VLM_API_KEY", "test-key")
-
-    result = asyncio.run(
-        vlm.VLMService().locate_many(
-            ["确认按钮", "输入框"],
-            "data:image/png;base64,AA==",
-        )
-    )
-
-    assert result == [[1, 2, 3, 4], [5, 6, 7, 8]]
-    assert len(clients) == 1
-    assert clients[0].closed is True
-    assert len(requests) == 1
-    parts = requests[0]["messages"][1]["content"]
-    assert len([part for part in parts if part["type"] == "image_url"]) == 1
-    text = next(part["text"] for part in parts if part["type"] == "text")
-    assert json.loads(text) == {"targets": ["确认按钮", "输入框"]}
 
 
 def test_save_multiple_images_writes_files(monkeypatch, tmp_path: Path) -> None:
@@ -189,11 +89,11 @@ def test_save_multiple_images_uses_restricted_subdirectory(monkeypatch, tmp_path
 
     filenames = image_utils.save_multiple_images(
         ["data:image/png;base64,AA=="],
-        category="screenshot",
+        category="environment",
     )
 
     assert len(filenames) == 1
-    assert filenames[0].startswith("screenshot/")
+    assert filenames[0].startswith("environment/")
     assert (tmp_path / Path(filenames[0])).read_bytes() == b"\x00"
 
 

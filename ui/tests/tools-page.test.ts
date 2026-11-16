@@ -124,7 +124,7 @@ const renderData = (): PageRenderData => ({
     openai_base_url: "http://127.0.0.1:1/v1", temperature: 0.1, system_prompt: "测试",
     tool_permissions: {}, tool_permissions_schema_version: 1,
     mcp: { servers: { enabled: { enabled: true }, globalOff: { enabled: true }, sessionOff: { enabled: false } } },
-    context_strategy: { compression_trigger_tokens_k: 100, max_screenshots_in_context: 2, screenshot_ttl_human_messages: 2 },
+    context_strategy: { compression_trigger_tokens_k: 100 },
   },
   dependencies: {
     mcpServers: [server("enabled", true), server("globalOff", false), server("sessionOff", true)],

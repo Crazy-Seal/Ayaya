@@ -16,7 +16,6 @@ from app.schemas.chat_settings import ChatSettings
 from app.mcp.mcp_connection_manager import MCPConnectionManager
 from app.agent.tools.authorization.manager import ToolAuthorization
 from app.agent.tools.core.runtime import ToolRuntimeFactory
-from app.schemas.desktop import DesktopOperations
 from app.schemas.mcp import MCPConnectionConfig
 from app.mcp.types import PluginMCPBinder
 from app.repl.repl_service import ReplService
@@ -28,7 +27,6 @@ def build_agent(
     mcp_connection_manager: MCPConnectionManager | None = None,
     tool_authorization: ToolAuthorization | None = None,
     tool_runtime_factory: ToolRuntimeFactory | None = None,
-    desktop: DesktopOperations | None = None,
     session_state_manager: SessionStateManager | None = None,
     plugin_runtime_factory: PluginRuntimeFactory | None = None,
     bind_plugin_mcp: PluginMCPBinder | None = None,
@@ -46,7 +44,6 @@ def build_agent(
         mcp_connection_manager (MCPConnectionManager | None): 共享 MCP 连接管理器。
         tool_authorization (ToolAuthorization | None): 工具单次授权验证器。
         tool_runtime_factory (ToolRuntimeFactory | None): 按工具、轮次及调用编号创建运行时。
-        desktop (DesktopOperations | None): 应用共享桌面接口，各会话使用同一实例。
         session_state_manager (SessionStateManager | None): worker 拥有并借给本次 Agent 的业务对象。
         plugin_runtime_factory (PluginRuntimeFactory | None): 按插件名称和来源轮次创建 PluginRuntime 的注入工厂。
         bind_plugin_mcp (PluginMCPBinder | None): 连接成功后的应用身份保存入口。
@@ -91,7 +88,6 @@ def build_agent(
         chat_settings=chat_settings,
         tool_authorization=tool_authorization,
         tool_runtime_factory=tool_runtime_factory,
-        desktop=desktop,
         session_state_manager=session_state_manager,
         plugin_runtime_factory=plugin_runtime_factory,
         bind_plugin_mcp=bind_plugin_mcp,

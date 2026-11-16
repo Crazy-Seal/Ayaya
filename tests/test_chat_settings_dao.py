@@ -156,11 +156,7 @@ def test_context_strategy_is_required_and_validated() -> None:
     with pytest.raises(ValidationError):
         ContextStrategyConfig(compression_trigger_tokens_k=9)
 
-    with pytest.raises(ValidationError):
-        ContextStrategyConfig(max_screenshots_in_context=-1)
 
-    with pytest.raises(ValidationError):
-        ContextStrategyConfig(screenshot_ttl_human_messages=-1)
 
 
 def test_context_strategy_defaults_to_100k_and_two_screenshots(tmp_path: Path) -> None:
@@ -186,8 +182,6 @@ def test_context_strategy_defaults_to_100k_and_two_screenshots(tmp_path: Path) -
     reloaded = ChatSettingsDao(config_file=config_file).get_chat_settings("test-session")
 
     assert reloaded.context_strategy.compression_trigger_tokens_k == 100
-    assert reloaded.context_strategy.max_screenshots_in_context == 2
-    assert reloaded.context_strategy.screenshot_ttl_human_messages == 2
     assert "compression_trigger_tokens_k: 100" in config_file.read_text(encoding="utf-8")
 
 
@@ -221,6 +215,3 @@ def test_legacy_context_strategy_without_screenshot_fields_uses_defaults(
     reloaded = ChatSettingsDao(config_file=config_file).get_chat_settings(
         "legacy-session"
     )
-
-    assert reloaded.context_strategy.max_screenshots_in_context == 2
-    assert reloaded.context_strategy.screenshot_ttl_human_messages == 2

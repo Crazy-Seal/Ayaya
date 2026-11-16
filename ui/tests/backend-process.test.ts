@@ -39,6 +39,7 @@ interface ControllerHarnessOptions {
   };
   startupTimeoutMs?: number;
   shutdown?: (init?: RequestInit) => Promise<Response>;
+  isProcessAlive?: (pid: number) => boolean;
 }
 
 /**
@@ -55,6 +56,8 @@ const createHarness = (options: ControllerHarnessOptions = {}) => {
   const backendLogs: Array<{ source: "stdout" | "stderr"; level: LogLevel; message: string }> = [];
   let shutdownCalls = 0;
   const controller = createBackendProcessController({
+    /** 在系统进程存在性边界替换查询，单元测试不读取本机进程。 */
+    isProcessAlive: options.isProcessAlive ?? (() => true),
     env: options.env ?? {},
     workspaceRoot: "E:\\code\\Ayaya",
     backendBaseUrl: "http://127.0.0.1:8000",
@@ -115,7 +118,7 @@ const createHarness = (options: ControllerHarnessOptions = {}) => {
        *
        * 此定义用于：根据用例脚本返回后端健康或关闭响应，记录请求顺序。
        */
-      async () => new Response(null, { status: 200 })))();
+      async () => Response.json({ ready: true, pid: 4321 })))();
     },
     /**
      * 记录受管进程终止操作，供断言不会重复终止。
@@ -344,6 +347,57 @@ async () => {
 
   assert.equal(harness.children.length, 0);
   assert.match(harness.backendLogs[0]?.message ?? "", /无法捕获外部 Python/);
+});
+
+test("外部后端断线只在确认 PID 退出后发布一次恢复通知", /** 验证普通断线与真实进程退出的区别。 */
+async () => {
+  let alive = true;
+  const harness = createHarness({
+    env: { AYAYA_MANAGE_BACKEND: "false", AYAYA_API_TOKEN: "e".repeat(43) },
+    /** 控制本次连接的外部进程存活事实。 */
+    isProcessAlive: (pid) => { assert.equal(pid, 4321); return alive; },
+  });
+  const exits: BackendUnexpectedExit[] = [];
+  harness.controller.onUnexpectedExit(/** 记录恢复对话框使用的进程退出通知。 */ event => exits.push(event));
+  await harness.controller.startBackend();
+  harness.controller.checkExternalBackendExit();
+  assert.equal(exits.length, 0);
+  alive = false;
+  harness.controller.checkExternalBackendExit();
+  harness.controller.checkExternalBackendExit();
+  assert.equal(exits.length, 1);
+  assert.equal(harness.children.length, 0);
+  await harness.controller.stopBackend();
+});
+
+test("外部后端重连更新 PID，旧订阅迟到结果和正常退出后信号不污染当前身份", /** 验证取消信号约束身份读取。 */
+async () => {
+  let count = 0;
+  let releaseOld: (response: Response) => void = () => {};
+  const checked: number[] = [];
+  const harness = createHarness({
+    env: { AYAYA_MANAGE_BACKEND: "false", AYAYA_API_TOKEN: "e".repeat(43) },
+    /** 第二次请求延迟到新连接身份已经确认之后。 */
+    ready: async () => {
+      count += 1;
+      if (count === 2) return new Promise<Response>(/** 保存旧连接的迟到响应。 */ resolve => { releaseOld = resolve; });
+      return Response.json({ ready: true, pid: count === 1 ? 41 : 43 });
+    },
+    /** 观察实际被检查的进程，不查询本机进程。 */
+    isProcessAlive: (pid) => { checked.push(pid); return true; },
+  });
+  await harness.controller.startBackend();
+  const previous = new AbortController();
+  const oldRequest = harness.controller.refreshExternalBackendIdentity(previous.signal);
+  previous.abort();
+  await harness.controller.refreshExternalBackendIdentity(new AbortController().signal);
+  releaseOld(Response.json({ ready: true, pid: 42 }));
+  await oldRequest;
+  harness.controller.checkExternalBackendExit();
+  assert.deepEqual(checked, [43]);
+  await harness.controller.stopBackend();
+  harness.controller.checkExternalBackendExit();
+  assert.deepEqual(checked, [43]);
 });
 
 test("AYAYA_PYTHON_EXECUTABLE 覆盖默认 Conda 命令", /**

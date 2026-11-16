@@ -266,7 +266,6 @@ class AgentState(BaseModel):
 
     def close_unfinished_tools(
         self, interrupted_content: str, pending_content: str, ordinary_content: str,
-        *, interrupted_images: Sequence[str] = (),
     ) -> bool:
         """重建未闭合批次并逐项写入终止结果，不执行工具且保持媒体顺序。
 
@@ -274,7 +273,6 @@ class AgentState(BaseModel):
             interrupted_content (str): 中断工具的终止结果。
             pending_content (str): 中断后尚未执行工具的取消结果。
             ordinary_content (str): 普通遗留调用的未知结果。
-            interrupted_images (Sequence[str]): 已持久桌面回报携带的截图。
 
         Returns:
             bool: 是否清理了中断或未闭合调用。
@@ -283,26 +281,26 @@ class AgentState(BaseModel):
         interrupt = self.interrupt_data or {}
         had_pending = bool(self.interrupt_data or self.pending_tool_calls)
         closed = {item.tool_call_id for item in self.messages if isinstance(item, ToolMessage)}
-        entries: list[tuple[ToolCall, str, Sequence[str]]] = []
+        entries: list[tuple[ToolCall, str]] = []
         call_id = interrupt.get("tool_call_id")
         if call_id and call_id not in closed:
             entries.append((ToolCall(
                 id=call_id, name=interrupt["tool_name"], args=interrupt.get("tool_args") or {},
-            ), interrupted_content, interrupted_images))
+            ), interrupted_content))
             closed.add(call_id)
         for call in self.pending_actions:
             if call.id not in closed:
-                entries.append((call, pending_content, ()))
+                entries.append((call, pending_content))
                 closed.add(call.id)
         for call in self.pending_tool_calls:
             if call.id not in closed:
-                entries.append((call, ordinary_content, ()))
+                entries.append((call, ordinary_content))
                 closed.add(call.id)
-        # 2. 整批登记后逐项写入完整结果，图片与同一次调用的终止文字一起保存。
-        self.set_pending_tool_calls([call for call, _content, _images in entries])
-        for call, content, images in entries:
+        # 2. 整批登记后逐项写入终止结果，保持工具批次闭合。
+        self.set_pending_tool_calls([call for call, _content in entries])
+        for call, content in entries:
             self.record_tool_result(
-                call, (*text_content(content), *(ImageContent(url, media_kind=MediaKind.SCREENSHOT) for url in images)),
+                call, text_content(content),
             )
         # 3. 在内存中清除中断和待执行信息；调用方随后统一保存工具结果与清理后的状态。
         self.clear_interrupt()
