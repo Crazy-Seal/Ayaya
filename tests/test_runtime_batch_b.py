@@ -498,6 +498,7 @@ def test_parent_and_two_children_control_independent_contexts(tmp_path: Path) ->
         factory = SqliteFactory(tmp_path / "independent.sqlite3")
         queue = asyncio.Queue()
         parent_running = asyncio.Event()
+        children_running = asyncio.Event()
         child_running = {}
         child_cancelled = set()
         parent_calls = 0
@@ -535,6 +536,8 @@ def test_parent_and_two_children_control_independent_contexts(tmp_path: Path) ->
                 event = child_running.setdefault(self.context_id, asyncio.Event())
                 yield StreamChunk(content="子仍在处理")
                 event.set()
+                if len(child_running) == 2 and all(item.is_set() for item in child_running.values()):
+                    children_running.set()
                 try:
                     await asyncio.Event().wait()
                 finally:
@@ -563,10 +566,7 @@ def test_parent_and_two_children_control_independent_contexts(tmp_path: Path) ->
             await runtime.start()
             await runtime.submit(ChannelCommand("s", "desktop", CommandKind.HUMAN_TURN, {"message": "同时执行"}))
             await asyncio.wait_for(parent_running.wait(), 3)
-            for _ in range(100):
-                if len(child_running) == 2 and all(event.is_set() for event in child_running.values()):
-                    break
-                await asyncio.sleep(0.01)
+            await asyncio.wait_for(children_running.wait(), 3)
             assert len(child_running) == 2
             first, second = tuple(child_running)
             parent_run = (await runtime.snapshot("s")).payload["run_id"]
