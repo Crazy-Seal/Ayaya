@@ -18,7 +18,7 @@ from app.agent.tools.authorization.models import (
     ToolIdentity,
     ToolInvocation,
 )
-from app.agent.tools.core.base import ToolResult
+from app.agent.tools.core.base import InterruptEvent, ToolResult
 from app.agent.core.tool_manager import ToolManager
 from app.agent.context import ContextStrategyConfig, ModelInputCoordinator
 from app.agent.core.events import EventType
@@ -530,10 +530,10 @@ class _UnsafePrepareTool(_CountingTool):
             ToolResult: 供外层用例断言使用的预设结果。
         """
         self.calls += 1
-        return ToolResult.needs_input(
-            "unsupported_execution",
-            "不应在授权前执行",
-            data={"action": "click", "x": 1, "y": 2},
+        return ToolResult(
+            content="",
+            interrupt=InterruptEvent.create("unsupported_execution", "不应在授权前执行",
+                data={"action": "click", "x": 1, "y": 2}),
         )
 
 

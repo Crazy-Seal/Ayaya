@@ -28,7 +28,7 @@ from app.agent.state.manager import SessionStateManager
 from app.agent.runtime.session_inbox import InboxEnvelope
 from app.agent.state import AgentState, TemporaryContextItem
 from app.agent.state.messages import BaseMessage, HumanMessage, TaskResultMessage, ToolCall
-from app.agent.tools.core.base import BaseTool, ToolContext, ToolResult
+from app.agent.tools.core.base import BaseTool, InterruptEvent, ToolContext, ToolResult
 from app.schemas.runtime_types import InteractionEventKind, InterruptKind, TaskStatus
 from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.services.channel_subscription_service import ChannelSubscriptionService
@@ -720,9 +720,7 @@ class PausingTool(BaseTool):
             ToolResult: 首次中断请求或恢复后的成功结果。
         """
         if context.resume_data is None:
-            if self.kind == InterruptKind.AUTHORIZATION_REQUEST:
-                return ToolResult.needs_input(self.kind, "等待审批")
-            return ToolResult.needs_input(InterruptKind.AUTHORIZATION_REQUEST, "等待审批")
+            return ToolResult(content="", interrupt=InterruptEvent.create(self.kind, "等待审批"))
         return ToolResult.success("原工具已恢复")
 
 

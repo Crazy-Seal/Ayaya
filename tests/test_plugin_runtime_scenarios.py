@@ -20,11 +20,11 @@ from app.agent.plugins.runtime import PluginRuntime
 from app.agent.state.manager import SessionStateManager
 from app.agent.state.messages import ToolCall
 from app.agent.runtime.tasks.base import BaseTask
-from app.agent.tools.core.base import BaseTool, ToolContext, ToolResult
+from app.agent.tools.core.base import BaseTool, InterruptEvent, ToolContext, ToolResult
 from app.interaction.interaction_contract import ChannelCommand
 from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
-from app.schemas.runtime_types import TaskStatus
+from app.schemas.runtime_types import InterruptKind, TaskStatus
 
 
 async def next_event_kind(scheduler: AgentRuntimeScheduler, kind: str):
@@ -106,7 +106,8 @@ def test_background_task_survives_approval_and_turn_end_until_explicit_stop(tmp_
                     ToolResult: 待审批材料或已批准的连接结果。
                 """
                 if context.resume_data is None:
-                    return ToolResult.needs_input("authorization_request", "允许连接游戏？")
+                    return ToolResult(content="", interrupt=InterruptEvent.create(
+                        InterruptKind.AUTHORIZATION_REQUEST, "允许连接游戏？"))
                 return ToolResult.success("游戏已连接")
 
         class GameWatchTask(BaseTask):

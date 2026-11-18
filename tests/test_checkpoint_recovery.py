@@ -1,4 +1,4 @@
-from app.schemas.runtime_types import AgentRunOutcomeKind
+from app.schemas.runtime_types import AgentRunOutcomeKind, InterruptKind
 from app.agent.state.manager import RequiredSaveError
 from tests.runtime_support import collect_agent_result
 from tests.runtime_support import make_execution_control
@@ -28,7 +28,7 @@ from app.agent.state.manager import CheckpointType, SessionStateManager
 from app.agent.state.messages import (AssistantMessage, HumanMessage, ImageContent, ToolMessage, ToolCall, ToolMessage)
 from app.agent.models.llm_client import StreamChunk
 from app.agent.state import AgentState
-from app.agent.tools.core.base import BaseTool, ToolContext, ToolResult
+from app.agent.tools.core.base import BaseTool, InterruptEvent, ToolContext, ToolResult
 import app.agent.plugins.memory.memory as memory_plugin_module
 
 
@@ -169,7 +169,8 @@ class ResumableScreenshotTool(BaseTool):
             ToolResult: 供外层用例断言使用的预设结果。
         """
         if context.resume_data is None:
-            return ToolResult.needs_input("authorization_request", "允许截屏？")
+            return ToolResult(content="", interrupt=InterruptEvent.create(
+                InterruptKind.AUTHORIZATION_REQUEST, "允许截屏？"))
         self.resumed_calls.append(context.resume_data.get("kind") == "approve")
         return ToolResult.success("截屏恢复完成")
 
@@ -192,8 +193,11 @@ class PhasedInterruptTool(BaseTool):
         """
         phase = (context.resume_state or {}).get("phase", 0)
         if phase < args["stages"]:
-            return ToolResult.needs_input(
-                "authorization_request", "允许继续？", resume_state={"phase": phase + 1},
+            return ToolResult(
+                content="",
+                interrupt=InterruptEvent.create(
+                    InterruptKind.AUTHORIZATION_REQUEST, "允许继续？"),
+                resume_state={"phase": phase + 1},
             )
         return ToolResult.success("阶段完成")
 

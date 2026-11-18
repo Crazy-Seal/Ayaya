@@ -169,41 +169,6 @@ class ToolResult:
                    state_updates=state_updates or {})
 
     @classmethod
-    def interrupt_result(cls, interrupt: InterruptEvent) -> "ToolResult":
-        """创建等待用户或运行时处理的工具结果，携带中断信息和恢复状态。
-
-        Args:
-            interrupt (InterruptEvent): 当前工具要求等待审批或桌面处理的中断事件。
-        """
-        return cls(content="", interrupt=interrupt)
-
-    @classmethod
-    def needs_input(
-        cls,
-        type: InterruptKind | str,
-        message: str,
-        resume_state: dict | None = None,
-        data: dict | None = None,
-    ) -> "ToolResult":
-        """创建「需要用户输入」的中断结果（可恢复工具在首次执行、尚未拿到用户输入时使用）
-
-        Args:
-            type (InterruptKind | str): 已知中断类型或沿原路径处理的扩展值。
-            message (str): 展示给用户的提示。
-            resume_state (dict | None): 恢复执行时需要的中间态。
-            data (dict | None): 发给前端的附加数据。
-
-        Returns:
-            ToolResult: 不执行副作用的中断结果。
-        """
-        return cls(
-            content="",
-            interrupt=InterruptEvent.create(type=type, message=message, data=data),
-            resume_state=resume_state or {},
-        )
-
-
-    @classmethod
     def prepared(
         cls,
         prepared_action: dict,
@@ -214,7 +179,7 @@ class ToolResult:
 
         Args:
             prepared_action (dict): 只读准备完成后的具体动作，执行前仍需授权。
-            resume_state (dict | None): 工具继续执行所需的私有恢复材料。
+            resume_state (dict | None): 工具继续执行所需的恢复材料。
         """
         return cls(
             content="",
