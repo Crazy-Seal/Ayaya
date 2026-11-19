@@ -1,8 +1,8 @@
 chat_models:
 - session_id: abcdefgh-ijkl-mnop-qrst-uvwxyz123456
-  model_name: gemini-3.1-pro-preview
+  model_name: qwen3.8-flash
   openai_api_key: YOUR_API_KEY
-  openai_base_url: https://www.dmxapi.cn/v1
+  openai_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
   temperature: 0.9
   system_prompt: '提示词(前端会自动组装)'
   tool_permissions:

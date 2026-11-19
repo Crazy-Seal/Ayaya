@@ -16,10 +16,9 @@ Ayaya 是运行在用户电脑上的桌面智能体应用。插件可以给它�
 | 请求停止或引导当前轮次 | [6 控制信号](#6-控制信号) |
 | 使用框架提供的前端展示 | [7 前端展示](#7-前端展示) |
 | 每次请求模型前加入临时信息 | [8 临时消息](#8-临时消息) |
-| 完成一个游戏观察插件 | [9 开发示例](#9-开发示例) |
-| 查找接口、验证自己的插件 | [10 附录](#10-附录) |
-| 了解退出时的任务处理和数据库升级 | [11 退出与数据库升级](#11-退出与数据库升级) |
-| 给原生 Python 预装插件能力 | [12 原生 Python REPL 能力](#12-原生-python-repl-能力) |
+| 给原生 Python 预装插件能力 | [9 原生 Python REPL 能力](#9-原生-python-repl-能力) |
+| 完成一个游戏观察插件 | [10 开发示例](#10-开发示例) |
+| 查找接口、验证自己的插件 | [11 附录](#11-附录) |
 
 ## 1 规约
 
@@ -81,7 +80,7 @@ Ayaya 是运行在用户电脑上的桌面智能体应用。插件可以给它�
 | `SessionStateManager` | 框架 | 受理内容，读取 Inbox，保存会话状态和交付结果 | 由 Scheduler、Agent 和执行流程使用 |
 | `PluginRuntime` | 框架注入，已实现 | 给插件提供后台任务、通知、控制和前端消息方法 | 从 `context.runtime` 或后台任务的 `run(runtime)` 取得 |
 
-`PluginRuntime` 定义在 `app.agent.plugins.runtime`，是框架按插件和调用来源创建的类实例。它保存 `plugin_name`、`session_id`、`run_id` 和可选的 `task_id`，内部使用应用共享的 Supervisor 和队列。公共任务父类 `BaseTask` 定义在 `app.agent.runtime.tasks.base`。
+`PluginRuntime` 定义在 `app.agent.plugins.runtime`，是框架按插件和调用来源创建的类实例。它保存 `plugin_name`、`session_id`、`run_id`、可选的 `subagent_id` 和 `task_id`，内部使用应用共享的 Supervisor 和队列。公共任务父类 `BaseTask` 定义在 `app.agent.runtime.tasks.base`。
 
 Supervisor 使用 `app.agent.runtime.tasks.runtime.TaskRuntime` 约定运行时共有的来源字段和任务编号绑定方法。插件任务实际收到 `PluginRuntime`；工具任务收到 `ToolRuntime`。本指南的通知和控制示例使用插件的运行时能力。
 
@@ -127,7 +126,7 @@ flowchart TD
 | `context.metadata` | 读取或原地补充该次调用的附加信息 |
 | `context.runtime` | 提交后台任务、查询记录、投递通知、控制及前端发布请求 |
 
-应用已注入 `context.runtime: PluginRuntime`，每个插件取得自己的 Context，原状态、钩子数据和公共 metadata 继续共享；传入空字典时也沿用原对象。后台任务收到的 `runtime` 提供相同方法，并额外绑定自己的 `task_id`。框架自动绑定 `plugin_name`、`session_id` 和来源 `run_id`。独立构造 Agent 或 PluginManager 的测试若使用这些能力，需要注入 `plugin_runtime_factory` 或 `runtime_factory`；未注入时 `context.runtime` 为 `None`。
+应用已注入 `context.runtime: PluginRuntime`，每个插件取得自己的 Context，原状态、钩子数据和公共 metadata 继续共享；传入空字典时也沿用原对象。后台任务收到的 `runtime` 提供相同方法，并额外绑定自己的 `task_id`。框架自动绑定 `plugin_name`、`session_id`、来源 `run_id` 及子上下文 `subagent_id`。独立构造 Agent 或 PluginManager 的测试若使用这些能力，需要注入 `plugin_runtime_factory` 或 `runtime_factory`；未注入时 `context.runtime` 为 `None`。
 
 `runtime.run_id` 一直表示创建该调用对象的来源轮次。后台任务跨轮次继续运行时，它发送的停止或引导仍指向原轮次，Scheduler 拒绝过期请求并记录原因。普通插件通知可以继续投递到所属会话。
 
@@ -204,8 +203,12 @@ app/agent/plugins/
     ├── docs/api.md          Agent 通过 cua.help() 读取的完整说明
     └── repl/ayaya_computer_use/
         ├── api.py           模型直接使用的 cua 和窗口对象
+        ├── accessibility.py 窗口控件树读取和语义动作
         ├── capture.py       后端钩子与 runner 共用的纯捕获代码
-        └── screen_helper.py 准确窗口、UIA 和输入的系统边界
+        ├── escape.py        独立消息线程区分物理 ESC 与模型注入的 Escape
+        ├── native_input.py  保存输入过程的剪贴板和按键，异常或中断后释放
+        ├── screen_helper.py 准确窗口、UIA 和输入的系统边界
+        └── types.py         窗口观察、捕获区域和控件信息的数据结构
 ```
 
 独立插件包则集中放在根目录 `plugins/`。下面以独立分发的游戏插件为例，将文件放在 `plugins/game-helper/`：
@@ -710,7 +713,7 @@ else:
 
 上例使用本插件刚提交得到的编号。`PluginRuntime.get_task()` 返回当前任务摘要；工具的 `ToolRuntime.get_task()` 和框架的 `Supervisor.get_task()` 返回尚未释放的具体任务对象。工具通过 `get_task_snapshot()` 查询摘要。插件通过摘要读取状态和结果。
 
-- `get_task()` 返回当时的任务记录，只查询同一会话内由本插件创建的任务；未知或超出该范围的任务返回 `None`。
+- `get_task()` 返回当时的任务记录，只查询同一会话、同一子上下文内由本插件创建的任务；未知或超出该范围的任务返回 `None`。
 - `wait_task()` 未找到可访问记录时返回 None；否则等待终态或本次预算结束，超时返回仍在运行的记录，任务继续运行。
 - 取消等待只结束这次等待，后台任务继续执行；任务失败通过记录的 `status` 和 `error` 表达。
 - `stop_task()` 投递停止请求后返回，Scheduler 随后受理并交给 Supervisor 执行停止和清理。
@@ -732,7 +735,7 @@ else:
 
 异步任务响应停止后，由 Supervisor 调用其清理实现。文件、网络连接和进程等资源按各自功能释放。独立任务所需的资料和资源由任务或应用对象持有，任务可以比创建它的插件实例活得更久。
 
-异步业务可以响应取消并完成结果保存；同步线程在取消外层等待后仍可能继续运行。当前记忆模块在 Mem0、Chroma 等实际同步线程调用处使用 `complete_owned_work()`，等待线程操作完成后再传播取消，包括关闭期间的重复取消；具体任务的 `run()` 直接等待业务方法。业务执行或结果保存尚未结束时计入活动任务，结果已保存或保存失败后的资源关闭由退出流程继续等待。应用进程被强制结束时，本轮提取可能不完整，重启后保留已保存结果并将旧 running 标记为 orphaned。
+异步业务可以响应取消并完成结果保存；同步线程在取消外层等待后仍可能继续运行。当前记忆模块在 Mem0、Chroma 等实际同步线程调用处使用 `complete_owned_work()`，等待线程操作完成后再传播取消，包括关闭期间的重复取消；具体任务的 `run()` 直接等待业务方法。业务执行或结果保存尚未结束时计入活动任务，结果已保存或保存失败后的资源关闭由退出流程继续等待。应用退出时等待已登记任务和保存结束，不自动强制终止；用户在等待界面主动强制退出时才结束后端进程树，该操作可能打断尚未确认的保存。应用进程被强制结束时，本轮提取可能不完整，重启后保留已保存结果并将旧 running 标记为 orphaned。
 
 ## 5 消息投递
 
@@ -766,7 +769,7 @@ await runtime.notify(
 
 任务最终结果通过第4章的 `notify_agent` 生成已有的 `TaskResultMessage`。持续变化的游戏状态通过第8章临时背景条目提供，框架每次请求时组装 `EnvironmentPerceptionMessage`；该派生消息只存在于模型请求中。
 
-OpenAI 模型转换使用 `role="user"`、`name="runtime_plugin_notification"`，正文采用上面的插件来源和通知名称格式。已有数据库的升级方式见第11章。
+OpenAI 模型转换使用 `role="user"`、`name="runtime_plugin_notification"`，正文采用上面的插件来源和通知名称格式。
 
 ### 5.3 什么时候会处理通知
 
@@ -841,6 +844,7 @@ await runtime.steer_turn("优先处理刚出现的敌人，稍后继续原目标
 | `run_started` | 开始回答状态 |
 | `text_chunk` | 更新聊天正文和桌面气泡 |
 | `tool_call` | 显示工具调用状态 |
+| `tool_completed` | 工具结果保存后收尾调用提示，并按该结果刷新历史 |
 | `interrupt` / `authorization_resolved` | 显示或关闭审批交互 |
 | `run_completed` | 结束回答状态并刷新历史 |
 | `error` | 显示运行错误及相应重试入口 |
@@ -940,11 +944,107 @@ context.agent_state.remove_temporary_context(GAME_STATUS_CONTEXT_KEY)
 
 checkpoint 保存的是临时背景条目。`EnvironmentPerceptionMessage` 每次请求时重新组装，历史消息的正文保持原样。
 
-## 9 开发示例
+## 9 原生 Python REPL 能力
+
+主 Agent 的 `python(intent, code)` 和 `python_reset()` 属于应用原生功能。`intent` 说明执行目的，与代码一起进入现有审批。子 Agent 无法取得这两个工具。
+
+应用首次执行代码时，使用后端的 `sys.executable` 启动唯一 Python 子进程。同会话的变量、函数、导入及代码主动切换的工作目录跨调用保留；普通代码异常也保留已经完成的修改。切换到另一会话执行、能力声明变化或主动 reset 会清空进程状态。初始目录为现有 `agent_workspace`。
+
+能力初始化预算为 30 秒，每次代码和执行清理的总预算为 120 秒。超时或进程崩溃会清空状态，下次调用重新初始化，已经执行的代码不会自动重放。这个环境可使用后端解释器中的包，属于本机执行环境，不是安全沙箱；插件开关决定是否预装能力。
+
+### 9.1 在插件中声明能力
+
+能力代码放在插件自己的 `repl/` 目录，模块名称应使用插件独有的包名。插件通过以下类方法返回声明：
+
+```python
+from pathlib import Path
+from app.agent.plugins.base import BasePlugin
+from app.repl.repl_api import ReplCapability
+
+
+class SamplePlugin(BasePlugin):
+    """提供示例业务能力，实际插件另行声明名称和所需钩子。"""
+
+    @classmethod
+    def resolve_repl_capabilities(cls, config):
+        """选择要交给子进程能力的初始化设置。
+
+        Args:
+            config (dict): 已校验的会话插件设置副本。
+
+        Returns:
+            tuple[ReplCapability, ...]: 启用插件时预装的能力声明。
+        """
+        return (ReplCapability(
+            module_root=Path(__file__).resolve().parent / "repl",
+            module_name="ayaya_sample.api",
+            export_name="sample",
+            config={"value": config["value"]},
+        ),)
+```
+
+声明字段由插件作者配置。`module_name` 是导入目标，`export_name` 是返回对象在模型代码里的变量名。`config` 只供能力工厂初始化业务对象使用，须能序列化为 JSON。没有初始化设置时传 `{}`。
+
+框架在会话准备阶段校验模块位置和暴露名冲突，绑定来源插件；此时不会导入能力模块。runner 初始化时导入 `ayaya_sample.api`，调用 `create(config, host)`，然后把对象放入 `sample`。模型直接使用 `sample`，无需手动 import。暴露名须为有效 Python 标识符，并避开其他能力及 `display_image`、`__name__`、`__builtins__`。
+
+### 9.2 能力工厂与图片输出
+
+子进程能力不导入 `app.*`。需要类型标注时使用 runner 提供的标准库契约模块 `repl_api`：
+
+```python
+from repl_api import JsonValue, ReplHost
+
+
+def create(config: dict[str, JsonValue], host: ReplHost) -> object:
+    """创建模型直接使用的业务对象。
+
+    Args:
+        config (dict[str, JsonValue]): 声明提供的初始化配置。
+        host (ReplHost): runner 提供的输出和执行控制接口。
+
+    Returns:
+        object: 插件自己的能力对象。
+    """
+    return SampleCapability(config, host)
+```
+
+`SampleCapability` 由插件自己实现。能力对象可以跨调用存在，`host.execution_id` 则属于当前这次执行。启动异步监听时必须捕获该编号，回调使用捕获值，避免迟到回调作用于后一次代码。
+
+| 接口 | 插件用法 |
+| --- | --- |
+| `host.emit_image(image_bytes)` | 输出已编码的 PNG/JPEG bytes，例如观察方法内部捕获后编码并输出 |
+| `host.publish_event(execution_id, name, payload)` | 通过框架的插件事件通路发布提示 |
+| `host.request_interrupt(execution_id)` | 请求中断匹配编号的当前执行 |
+| `host.raise_if_interrupted(execution_id)` | 业务方法进入和返回时检查已受理中断 |
+| `host.defer_cleanup(execution_id, callback)` | 登记解除监听、释放按键等同步清理，执行结束时逆序尝试全部回调 |
+
+模型可以直接调用 `display_image(pil_image)`，也可以传 PNG/JPEG bytes；PIL 编码由 REPL 完成。插件使用 `host.emit_image` 时自行编码。两个入口共用图片输出链，观察方法已经输出的图片不需再次 display。文字使用 `print()`，普通表达式不自动回显。工具结果沿既有普通工具图片保存及压缩流程处理。
+
+### 9.3 提示与中断收尾
+
+控制类能力可以在本次第一次实际操作前发布 `status_notice`：
+
+```python
+execution_id = host.execution_id
+notice_id = f"{execution_id}:control"
+host.publish_event(execution_id, "status_notice", {
+    "id": notice_id, "active": True, "text": "操作进行中",
+})
+```
+
+同一编号更新文字或发布 `active=False` 即可更新、关闭提示。事件经应用接入代码调用既有 `PluginRuntime.publish_event`，会话、插件及来源轮次由框架绑定；原生 REPL 没有 Supervisor 后台任务编号。发布返回表示子进程已排队，前端展示仍由后端事件链处理。
+
+能力通过 `defer_cleanup` 登记本次资源释放。正常、异常或中断结束时，runner 尝试全部清理，再报告结束；清理错误随工具结果返回。应用端随后将本次尚未关闭的提示关闭入队，再释放 REPL 占用。进程崩溃或超时时，应用端也会关闭已经收到的提示。提示仍遵循第 7 章的非持久化和断线清空规则。
+
+能力请求中断会在代码入口捕获为 `KeyboardInterrupt`，清理后返回用户终止结果，保留进程和已有状态。聊天停止沿同一代码中断方法执行，随后继续传播工具取消，由现有运行时结束 Agent。原生阻塞可能延迟中断，能力应在业务方法边界调用 `raise_if_interrupted`。
+
+`computer_use` 在本次第一次改变桌面状态前创建尚未安装的 ESC 监听，先登记清理，再安装钩子及发布提示。同一执行内共享一次监听，计算和等待期间保持提示。回调固定使用创建时的执行编号，注入的 Escape 会继续交给目标窗口。清理解除监听和释放输入，已有应用接入代码负责关闭剩余提示。
+
+## 10 开发示例
 
 游戏 MCP 和参数声明使用第2章接口，临时状态使用第8章的方法。本例组合后台观察、持久通知、停止、临时状态更新和清理。
 
-### 9.1 准备自己的游戏连接
+### 10.1 准备自己的游戏连接
 
 假设插件作者已经实现了一个 `GameConnection`，约定如下：
 
@@ -957,7 +1057,7 @@ checkpoint 保存的是临时背景条目。`EnvironmentPerceptionMessage` 每�
 
 这些是示例游戏连接的方法，具体实现取决于具体游戏提供的接口。MCP 操作连接仍由应用已有的 MCP 管理功能负责，观察任务持有自己的状态连接。
 
-### 9.2 编写观察任务
+### 10.2 编写观察任务
 
 观察任务可以放在 `plugins/game-helper/tasks/game_watch.py`，同目录保留 `tasks/__init__.py`。插件类用 `from .tasks.game_watch import GameWatchTask` 引用它，游戏连接代码也保存在当前插件目录内。
 
@@ -1006,7 +1106,7 @@ class GameWatchTask(BaseTask):
 
 示例在发送停止请求后 `return`，表示观察任务自己也完成了。长期观察任务可以继续读取后续事件。任务完成、被主动停止或应用退出时，Supervisor 负责调用 `cleanup()`。
 
-### 9.3 从插件钩子启动观察并刷新临时状态
+### 10.3 从插件钩子启动观察并刷新临时状态
 
 在插件文件中导入第8章已有类型，并定义自己的条目键：
 
@@ -1062,9 +1162,9 @@ async def execute(self, context: HookContext) -> None:  # 框架调用的插件�
 
 本例每次读取临时状态时建立并释放一条短期状态连接。每次请求的状态由 `temporary_context` 提供，工具和 MCP 的发现、用户权限及连接配置继续使用第2章设置流程。
 
-## 10 附录
+## 11 附录
 
-### 10.1 插件接口目录
+### 11.1 插件接口目录
 
 下表汇总当前插件接口、回调、配置成员和数据对象，章节名称可以点击跳转。
 
@@ -1096,7 +1196,7 @@ async def execute(self, context: HookContext) -> None:  # 框架调用的插件�
 | 钩子数据 | `agent_state.messages`、`agent_state.extra` | 读取当前消息，保存插件自己的少量会话数据 | [第3章](#3-插件钩子) |
 | 钩子数据 | `context.data["runtime_context"].latest_human_message_id` | 在 `ON_INVOKE` 中取得本轮真人输入编号，纯通知轮次为空 | [第3章](#3-插件钩子)、[第4章](#4-后台任务) |
 | 运行时对象 | `HookContext.runtime`、`run(runtime)` 的参数 | 取得框架绑定插件、会话及来源轮次的 `PluginRuntime` | [第1章](#1-规约)、[第4章](#4-后台任务) |
-| 运行时对象 | `runtime.plugin_name`、`session_id`、`run_id`、`task_id` | 识别插件、所属会话、来源轮次和当前后台任务；`task_id` 用于任务中的运行时对象 | [第1章](#1-规约) |
+| 运行时对象 | `runtime.plugin_name`、`session_id`、`run_id`、`subagent_id`、`task_id` | 识别插件、所属会话、来源轮次、子上下文和当前后台任务；`task_id` 用于任务中的运行时对象 | [第1章](#1-规约) |
 | 后台任务 | `BaseTask`、`TaskRuntime` | 定义任务执行和清理，以及 Supervisor 使用的运行时来源契约；插件任务实际收到 `PluginRuntime` | [第1章](#1-规约)、[第4章](#4-后台任务) |
 | 后台任务 | `task.run(runtime)` | 执行任务，返回 `str` 记录结果正文，或返回 `None` 表示无正文 | [第4章](#4-后台任务) |
 | 后台任务 | `task.cleanup()` | 由 Supervisor 在收尾时调用，释放任务资源 | [第4章](#4-后台任务) |
@@ -1118,7 +1218,7 @@ async def execute(self, context: HookContext) -> None:  # 框架调用的插件�
 | 临时消息 | `agent_state.temporary_context` | 查看本轮当前保存的临时背景条目 | [第8章](#8-临时消息) |
 | 临时消息 | `agent_state.clear_temporary_context()` | 清空全部条目；框架在新轮开始和结束等流程中使用 | [第8章](#8-临时消息) |
 
-### 10.2 实现插件后验证这些行为
+### 11.2 实现插件后验证这些行为
 
 1. 插件类能被 PluginRegistry 找到并在 Agent 配置中登记，参数使用用户保存值。
 2. 验证插件卡片统一展示参数、两类工具权限及 MCP 状态，保存参数用于实际执行。
@@ -1135,7 +1235,7 @@ async def execute(self, context: HookContext) -> None:  # 框架调用的插件�
 
 开发验证使用独立测试数据目录。测试环境设置 `AYAYA_ENV=test`，`AYAYA_DATA_DIR` 指向生产数据之外的目录。仓库测试入口为 `conda run -n ayaya python -B -m pytest tests -q -p no:cacheprovider`。已有 `tests/test_plugin_runtime.py`、`tests/test_plugin_runtime_scenarios.py` 验证运行时接口和组合行为；自己的插件另补业务用例。
 
-### 10.3 查阅实现
+### 11.3 查阅实现
 
 | 主题 | 当前文件 |
 | --- | --- |
@@ -1160,108 +1260,3 @@ async def execute(self, context: HookContext) -> None:  # 框架调用的插件�
 | 临时背景条目与设置、删除方法 | [model.py](../app/agent/state/model.py) |
 | 每次请求末尾的环境消息组装 | [_projection.py](../app/agent/context/_projection.py) |
 
-## 11 退出与数据库升级
-
-退出前，界面最多等待 2 秒查询全应用业务或结果保存尚未结束的任务，包括静默任务和其他会话的任务。有活动任务或查询失败时，界面会请求用户确认。已经交付结果的资源关闭继续由应用退出流程等待。
-
-用户确认退出后，Electron 从发起后端关闭请求开始，最多等待 5 秒供关闭接口响应和 Python 进程退出共同使用；到期仍存活时尝试强制结束后端进程树。插件任务应在 `cleanup()` 中释放自己持有的资源，遵循第4章的取消和收尾规则。
-
-2026-11-12 验收边界：关键 SQLite 保存会等待已开始的提交／回滚取得实际结果，允许超过保存重试预算；资源关闭仍有限等待。Electron 上述 5 秒强制终止与关键事务延长退出的已确认要求存在政策冲突，尚待决定，见[整体验收记录](../.scratch/runtime-architecture-redesign/acceptance-result.md)。当前模块职责见[运行模块说明](runtime-architecture.md)。
-
-已有数据库的通用任务及插件通知表通过 [migrate_plugin_runtime.py](../scripts/migrate_plugin_runtime.py) 离线升级。关闭应用后，使用 `conda run -n ayaya python -B scripts/migrate_plugin_runtime.py --db-path <数据库文件路径>` 显式指定文件。默认只检查待升级内容，添加 `--apply` 才写入；数据库升级由应用维护者完成。
-
-## 12 原生 Python REPL 能力
-
-主 Agent 的 `python(intent, code)` 和 `python_reset()` 属于应用原生功能。`intent` 说明执行目的，与代码一起进入现有审批。子 Agent 无法取得这两个工具。
-
-应用首次执行代码时，使用后端的 `sys.executable` 启动唯一 Python 子进程。同会话的变量、函数、导入及代码主动切换的工作目录跨调用保留；普通代码异常也保留已经完成的修改。切换到另一会话执行、能力声明变化或主动 reset 会清空进程状态。初始目录为现有 `agent_workspace`。
-
-能力初始化预算为 30 秒，每次代码和执行清理的总预算为 120 秒。超时或进程崩溃会清空状态，下次调用重新初始化，已经执行的代码不会自动重放。这个环境可使用后端解释器中的包，属于本机执行环境，不是安全沙箱；插件开关决定是否预装能力。
-
-### 12.1 在插件中声明能力
-
-能力代码放在插件自己的 `repl/` 目录，模块名称应使用插件独有的包名。插件通过以下类方法返回声明：
-
-```python
-from pathlib import Path
-from app.agent.plugins.base import BasePlugin
-from app.repl.repl_api import ReplCapability
-
-
-class SamplePlugin(BasePlugin):
-    """提供示例业务能力，实际插件另行声明名称和所需钩子。"""
-
-    @classmethod
-    def resolve_repl_capabilities(cls, config):
-        """选择要交给子进程能力的初始化设置。
-
-        Args:
-            config (dict): 已校验的会话插件设置副本。
-
-        Returns:
-            tuple[ReplCapability, ...]: 启用插件时预装的能力声明。
-        """
-        return (ReplCapability(
-            module_root=Path(__file__).resolve().parent / "repl",
-            module_name="ayaya_sample.api",
-            export_name="sample",
-            config={"value": config["value"]},
-        ),)
-```
-
-声明字段由插件作者配置。`module_name` 是导入目标，`export_name` 是返回对象在模型代码里的变量名。`config` 只供能力工厂初始化业务对象使用，须能序列化为 JSON。没有初始化设置时传 `{}`。
-
-框架在会话准备阶段校验模块位置和暴露名冲突，绑定来源插件；此时不会导入能力模块。runner 初始化时导入 `ayaya_sample.api`，调用 `create(config, host)`，然后把对象放入 `sample`。模型直接使用 `sample`，无需手动 import。暴露名须为有效 Python 标识符，并避开其他能力及 `display_image`、`__name__`、`__builtins__`。
-
-### 12.2 能力工厂与图片输出
-
-子进程能力不导入 `app.*`。需要类型标注时使用 runner 提供的标准库契约模块 `repl_api`：
-
-```python
-from repl_api import JsonValue, ReplHost
-
-
-def create(config: dict[str, JsonValue], host: ReplHost) -> object:
-    """创建模型直接使用的业务对象。
-
-    Args:
-        config (dict[str, JsonValue]): 声明提供的初始化配置。
-        host (ReplHost): runner 提供的输出和执行控制接口。
-
-    Returns:
-        object: 插件自己的能力对象。
-    """
-    return SampleCapability(config, host)
-```
-
-`SampleCapability` 由插件自己实现。能力对象可以跨调用存在，`host.execution_id` 则属于当前这次执行。启动异步监听时必须捕获该编号，回调使用捕获值，避免迟到回调作用于后一次代码。
-
-| 接口 | 插件用法 |
-| --- | --- |
-| `host.emit_image(image_bytes)` | 输出已编码的 PNG/JPEG bytes，例如观察方法内部捕获后编码并输出 |
-| `host.publish_event(execution_id, name, payload)` | 通过框架的插件事件通路发布提示 |
-| `host.request_interrupt(execution_id)` | 请求中断匹配编号的当前执行 |
-| `host.raise_if_interrupted(execution_id)` | 业务方法进入和返回时检查已受理中断 |
-| `host.defer_cleanup(execution_id, callback)` | 登记解除监听、释放按键等同步清理，执行结束时逆序尝试全部回调 |
-
-模型可以直接调用 `display_image(pil_image)`，也可以传 PNG/JPEG bytes；PIL 编码由 REPL 完成。插件使用 `host.emit_image` 时自行编码。两个入口共用图片输出链，观察方法已经输出的图片不需再次 display。文字使用 `print()`，普通表达式不自动回显。工具结果沿既有普通工具图片保存及压缩流程处理。
-
-### 12.3 提示与中断收尾
-
-控制类能力可以在本次第一次实际操作前发布 `status_notice`：
-
-```python
-execution_id = host.execution_id
-notice_id = f"{execution_id}:control"
-host.publish_event(execution_id, "status_notice", {
-    "id": notice_id, "active": True, "text": "操作进行中",
-})
-```
-
-同一编号更新文字或发布 `active=False` 即可更新、关闭提示。事件经应用接入代码调用既有 `PluginRuntime.publish_event`，会话、插件及来源轮次由框架绑定；原生 REPL 没有 Supervisor 后台任务编号。发布返回表示子进程已排队，前端展示仍由后端事件链处理。
-
-能力通过 `defer_cleanup` 登记本次资源释放。正常、异常或中断结束时，runner 尝试全部清理，再报告结束；清理错误随工具结果返回。应用端随后将本次尚未关闭的提示关闭入队，再释放 REPL 占用。进程崩溃或超时时，应用端也会关闭已经收到的提示。提示仍遵循第 7 章的非持久化和断线清空规则。
-
-能力请求中断会在代码入口捕获为 `KeyboardInterrupt`，清理后返回用户终止结果，保留进程和已有状态。聊天停止沿同一代码中断方法执行，随后继续传播工具取消，由现有运行时结束 Agent。原生阻塞可能延迟中断，能力应在业务方法边界调用 `raise_if_interrupted`。
-
-`computer_use` 在本次第一次改变桌面状态前创建尚未安装的 ESC 监听，先登记清理，再安装钩子及发布提示。同一执行内共享一次监听，计算和等待期间保持提示。回调固定使用创建时的执行编号，注入的 Escape 会继续交给目标窗口。清理解除监听和释放输入，已有应用接入代码负责关闭剩余提示。
