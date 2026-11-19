@@ -40,6 +40,8 @@ class Accessibility:
             AxState: 可供模型选择控件编号的最新信息。
         """
         import uiautomation as auto
+        client = auto.uiautomation._AutomationClient.instance()
+        client.ViewWalker = client.IUIAutomation.ControlViewWalker
         self._controls.clear()
         nodes: list[AxNode] = []
         root = auto.ControlFromHandle(self.hwnd)

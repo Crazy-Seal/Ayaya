@@ -531,12 +531,16 @@ def test_uia_observation_replaces_indices_and_checks_live_control_ownership(monk
             self.Value = value
 
     value = Value()
+    control_view = object()
+    client = SimpleNamespace(ViewWalker=None,
+        IUIAutomation=SimpleNamespace(ControlViewWalker=control_view))
 
     class Control:
         """模拟跨进程 SDK 提供的控件属性与父子关系。"""
         BoundingRectangle = SimpleNamespace(left=0, top=0, right=100, bottom=100)
         IsPassword = False
         IsEnabled = True
+        IsControlElement = True
         HasKeyboardFocus = False
 
         def __init__(self, name: str, parent=None) -> None:
@@ -550,8 +554,10 @@ def test_uia_observation_replaces_indices_and_checks_live_control_ownership(monk
             return value if self.ControlTypeName == "EditControl" and pattern == 1 else None
 
         def GetChildren(self):
-            """返回系统当前提供的子控件。"""
-            return self.children
+            """按库当前遍历器视图返回子控件。"""
+            if client.ViewWalker is control_view:
+                return [child for child in self.children if child.IsControlElement]
+            return list(self.children)
 
         def GetParentControl(self):
             """返回系统当前提供的父控件。"""
@@ -559,8 +565,11 @@ def test_uia_observation_replaces_indices_and_checks_live_control_ownership(monk
 
     root = Control("window")
     edit = Control("editor", root)
-    root.children.append(edit)
+    decoration = Control("decoration", root)
+    decoration.IsControlElement = False
+    root.children.extend([edit, decoration])
     sdk = SimpleNamespace(ControlFromHandle=lambda hwnd: root, ControlsAreSame=lambda a, b: a is b,
+        uiautomation=SimpleNamespace(_AutomationClient=SimpleNamespace(instance=lambda: client)),
         PatternId=SimpleNamespace(ValuePattern=1, TextPattern=2, InvokePattern=3, TogglePattern=4,
             SelectionItemPattern=5, ExpandCollapsePattern=6))
     monkeypatch.setitem(sys.modules, "uiautomation", sdk)
@@ -597,7 +606,9 @@ def test_uia_observation_replaces_indices_and_checks_live_control_ownership(monk
     host = RecordingHost()
     cua = Cua(host, desktop=Desktop())
     window = cua.get_app(window_id="42")
-    previous = window.get_ax_state().nodes[-1].element_index
+    first_state = window.get_ax_state()
+    assert [node.name for node in first_state.nodes] == ["window", "editor"]
+    previous = first_state.nodes[-1].element_index
     current = window.get_ax_state().nodes[-1].element_index
     assert current != previous
     with pytest.raises(ValueError, match="失效"):
