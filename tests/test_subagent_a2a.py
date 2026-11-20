@@ -1,3 +1,4 @@
+from tests.memory_support import memory_count, set_memory_count
 """父子显式消息、原工具回复及停止竞争的行为测试。"""
 from app.crud.sqlite_factory import SqliteFactory
 
@@ -152,7 +153,7 @@ def test_fast_parent_command_cancels_remaining_batch_and_keeps_delegation(tmp_pa
                 results = {item.tool_call_id: item.text for item in state.messages if isinstance(item, ToolMessage)}
                 assert results['question'] == '消息已投递。'
                 assert '取消' in results['later']
-                assert state.long_term_memory_turn_counter == 0
+                assert memory_count(state) == 0
             finally:
                 await reader.close()
     asyncio.run(scenario())

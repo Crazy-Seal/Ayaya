@@ -1,3 +1,4 @@
+from app.agent.state.model import CHECKPOINT_SCHEMA_VERSION
 """通过会话保存和模型入口验证文件引用图片的生命周期。"""
 
 import asyncio
@@ -296,7 +297,7 @@ def test_save_and_restore_all_local_images_as_references(tmp_path: Path, scope: 
                 history = db.execute(f"SELECT message_json FROM {scope.messages_table}").fetchall()
             assert "base64" not in checkpoint
             assert all("base64" not in row[0] for row in history)
-            assert json.loads(checkpoint)["schema_version"] == 4
+            assert json.loads(checkpoint)["schema_version"] == CHECKPOINT_SCHEMA_VERSION
         finally:
             await manager.close()
 

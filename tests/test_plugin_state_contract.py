@@ -1,3 +1,4 @@
+from tests.memory_support import memory_count, set_memory_count
 from tests.runtime_support import collect_agent_events
 from app.crud.sqlite_factory import SqliteFactory
 from tests.model_capture import capture_input
@@ -6,7 +7,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from app.agent.plugins.base import BasePlugin, HookContext, PluginHook
+from app.agent.plugins.base import BasePlugin, HookContext, PluginContext, PluginHook
 from app.agent.agent import Agent, AgentConfig
 from app.agent.context import ContextStrategyConfig
 from app.agent.core.events import EventType
@@ -202,7 +203,7 @@ def test_hooks_continue_on_original_state_after_rejected_replacement(hook, caplo
         data = {}
         first = _MutatingPlugin("first")
         last = _MutatingPlugin("last")
-        for plugin in (first, _ReplacingPlugin(), last):
+        for plugin in (first, _ReplacingPlugin(context=PluginContext(SqliteFactory())), last):
             manager.register(plugin)
         try:
             result = await manager.run_hooks(hook, state, data)
@@ -260,7 +261,7 @@ def test_agent_commits_response_and_in_place_changes_after_rejected_replacement(
             llm_client=ScriptedLLM(),
         )
         plugin = _MutatingPlugin("updated")
-        agent.register_plugin(_ReplacingPlugin())
+        agent.register_plugin(_ReplacingPlugin(context=PluginContext(SqliteFactory())))
         agent.register_plugin(plugin)
         try:
             events = [event for event in await collect_agent_events(agent.run, '开始')]
@@ -273,7 +274,7 @@ def test_agent_commits_response_and_in_place_changes_after_rejected_replacement(
             assert isinstance(saved.messages[1], AssistantMessage)
             assert [message.text for message in saved.messages] == ["开始", "已保存的回复"]
             assert saved.extra["updated"] is True
-            assert saved.long_term_memory_turn_counter == 1
+            assert memory_count(saved) == 0
             assert all(state is plugin.seen_states[0] for state in plugin.seen_states)
         finally:
             await agent.close()

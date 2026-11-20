@@ -1,3 +1,6 @@
+from tests.memory_support import operation_for
+from app.agent.plugins.memory.memory import MemoryJob
+from tests.memory_support import make_memory_plugin
 """验证记忆任务按需登记、并发去重及面板可读取的完成和失败结果。"""
 from app.crud.sqlite_factory import SqliteFactory
 
@@ -14,11 +17,11 @@ from typing import cast
 
 import pytest
 
-from app.agent.memory.config import MemoryConfig
-from app.agent.memory.manager import MemoryManager
-from app.agent.memory.memories.diary import DiaryMemory
-from app.agent.memory.memories.episodic import EpisodicMemory
-from app.agent.memory.memories.semantic_mem0 import Mem0SemanticMemory
+from app.agent.plugins.memory.config import MemoryConfig, MemoryPluginConfig
+from app.agent.plugins.memory.manager import MemoryManager
+from app.agent.plugins.memory.memories.diary import DiaryMemory
+from app.agent.plugins.memory.memories.episodic import EpisodicMemory
+from app.agent.plugins.memory.memories.semantic_mem0 import Mem0SemanticMemory
 from app.agent.models.llm_client import LLMClient
 from app.agent.plugins.base import HookContext, PluginHook
 from app.agent.plugins.memory.memory import MemoryPlugin
@@ -53,6 +56,7 @@ def make_manager(session_id: str = "diary-results") -> MemoryManager:
     diary.has_diary = AsyncMock(return_value=False)
     diary.generate = AsyncMock()
     manager = object.__new__(MemoryManager)
+    manager.options = MemoryPluginConfig()
     manager.session_id = session_id
     manager.config = diary.config
     manager.diary_memory = diary
@@ -71,11 +75,9 @@ async def start_diary(manager: MemoryManager, runtime: PluginRuntime) -> None:
         manager (MemoryManager): 本轮检查使用的记忆管理器。
         runtime (PluginRuntime): 连接正式任务管理器的插件调用对象。
     """
-    plugin = MemoryPlugin(enable_episodic=False, enable_semantic=False, sqlite_factory=SqliteFactory())
-    data = {"memory": {
-        "manager": manager, "protocol_history_cutoff": 42,
-        "check_diary": True, "extract_long_term_memory": False,
-    }}
+    plugin = make_memory_plugin(enable_episodic=False, enable_semantic=False, sqlite_factory=SqliteFactory())
+    plugin._operation = operation_for(manager)
+    data = {"memory": MemoryJob(manager.session_id, 42, True, False, 0)}
     await plugin.execute(HookContext.create(
         PluginHook.ON_INVOKE, AgentState.create_new(manager.session_id), data, runtime=runtime,
     ))
@@ -200,7 +202,7 @@ def test_long_term_task_reports_counts_and_extraction_failures(tmp_path: Path, f
         runtime = PluginRuntime("memory", manager.session_id, "run", supervisor, supervisor.runtime_queue)
         try:
             task_id = await runtime.submit_task(
-                LongTermMemoryTask(manager, manager.session_id, 42, 1, True, True),
+                LongTermMemoryTask(operation_for(manager), manager.session_id, 42, 1, True, True),
                 name="memory.persist_long_term", title="提取长期记忆",
                 notify_agent=False,
             )
@@ -417,7 +419,7 @@ def test_long_term_task_explains_empty_disabled_and_skipped_results(case: str) -
             manager.chat_history_store = None
         elif case == "insufficient":
             manager.chat_history_store.get_recent_completed_turns.return_value = ([], [])
-        task = LongTermMemoryTask(manager, manager.session_id, 42, 1, case != "disabled", True)
+        task = LongTermMemoryTask(operation_for(manager), manager.session_id, 42, 1, case != "disabled", True)
         result = await task.run(Mock(spec=PluginRuntime))
         if case in ("no_store", "insufficient"):
             assert "跳过" in result
@@ -487,7 +489,7 @@ def test_diary_stopped_before_run_releases_reservation(tmp_path: Path, monkeypat
         generation = await manager.prepare_diary(max_history_id=42)
         try:
             task_id = await runtime.submit_task(
-                DiaryTask(manager, generation), name="memory.check_diary", title="生成日记",
+                DiaryTask(operation_for(manager), generation), name="memory.check_diary", title="生成日记",
                 notify_agent=False,
             )
             await supervisor.stop_task(task_id)

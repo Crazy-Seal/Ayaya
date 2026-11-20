@@ -1,7 +1,7 @@
 """使用真实 Scheduler、Agent 和 SQLite 的子功能测试装配，只替换模型与父发起动作。"""
 from tests.runtime_support import runtime_hub, close_test_runtime
 from app.routes.agent import observe_runtime
-from app.schemas.runtime_types import AgentRunOutcome, AgentRunOutcomeKind
+from app.schemas.runtime_types import AgentRunOutcome, AgentRunOutcomeKind, CheckpointType
 from tests.runtime_support import build_test_scheduler
 from app.crud.sqlite_factory import SqliteFactory
 
@@ -111,7 +111,8 @@ class SubagentHarness:
                 outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
                 await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False}))
                 state = await self.manager.load()
-                await self.manager.commit_human_input(state, message, None, inputs=inbox_inputs)
+                self.manager.append_human_input(state, message, None, inputs=inbox_inputs)
+                await self.manager.save(state, checkpoint_type=CheckpointType.INTERMEDIATE, inbox_inputs=inbox_inputs)
                 source = SubagentSource("parent", turn_control.run_id, "create")
                 future = asyncio.get_running_loop().create_future()
                 identities = frozenset(getattr(tool, "identity", None) or ToolIdentity.local(tool.name) for tool in harness.tools)
@@ -129,7 +130,8 @@ class SubagentHarness:
                 outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
                 await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False}))
                 state = await self.manager.load()
-                await self.manager.commit_runtime_inputs(state, None, inbox_inputs)
+                self.manager.append_runtime_inputs(state, None, inbox_inputs)
+                await self.manager.save(state, checkpoint_type=CheckpointType.INTERMEDIATE, inbox_inputs=inbox_inputs)
                 await harness.received.put(inbox_inputs)
                 await emit(AgentEvent(EventType.DONE, None))
 

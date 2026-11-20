@@ -11,10 +11,10 @@ import pytest
 from mem0 import Memory
 import mem0.memory.main as mem0_main
 
-import app.agent.memory.memories.semantic_mem0 as semantic_mem0_module
-from app.agent.memory.memories.mem0_llm_compat import Mem0FactExtractionLLMAdapter, Mem0FactSchemaError
-from app.agent.memory.memories.semantic_mem0 import Mem0SemanticMemory
-from app.agent.memory.config import MemoryConfig
+import app.agent.plugins.memory.memories.semantic_mem0 as semantic_mem0_module
+from app.agent.plugins.memory.memories.mem0_llm_compat import Mem0FactExtractionLLMAdapter, Mem0FactSchemaError
+from app.agent.plugins.memory.memories.semantic_mem0 import Mem0SemanticMemory
+from app.agent.plugins.memory.config import MemoryConfig
 from app.agent.state.messages import (
     AssistantMessage, HumanMessage, PluginNotificationMessage, SubagentMessage,
     TaskResultMessage, ToolCall, ToolMessage, text_content,
@@ -162,23 +162,24 @@ def test_cached_mem0_reuses_library_client(monkeypatch, tmp_path) -> None:
             Args:
                 _config (Any): 调用方提供的配置。
             """
-            return cls()
+            instance = cls()
+            instance.vector_client = _config["vector_store"]["config"]["client"]
+            return instance
 
-    semantic_mem0_module._get_cached_mem0.cache_clear()
     monkeypatch.setattr(semantic_mem0_module, "Memory", _FakeMemory)
 
-    memory = semantic_mem0_module._get_cached_mem0(
-        collection_name="test",
-        qdrant_path=str(tmp_path),
+    memory = semantic_mem0_module._create_mem0(MemoryConfig(
+        mem0_collection_name="test",
+        mem0_qdrant_path=str(tmp_path),
         embedding_dimension=3,
         embedding_model="embedding-test",
         embedding_base_url="https://example.invalid/v1",
         embedding_api_key="test-key",
-    )
+    ))
 
     assert memory.llm is delegate
     assert memory.llm.config is delegate.config
-    semantic_mem0_module._get_cached_mem0.cache_clear()
+    memory.vector_client.close()
 
 
 @pytest.mark.parametrize(

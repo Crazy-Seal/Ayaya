@@ -1,3 +1,6 @@
+from app.agent.plugins.memory.config import MemoryPluginConfig
+from tests.memory_support import bind_memory_manager
+from tests.memory_support import make_memory_plugin
 """验证日记存在与否均保留旧摘要，并将任务和聊天梗概交给下一次压缩。"""
 from tests.runtime_support import collect_agent_events
 from app.crud.sqlite_factory import SqliteFactory
@@ -12,9 +15,9 @@ import pytest
 
 from app.agent.agent import Agent, AgentConfig
 from app.agent.context._compaction import CONTEXT_SUMMARY_PREFIX
-from app.agent.memory.config import MemoryConfig
-from app.agent.memory.manager import MemoryManager
-from app.agent.memory.store.chat_history_store import ChatHistoryStore
+from app.agent.plugins.memory.config import MemoryConfig
+from app.agent.plugins.memory.manager import MemoryManager
+from app.agent.plugins.memory.store.chat_history_store import ChatHistoryStore
 from app.agent.models.contracts import InputMessage, StreamChunk, ToolDefinition
 from app.agent.plugins.memory.memory import MemoryPlugin
 from app.agent.state.manager import SessionStateManager
@@ -45,13 +48,13 @@ def test_diary_preserves_summary_and_tasks_during_model_preparation(
             session_id="session", model_name="test", openai_api_key="test",
             openai_base_url="http://unused", temperature=0, system_prompt="测试",
             context_strategy={"compression_trigger_tokens_k": 10},
-            agent_plugins={"memory": AgentPluginSettings(config={
+            agent_plugins={"memory": AgentPluginSettings(enabled=True, config={
                 "enable_diary": True, "enable_episodic": False, "enable_semantic": False,
             })},
         )
         memory = MemoryManager("session", MemoryConfig(
             sqlite_path=str(tmp_path / "diary.sqlite3"), timezone=ZoneInfo("Asia/Shanghai"),
-        ), settings, sqlite_factory=SqliteFactory())
+        ), settings, sqlite_factory=SqliteFactory(), options=MemoryPluginConfig(**(settings).agent_plugins["memory"].config))
         memory.chat_history_store = ChatHistoryStore(SqliteFactory(path))
         diary_date = date(2026, 8, 29)
         if has_diary:
@@ -65,7 +68,7 @@ def test_diary_preserves_summary_and_tasks_during_model_preparation(
             """
 
         monkeypatch.setattr(memory, "prepare_diary", no_generation)
-        monkeypatch.setattr(MemoryPlugin, "_manager_for", lambda _plugin, _session: memory)
+        bind_memory_manager(monkeypatch, lambda _plugin, _session: memory)
         payload = {
             "active_tasks": [{
                 "topic": "整理上下文", "current_state": "已确认旧方案",
@@ -130,7 +133,7 @@ def test_diary_preserves_summary_and_tasks_during_model_preparation(
                         context_strategy=settings.context_strategy),
             llm_client=Model(), session_state_manager=manager, chat_settings=settings,
          sqlite_factory=SqliteFactory())
-        agent.register_plugin(MemoryPlugin(enable_diary=True, enable_episodic=False, enable_semantic=False, sqlite_factory=SqliteFactory()))
+        agent.register_plugin(make_memory_plugin(enable_diary=True, enable_episodic=False, enable_semantic=False, sqlite_factory=SqliteFactory()))
         try:
             # 1. 保存真实原消息，再以一条摘要替换，使已有日记能对应到被压缩的历史。
             state = AgentState.create_new("session")

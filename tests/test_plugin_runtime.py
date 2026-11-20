@@ -1,3 +1,5 @@
+from tests.memory_support import operation_for
+from tests.memory_support import memory_count, set_memory_count
 """通过正式任务入口验证插件任务的执行、清理和结果查询。"""
 from tests.runtime_support import runtime_hub, close_test_runtime
 from app.routes.agent import observe_runtime
@@ -26,8 +28,9 @@ def test_shutdown_repeated_cancellation_keeps_memory_work_active(tmp_path, monke
     """关闭期间多次取消等待时，线程中的记忆工作仍计为活动任务。"""
     from types import SimpleNamespace
     from app.agent.plugins.memory.tasks.memory_tasks import LongTermMemoryTask
-    from app.agent.memory.manager import MemoryManager
-    from app.agent.memory.memories.semantic_mem0 import Mem0SemanticMemory
+    from app.agent.plugins.memory.manager import MemoryManager
+    from app.agent.plugins.memory.config import MemoryPluginConfig
+    from app.agent.plugins.memory.memories.semantic_mem0 import Mem0SemanticMemory
     from app.agent.state.messages import HumanMessage, text_content
 
 
@@ -77,13 +80,14 @@ def test_shutdown_repeated_cancellation_keeps_memory_work_active(tmp_path, monke
         semantic._memory.llm = SimpleNamespace()
         semantic._memory.config = SimpleNamespace()
         manager = object.__new__(MemoryManager)
+        manager.options = MemoryPluginConfig()
         manager.chat_history_store = History()
         manager.episodic_memory = None
         manager.semantic_memory = semantic
 
         closing = None
         try:
-            task_id = await runtime.submit_task(LongTermMemoryTask(manager, "s", 1, 1, False, True), name="diary", title="日记", notify_agent=False)
+            task_id = await runtime.submit_task(LongTermMemoryTask(operation_for(manager), "s", 1, 1, False, True), name="diary", title="日记", notify_agent=False)
             assert await asyncio.to_thread(started.wait, 2)
             closing = asyncio.create_task(supervisor.close())
             await asyncio.sleep(0.05)
@@ -548,7 +552,7 @@ def test_plugin_notification_is_persistent_and_reaches_real_model_encoding(tmp_p
             model_result = next(item for item in captured if item.get("name") == "runtime_task_result")
             assert "Hello, World!" in model_result["content"]
             assert "output_ref" not in model_result["content"] and "task_id" not in model_result["content"]
-            assert state.long_term_memory_turn_counter == 1
+            assert memory_count(state) == 0
         finally:
             await close_test_runtime(scheduler)
             await supervisor.close()

@@ -3,8 +3,8 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from app.agent.context._projection import build_model_window, project_messages_with_time
-from app.agent.memory.memories.episodic import EpisodicMemory
-from app.agent.memory.memories.semantic_mem0 import Mem0SemanticMemory
+from app.agent.plugins.memory.memories.episodic import EpisodicMemory
+from app.agent.plugins.memory.memories.semantic_mem0 import Mem0SemanticMemory
 from app.agent.state import AgentState
 from app.agent.state.messages import (
     AssistantMessage,

@@ -1,3 +1,4 @@
+from tests.memory_support import memory_settings
 """用真实 SQLite 和执行调用链验证批次 B 的保存、恢复及输入政策。"""
 
 import asyncio
@@ -642,12 +643,12 @@ def test_direct_agent_initializes_memory_plugin_and_its_tools_with_explicit_fact
         """只初始化插件和工具，保持模型及记忆提取未运行。"""
         config = AgentConfig("direct", "test", "test", ContextStrategyConfig(), plugins=[{
             "name": "memory", "config": {"enable_diary": False, "enable_episodic": False, "enable_semantic": False}}])
-        agent = Agent(config, SqliteFactory(tmp_path / "direct.sqlite3"))
+        agent = Agent(config, SqliteFactory(tmp_path / "direct.sqlite3"), chat_settings=memory_settings("direct"))
         try:
             await agent.initialize()
             assert agent.get_plugins() == ["memory"]
             identities = agent.tool_manager.get_visible_tool_identities()
-            assert {identity.name for identity in identities.values()} == {"search_memory", "search_diary"}
+            assert {identity.name for identity in identities.values() if identity.plugin_name == "memory"} == {"search_memory", "search_diary"}
         finally:
             await agent.close()
     asyncio.run(scenario())

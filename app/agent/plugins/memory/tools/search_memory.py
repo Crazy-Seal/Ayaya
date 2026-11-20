@@ -1,7 +1,6 @@
 """由记忆插件装配查询工具，检索当前调用上下文的已保存记忆。"""
 
-from collections.abc import Callable
-from app.agent.memory.manager import MemoryManager
+from app.agent.plugins.memory.operation import MemoryOperation
 from app.agent.tools.core.base import BaseTool, ToolContext, ToolResult
 
 
@@ -13,13 +12,13 @@ class SearchMemoryTool(BaseTool):
     compressible = True
     parameters_schema = {'type': 'object', 'properties': {'query': {'type': 'string', 'description': '搜索关键词/关键句。不要使用问句。'}}, 'required': ['query']}
 
-    def __init__(self, manager_for: Callable[[str], MemoryManager]) -> None:
+    def __init__(self, operation: MemoryOperation) -> None:
         """绑定插件提供的查询入口。
 
         Args:
-            manager_for (Callable[[str], MemoryManager]): 按实际会话取得记忆管理器。
+            operation (MemoryOperation): 当前配置及操作内资源创建入口。
         """
-        self._manager_for = manager_for
+        self._operation = operation
 
     async def execute(self, args: dict, context: ToolContext) -> ToolResult:
         """执行用户授权的记忆检索并返回可显示的结果。
@@ -52,12 +51,8 @@ class SearchMemoryTool(BaseTool):
             if session_id is None:
                 return "错误: 缺少会话id信息，无法定位长期记忆。"
 
-            memory_manager = self._manager_for(session_id)
-            result = await memory_manager.search(
-                query=query.strip(),
-                memory_type="all",
-                top_k=5,
-            )
+            async with self._operation.open(session_id, episodic=True, semantic=True) as manager:
+                result = await manager.search(query=query.strip(), memory_type="all", top_k=5)
 
             if not result or result == "未找到相关记忆":
                 return "未找到有效的长期记忆内容。"

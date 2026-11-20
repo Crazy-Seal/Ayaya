@@ -38,7 +38,7 @@ def test_legacy_settings_drop_retired_skills_on_save(tmp_path: Path) -> None:
     saved = ChatSettingsDao(config_file=config_file).get_chat_settings("test-session")
 
     assert saved.system_prompt == "test"
-    assert reloaded.agent_plugins["memory"].enabled is True
+    assert reloaded.agent_plugins == {}
     assert saved.agent_plugins == reloaded.agent_plugins
     assert "skills" not in saved.model_dump()
     assert "skills:" not in config_file.read_text(encoding="utf-8")

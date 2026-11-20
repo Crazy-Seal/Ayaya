@@ -1,3 +1,4 @@
+from tests.memory_support import bind_memory_manager
 from app.crud.sqlite_factory import SqliteFactory
 """验证记忆查询工具由记忆插件提供，沿用插件配置、执行与审批流程。"""
 
@@ -44,7 +45,7 @@ def test_memory_query_permissions_and_catalog_belong_to_plugin(tmp_path: Path) -
     service = ChatSettingsService(ChatSettingsDao(path))
     settings = ChatSettings(session_id="memory-catalog", model_name="test", openai_api_key="test",
                             openai_base_url="http://localhost", temperature=0.7, system_prompt="test",
-                            context_strategy={})
+                            context_strategy={}, agent_plugins={"memory": {"enabled": True}})
     normalized = service.normalize(settings)
     assert all(f"local:{name}" not in normalized.tool_permissions for name in MEMORY_TOOL_NAMES)
     assert normalized.agent_plugins[MemoryPlugin.name].tool_permissions == {
@@ -73,7 +74,7 @@ async def test_memory_queries_follow_plugin_switch_and_permissions(
         enabled (bool): 当前会话是否启用记忆插件。
         policy (ToolPolicy): 两个查询工具在插件卡片中保存的权限。
     """
-    from app.agent.memory import manager as memory_manager_module
+    from app.agent.plugins.memory import manager as memory_manager_module
 
     memory = SimpleNamespace(search=AsyncMock(return_value="用户喜欢音乐"),
                              search_diary=AsyncMock(return_value="今天完成了任务"))
@@ -91,7 +92,7 @@ async def test_memory_queries_follow_plugin_switch_and_permissions(
         sessions.append(session_id)
         return memory
 
-    monkeypatch.setattr(memory_manager_module, "get_memory_manager", get_memory)
+    bind_memory_manager(monkeypatch, lambda self, session: get_memory(session, self.sqlite_factory))
     settings = ChatSettings(session_id="memory-tools", model_name="test", openai_api_key="test",
                             openai_base_url="http://localhost", temperature=0.7, system_prompt="test",
                             context_strategy={}, agent_plugins={MemoryPlugin.name: {

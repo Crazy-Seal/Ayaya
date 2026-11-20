@@ -1,14 +1,14 @@
 from app.crud.sqlite_factory import SqliteFactory
-"""验证配置保存后的缓存行为及运行时权限更新。"""
+"""验证配置保存后的记忆快照及运行时权限更新。"""
 
 import asyncio
 from collections.abc import Iterator
-from functools import partial
 from pathlib import Path
 
 import pytest
 
-import app.agent.memory.manager as memory_module
+from app.agent.plugins.memory import MemoryPlugin
+from app.agent.plugins.base import PluginContext
 import app.dependencies as dependencies
 from app.agent.tools.authorization.manager import ToolAuthorization
 from app.agent.tools.authorization.models import (
@@ -31,7 +31,7 @@ from app.services.tool_permission_service import ToolPermissionService
 
 
 def make_settings(session_id: str = "session") -> ChatSettings:
-    """构造关闭全部记忆提取器的配置，真实记忆缓存不创建外部模型或向量客户端。
+    """构造关闭全部记忆提取器的配置，快照检查保持离线。
 
     Args:
         session_id (str): 测试配置所属的会话编号。
@@ -43,7 +43,7 @@ def make_settings(session_id: str = "session") -> ChatSettings:
         session_id=session_id, model_name="old-model", openai_api_key="test",
         openai_base_url="http://127.0.0.1:1/v1", temperature=0.1,
         system_prompt="测试", context_strategy={},
-        agent_plugins={"memory": {"config": {
+        agent_plugins={"memory": {"enabled": True, "config": {
             "enable_diary": False, "enable_episodic": False, "enable_semantic": False,
         }}},
     )
@@ -51,7 +51,7 @@ def make_settings(session_id: str = "session") -> ChatSettings:
 
 @pytest.fixture
 def chat_dao(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[ChatSettingsDao]:
-    """让真实记忆工厂读取本用例的配置文件，并在用例结束后释放工厂缓存引用。
+    """为配置更新场景提供隔离 YAML 和明确的 SQLite 工厂。
 
     Args:
         tmp_path (Path): Pytest 创建的隔离目录。
@@ -64,61 +64,55 @@ def chat_dao(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[ChatSe
     config_file.write_text("chat_models: []\n", encoding="utf-8")
     dao = ChatSettingsDao(config_file)
     dao.add_chat_settings(make_settings())
-    monkeypatch.setattr(memory_module, "ChatSettingsDao", partial(ChatSettingsDao, config_file))
     global _memory_sqlite_factory
     _memory_sqlite_factory = SqliteFactory(tmp_path / "memory.sqlite3")
-    memory_module.get_memory_manager.cache_clear()
-    try:
-        yield dao
-    finally:
-        memory_module.get_memory_manager.cache_clear()
+    yield dao
 
 
-def test_dao_refreshes_own_settings_without_invalidating_memory(chat_dao: ChatSettingsDao) -> None:
-    """直接使用 DAO 保存只刷新配置读取，不反向操作已缓存的记忆实例。
+def test_dao_refresh_keeps_submitted_operation_snapshot(chat_dao: ChatSettingsDao) -> None:
+    """修改配置文件后，已经提交的记忆操作继续持有原模型设置。
 
     Args:
         chat_dao (ChatSettingsDao): 本用例隔离的配置存储。
     """
-    previous = memory_module.get_memory_manager("session", _memory_sqlite_factory)
+    previous = memory_snapshot(chat_dao, "session", _memory_sqlite_factory)
     settings = chat_dao.get_chat_settings("session")
     chat_dao.update_chat_settings("session", settings.model_copy(update={"model_name": "new-model"}))
 
     assert chat_dao.get_chat_settings("session").model_name == "new-model"
-    assert memory_module.get_memory_manager("session", _memory_sqlite_factory) is previous
-    assert previous.chat_settings.model_name == "old-model"
+    assert previous.settings.model_name == "old-model"
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("operation", ["add", "update", "delete"])
-async def test_chat_settings_service_invalidates_memory_after_save(
+async def test_chat_settings_service_provides_new_operation_snapshot(
     chat_dao: ChatSettingsDao, operation: str,
 ) -> None:
-    """通过设置服务修改真实 YAML 后，下一次记忆装配读取新配置或拒绝已删除会话。
+    """通过设置服务修改真实 YAML 后，下一次记忆操作读取新配置或拒绝已删除会话。
 
     Args:
         chat_dao (ChatSettingsDao): 本用例隔离的配置存储。
         operation (str): 覆盖新增、更新或删除设置入口。
     """
-    previous = memory_module.get_memory_manager("session", _memory_sqlite_factory)
+    previous = memory_snapshot(chat_dao, "session", _memory_sqlite_factory)
     service = ChatSettingsService(chat_dao)
     if operation == "add":
         await service.add_chat_settings(make_settings("new-session"))
-        assert memory_module.get_memory_manager("new-session", _memory_sqlite_factory).session_id == "new-session"
+        assert memory_snapshot(chat_dao, "new-session", _memory_sqlite_factory).settings.session_id == "new-session"
     elif operation == "update":
         await service.update_chat_settings(make_settings().model_copy(update={"model_name": "new-model"}))
-        assert memory_module.get_memory_manager("session", _memory_sqlite_factory).chat_settings.model_name == "new-model"
+        assert memory_snapshot(chat_dao, "session", _memory_sqlite_factory).settings.model_name == "new-model"
     else:
         await service.delete_chat_settings("session")
         with pytest.raises(KeyError):
-            memory_module.get_memory_manager("session", _memory_sqlite_factory)
+            memory_snapshot(chat_dao, "session", _memory_sqlite_factory)
         return
-    assert memory_module.get_memory_manager("session", _memory_sqlite_factory) is not previous
+    assert previous.settings.model_name == "old-model"
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("operation", ["add", "update", "delete"])
-async def test_failed_settings_write_preserves_memory_cache(
+async def test_failed_settings_write_preserves_saved_configuration(
     chat_dao: ChatSettingsDao, monkeypatch: pytest.MonkeyPatch, operation: str,
 ) -> None:
     """配置文件保存失败时不清除仍然有效的记忆配置。
@@ -139,7 +133,7 @@ async def test_failed_settings_write_preserves_memory_cache(
         """
         raise OSError("保存失败")
 
-    previous = memory_module.get_memory_manager("session", _memory_sqlite_factory)
+    previous = memory_snapshot(chat_dao, "session", _memory_sqlite_factory)
     service = ChatSettingsService(chat_dao)
     monkeypatch.setattr(chat_dao, "_save_chat_settings_file", fail_save)
     with pytest.raises(OSError, match="保存失败"):
@@ -149,7 +143,7 @@ async def test_failed_settings_write_preserves_memory_cache(
             await service.update_chat_settings(make_settings().model_copy(update={"model_name": "new-model"}))
         else:
             await service.delete_chat_settings("session")
-    assert memory_module.get_memory_manager("session", _memory_sqlite_factory) is previous
+    assert previous.settings.model_name == "old-model"
 
 
 class ConnectionProbe:
@@ -241,21 +235,21 @@ def permission_service(
 async def test_unknown_permission_rejects_whole_batch_without_invalidating_cache(
     chat_dao: ChatSettingsDao, permission_service: tuple[ToolPermissionService, SettingsMutationCoordinator],
 ) -> None:
-    """一批权限包含未知工具时，不保存其中的有效项，也不使现有记忆缓存失效。
+    """一批权限包含未知工具时，不保存其中的有效项，也不使现有记忆快照变化。
 
     Args:
         chat_dao (ChatSettingsDao): 本用例隔离的配置存储。
         permission_service (tuple): 真实权限服务及共用配置写入锁。
     """
     service, _ = permission_service
-    previous = memory_module.get_memory_manager("session", _memory_sqlite_factory)
+    previous = memory_snapshot(chat_dao, "session", _memory_sqlite_factory)
     before = chat_dao.config_file.read_bytes()
     with pytest.raises(ValueError, match="local:missing_tool"):
         await service.set_policies("session", {
             "local:read_file": ToolPolicy.DENY, "local:missing_tool": ToolPolicy.ALLOW,
         })
     assert chat_dao.config_file.read_bytes() == before
-    assert memory_module.get_memory_manager("session", _memory_sqlite_factory) is previous
+    assert previous.settings.model_name == "old-model"
 
 
 @pytest.mark.asyncio
@@ -352,10 +346,10 @@ async def test_response_query_failure_preserves_saved_permissions(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("operation", ["create", "reconnect", "update", "disable", "disconnect_failure", "delete"])
-async def test_mcp_settings_changes_preserve_memory_cache(
+async def test_mcp_settings_changes_preserve_submitted_memory_snapshot(
     chat_dao: ChatSettingsDao, tmp_path: Path, operation: str,
 ) -> None:
-    """MCP 修改后会话权限立即更新，各会话已有记忆实例继续复用。
+    """MCP 修改后会话权限立即更新，各会话已提交的记忆配置保持有效。
 
     Args:
         chat_dao (ChatSettingsDao): 本用例隔离的会话配置存储。
@@ -376,8 +370,8 @@ async def test_mcp_settings_changes_preserve_memory_cache(
     manager = ConnectionProbe()
     service = MCPService(mcp_dao, chat_dao, manager, PluginService())
     assert chat_dao.get_chat_settings("session").tool_permissions["mcp:server:read"] == ToolPolicy.ALLOW
-    previous = memory_module.get_memory_manager("session", _memory_sqlite_factory)
-    other_previous = memory_module.get_memory_manager("other-session", _memory_sqlite_factory)
+    previous = memory_snapshot(chat_dao, "session", _memory_sqlite_factory)
+    other_previous = memory_snapshot(chat_dao, "other-session", _memory_sqlite_factory)
 
     if operation == "create":
         await service.create_server(server)
@@ -395,8 +389,7 @@ async def test_mcp_settings_changes_preserve_memory_cache(
     else:
         await service.delete_server("server")
 
-    assert memory_module.get_memory_manager("session", _memory_sqlite_factory) is previous
-    assert memory_module.get_memory_manager("other-session", _memory_sqlite_factory) is other_previous
+    assert memory_snapshot(chat_dao, "other-session", _memory_sqlite_factory) == other_previous
     saved = chat_dao.get_chat_settings("session")
     if operation in {"update", "disable"}:
         assert saved.tool_permissions["mcp:server:read"] == ToolPolicy.ASK
@@ -406,6 +399,7 @@ async def test_mcp_settings_changes_preserve_memory_cache(
     else:
         assert saved.mcp.servers["server"].identity_fingerprint == server_identity_fingerprint(server)
         assert saved.tool_permissions["mcp:server:read"] == ToolPolicy.ALLOW
+    assert previous.settings.model_name == "old-model"
 
 
 @pytest.mark.asyncio
@@ -413,7 +407,7 @@ async def test_mcp_settings_changes_preserve_memory_cache(
 async def test_mcp_without_saved_chat_changes_preserves_memory_cache(
     chat_dao: ChatSettingsDao, tmp_path: Path, operation: str,
 ) -> None:
-    """没有会话引用或连接失败而未修改会话配置时，不使原记忆实例失效。
+    """没有会话引用或连接失败而未修改会话配置时，保留原记忆配置。
 
     Args:
         chat_dao (ChatSettingsDao): 本用例隔离的会话配置存储。
@@ -425,7 +419,7 @@ async def test_mcp_without_saved_chat_changes_preserves_memory_cache(
     mcp_dao.save(MCPServersConfig(servers=[server]))
     manager = ConnectionProbe()
     service = MCPService(mcp_dao, chat_dao, manager, PluginService())
-    previous = memory_module.get_memory_manager("session", _memory_sqlite_factory)
+    previous = memory_snapshot(chat_dao, "session", _memory_sqlite_factory)
     if operation == "connect_failure":
         manager.fail_connect = True
         with pytest.raises(MCPConnectionError, match="连接失败"):
@@ -434,15 +428,15 @@ async def test_mcp_without_saved_chat_changes_preserves_memory_cache(
         await service.reconnect("server")
     else:
         await service.delete_server("server")
-    assert memory_module.get_memory_manager("session", _memory_sqlite_factory) is previous
+    assert previous.settings.model_name == "old-model"
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("write_fails", [False, True])
-async def test_wired_tool_permissions_preserve_memory_cache(
+async def test_wired_tool_permissions_preserve_submitted_memory_snapshot(
     chat_dao: ChatSettingsDao, monkeypatch: pytest.MonkeyPatch, write_fails: bool,
 ) -> None:
-    """通过生产装配的服务修改权限，校验新权限生效且保留原记忆实例。
+    """通过生产装配的服务修改权限，校验新权限生效且保留已提交的记忆快照。
 
     Args:
         chat_dao (ChatSettingsDao): 本用例隔离的会话配置存储。
@@ -462,7 +456,7 @@ async def test_wired_tool_permissions_preserve_memory_cache(
 
     mcp_dao = MCPSettingsDao(chat_dao.config_file.with_name("mcp_servers.yaml"))
     mcp_dao.save(MCPServersConfig())
-    previous = memory_module.get_memory_manager("session", _memory_sqlite_factory)
+    previous = memory_snapshot(chat_dao, "session", _memory_sqlite_factory)
     if write_fails:
         monkeypatch.setattr(chat_dao, "_save_chat_settings_file", fail_save)
     # 1. 使用生产工厂装配服务，读取和保存全部指向本用例的隔离配置。
@@ -472,11 +466,26 @@ async def test_wired_tool_permissions_preserve_memory_cache(
     if write_fails:
         with pytest.raises(OSError, match="保存失败"):
             await service.set_policies("session", {"local:read_file": ToolPolicy.DENY})
-        assert memory_module.get_memory_manager("session", _memory_sqlite_factory) is previous
     else:
         await service.set_policies("session", {"local:read_file": ToolPolicy.DENY})
         assert chat_dao.get_chat_settings("session").tool_permissions["local:read_file"] == ToolPolicy.DENY
         assert ToolAuthorization(chat_dao.get_chat_settings).get_policy(
             "session", ToolIdentity.local("read_file"),
         ) == ToolPolicy.DENY
-        assert memory_module.get_memory_manager("session", _memory_sqlite_factory) is previous
+    assert previous.settings.model_name == "old-model"
+
+
+def memory_snapshot(dao, session_id, sqlite_factory):
+    """从本次已准备的配置构造记忆操作材料，便于观察修改前后的快照。
+
+    Args:
+        dao (ChatSettingsDao): 本用例的配置文件。
+        session_id (str): 本次读取的会话。
+        sqlite_factory (SqliteFactory): 隔离连接配置。
+
+    Returns:
+        MemoryOperation: 提交时固定的配置。
+    """
+    prepared = ChatSettingsService(dao).prepare(dao.get_chat_settings(session_id)).settings
+    return MemoryPlugin(context=PluginContext(sqlite_factory, prepared),
+                        **prepared.agent_plugins["memory"].config)._operation

@@ -1,4 +1,5 @@
 """情景记忆 - 存储事件性记忆，支持向量检索"""
+from functools import cached_property
 from app.crud.sqlite_factory import SqliteFactory
 
 import logging
@@ -8,8 +9,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.agent.memory.base import MemoryExtractionError, MemoryItem
-from app.agent.memory.materials import compress_tool_results, format_memory_notification
+from app.agent.plugins.memory.base import MemoryExtractionError, MemoryItem
+from app.agent.plugins.memory.materials import compress_tool_results, format_memory_notification
 from app.agent.state.messages import (
     text_content, format_tool_arguments,
     AssistantMessage, BaseMessage, HumanMessage, RuntimeInputMessage, ToolMessage,
@@ -17,9 +18,9 @@ from app.agent.state.messages import (
 from app.agent.state.time import render_timed_text
 from app.agent.utils.domain.token_estimation import RoughTokenEstimator
 from app.schemas.runtime_types import DESKTOP_CHANNEL
-from app.agent.memory.config import MemoryConfig
-from app.agent.memory.store.episodic_chroma_store import EpisodicChromaStore
-from app.agent.memory.store.episodic_sqlite_store import EpisodicSqliteStore
+from app.agent.plugins.memory.config import MemoryConfig
+from app.agent.plugins.memory.store.episodic_chroma_store import EpisodicChromaStore
+from app.agent.plugins.memory.store.episodic_sqlite_store import EpisodicSqliteStore
 from app.agent.models.llm_client import LLMClient, LLMConfig
 from app.agent.models.embedding_client import EmbeddingConfig
 from app.schemas.chat_settings import ChatSettings
@@ -111,7 +112,7 @@ class EpisodicMemory:
         chat_settings: ChatSettings,
         *, sqlite_factory: SqliteFactory,
     ):
-        """绑定会话并装配情景记忆提取模型、向量检索集合及 SQLite 正文存储；SQLite 保存完整记忆事实。
+        """保存会话和模型配置，先准备 SQLite 正文存储，再创建向量检索客户端。
 
         Args:
             session_id (str): 当前操作所属的会话编号。
@@ -123,7 +124,14 @@ class EpisodicMemory:
         self.config = config
         self.chat_settings = chat_settings
 
-        # 初始化向量存储
+        # 1. 先完成 SQLite 建表，连接随初始化结束关闭。
+        self.sqlite_store = EpisodicSqliteStore(
+            db_path=config.sqlite_path,
+            embedding_model=config.embedding_model,
+            sqlite_factory=sqlite_factory,
+        )
+
+        # 2. 再创建需要在操作结束时关闭的向量和 embedding 客户端。
         self.chroma_store = EpisodicChromaStore(
             collection_name=f"{self.NAMESPACE}_{session_id}",
             embedding_config=EmbeddingConfig(
@@ -134,21 +142,6 @@ class EpisodicMemory:
             ),
             persist_path=config.chroma_path,
         )
-
-        # 初始化 SQLite 存储（权威数据源）
-        self.sqlite_store = EpisodicSqliteStore(
-            db_path=config.sqlite_path,
-            embedding_model=config.embedding_model,
-         sqlite_factory=sqlite_factory)
-
-        # 初始化 LLM
-        self.llm = LLMClient(LLMConfig(
-            model=config.episodic_extraction_model,
-            api_key=config.episodic_extraction_api_key,
-            base_url=config.episodic_extraction_base_url,
-            temperature=0.1,
-            timeout=60.0,
-        ))
 
     # ==================== 核心方法 ====================
 
@@ -642,3 +635,23 @@ class EpisodicMemory:
     async def count(self) -> int:
         """获取记忆数量"""
         return await self.sqlite_store.count(session_id=self.session_id)
+
+    @cached_property
+    def llm(self) -> LLMClient:
+        """情景记忆提取首次调用模型时创建客户端。"""
+        return LLMClient(LLMConfig(
+            model=self.config.episodic_extraction_model,
+            api_key=self.config.episodic_extraction_api_key,
+            base_url=self.config.episodic_extraction_base_url,
+            temperature=0.1,
+            timeout=60.0,
+        ))
+
+    async def close(self) -> None:
+        """关闭当前操作创建的模型和索引客户端。"""
+        from contextlib import AsyncExitStack
+        async with AsyncExitStack() as stack:
+            client = self.__dict__.pop("llm", None)
+            if client is not None:
+                stack.push_async_callback(client.close)
+            stack.push_async_callback(self.chroma_store.close)

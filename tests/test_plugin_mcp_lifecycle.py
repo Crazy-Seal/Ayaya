@@ -11,7 +11,7 @@ import pytest
 from mcp.types import Tool
 from pydantic import BaseModel
 
-from app.agent.plugins.base import BasePlugin
+from app.agent.plugins.base import BasePlugin, PluginContext
 from app.agent.plugins.registry import PluginRegistry
 from app.agent.runtime import agent_factory
 from app.agent.tools.authorization.manager import ToolAuthorization
@@ -45,8 +45,13 @@ async def test_plugin_mcp_binds_permissions_and_disconnects_on_parameter_change(
         config_model = Config
         hooks = []
 
-        def __init__(self, **config):
-            """接收已通过校验的参数。"""
+        def __init__(self, *, context: PluginContext, **config):
+            """接收宿主依赖和已通过校验的插件参数。
+
+            Args:
+                context (PluginContext): 本次 Agent 提供的构造依赖。
+                config (dict): 已通过校验的插件参数。
+            """
 
         async def execute(self, context):
             """本用例无钩子业务。"""

@@ -6,7 +6,7 @@ import base64
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.agent.plugins.base import BasePlugin, HookContext, PluginHook
+from app.agent.plugins.base import BasePlugin, HookContext, PluginContext, PluginHook
 from app.agent.state import ImageContent, TemporaryContextItem
 from app.agent.utils.domain.images import save_image_to_disk
 from app.repl.repl_api import ReplCapability
@@ -33,10 +33,11 @@ class ComputerUsePlugin(BasePlugin):
     description = "通过 Python 中的 cua 观察窗口、控件树和画面，并操作 Windows。"
     config_model = ComputerUseConfig
 
-    def __init__(self, inject_screen_state: bool = False) -> None:
+    def __init__(self, *, context: PluginContext, inject_screen_state: bool = False) -> None:
         """保存本会话环境注入开关。
 
         Args:
+            context (PluginContext): 宿主提供的配置快照和存储依赖。
             inject_screen_state (bool): 是否在模型请求前刷新主屏幕图片。
         """
         self._inject_screen_state = inject_screen_state

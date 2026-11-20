@@ -11,7 +11,7 @@ import pytest
 from app.agent.context import ContextStrategyConfig
 from app.agent.core.plugin_manager import PluginManager
 from app.agent.core.tool_manager import ToolManager
-from app.agent.plugins.base import BasePlugin, PluginHook
+from app.agent.plugins.base import BasePlugin, PluginContext, PluginHook
 from app.agent.state.model import AgentState
 from app.agent.tools.authorization.manager import ToolAuthorization
 from app.agent.tools.core.base import BaseTool, ToolContext, ToolResult
@@ -110,7 +110,7 @@ def test_disabling_automatic_hooks_keeps_plugin_registered() -> None:
                 events.append("hook")
 
         manager = PluginManager(enable_plugin_hooks=False)
-        manager.register(Plugin())
+        manager.register(Plugin(context=PluginContext(SqliteFactory())))
         await manager.run_hooks(PluginHook.BEFORE_LLM, AgentState.create_new("child"))
         assert manager.get_plugin("test") is not None
         assert events == []

@@ -2,7 +2,7 @@ from app.crud.sqlite_factory import SqliteFactory
 import asyncio
 from datetime import date
 
-from app.agent.memory.store.diary_sqlite_store import DiarySqliteStore
+from app.agent.plugins.memory.store.diary_sqlite_store import DiarySqliteStore
 
 
 def test_diary_is_unique_by_session_and_effective_date(tmp_path) -> None:

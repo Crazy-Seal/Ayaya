@@ -22,7 +22,7 @@ chat_models:
       config:
         inject_screen_state: false
     memory:
-      enabled: true
+      enabled: false
       config:
         enable_diary: true
         enable_episodic: true

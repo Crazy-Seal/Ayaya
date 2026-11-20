@@ -2,12 +2,12 @@ from pathlib import Path
 
 import pytest
 
+from app.agent.plugins.memory.config import get_memory_base_dir
 from app.environment import (
     PRODUCTION_DATA_DIR,
     get_chat_history_db,
     get_chat_settings_file,
     get_data_dir,
-    get_memory_base_dir,
 )
 
 

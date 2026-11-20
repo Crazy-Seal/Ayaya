@@ -1,3 +1,6 @@
+from tests.memory_support import bind_memory_manager, operation_for
+from tests.memory_support import memory_count, set_memory_count
+from tests.memory_support import make_memory_plugin
 """通过真实激活入口与临时 SQLite 验证记忆批次和内部通知的提交时机。"""
 from tests.runtime_support import collect_agent_events
 from tests.runtime_support import runtime_hub, close_test_runtime
@@ -20,9 +23,9 @@ import pytest
 from app.agent.agent import Agent, AgentConfig
 from app.agent.context import ContextStrategyConfig
 from app.agent.core.events import AgentEvent, EventType
-from app.agent.memory.store.chat_history_store import ChatHistoryStore
+from app.agent.plugins.memory.store.chat_history_store import ChatHistoryStore
 from app.agent.models.llm_client import StreamChunk
-from app.agent.plugins.base import BasePlugin, HookContext, PluginHook
+from app.agent.plugins.base import BasePlugin, HookContext, PluginContext, PluginHook
 from app.agent.plugins.memory.memory import MemoryPlugin
 from app.agent.state.manager import SessionStateManager
 from app.agent.runtime.session_inbox import InboxEnvelope
@@ -223,7 +226,7 @@ async def make_agent(db_path: Path, model: QueuedModel, hooks: list[PluginHook])
         sqlite_factory=SqliteFactory(str(db_path)), llm_client=model, supervisor=supervisor,
     )
     agent.register_tool(StepTool())
-    agent.register_plugin(MemoryPlugin(enable_diary=False, enable_semantic=False, sqlite_factory=SqliteFactory()))
+    agent.register_plugin(make_memory_plugin(enable_diary=False, enable_semantic=False, sqlite_factory=SqliteFactory()))
     agent.register_plugin(RecordingHooks(hooks))
     return agent
 
@@ -240,7 +243,7 @@ async def seed_history(manager: SessionStateManager, completed: int, counter: in
     for number in range(1, completed + 1):
         state.add_user_message(f"human-{number}")
         state.add_assistant_message(f"reply-{number}")
-    state.long_term_memory_turn_counter = counter
+    set_memory_count(state, counter)
     await manager.save(state, checkpoint_type="completed")
 
 
@@ -280,7 +283,7 @@ def bind_memory(db_path: Path, monkeypatch: pytest.MonkeyPatch) -> RecordingMemo
         assert session_id == SESSION_ID
         return memory
 
-    monkeypatch.setattr(memory_plugin_module.MemoryPlugin, "_manager_for", locate_memory)
+    bind_memory_manager(monkeypatch, locate_memory)
     return memory
 
 
@@ -352,7 +355,7 @@ def test_mid_turn_notification_preserves_batch_until_next_activation(tmp_path: P
             assert session_id == SESSION_ID
             return memory
 
-        monkeypatch.setattr(memory_plugin_module.MemoryPlugin, "_manager_for", locate_memory)
+        bind_memory_manager(monkeypatch, locate_memory)
         models = [QueuedModel(), QueuedModel()]
         agents = [await make_agent(db_path, model, hooks) for model in models]
         remaining = list(agents)
@@ -412,7 +415,7 @@ def test_mid_turn_notification_preserves_batch_until_next_activation(tmp_path: P
                 SESSION_ID, "desktop", "human_turn", {"message": f"human-{current}"},
             ))).accepted
             await asyncio.wait_for(models[0].requests.get(), WAIT_SECONDS)
-            assert (await manager.load()).long_term_memory_turn_counter == 10
+            assert memory_count(await manager.load()) == 10
 
             # 2. 当前模型尚未回复时保存任务通知；工具完成后的模型前回调负责真实交付。
             await publish_terminal(records, db_path, "mid-turn")
@@ -423,14 +426,14 @@ def test_mid_turn_notification_preserves_batch_until_next_activation(tmp_path: P
             saved = await manager.load()
             assert any(isinstance(item, TaskResultMessage) and item.task_id == "mid-turn" for item in saved.messages)
             assert await inbox.read_task_terminals() == ()
-            assert saved.long_term_memory_turn_counter == 10
+            assert memory_count(saved) == 10
             assert memory.extractions == []
             assert len(hooks) == 2
 
             # 3. 当前轮次正常完成仍保留到期计数，记录下一输入之前的协议高水位。
             models[0].replies.put_nowait((StreamChunk(content=f"reply-{current}"),))
             await wait_event(stream, InteractionEventKind.RUN_COMPLETED)
-            assert (await manager.load()).long_term_memory_turn_counter == 10
+            assert memory_count(await manager.load()) == 10
             cutoff = await memory.chat_history_store.get_latest_message_id(SESSION_ID)
 
             # 4. 下一真人激活才消费批次；真实日志查询应选当前十轮，并包含中途任务事实。
@@ -446,7 +449,7 @@ def test_mid_turn_notification_preserves_batch_until_next_activation(tmp_path: P
             assert any(isinstance(item, TaskResultMessage) and item.task_id == "mid-turn" for item in selected)
             assert memory.cutoffs == [cutoff]
             assert len(memory.extractions) == 1
-            assert (await manager.load()).long_term_memory_turn_counter == 1
+            assert memory_count(await manager.load()) == 1
             assert len(hooks) == 4
             models[1].replies.put_nowait((StreamChunk(content="下一轮完成"),))
             await wait_event(stream, InteractionEventKind.RUN_COMPLETED)
@@ -606,7 +609,7 @@ def test_runtime_only_activation_extracts_previous_batch_without_counting_notice
             # 2. 原批次真实提取一次，新通知与它的助手回复已经保存但不能进入旧批次。
             saved = await manager.load()
             assert events[-1].type == EventType.DONE
-            assert saved.long_term_memory_turn_counter == 0
+            assert memory_count(saved) == 0
             assert await inbox.status(inputs[0].id) == "delivered"
             assert len([item for item in saved.messages if isinstance(item, HumanMessage)]) == 10
             selected, _history = memory.extractions[0]
@@ -663,7 +666,7 @@ def test_mixed_activation_and_repeated_notices_use_one_activation_hook_pair(tmp_
                     id=f"step-{number}", name="activation_step", args={},
                 )),))
                 await asyncio.wait_for(model.requests.get(), WAIT_SECONDS)
-                assert (await manager.load()).long_term_memory_turn_counter == 10
+                assert memory_count(await manager.load()) == 10
             model.replies.put_nowait((StreamChunk(content="reply-10"),))
             events = await asyncio.wait_for(running, WAIT_SECONDS)
 
@@ -675,7 +678,7 @@ def test_mixed_activation_and_repeated_notices_use_one_activation_hook_pair(tmp_
             }
             assert await inbox.status(terminals[0].id) == "delivered"
             assert await inbox.read_task_terminals() == ()
-            assert saved.long_term_memory_turn_counter == 10
+            assert memory_count(saved) == 10
             assert memory.cutoffs == [] and memory.extractions == []
             assert hooks == [PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, PluginHook.ON_INVOKE]
         finally:
@@ -757,7 +760,7 @@ def test_resuming_original_turn_does_not_commit_another_activation(tmp_path: Pat
             )),))
             events = await collect_agent_events(agent.run, 'human-10', inbox_input=human)
             assert events[-1].type == EventType.INTERRUPT
-            assert (await manager.load()).long_term_memory_turn_counter == 10
+            assert memory_count(await manager.load()) == 10
 
             # 2. 等待期间保存任务通知，原轮次恢复后的模型前交付仍不属于新激活。
             await publish_terminal(records, db_path, "during-interrupt")
@@ -779,7 +782,7 @@ def test_resuming_original_turn_does_not_commit_another_activation(tmp_path: Pat
             assert saved.temporary_context == {}
             assert any(isinstance(item, TaskResultMessage) and item.task_id == "during-interrupt" for item in saved.messages)
             assert await inbox.read_task_terminals() == ()
-            assert saved.long_term_memory_turn_counter == 10
+            assert memory_count(saved) == 10
             assert memory.cutoffs == [] and memory.extractions == []
             assert hooks == [PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, PluginHook.ON_INVOKE]
         finally:
@@ -842,6 +845,32 @@ def test_failed_activation_commit_preserves_batch_and_retry_extracts_frozen_hist
                 await publish_terminal(records, db_path, "retry-notice")
                 inputs = await inbox.read_task_terminals()
 
+            observations = []
+
+            class InputObserver(BasePlugin):
+                """观察钩子中的本次输入与数据库提交边界。"""
+                name = "input_observer"
+                priority = 200
+                hooks = [PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, PluginHook.ON_INVOKE]
+
+                async def execute(self, context: HookContext) -> None:
+                    """比较内存状态、持久历史和 Inbox 交付状态。
+
+                    Args:
+                        context (HookContext): 提交前或提交后的实际会话状态。
+                    """
+                    current = context.agent_state.messages[-1]
+                    if activation == "human":
+                        assert isinstance(current, HumanMessage) and current.text == "human-11"
+                    else:
+                        assert isinstance(current, TaskResultMessage)
+                    persisted = await manager.load()
+                    observations.append((context.hook, len(context.agent_state.messages),
+                                         len(persisted.messages), await inbox.status(inputs[0].id)))
+
+            for agent in agents:
+                agent.register_plugin(InputObserver(context=PluginContext(SqliteFactory(db_path))))
+
             # 2. 用真实数据库触发器拒绝输入 checkpoint，不替换状态管理器或插件分发。
             async with aiosqlite.connect(str(db_path)) as db:
                 await db.execute(
@@ -853,11 +882,12 @@ def test_failed_activation_commit_preserves_batch_and_retry_extracts_frozen_hist
             events, outcome = await activate(agents[0], inputs)
             assert outcome.kind == "save_failed"
             assert "activation commit rejected" in outcome.error
-            assert (await manager.load()).long_term_memory_turn_counter == 10
+            assert memory_count(await manager.load()) == 10
             assert await inbox.status(inputs[0].id) == "pending"
             assert memory.extractions == []
             assert models[0].requests.empty()
             assert hooks == [PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT]
+            assert observations == [(PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, 21, 20, "pending")]
 
             # 3. 数据库恢复后，新 Agent 加载仍到期的旧批次，提交成功后才提取一次。
             async with aiosqlite.connect(str(db_path)) as db:
@@ -869,7 +899,7 @@ def test_failed_activation_commit_preserves_batch_and_retry_extracts_frozen_hist
             await asyncio.wait_for(memory.extracted.wait(), WAIT_SECONDS)
             saved = await manager.load()
             assert events[-1].type == EventType.DONE
-            assert saved.long_term_memory_turn_counter == (1 if activation == "human" else 0)
+            assert memory_count(saved) == (1 if activation == "human" else 0)
             assert await inbox.status(inputs[0].id) == "delivered"
             selected, _history = memory.extractions[0]
             assert [item.text for item in selected if isinstance(item, HumanMessage)] == [
@@ -878,6 +908,11 @@ def test_failed_activation_commit_preserves_batch_and_retry_extracts_frozen_hist
             assert not any(isinstance(item, TaskResultMessage) for item in selected)
             assert memory.cutoffs == [cutoff, cutoff]
             assert len(memory.extractions) == 1
+            assert observations == [
+                (PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, 21, 20, "pending"),
+                (PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, 21, 20, "pending"),
+                (PluginHook.ON_INVOKE, 21, 21, "delivered"),
+            ]
             assert hooks == [
                 PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT,
                 PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT,

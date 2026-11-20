@@ -44,9 +44,6 @@ class EpisodicChromaStore:
         self.embedding_config = embedding_config
         self.persist_path = persist_path
 
-        # 初始化 Embedding 客户端
-        self._embedding_client = EmbeddingClient(embedding_config)
-
         # 同步初始化 Chroma 客户端
         if self.persist_path:
             self._client = chromadb.PersistentClient(path=self.persist_path)
@@ -54,10 +51,14 @@ class EpisodicChromaStore:
             logger.warning("[ChromaStore] 未指定Chroma持久化路径，将使用内存存储")
             self._client = chromadb.Client()
 
-        self._collection = self._client.get_or_create_collection(
-            name=self.collection_name,
-            metadata={"hnsw:space": "cosine"},
-        )
+        try:
+            self._collection = self._client.get_or_create_collection(
+                name=self.collection_name, metadata={"hnsw:space": "cosine"},
+            )
+            self._embedding_client = EmbeddingClient(embedding_config)
+        except BaseException:
+            self._client.close()
+            raise
 
     # ==================== 核心方法 ====================
 
@@ -187,5 +188,8 @@ class EpisodicChromaStore:
         return None
 
     async def close(self) -> None:
-        """关闭连接"""
-        await self._embedding_client.close()
+        """释放当前操作的向量请求客户端及 Chroma 客户端引用。"""
+        try:
+            await self._embedding_client.close()
+        finally:
+            await complete_owned_work(asyncio.to_thread(self._client.close))

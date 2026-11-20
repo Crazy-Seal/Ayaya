@@ -1,8 +1,7 @@
 """由记忆插件装配查询工具，检索当前调用上下文的已保存记忆。"""
 
-from collections.abc import Callable
 from datetime import date
-from app.agent.memory.manager import MemoryManager
+from app.agent.plugins.memory.operation import MemoryOperation
 from app.agent.tools.core.base import BaseTool, ToolContext, ToolResult
 
 
@@ -14,13 +13,13 @@ class SearchDiaryTool(BaseTool):
     compressible = True
     parameters_schema = {'type': 'object', 'properties': {'start': {'type': 'string', 'description': '开始日期，格式 YYYY-MM-DD'}, 'end': {'type': 'string', 'description': '结束日期，格式 YYYY-MM-DD'}}, 'required': ['start', 'end']}
 
-    def __init__(self, manager_for: Callable[[str], MemoryManager]) -> None:
+    def __init__(self, operation: MemoryOperation) -> None:
         """绑定插件提供的查询入口。
 
         Args:
-            manager_for (Callable[[str], MemoryManager]): 按实际会话取得记忆管理器。
+            operation (MemoryOperation): 当前配置及操作内资源创建入口。
         """
-        self._manager_for = manager_for
+        self._operation = operation
 
     async def execute(self, args: dict, context: ToolContext) -> ToolResult:
         """执行用户授权的记忆检索并返回可显示的结果。
@@ -51,12 +50,11 @@ class SearchDiaryTool(BaseTool):
             if session_id is None:
                 return "错误: 缺少会话id信息，无法查找日记。"
 
-            memory_manager = self._manager_for(session_id)
-
             start_date = date.fromisoformat(start)
             end_date = date.fromisoformat(end)
 
-            return await memory_manager.search_diary(start_date, end_date)
+            async with self._operation.open(session_id, diary=True) as manager:
+                return await manager.search_diary(start_date, end_date)
 
         except ValueError as e:
             return f"错误: {e}"

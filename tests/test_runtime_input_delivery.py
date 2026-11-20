@@ -1,3 +1,4 @@
+from tests.memory_support import memory_count, set_memory_count
 """验证输入提交事实、原子交付，以及生成器关闭和取消时的执行顺序。"""
 from tests.runtime_support import collect_agent_events
 from tests.runtime_support import runtime_hub, close_test_runtime
@@ -158,7 +159,7 @@ def test_human_commit_event_precedes_on_invoke_and_model(tmp_path) -> None:
             assert (await pending).kind == "completed"
             assert model.calls == 1
             assert hooks.calls == [PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, PluginHook.ON_INVOKE]
-            assert (await agent.session_state_manager.load()).long_term_memory_turn_counter == 1
+            assert memory_count(await agent.session_state_manager.load()) == 0
         finally:
             hooks.release.set()
             if pending is not None:
@@ -284,7 +285,7 @@ def test_input_commit_failure_rolls_back_all_persistent_writes(tmp_path, entry, 
                 await delivery.deliver_pending(state)
                 await delivery.deliver_pending(state)
                 assert len(state.messages) == 1 and isinstance(state.messages[0], TaskResultMessage)
-                assert state.long_term_memory_turn_counter == 0
+                assert memory_count(state) == 0
             assert await inbox.status(item.id) == "delivered"
         finally:
             await agent.close()

@@ -1,3 +1,4 @@
+from tests.memory_support import operation_for
 """验证记忆具体任务直接执行业务时的取消行为。"""
 from app.crud.sqlite_factory import SqliteFactory
 
@@ -8,7 +9,7 @@ import asyncio
 from datetime import date
 from tests.runtime_support import configured_settings
 
-from app.agent.memory.memories.diary import DiaryGeneration
+from app.agent.plugins.memory.memories.diary import DiaryGeneration
 from app.agent.plugins.runtime import PluginRuntime
 from app.agent.plugins.memory.tasks.memory_tasks import DiaryTask
 from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
@@ -44,7 +45,7 @@ def test_diary_async_work_is_cancelled_without_waiting_for_unrelated_completion(
 
         try:
             generation = DiaryGeneration("s", date(2026, 10, 25), [], 1)
-            task_id = await runtime.submit_task(DiaryTask(Memory(), generation), name='diary', title='日记', notify_agent=False)
+            task_id = await runtime.submit_task(DiaryTask(operation_for(Memory()), generation), name='diary', title='日记', notify_agent=False)
             await started.wait()
             await supervisor.stop_task(task_id)
             assert (await runtime.wait_task(task_id, timeout_ms=1000)).status == TaskStatus.STOPPED

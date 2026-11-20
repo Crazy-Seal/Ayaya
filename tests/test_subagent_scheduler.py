@@ -1,7 +1,7 @@
 """从公开命令、专用请求和持久详情验证 Scheduler 管理子 Agent。"""
 from tests.runtime_support import runtime_hub, close_test_runtime
 from app.routes.agent import observe_runtime
-from app.schemas.runtime_types import AgentRunOutcome, AgentRunOutcomeKind
+from app.schemas.runtime_types import AgentRunOutcome, AgentRunOutcomeKind, CheckpointType
 from tests.runtime_support import build_test_scheduler
 from app.crud.sqlite_factory import SqliteFactory
 
@@ -79,7 +79,8 @@ def test_child_final_report_and_context_retention(tmp_path: Path, retain: bool) 
                 outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
                 await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False}))
                 state = await self.manager.load()
-                await self.manager.commit_human_input(state, message, None, inputs=inbox_inputs)
+                self.manager.append_human_input(state, message, None, inputs=inbox_inputs)
+                await self.manager.save(state, checkpoint_type=CheckpointType.INTERMEDIATE, inbox_inputs=inbox_inputs)
                 source = SubagentSource("parent", turn_control.run_id, "create-call")
                 reply = asyncio.get_running_loop().create_future()
                 await queue.put(CreateSubagentRequest(source, "测试子助手", "完成任务", "第一项任务", frozenset(), retain, reply))
@@ -93,7 +94,8 @@ def test_child_final_report_and_context_retention(tmp_path: Path, retain: bool) 
                 outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
                 await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False}))
                 state = await self.manager.load()
-                await self.manager.commit_runtime_inputs(state, None, inbox_inputs)
+                self.manager.append_runtime_inputs(state, None, inbox_inputs)
+                await self.manager.save(state, checkpoint_type=CheckpointType.INTERMEDIATE, inbox_inputs=inbox_inputs)
                 await emit(AgentEvent(EventType.DONE, None))
 
                 return outcome

@@ -396,7 +396,8 @@ def test_environment_hook_refreshes_saved_screen_and_drops_failed_capture(monkey
     """默认关闭环境捕获，开启后每请求保存新图，捕获失败时删除旧条目。"""
     from io import BytesIO
     from PIL import Image
-    from app.agent.plugins.base import HookContext, PluginHook
+    from app.agent.plugins.base import HookContext, PluginContext, PluginHook
+    from app.crud.sqlite_factory import SqliteFactory
     from app.agent.plugins.computer_use.plugin import ComputerUsePlugin, SCREEN_KEY
     from app.agent.plugins.computer_use.repl.ayaya_computer_use import capture
     from app.agent.plugins.computer_use.repl.ayaya_computer_use.types import CaptureRegion, Screenshot
@@ -415,9 +416,10 @@ def test_environment_hook_refreshes_saved_screen_and_drops_failed_capture(monkey
     monkeypatch.setattr(capture, "capture_desktop", screen)
     state = AgentState(session_id="environment")
     context = HookContext.create(PluginHook.BEFORE_LLM, state)
-    asyncio.run(ComputerUsePlugin().execute(context))
+    plugin_context = PluginContext(sqlite_factory=SqliteFactory())
+    asyncio.run(ComputerUsePlugin(context=plugin_context).execute(context))
     assert not captures and SCREEN_KEY not in state.temporary_context
-    plugin = ComputerUsePlugin(inject_screen_state=True)
+    plugin = ComputerUsePlugin(context=plugin_context, inject_screen_state=True)
     asyncio.run(plugin.execute(context))
     first = state.temporary_context[SCREEN_KEY].images[0]
     assert first.storage_ref.startswith("environment/")

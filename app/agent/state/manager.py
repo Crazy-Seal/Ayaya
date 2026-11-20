@@ -130,7 +130,7 @@ def task_result_messages(inputs: tuple[InboxEnvelope, ...]) -> tuple[TaskResultM
 def runtime_input_messages(inputs: tuple[InboxEnvelope, ...]) -> tuple[HumanMessage | RuntimeInputMessage, ...]:
     """把同批父指令、任务结果和插件通知转换为加入 Agent 对话的消息。
 
-    commit_human_input 和 commit_runtime_inputs 在保存输入时调用。
+    append_human_input 和 append_runtime_inputs 在装配本轮输入时调用。
     父指令使用用户消息，来源和交互信息由 Inbox 保存。真人入口另行创建
     用户消息；这里保持同批父指令和通知的先后顺序。
 
@@ -215,7 +215,7 @@ class SessionStateManager:
         """用户发送消息时将正文和附件存入 Inbox，等待会话开始处理。
 
         Scheduler 在保存成功后安排执行，或等待当前轮正常结束后处理排队消息。
-        输入加入对话和真人计数的更新由 commit_human_input 在执行开始时完成。
+        Agent 开始执行时追加本次输入，提交前钩子准备插件状态，随后与输入一起保存。
 
         Args:
             origin_channel (str): 用户发送消息的界面或渠道。
@@ -363,14 +363,13 @@ class SessionStateManager:
                 USER_CANCELLED_PENDING_TOOL_RESULT, INTERRUPTED_TOOL_RESULT):
             await self.complete_turn(state)
 
-    async def commit_human_input(self, state: AgentState, message: str, images: list[str] | None, *,
+    def append_human_input(self, state: AgentState, message: str, images: list[str] | None, *,
                                  origin_channel: str = DESKTOP_CHANNEL,
                                  inputs: tuple[InboxEnvelope, ...] = ()) -> HumanMessage:
-        """Agent 开始处理用户消息时，将同批通知和真人输入加入对话并保存。
+        """把同批通知和真人输入追加到内存状态，供提交前钩子读取。
 
-        Agent 已完成输入保存前的插件钩子。本方法先追加内部通知，再追加真人消息、
-        图片和真人计数；对话历史、执行快照及 Inbox 已交付标记在同一事务保存。
-        返回后，Agent 才报告真人消息保存成功并进入后续插件钩子和模型执行。
+        Agent 在本方法返回后执行提交前钩子，再调用 save 将对话历史、插件状态
+        和 Inbox 已交付标记一次保存。返回的消息提供提交后显示事件需要的编号。
 
         Args:
             state (AgentState): 已加载并整理完上轮工具调用的当前会话状态。
@@ -380,28 +379,20 @@ class SessionStateManager:
             inputs (tuple[InboxEnvelope, ...]): 随本次对话保存一起标记为已交付的 Inbox 记录。
 
         Returns:
-            HumanMessage: 已保存的真人消息，供 Agent 使用其编号和正文通知界面显示。
-
-        Raises:
-            Exception: 输入已失效或数据库保存失败；本次数据库事务回滚，错误交给执行调用方处理。
+            HumanMessage: 已追加到内存、等待随本轮状态保存的真人消息。
         """
-        # 1. 先把同批任务结果和插件通知加入对话，这些内部消息不增加真人计数。
-        for notice in runtime_input_messages(inputs):
-            state.append_input(notice)
-        # 2. 将真人附件加入本轮输入，由统一保存入口落盘并提交执行进度。
-        human = state.add_user_message(message, image_urls=images or (),
-                                       origin_channel=origin_channel)
-        state.increment_long_term_memory_turn_counter()
-        await self.save(state, checkpoint_type=CheckpointType.INTERMEDIATE, inbox_inputs=inputs)
-        return next(item for item in state.messages
-                    if isinstance(item, HumanMessage) and item.message_id == human.message_id)
+        # 1. 先把同批任务结果和插件通知加入对话，这些内部消息沿用各自来源。
+        self.append_runtime_inputs(state, None, inputs)
+        # 2. 真人输入放在同批通知之后，插件可从最新消息识别本次用户输入。
+        return state.add_user_message(message, image_urls=images or (), origin_channel=origin_channel)
 
-    async def commit_runtime_inputs(self, state: AgentState, messages: tuple[HumanMessage | RuntimeInputMessage, ...] | None,
-                                    inputs: tuple[InboxEnvelope, ...]) -> None:
-        """将父指令或内部通知加入当前对话，并保存输入已经交给 Agent 的记录。
+    def append_runtime_inputs(self, state: AgentState, messages: tuple[HumanMessage | RuntimeInputMessage, ...] | None,
+                              inputs: tuple[InboxEnvelope, ...]) -> None:
+        """将父指令或内部通知追加到内存状态，供调用方执行钩子和保存。
 
         Agent 由父指令或内部通知启动新轮次时，以及 Pipeline 在下一次模型请求前
-        追加通知时，都会使用此方法。输入保存执行进度，真人计数由真人入口维护。
+        追加通知时，都会使用此方法。Agent 在新激活中执行提交前钩子，轮次中途
+        的通知由 Pipeline 直接保存；消息和交付标记沿同一保存入口提交。
 
         Args:
             state (AgentState): 需要加入父指令或内部通知的当前会话状态。
@@ -411,8 +402,6 @@ class SessionStateManager:
         # 1. 使用调用方传入的消息，或将 Inbox 通知转换成消息，再按顺序加入对话。
         for message in runtime_input_messages(inputs) if messages is None else messages:
             state.append_input(message)
-        # 2. 同时保存新增消息、执行快照和通知的已交付标记，成功后再继续模型调用。
-        await self.save(state, checkpoint_type=CheckpointType.INTERMEDIATE, inbox_inputs=inputs)
 
     #=====================执行期间保存进度和追加通知======================
 
@@ -441,7 +430,8 @@ class SessionStateManager:
         # 1. 查询当前待处理的内部通知，有内容时加入对话并保存。
         inputs = await self._inbox_dao.read_runtime_inputs()
         if inputs:
-            await self.commit_runtime_inputs(state, None, inputs)
+            self.append_runtime_inputs(state, None, inputs)
+            await self.save(state, checkpoint_type=CheckpointType.INTERMEDIATE, inbox_inputs=inputs)
 
     async def read_task_terminals(self) -> tuple[InboxEnvelope, ...]:
         """单独查询当前会话尚未加入 Agent 对话的后台任务结束通知。

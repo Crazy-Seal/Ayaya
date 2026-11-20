@@ -1,3 +1,4 @@
+from tests.memory_support import memory_count, set_memory_count
 """通过真实 Agent、调度器及任务验证插件组合行为，只替代外部工作。"""
 from tests.runtime_support import runtime_hub, close_test_runtime
 from app.routes.agent import observe_runtime
@@ -390,7 +391,7 @@ def test_game_watch_reports_changes_controls_source_and_cleans_connection(tmp_pa
 
 def test_after_response_commit_notifications_start_followup_turns(tmp_path):
     """提交后钩子连续投递通知会继续执行，每次通知属于独立新轮次。"""
-    from app.agent.plugins.base import BasePlugin, PluginHook
+    from app.agent.plugins.base import BasePlugin, PluginContext, PluginHook
     from app.agent.state.messages import PluginNotificationMessage
     from tests.model_capture import capture_input
 
@@ -450,7 +451,7 @@ def test_after_response_commit_notifications_start_followup_turns(tmp_path):
             async def initialize(self):
                 """装配真实依赖和提交后钩子。"""
                 await super().initialize()
-                self.register_plugin(FollowupPlugin())
+                self.register_plugin(FollowupPlugin(context=PluginContext(SqliteFactory(path))))
 
         scheduler = build_test_scheduler(runtime_queue=queue, task_supervisor=supervisor,
             agent_factory=lambda session, manager: AgentWithFollowups(AgentConfig(session_id=session, model_name="test", api_key="test",
@@ -465,7 +466,7 @@ def test_after_response_commit_notifications_start_followup_turns(tmp_path):
                 await next_event_kind(scheduler, "run_completed")
             assert len(requests) == 3 and len(set(committed)) == 3
             state = await manager.load()
-            assert state.long_term_memory_turn_counter == 1
+            assert memory_count(state) == 0
             messages = [message for message in state.messages if isinstance(message, PluginNotificationMessage)]
             assert [message.text for message in messages] == ["继续处理第1项", "继续处理第2项"]
             assert await manager.read_activation_batch() == ()

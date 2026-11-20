@@ -45,7 +45,8 @@ def test_a2a_reply_is_delivered_once_as_user_message(tmp_path: Path) -> None:
             assert len(batch) == 1
             assert batch[0].payload["text"] == "处理 app.py"
             state = await manager.load()
-            await manager.commit_runtime_inputs(state, None, batch)
+            manager.append_runtime_inputs(state, None, batch)
+            await manager.save(state, checkpoint_type=CheckpointType.INTERMEDIATE, inbox_inputs=batch)
             restored = await manager.load()
             assert len(restored.messages) == 1
             assert isinstance(restored.messages[0], HumanMessage)
@@ -80,9 +81,11 @@ def test_parent_and_child_state_and_inbox_are_isolated(tmp_path: Path) -> None:
             first = await parent.submit_human("desktop", "父输入")
             second = await child.submit_human("desktop", "子输入")
             parent_state, child_state = await parent.load(), await child.load()
-            await parent.commit_human_input(parent_state, "父输入", None, inputs=(first,))
+            parent.append_human_input(parent_state, "父输入", None, inputs=(first,))
+            await parent.save(parent_state, checkpoint_type=CheckpointType.INTERMEDIATE, inbox_inputs=(first,))
             assert await child.status(second.id) == InboxStatus.PENDING
-            await child.commit_human_input(child_state, "子输入", None, inputs=(second,))
+            child.append_human_input(child_state, "子输入", None, inputs=(second,))
+            await child.save(child_state, checkpoint_type=CheckpointType.INTERMEDIATE, inbox_inputs=(second,))
             assert "父输入" in str((await parent.load()).messages)
             assert "子输入" not in str((await parent.load()).messages)
             assert "子输入" in str((await child.load()).messages)
@@ -165,7 +168,8 @@ def test_retirement_keeps_history_and_blocks_late_task_inputs(tmp_path: Path, de
             await dao.create_with_command(definition, "已交付任务", "create")
             initial = (await child.read_activation_batch())[0]
             state = await child.load()
-            await child.commit_runtime_inputs(state, None, (initial,))
+            child.append_runtime_inputs(state, None, (initial,))
+            await child.save(state, checkpoint_type=CheckpointType.INTERMEDIATE, inbox_inputs=(initial,))
             state.add_assistant_message("已保存的最终回答")
             await child.save(state, checkpoint_type=CheckpointType.COMPLETED)
             await dao.append_message(definition, SubagentInteractionKind.STEER, "未交付的引导", "steer")

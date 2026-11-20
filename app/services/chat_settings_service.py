@@ -2,7 +2,6 @@ from dataclasses import dataclass
 
 from app.schemas.tool_types import LOCAL_TOOL_KEY_PREFIX, MCP_TOOL_KEY_PREFIX
 from app.agent.tools.core.registry import ToolRegistry
-from app.agent.memory.manager import get_memory_manager
 from app.crud.chat_settings_dao import ChatSettingsDao
 from app.crud.mcp_settings_dao import MCPSettingsDao
 from app.mcp.identity import server_identity_fingerprint
@@ -31,7 +30,7 @@ class PreparedChatSettings:
 
 
 class ChatSettingsService:
-    """统一整理会话参数和工具权限，协调配置保存、MCP 清理及记忆缓存失效。"""
+    """统一整理会话参数和工具权限，协调配置保存和 MCP 清理。"""
 
     def __init__(
         self,
@@ -129,7 +128,6 @@ class ChatSettingsService:
         async with self.mutation_coordinator.lock:
             normalized = self._sanitize_plugins(self.normalize(chat_settings), None)
             saved = self.chat_settings_dao.add_chat_settings(self._sanitize_mcp(normalized, None))
-            get_memory_manager.cache_clear()
             return saved
 
     async def delete_chat_settings(self, session_id: str) -> None:
@@ -142,7 +140,6 @@ class ChatSettingsService:
         async with self.mutation_coordinator.lock:
             async with self.mutation_coordinator.admission_lock:
                 self.chat_settings_dao.delete_chat_settings(session_id)
-                get_memory_manager.cache_clear()
 
     def get_chat_settings_by_session(self, session_id: str) -> ChatSettings:
         """读取会话设置并在内存副本中整理参数与工具权限，保留待修正参数。
@@ -180,7 +177,6 @@ class ChatSettingsService:
                     current = saved.agent_plugins.get(name)
                     if current is None or not current.enabled or current.config != previous.config:
                         await self.connection_manager.disconnect_plugin(saved.session_id, name)
-            get_memory_manager.cache_clear()
             return saved
 
     def _sanitize_plugins(self, incoming: ChatSettings, existing: ChatSettings | None) -> ChatSettings:

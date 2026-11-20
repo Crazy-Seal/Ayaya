@@ -28,7 +28,7 @@ from app.agent.state.messages import (
 from app.agent.state.time import normalize_utc, utc_now
 
 
-CHECKPOINT_SCHEMA_VERSION = 4
+CHECKPOINT_SCHEMA_VERSION = 5
 
 
 class TokenBaseline(BaseModel):
@@ -66,7 +66,6 @@ class AgentState(BaseModel):
     Attributes:
         session_id (str): 共享 Ayaya 会话标识。
         token_baseline (TokenBaseline | None): 最近一次已观测的模型输入 token 基线。
-        long_term_memory_turn_counter (int): 已经持久提交的真人轮次计数。
         pending_tool_calls (tuple[ToolCall, ...]): Assistant 步骤中尚未闭合结果的工具调用。
         interrupt_data (dict[str, Any] | None): 持久中断路由、单次授权及恢复决定。
         pending_actions (tuple[ToolCall, ...]): 当前中断之后仍未执行的同批工具调用。
@@ -79,7 +78,6 @@ class AgentState(BaseModel):
 
     session_id: str
     token_baseline: TokenBaseline | None = None
-    long_term_memory_turn_counter: int = 0
     pending_tool_calls: tuple[ToolCall, ...] = ()
     interrupt_data: dict[str, Any] | None = None
     pending_actions: tuple[ToolCall, ...] = ()
@@ -439,24 +437,6 @@ class AgentState(BaseModel):
         """
         return self.interrupt_data is not None
 
-    def increment_long_term_memory_turn_counter(self, count: int = 1) -> int:
-        """增加已提交真人输入的计数，供记忆插件判断是否达到长期记忆提取间隔。
-
-        Args:
-            count (int): 本次已提交的真人输入数量。
-
-        Returns:
-            int: 增加后的内存计数；持久保存由调用方完成。
-        """
-        self.long_term_memory_turn_counter += count
-        self.updated_at = utc_now()
-        return self.long_term_memory_turn_counter
-
-    def reset_long_term_memory_turn_counter(self) -> None:
-        """长期记忆提取完成后清零内存计数，后续 checkpoint 保存该结果。"""
-        self.long_term_memory_turn_counter = 0
-        self.updated_at = utc_now()
-
     def set_extra(self, key: str, value: Any) -> None:
         """在内存中保存一个插件或工具的附加状态字段，并更新修改时间。
 
@@ -527,7 +507,6 @@ class AgentState(BaseModel):
             "token_baseline": (
                 self.token_baseline.model_dump() if self.token_baseline is not None else None
             ),
-            "long_term_memory_turn_counter": self.long_term_memory_turn_counter,
             "pending_tool_calls": [call.to_dict() for call in self.pending_tool_calls],
             "interrupt_data": to_json_value(self.interrupt_data),
             "pending_actions": [call.to_dict() for call in self.pending_actions],
@@ -569,7 +548,6 @@ class AgentState(BaseModel):
         state = cls(
             session_id=str(data.get("session_id") or ""),
             token_baseline=data.get("token_baseline"),
-            long_term_memory_turn_counter=int(data.get("long_term_memory_turn_counter", 0)),
             pending_tool_calls=tuple(ToolCall.from_dict(item) for item in raw_pending),
             interrupt_data=data.get("interrupt_data"),
             pending_actions=tuple(ToolCall.from_dict(item) for item in raw_actions),

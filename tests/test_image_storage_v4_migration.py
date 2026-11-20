@@ -1,3 +1,4 @@
+from scripts.migrate_memory_state_v5 import convert_checkpoint
 """通过离线迁移入口验证旧图片转换、文件操作及数据库事务。"""
 
 import json
@@ -33,6 +34,7 @@ def make_v3_fixture(path: Path, images: Path) -> dict:
     state.record_tool_result(call, result_parts("观察结果", (), "tool"))
     raw = state.to_checkpoint()
     raw["schema_version"] = 3
+    raw["long_term_memory_turn_counter"] = 0
     picture = {"type": "image_url", "image_url": {"url": ""}, "media_kind": "screenshot",
                "storage_ref": "screenshot/screen.png", "context_state": "compacted"}
     raw["messages"][-1]["content"].append(picture)
@@ -78,7 +80,7 @@ def test_migration_checks_then_restores_compacted_images_and_moves_all_files(tmp
         raw = json.loads(db.execute("SELECT state_json FROM checkpoints").fetchone()[0])
         assert db.execute("SELECT value FROM unrelated").fetchone()[0] == "保留"
         assert db.execute("SELECT name FROM sqlite_master WHERE name='chat_history'").fetchone() is None
-    restored = AgentState.from_checkpoint(raw)
+    restored = AgentState.from_checkpoint(convert_checkpoint(raw))
     picture = restored.messages[-1].content[-1]
     assert isinstance(picture, ImageContent)
     assert picture.storage_ref == "tool/screen.png" and picture.url is None
@@ -128,7 +130,7 @@ def test_migration_covers_child_inline_images_and_temporary_background(tmp_path:
     assert (images / picture["storage_ref"]).read_bytes() == b"xyz"
     assert parent["messages"][-1]["content"][-2] == {"type": "text", "text": "[图片不可用：tool/missing.png]"}
     assert parent["messages"][-1]["content"][-1]["text"] == "末尾文字"
-    background = AgentState.from_checkpoint(child).temporary_context["plugin.screen"].images[0]
+    background = AgentState.from_checkpoint(convert_checkpoint(child)).temporary_context["plugin.screen"].images[0]
     assert background.url is None and background.storage_ref.startswith("environment/")
 
 
@@ -316,6 +318,6 @@ def test_compacted_images_without_references_become_text_in_messages_and_backgro
     with sqlite3.connect(path) as db:
         raw = json.loads(db.execute("SELECT state_json FROM checkpoints").fetchone()[0])
     assert raw["messages"][-1]["content"][-1] == {"type": "text", "text": "[图片不可用：旧图片缺少文件引用]"}
-    restored = AgentState.from_checkpoint(raw)
+    restored = AgentState.from_checkpoint(convert_checkpoint(raw))
     assert restored.temporary_context["plugin.screen"].images == ()
     assert restored.temporary_context["plugin.screen"].text == "已有文字\n[图片不可用：旧图片缺少文件引用]"

@@ -15,7 +15,7 @@ from typing import Any, AsyncGenerator, TYPE_CHECKING, Awaitable, Callable, cast
 
 from app.agent.models.contracts import OPENAI_CHAT_COMPLETIONS
 from app.schemas.runtime_types import (
-    DESKTOP_CHANNEL, InboxKind,
+    CheckpointType, DESKTOP_CHANNEL, InboxKind,
 )
 from app.agent.context import (
     ContextStrategyConfig,
@@ -29,7 +29,7 @@ from app.agent.plugins.runtime import PluginRuntimeFactory
 from app.agent.core.events import EventType, AgentEvent
 from app.agent.core.pipeline import ExecutionPipeline
 from app.agent.models.llm_client import LLMClient, LLMConfig
-from app.agent.plugins.base import BasePlugin, PluginHook
+from app.agent.plugins.base import BasePlugin, PluginContext, PluginHook
 from app.agent.state import AgentState
 from app.agent.state.manager import SessionStateManager
 from app.agent.runtime.session_inbox import InboxEnvelope, InputNoLongerPending
@@ -129,6 +129,7 @@ class Agent:
         self._bind_plugin_mcp = bind_plugin_mcp
 
         # 核心管理器
+        self._plugin_settings = chat_settings.model_copy(deep=True) if chat_settings is not None else None
         self.tool_authorization = tool_authorization
         if self.tool_authorization is None and chat_settings is not None:
             self.tool_authorization = ToolAuthorization(lambda _session_id: chat_settings)
@@ -238,8 +239,9 @@ class Agent:
             plugin_class = PluginRegistry.get(plugin_name)
             if plugin_class:
                 try:
-                    from app.agent.core.plugin_factory import create_plugin
-                    plugin = create_plugin(plugin_class, plugin_params, self._sqlite_factory)
+                    settings = self._plugin_settings.model_copy(deep=True) if self._plugin_settings is not None else None
+                    context = PluginContext(sqlite_factory=self._sqlite_factory, chat_settings=settings)
+                    plugin = plugin_class(context=context, **plugin_params)
                     self.plugin_manager.register(plugin)
                     from app.agent.plugins.tool_adapter import PluginToolAdapter
                     for tool in plugin.create_tools():
@@ -394,7 +396,7 @@ class Agent:
         inputs: tuple[InboxEnvelope, ...],
         *, activation_data: dict,
     ) -> None:
-        """在父指令或内部通知启动新轮时，协调输入提交和上一批记忆任务。
+        """在父指令或内部通知启动新轮时，追加消息、执行提交前钩子并保存。
 
         仅由 run_runtime_inputs 在启动模型循环前调用。当前轮次中途收到
         通知由 SessionStateManager 直接交付，不再次进入本生命周期。
@@ -405,14 +407,15 @@ class Agent:
             inputs (tuple[InboxEnvelope, ...]): 与通知一同持久交付的输入快照。
             activation_data (dict): 输入前置钩子准备的数据，保存成功后供 ON_INVOKE 使用。
         """
-        # 1. 新轮先清空上一轮背景，再让插件准备本次激活的数据。
+        # 1. 新轮清空上一轮背景，将本次输入追加到内存，供插件读取当前消息。
         state.clear_temporary_context()
-        # 2. 本批输入加入前准备上一批派生任务，将准备数据交给后续 ON_INVOKE。
+        self.session_state_manager.append_runtime_inputs(state, messages, inputs)
+        # 2. 提交前钩子准备插件状态和派生任务材料，后续 ON_INVOKE 继续使用这些材料。
         await self.plugin_manager.run_hooks(
             PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, state, data=activation_data,
         )
         # 3. 消息与输入交付标记原子保存；失败时直接退出，不启动后台派生任务。
-        await self.session_state_manager.commit_runtime_inputs(state, messages, inputs)
+        await self.session_state_manager.save(state, checkpoint_type=CheckpointType.INTERMEDIATE, inbox_inputs=inputs)
 
     async def _run_runtime_inputs(
         self, messages: tuple[HumanMessage | RuntimeInputMessage, ...] | None = None, *,
@@ -489,7 +492,7 @@ class Agent:
     ) -> AsyncGenerator[AgentEvent, None]:
         """准备并提交一次真人输入激活，保存同批通知与真人消息。
 
-        由 run 在模型循环开始前调用。前置钩子处理本次输入之前的记忆批次；
+        由 run 在模型循环开始前调用。先追加消息，再让提交前钩子准备插件状态；
         消息保存成功后先发布真人输入事实，调用方随后进入 ON_INVOKE 启动派生任务。
 
         Args:
@@ -504,20 +507,23 @@ class Agent:
         Yields:
             AgentEvent: 事务成功后的真人输入提交事实。
         """
-        # 1. 新轮先清空上一轮背景，再让插件准备本次激活的数据。
+        # 1. 新轮清空上一轮背景，将同批通知和真人消息追加到内存状态。
         state.clear_temporary_context()
-        # 2. 本次激活输入尚未追加，先准备上一批派生任务，不包含本次真人或通知。
+        inputs = inbox_inputs if inbox_inputs is not None else ((inbox_input,) if inbox_input is not None else ())
+        human = self.session_state_manager.append_human_input(
+            state, message, images, origin_channel=origin_channel, inputs=inputs,
+        )
+        # 2. 提交前钩子读取本次消息，插件状态随本次输入一起持久保存。
         await self.plugin_manager.run_hooks(
             PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT,
             state,
             data=activation_data,
         )
 
-        # 3. Manager 统一准备同批任务通知、真人图片与计数，保存成功才返回真人事实。
-        inputs = inbox_inputs if inbox_inputs is not None else ((inbox_input,) if inbox_input is not None else ())
-        human_message = await self.session_state_manager.commit_human_input(
-            state, message, images, origin_channel=origin_channel, inputs=inputs,
-        )
+        # 3. 消息、插件状态与交付标记一起保存，提交后取得已外置图片的真人消息。
+        await self.session_state_manager.save(state, checkpoint_type=CheckpointType.INTERMEDIATE, inbox_inputs=inputs)
+        human_message = next(item for item in state.messages
+                             if isinstance(item, HumanMessage) and item.message_id == human.message_id)
 
         # 4. 输入已提交后立即通知观察方，不能等到模型首片才显示真人消息。
         human_input = next((item for item in inputs if item.kind == InboxKind.HUMAN), None)

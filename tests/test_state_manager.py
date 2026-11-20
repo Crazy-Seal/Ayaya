@@ -13,7 +13,7 @@ import pytest
 
 from app.agent.state.manager import SessionStateManager
 from app.crud.agent_state_dao import AgentStateDao, LATEST_CHECKPOINT_SQL
-from app.agent.memory.store.chat_history_store import ChatHistoryStore
+from app.agent.plugins.memory.store.chat_history_store import ChatHistoryStore
 from app.crud.chat_history_dao import ChatHistoryDao
 from app.agent.state import AgentState, TokenBaseline
 from app.agent.state.messages import (HumanMessage, PROTOCOL_MESSAGE_TYPES, ToolCall, ImageContent, ToolMessage)

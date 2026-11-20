@@ -1,3 +1,6 @@
+from tests.memory_support import bind_memory_manager, operation_for
+from tests.memory_support import memory_count, set_memory_count
+from tests.memory_support import make_memory_plugin
 from app.crud.sqlite_factory import SqliteFactory
 from app.crud.task_record_dao import TaskRecordDao
 from app.services.settings_mutation import SettingsMutationCoordinator
@@ -13,10 +16,10 @@ from types import SimpleNamespace
 
 from app.agent.plugins.base import HookContext, PluginHook
 from app.agent.state.manager import SessionStateManager
-from app.agent.memory.memories.diary import DiaryGeneration, DiaryMemory
-from app.agent.memory.memories.episodic import EpisodicMemory
-from app.agent.memory.memories.semantic_mem0 import Mem0SemanticMemory
-from app.agent.memory.store.chat_history_store import ChatHistoryStore
+from app.agent.plugins.memory.memories.diary import DiaryGeneration, DiaryMemory
+from app.agent.plugins.memory.memories.episodic import EpisodicMemory
+from app.agent.plugins.memory.memories.semantic_mem0 import Mem0SemanticMemory
+from app.agent.plugins.memory.store.chat_history_store import ChatHistoryStore
 from app.agent.state.messages import (
     AssistantMessage,
     HumanMessage,
@@ -454,21 +457,21 @@ def test_memory_jobs_start_only_after_input_commit_with_frozen_history(tmp_path,
             calls.append(generation.max_history_id)
             return "日记生成成功"
 
-    monkeypatch.setattr(memory_plugin_module.MemoryPlugin, "_manager_for", lambda self, session: MemoryManager())
+    bind_memory_manager(monkeypatch, lambda self, session: MemoryManager())
 
     async def scenario():
         """通过钩子提交任务，再通过正式记录和等待接口验证。"""
         supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "state.sqlite3"))))
         runtime = PluginRuntime("memory", "session", "r", _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue)
-        plugin = MemoryPlugin(sqlite_factory=SqliteFactory())
+        plugin = make_memory_plugin(sqlite_factory=SqliteFactory())
         state = AgentState.create_new("session")
-        state.long_term_memory_turn_counter = 12
+        set_memory_count(state, 12)
         data = {}
         try:
             await plugin.execute(HookContext.create(PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, state, data, runtime=runtime))
             assert await supervisor.list_tasks("session") == []
-            assert state.long_term_memory_turn_counter == 0
-            assert data["memory"]["protocol_history_cutoff"] == 84
+            assert memory_count(state) == 0
+            assert data["memory"].protocol_history_cutoff == 84
             await plugin.execute(HookContext.create(PluginHook.ON_INVOKE, state, data, runtime=runtime))
             records = await supervisor.list_tasks("session")
             assert {record.name for record in records} == {"memory.check_diary", "memory.persist_long_term"}
@@ -555,7 +558,7 @@ def test_long_term_memory_uses_frozen_protocol_cutoff(tmp_path) -> None:
         supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "state.sqlite3"))))
         runtime = PluginRuntime("memory", "session", "r", _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue)
         try:
-            task_id = await runtime.submit_task(LongTermMemoryTask(MemoryManager(), "session", 42, 12, True, True),
+            task_id = await runtime.submit_task(LongTermMemoryTask(operation_for(MemoryManager()), "session", 42, 12, True, True),
                 name="memory.persist_long_term", title="提取长期记忆", notify_agent=False)
             assert (await runtime.wait_task(task_id, timeout_ms=1000)).status == TaskStatus.COMPLETED
         finally:
@@ -583,20 +586,20 @@ def test_disabled_long_term_memory_resets_reached_interval_on_next_input() -> No
         Returns:
             tuple[AgentState, dict]: 清零后的状态与空任务准备数据。
         """
-        plugin = MemoryPlugin(
+        plugin = make_memory_plugin(
             enable_diary=False,
             enable_episodic=False,
             enable_semantic=False,
         sqlite_factory=SqliteFactory())
         state = AgentState.create_new("session")
-        state.long_term_memory_turn_counter = 10
+        set_memory_count(state, 10)
         commit_context = {}
         await plugin.execute(HookContext.create(
             PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, state, data=commit_context
         ))
         return state, commit_context
     state, commit_context = asyncio.run(scenario())
-    assert state.long_term_memory_turn_counter == 0
+    assert memory_count(state) == 0
     assert commit_context == {}
 
 def test_disabled_long_term_memory_resets_counter_when_diary_preparation_fails(
@@ -613,7 +616,7 @@ def test_disabled_long_term_memory_resets_counter_when_diary_preparation_fails(
         Returns:
             tuple[AgentState, dict]: 已消费计数的状态和未准备成功的任务数据。
         """
-        plugin = MemoryPlugin(
+        plugin = make_memory_plugin(
             enable_diary=True,
             enable_episodic=False,
             enable_semantic=False,
@@ -628,16 +631,16 @@ def test_disabled_long_term_memory_resets_counter_when_diary_preparation_fails(
                 RuntimeError: 测试指定的记忆管理器不可用错误。
             """
             raise RuntimeError("diary manager unavailable")
-        monkeypatch.setattr(plugin, "_mm", fail)
+        bind_memory_manager(monkeypatch, lambda self, session: fail(session))
         state = AgentState.create_new("session")
-        state.long_term_memory_turn_counter = 10
+        set_memory_count(state, 10)
         commit_context = {}
         await plugin.execute(HookContext.create(
             PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, state, data=commit_context
         ))
         return state, commit_context
     state, commit_context = asyncio.run(scenario())
-    assert state.long_term_memory_turn_counter == 0
+    assert memory_count(state) == 0
     assert commit_context == {}
 
 def test_memory_preparation_failure_keeps_pending_turn_counter(monkeypatch) -> None:
@@ -652,7 +655,7 @@ def test_memory_preparation_failure_keeps_pending_turn_counter(monkeypatch) -> N
         Returns:
             tuple[AgentState, dict]: 保留到期计数的状态和空任务数据。
         """
-        plugin = MemoryPlugin(enable_diary=False, sqlite_factory=SqliteFactory())
+        plugin = make_memory_plugin(enable_diary=False, sqlite_factory=SqliteFactory())
         def fail(_state):
             """模拟长期记忆准备依赖不可用。
 
@@ -663,34 +666,34 @@ def test_memory_preparation_failure_keeps_pending_turn_counter(monkeypatch) -> N
                 RuntimeError: 测试指定的记忆管理器不可用错误。
             """
             raise RuntimeError("memory manager unavailable")
-        monkeypatch.setattr(plugin, "_mm", fail)
+        bind_memory_manager(monkeypatch, lambda self, session: fail(session))
         state = AgentState.create_new("session")
-        state.long_term_memory_turn_counter = 10
+        set_memory_count(state, 10)
         commit_context = {}
         await plugin.execute(HookContext.create(
             PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT, state, data=commit_context
         ))
         return state, commit_context
     state, commit_context = asyncio.run(scenario())
-    assert state.long_term_memory_turn_counter == 10
+    assert memory_count(state) == 10
     assert commit_context == {}
 
 def test_memory_plugin_does_not_own_completed_turn_counting() -> None:
     """验证记忆插件不自行增加已完成轮次计数。"""
     async def scenario():
         """由外层测试调用，完成“记忆插件不自行增加已完成轮次计数”的异步步骤。"""
-        plugin = MemoryPlugin(
+        plugin = make_memory_plugin(
             enable_diary=False,
             enable_episodic=False,
             enable_semantic=False,
         sqlite_factory=SqliteFactory())
         state = AgentState.create_new("session")
         state.add_user_message("尚未完成的真人输入")
-        before = state.long_term_memory_turn_counter
+        before = memory_count(state)
         await plugin.execute(HookContext.create(
             PluginHook.BEFORE_RESPONSE_COMMIT, state, data={}
         ))
-        return before, state.long_term_memory_turn_counter
+        return before, memory_count(state)
 
     assert asyncio.run(scenario()) == (0, 0)
 

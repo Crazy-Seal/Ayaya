@@ -71,6 +71,7 @@ Ayaya 是运行在用户电脑上的桌面智能体应用。插件可以给它�
 | 对象 | 谁创建 | 负责什么 | 插件作者怎样接触它 |
 | --- | --- | --- | --- |
 | `BasePlugin` | 插件作者定义子类，框架创建实例 | 记录插件名称、配置和订阅的钩子 | 继承并实现 `hooks`、`execute()` |
+| `PluginContext` | Agent 装配插件时创建 | 提供该插件独立的会话配置快照和通用数据库工厂 | 构造函数的关键字参数 `context` |
 | `PluginManager` | Agent | 注册插件，按时机调用插件，记录普通插件异常 | 由框架使用 |
 | `HookContext` | PluginManager | 提供当前钩子、会话状态和该次调用的数据 | `execute(context)` 的参数 |
 | `Agent` / `ExecutionPipeline` | 框架 | 执行一轮中的模型、工具、审批和结果保存 | 插件通过钩子参与 |
@@ -184,7 +185,15 @@ await runtime.publish_event(InteractionEventKind.STATUS_NOTICE, {
 
 两处使用同一个 `BasePlugin` 接口，都按会话启停，遵循相同的配置、工具权限及生命周期流程；插件名称在全部目录中保持唯一。
 
-设置页保存每个插件的 `enabled` 和 `config`，下一轮创建 Agent 时只装配已开启的插件。所有插件都可以关闭；记忆插件默认开启，用户保存的关闭状态会生效。
+设置页保存每个插件的 `enabled` 和 `config`，下一轮创建 Agent 时只装配明确开启的插件。所有插件默认关闭；缺少插件记录或未填写 `enabled` 时保持关闭，已有显式开关继续生效。
+
+插件通过已有 `config_model` 声明业务参数及默认值，由设置准备流程校验；插件总开关使用会话中的 `enabled`。`ChatSettings` 和 DAO 负责通用结构与保存内容，读取配置时不自动插入插件记录。
+
+Agent 通过普通构造函数统一传入 `PluginContext`，插件从中取得当前会话配置和 SQLite 工厂；启用记忆的直接 Agent 调用必须提供 `chat_settings`。插件构造时保存配置材料，具体查询或后台任务自行打开并关闭资源。
+
+记忆插件的 `MemoryOperation` 固定本次模型、角色、环境和能力开关。后台任务携带该材料及历史截止位置，跨轮次执行时继续使用提交时的配置。`DiaryTask`、`LongTermMemoryTask` 均在 `run()` 内进入操作上下文；原 Agent 结束后，任务仍能独立完成。并行查询或提取等待全部分支结束后再传播错误或取消，随后关闭资源。语义记忆按本地向量目录排队，直到前一操作实际关闭后再打开客户端。
+
+新激活先将消息追加到内存中的 `AgentState.messages`，再执行提交前钩子。插件直接从状态读取本次输入；记忆插件根据最新消息的类型累计真人计数。需要随输入持久化的插件状态写入 `AgentState.extra` 的自有命名空间，随后与输入和 Inbox 交付标记一次保存。记忆计数位于 `extra["memory"]["long_term_memory_turn_counter"]`，禁用整个插件时暂停累计；原轮次恢复和中途通知不重复触发新激活钩子。
 
 ### 2.1 集中存放一个插件的文件
 
@@ -194,7 +203,13 @@ await runtime.publish_event(InteractionEventKind.STATUS_NOTICE, {
 app/agent/plugins/
 ├── memory/
 │   ├── __init__.py           导出 MemoryPlugin
-│   ├── memory.py             记忆插件配置和钩子
+│   ├── memory.py             记忆插件构造和钩子
+│   ├── config.py             配置默认值、环境与路径解析
+│   ├── operation.py          操作配置快照和资源上下文
+│   ├── state.py              checkpoint 记忆命名空间
+│   ├── manager.py            操作内的记忆业务协调
+│   ├── memories/             日记、情景和语义记忆
+│   ├── store/                协议历史查询和记忆持久访问
 │   ├── tools/                长期记忆和日记查询工具
 │   └── tasks/                记忆插件自己的后台任务
 └── computer_use/
@@ -304,7 +319,7 @@ async def game_help(topic: Annotated[str, "需要查询的游戏帮助主题。"
 以下声明随当前会话的插件开关装配。插件 MCP 连接类型只包含参数，声明即随插件启用，无独立 `enabled` 字段。
 
 ```python
-from app.agent.plugins.base import BasePlugin, HookContext, PluginHook
+from app.agent.plugins.base import BasePlugin, HookContext, PluginContext, PluginHook
 from app.schemas.mcp import StdioMCPConnectionConfig
 from .tools.game_help import game_help
 
@@ -324,10 +339,11 @@ class GameHelperPlugin(BasePlugin):
         ),
     )
 
-    def __init__(self, **config) -> None:
+    def __init__(self, *, context: PluginContext, **config) -> None:
         """校验并保存用户设置。
 
         Args:
+            context (PluginContext): 当前 Agent 提供的会话配置快照和数据库工厂。
             **config (Any): 设置页保存的插件参数。
         """
         self.config = GameHelperConfig(**config)
@@ -432,6 +448,10 @@ agent_plugins:
 
 生产构造入口通过 `ChatSettingsService.prepare()` 取得会话设置和各插件准备结果。每个插件在同次准备中校验一次参数，再将独立副本交给 `resolve_mcp_servers(config)` 生成 MCP 声明；Agent 直接复用这些结果，初始化时创建启用的插件、注册钩子和本地工具，并连接已准备的插件 MCP。读取配置页继续保留待修正参数，不解析 MCP。连接管理器在异步等待后仍会根据最新会话参数复核连接配置。会话开关与参数用于下一次装配，执行和审批恢复仍复查当前权限。`GET /plugins/mcp-status/{session_id}` 只读查询连接状态，不触发连接，不返回参数或凭据。
 
+Agent 对所有插件统一调用 `plugin_class(context=plugin_context, **plugin_params)`。覆盖构造函数时，必须显式接收关键字参数 `context: PluginContext`；沿用基类构造函数的插件也能接受上下文。`plugin_params` 是用户保存的业务配置，与宿主运行依赖分开传递。
+
+`PluginContext` 定义在 `app.agent.plugins.base`，只有 `chat_settings` 和 `sqlite_factory` 两个字段。每个插件得到本次 Agent 配置的独立深拷贝，插件私有修改彼此隔离；配置更新由新建 Agent 使用。直接创建独立 Agent 时可以省略完整会话配置，此时 `chat_settings` 为 `None`，需要它的插件自行校验。`sqlite_factory` 提供宿主指定的数据库位置和连接配置，实际连接由插件操作或后台任务通过上下文管理器打开、关闭。框架按统一契约构造插件，具体业务对象由插件内部装配。
+
 ## 3 插件钩子
 
 ### 3.1 一个最小插件
@@ -489,8 +509,9 @@ class RequestLogPlugin(BasePlugin):
 
 ```mermaid
 flowchart TD
-    Input[新一批真人输入或持久通知] --> BeforeInput[BEFORE_ACTIVATION_INPUT_COMMIT]
-    BeforeInput --> SaveInput[追加输入并保存 checkpoint 与交付标记]
+    Input[新一批真人输入或持久通知] --> AppendInput[追加本次消息到内存状态]
+    AppendInput --> BeforeInput[BEFORE_ACTIVATION_INPUT_COMMIT]
+    BeforeInput --> SaveInput[保存消息、插件状态、checkpoint 与交付标记]
     SaveInput --> Invoke[ON_INVOKE]
     Invoke --> BeforeModel
 
@@ -526,8 +547,8 @@ flowchart TD
     class BeforeInput,Invoke,BeforeModel,AfterModel,BeforeTool,AfterTool,BeforeResponse,AfterResponse,Interrupt,ErrorHook hook;
 ```
 
-- 新输入开始执行时，先触发 `BEFORE_ACTIVATION_INPUT_COMMIT`，保存输入后触发 `ON_INVOKE`。审批恢复和本轮中途交付通知时继续原循环。
-- `BEFORE_ACTIVATION_INPUT_COMMIT` 读取本轮输入加入前的历史；输入和 checkpoint 保存成功后，`ON_INVOKE` 才能读取包含本轮输入的状态和本轮真人输入编号。
+- 新输入开始执行时，先将本次消息追加到内存状态，再触发 `BEFORE_ACTIVATION_INPUT_COMMIT`；保存输入后触发 `ON_INVOKE`。审批恢复和本轮中途交付通知时继续原循环。
+- `BEFORE_ACTIVATION_INPUT_COMMIT` 能读取包含本轮输入的内存状态，此时数据库仍是此前已提交的历史。输入和 checkpoint 保存成功后，`ON_INVOKE` 取得已提交状态及本轮真人输入编号。需要限定旧历史范围的插件可在前置钩子读取持久历史截止位置。
 - 两个钩子的 `context.data` 是同一个字典。插件可在提交前按自己的名称保存准备数据，`ON_INVOKE` 再读取；框架在执行 `ON_INVOKE` 前加入 `runtime_context`。输入保存失败时，执行在 `ON_INVOKE` 之前结束。
 - 一次模型输出可以包含多个工具调用，框架逐个处理。审批恢复回到原工具，已经触发过的 `BEFORE_TOOL` 会按保存的进度跳过；随后继续剩余工具和模型循环。
 - `BEFORE_TOOL` 按具体 `tool_call_id` 计算，同一工具名的两次调用分别处理。执行前审批尚未通过时该钩子尚未触发；直接拒绝的调用可以一次也不触发。只读准备后才需要审批的调用，钩子在准备前已触发，恢复后沿用记录。
@@ -1259,4 +1280,3 @@ async def execute(self, context: HookContext) -> None:  # 框架调用的插件�
 | 业务消息 | [messages.py](../app/agent/state/messages.py) |
 | 临时背景条目与设置、删除方法 | [model.py](../app/agent/state/model.py) |
 | 每次请求末尾的环境消息组装 | [_projection.py](../app/agent/context/_projection.py) |
-

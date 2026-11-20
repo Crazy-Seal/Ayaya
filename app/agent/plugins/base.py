@@ -11,6 +11,21 @@ from app.agent.state.model import AgentState
 from app.agent.tools.core.base import BaseTool
 from app.schemas.mcp import MCPConnectionConfig
 from app.repl.repl_api import ReplCapability
+from app.crud.sqlite_factory import SqliteFactory
+from app.schemas.chat_settings import ChatSettings
+
+
+@dataclass(frozen=True)
+class PluginContext:
+    """在插件装配时提供当前执行的配置快照和存储依赖。
+
+    Attributes:
+        sqlite_factory (SqliteFactory): 宿主提供的数据库位置和连接配置，连接由实际使用者打开并关闭。
+        chat_settings (ChatSettings | None): 当前 Agent 使用的独立会话配置快照；独立执行可省略。
+    """
+
+    sqlite_factory: SqliteFactory
+    chat_settings: ChatSettings | None = None
 
 
 class PluginHook(str, Enum):
@@ -21,7 +36,8 @@ class PluginHook(str, Enum):
 
     Attributes:
         BEFORE_ACTIVATION_INPUT_COMMIT (PluginHook): Agent 在新一轮真人或内部通知
-            输入追加前触发，用于准备上一批派生任务；原轮次恢复和中途通知不触发。
+            输入追加到内存后、持久提交前触发，用于准备随输入保存的插件状态和后续任务材料；
+            原轮次恢复和中途通知不触发。
         ON_INVOKE (PluginHook): 新一轮输入、协议历史和 Inbox 交付保存成功后触发，
             接收前置钩子准备的数据及 runtime_context；审批恢复沿用原轮次进度。
     """
@@ -76,7 +92,7 @@ class HookContext:
 
 
 class BasePlugin(ABC):
-    """插件基类。"""
+    """声明插件能力，框架以 Plugin(context=context, **config) 创建实例。"""
 
     name: str
     description: str = ""
@@ -85,6 +101,13 @@ class BasePlugin(ABC):
     priority: int = 100
     tools: tuple[type[BaseTool], ...] = ()
     mcp_servers: tuple[MCPConnectionConfig, ...] = ()
+
+    def __init__(self, *, context: PluginContext) -> None:
+        """接收宿主装配依赖，插件可覆盖构造函数读取自己的配置参数。
+
+        Args:
+            context (PluginContext): 当前执行的配置快照及数据库连接工厂。
+        """
 
     def create_tools(self) -> tuple[BaseTool, ...]:
         """为当前插件创建工具，依赖共享插件资源的工具由所属插件装配。
@@ -134,4 +157,4 @@ class BasePlugin(ABC):
         pass
 
 
-__all__ = ["BasePlugin", "HookContext", "PluginHook"]
+__all__ = ["BasePlugin", "PluginContext", "HookContext", "PluginHook"]

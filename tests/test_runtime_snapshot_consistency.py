@@ -1,7 +1,7 @@
 """用公开事件流验证状态查询和增量交付的并发顺序。"""
 from tests.runtime_support import runtime_hub, close_test_runtime
 from app.routes.agent import observe_runtime
-from app.schemas.runtime_types import AgentRunOutcome, AgentRunOutcomeKind
+from app.schemas.runtime_types import AgentRunOutcome, AgentRunOutcomeKind, CheckpointType
 from tests.runtime_support import build_test_scheduler
 from app.crud.sqlite_factory import SqliteFactory
 from tests.runtime_support import RuntimeAgentStub
@@ -131,7 +131,8 @@ def test_event_during_inbox_query_reaches_old_and_new_connection(
                 outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
                 await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": kwargs.get("origin_channel", "desktop"), "resumed": False}))
                 state = await self.manager.load()
-                await self.manager.commit_human_input(state, message, None, inputs=kwargs["inbox_inputs"])
+                self.manager.append_human_input(state, message, None, inputs=kwargs["inbox_inputs"])
+                await self.manager.save(state, checkpoint_type=CheckpointType.INTERMEDIATE, inbox_inputs=kwargs["inbox_inputs"])
                 await emit(AgentEvent(EventType.TEXT_CHUNK, "今天"))
                 await release_agent.wait()
                 control = kwargs["turn_control"]

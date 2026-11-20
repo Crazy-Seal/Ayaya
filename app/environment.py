@@ -116,31 +116,6 @@ def require_test_storage_path(path: Path, label: str) -> Path:
     return resolved
 
 
-def get_memory_base_dir() -> Path:
-    """解析 MEMORY_BASE_PATH 覆盖值，省略时使用当前数据根目录。
-
-    Returns:
-        Path: 经过测试隔离检查的记忆根目录。
-    """
-    configured = os.getenv("MEMORY_BASE_PATH", "").strip()
-    path = Path(configured) if configured else get_data_dir()
-    return require_test_storage_path(path, "MEMORY_BASE_PATH")
-
-
-def get_mem0_qdrant_dir(memory_base_dir: Path) -> Path:
-    """解析语义记忆向量目录，测试环境覆盖值仍须位于隔离数据目录内。
-
-    Args:
-        memory_base_dir (Path): 当前环境的记忆数据根目录。
-
-    Returns:
-        Path: Mem0/Qdrant 的当前持久目录。
-    """
-    configured = os.getenv("MEM0_QDRANT_PATH", "").strip()
-    path = Path(configured) if configured else memory_base_dir / "mem0" / "qdrant_data"
-    return require_test_storage_path(path, "MEM0_QDRANT_PATH")
-
-
 def get_chat_settings_file() -> Path:
     """选择会话设置 YAML，测试默认从隔离目录读取，生产默认从仓库 config 读取。
 

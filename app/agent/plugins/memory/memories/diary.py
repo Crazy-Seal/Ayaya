@@ -1,6 +1,7 @@
 """每日记忆：从协议日志生成和检索日记。"""
 
 from __future__ import annotations
+from functools import cached_property
 from app.crud.sqlite_factory import SqliteFactory
 
 from dataclasses import dataclass, field
@@ -9,10 +10,10 @@ from datetime import date
 from app.schemas.runtime_types import (
     DESKTOP_CHANNEL,
 )
-from app.agent.memory.config import MemoryConfig
-from app.agent.memory.materials import format_memory_notification
-from app.agent.memory.store.chat_history_store import ChatHistoryStore
-from app.agent.memory.store.diary_sqlite_store import DiarySqliteStore
+from app.agent.plugins.memory.config import MemoryConfig
+from app.agent.plugins.memory.materials import format_memory_notification
+from app.agent.plugins.memory.store.chat_history_store import ChatHistoryStore
+from app.agent.plugins.memory.store.diary_sqlite_store import DiarySqliteStore
 from app.agent.state.messages import (
     text_content, format_tool_arguments,
     AssistantMessage,
@@ -89,13 +90,7 @@ class DiaryMemory:
         self.chat_settings = chat_settings
         self.chat_history_store = chat_history_store
         self.store = DiarySqliteStore(config.sqlite_path, sqlite_factory=sqlite_factory)
-        self.llm = LLMClient(LLMConfig(
-            model=chat_settings.model_name,
-            api_key=chat_settings.openai_api_key,
-            base_url=chat_settings.openai_base_url,
-            temperature=0.2,
-            timeout=60.0,
-        ))
+
 
     async def prepare_generation(
         self, today: date, *, max_history_id: int | None = None
@@ -368,3 +363,22 @@ xxxxxxxxx，xxxxxxxxxxxxx......
             elif isinstance(message, ToolMessage):
                 lines.append(f"工具结果：{render_timed_text(message.text, message.created_at)}")
         return "\n".join(lines)
+
+    @cached_property
+    def llm(self) -> LLMClient:
+        """日记生成首次调用模型时创建客户端。"""
+        return LLMClient(LLMConfig(
+            model=self.chat_settings.model_name,
+            api_key=self.chat_settings.openai_api_key,
+            base_url=self.chat_settings.openai_base_url,
+            temperature=0.2,
+            timeout=60.0,
+        ))
+
+    async def close(self) -> None:
+        """关闭当前操作创建的模型和索引客户端。"""
+        from contextlib import AsyncExitStack
+        async with AsyncExitStack() as stack:
+            client = self.__dict__.pop("llm", None)
+            if client is not None:
+                stack.push_async_callback(client.close)

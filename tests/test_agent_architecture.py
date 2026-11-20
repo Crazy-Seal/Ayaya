@@ -23,7 +23,7 @@ from app.agent.core.pipeline import ExecutionPipeline
 from app.agent.core.plugin_manager import PluginManager
 from app.agent.core.tool_manager import ToolManager
 from app.agent.models.llm_client import StreamChunk, TokenUsage
-from app.agent.plugins.base import BasePlugin, HookContext, PluginHook
+from app.agent.plugins.base import BasePlugin, HookContext, PluginContext, PluginHook
 from app.agent.state import AgentState
 from app.agent.state.messages import ToolCall
 from app.agent.tools.core.base import BaseTool, ToolContext, ToolResult
@@ -320,7 +320,7 @@ def test_retained_pipeline_does_not_keep_agent_alive() -> None:
 def test_plugin_registration_does_not_require_or_retain_agent() -> None:
     """验证注册插件不要求或保留 Agent 引用。"""
     manager = PluginManager()
-    manager.register(_NoopPlugin())
+    manager.register(_NoopPlugin(context=PluginContext(SqliteFactory())))
 
     assert manager.list_plugins() == ["noop"]
     assert "_agent" not in vars(manager)
@@ -348,7 +348,7 @@ def test_model_close_failure_respects_state_connection_ownership(
             _config(), sqlite_factory=SqliteFactory(str(tmp_path / "owned.sqlite3")),
             llm_client=llm, session_state_manager=manager,
         )
-        agent.register_plugin(_NoopPlugin())
+        agent.register_plugin(_NoopPlugin(context=PluginContext(SqliteFactory())))
         closed = False
         original_close = agent.session_state_manager.close
 

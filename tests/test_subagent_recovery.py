@@ -80,7 +80,8 @@ def test_restart_preserves_child_progress_and_only_retires_non_reusable_identiti
                 retain, datetime.now(timezone.utc)), "崩溃前已交付的任务", "create")
             batch = await manager.read_activation_batch()
             state = await manager.load()
-            await manager.commit_runtime_inputs(state, None, batch)
+            manager.append_runtime_inputs(state, None, batch)
+            await manager.save(state, checkpoint_type=CheckpointType.INTERMEDIATE, inbox_inputs=batch)
             state.record_assistant_step("崩溃前已开始操作", (ToolCall("old-call", "operation", {}),))
             await manager.save(state, checkpoint_type=CheckpointType.INTERMEDIATE)
             await tasks.insert_running("old-run", "parent", name="subagent", title="旧委派", background=False,

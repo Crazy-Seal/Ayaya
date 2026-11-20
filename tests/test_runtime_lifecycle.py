@@ -1,7 +1,7 @@
 """通过持久输入、快照与生命周期入口验证退出后的执行意图作废。"""
 from tests.runtime_support import runtime_hub, close_test_runtime
 from app.routes.agent import observe_runtime
-from app.schemas.runtime_types import AgentRunOutcome, AgentRunOutcomeKind
+from app.schemas.runtime_types import AgentRunOutcome, AgentRunOutcomeKind, CheckpointType
 from tests.runtime_support import next_runtime_event
 from tests.runtime_support import build_test_scheduler
 from app.crud.sqlite_factory import SqliteFactory
@@ -55,7 +55,8 @@ def test_shutdown_retries_parent_resource_still_owned_by_session(tmp_path) -> No
                 """交付输入后等待应用退出取消执行。"""
                 outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
                 state = await self.manager.load()
-                await self.manager.commit_human_input(state, message, None, inputs=kwargs["inbox_inputs"])
+                self.manager.append_human_input(state, message, None, inputs=kwargs["inbox_inputs"])
+                await self.manager.save(state, checkpoint_type=CheckpointType.INTERMEDIATE, inbox_inputs=kwargs["inbox_inputs"])
                 await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False}))
                 entered.set()
                 await asyncio.Event().wait()

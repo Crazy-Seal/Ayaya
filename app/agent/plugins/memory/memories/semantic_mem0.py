@@ -6,19 +6,23 @@ import asyncio
 import logging
 import os
 from copy import copy
+from contextlib import ExitStack
+from pathlib import Path
 from datetime import datetime
-from functools import lru_cache
 from typing import Any
 
+# 本地记忆默认关闭 SDK 遥测，避免额外创建用户目录中的向量客户端。
+os.environ.setdefault("MEM0_TELEMETRY", "false")
 from mem0 import Memory
+from qdrant_client import QdrantClient
 
 from app.schemas.runtime_types import (
     DESKTOP_CHANNEL,
 )
-from app.agent.memory.base import MemoryItem
-from app.agent.memory.config import MemoryConfig
-from app.agent.memory.materials import compress_tool_results, format_memory_notification
-from app.agent.memory.memories.mem0_llm_compat import Mem0FactExtractionLLMAdapter
+from app.agent.plugins.memory.base import MemoryItem
+from app.agent.plugins.memory.config import MemoryConfig
+from app.agent.plugins.memory.materials import compress_tool_results, format_memory_notification
+from app.agent.plugins.memory.memories.mem0_llm_compat import Mem0FactExtractionLLMAdapter
 from app.agent.state.messages import (
     text_content, format_tool_arguments,
     AssistantMessage,
@@ -35,58 +39,56 @@ from app.schemas.message_types import MessageType
 logger = logging.getLogger(__name__)
 
 
-@lru_cache(maxsize=1)
-def _get_cached_mem0(
-    collection_name: str,
-    qdrant_path: str,
-    embedding_dimension: int,
-    embedding_model: str,
-    embedding_base_url: str,
-    embedding_api_key: str,
-) -> Memory:
-    """按模型、向量及存储配置复用 Mem0 客户端，供各次提取共享底层连接。
+def _create_mem0(config: MemoryConfig) -> Memory:
+    """按提交时的固定配置创建本次语义操作使用的 Mem0 客户端。
 
     Args:
-        collection_name (str): 当前会话独立使用的 Chroma 集合名称。
-        qdrant_path (str): 当前环境的 Mem0/Qdrant 持久目录。
-        embedding_dimension (int): 向量模型输出维数。
-        embedding_model (str): 该记录使用的向量模型名称。
-        embedding_base_url (str): 向量模型兼容接口地址。
-        embedding_api_key (str): 向量模型调用凭据，仅用于请求认证。
+        config (MemoryConfig): 环境配置和隔离存储路径快照。
+
+    Returns:
+        Memory: 当前操作独占的语义记忆客户端。
     """
     mem0_config: dict[str, Any] = {
         "vector_store": {
             "provider": "qdrant",
             "config": {
-                "collection_name": collection_name,
-                "path": qdrant_path,
-                "embedding_model_dims": embedding_dimension,
+                "collection_name": config.mem0_collection_name,
+                "path": config.mem0_qdrant_path,
+                "embedding_model_dims": config.embedding_dimension,
             }
         },
         "embedder": {
             "provider": "openai",
             "config": {
-                "model": embedding_model,
-                "embedding_dims": embedding_dimension,
-                "openai_base_url": embedding_base_url,
-                "api_key": embedding_api_key,
+                "model": config.embedding_model,
+                "embedding_dims": config.embedding_dimension,
+                "openai_base_url": config.embedding_base_url,
+                "api_key": config.embedding_api_key,
             }
         },
         "llm": {
             "provider": "openai",
             "config": {
-                "model": os.getenv("MEM0_EXTRACTION_MODEL", "gpt-4o"),
-                "openai_base_url": os.getenv("MEM0_EXTRACTION_BASE_URL", ""),
-                "api_key": os.getenv("MEM0_EXTRACTION_API_KEY", ""),
+                "model": config.semantic_extraction_model,
+                "openai_base_url": config.semantic_extraction_base_url,
+                "api_key": config.semantic_extraction_api_key,
                 "temperature": 0.0,
                 # 为事实提取和更新动作预留完整 JSON 的输出空间。
                 "max_tokens": 8192,
             }
         },
         "version": "v1.1",
+        "history_db_path": str(Path(config.mem0_qdrant_path).parent / "history.db"),
     }
 
-    return Memory.from_config(mem0_config)
+    # 1. 先取得本地目录的客户端所有权，SDK 装配失败时也能立即释放文件锁。
+    client = QdrantClient(path=config.mem0_qdrant_path)
+    mem0_config["vector_store"]["config"]["client"] = client
+    try:
+        return Memory.from_config(mem0_config)
+    except BaseException:
+        client.close()
+        raise
 
 
 class Mem0SemanticMemory:
@@ -118,15 +120,8 @@ class Mem0SemanticMemory:
         self._memory = self._init_mem0()
 
     def _init_mem0(self) -> Memory:
-        """按当前记忆配置取得共享 Mem0 实例，会话范围由后续记忆操作指定。"""
-        return _get_cached_mem0(
-            collection_name=self.config.mem0_collection_name,
-            qdrant_path=self.config.mem0_qdrant_path,
-            embedding_dimension=self.config.embedding_dimension,
-            embedding_model=self.config.embedding_model,
-            embedding_base_url=self.config.embedding_base_url,
-            embedding_api_key=self.config.embedding_api_key,
-        )
+        """按本次配置创建操作内 Mem0 实例，会话范围由后续记忆操作指定。"""
+        return _create_mem0(self.config)
 
     # ==================== 核心方法 ====================
 
@@ -187,7 +182,7 @@ class Mem0SemanticMemory:
         )
 
         try:
-            # 3.1. 为本次调用复制配置并绑定角色提示词及正文，底层存储和模型连接继续复用。
+            # 3.1. 为本次提取绑定角色提示词及正文，副本沿用当前操作拥有的连接。
             memory = copy(self._memory)
             memory.config = copy(self._memory.config)
             memory.config.custom_fact_extraction_prompt = extraction_prompt
@@ -405,3 +400,19 @@ class Mem0SemanticMemory:
                 mem0_messages.append(converted)
 
         return mem0_messages
+
+    async def close(self) -> None:
+        """等待同步关闭完成，释放历史库、向量客户端和模型网络连接。"""
+        await complete_owned_work(asyncio.to_thread(self._close_clients))
+
+    def _close_clients(self) -> None:
+        """逐项关闭当前 Mem0 对象拥有的连接，一项失败后仍清理剩余连接。"""
+        memory = self._memory
+        with ExitStack() as stack:
+            stack.callback(memory.close)
+            stack.callback(memory.vector_store.client.close)
+            stack.callback(memory.llm.client.close)
+            stack.callback(memory.embedding_model.client.close)
+            telemetry_store = getattr(memory, "_telemetry_vector_store", None)
+            if telemetry_store is not None:
+                stack.callback(telemetry_store.client.close)

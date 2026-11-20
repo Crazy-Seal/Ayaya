@@ -4,18 +4,19 @@ from app.crud.sqlite_factory import SqliteFactory
 import asyncio
 import logging
 from datetime import date, datetime, timedelta
-from functools import lru_cache
+from functools import cached_property
+from contextlib import AsyncExitStack
 from typing import Any
 
-from app.agent.memory.base import MemoryExtractionError
-from app.agent.memory.config import MemoryConfig
-from app.agent.memory.memories.episodic import EpisodicMemory
-from app.agent.memory.memories.semantic_mem0 import Mem0SemanticMemory
-from app.agent.memory.memories.diary import DiaryGeneration, DiaryMemory
-from app.agent.memory.store.chat_history_store import ChatHistoryStore
+from app.agent.plugins.memory.base import MemoryExtractionError
+from app.agent.plugins.memory.config import MemoryConfig
+from app.agent.plugins.memory.memories.episodic import EpisodicMemory
+from app.agent.plugins.memory.memories.semantic_mem0 import Mem0SemanticMemory
+from app.agent.plugins.memory.memories.diary import DiaryGeneration, DiaryMemory
+from app.agent.plugins.memory.store.chat_history_store import ChatHistoryStore
 from app.agent.state.messages import BaseMessage
-from app.crud.chat_settings_dao import ChatSettingsDao
-from app.schemas.chat_settings import MEMORY_DEFAULT_CONFIG, ChatSettings
+from app.schemas.chat_settings import ChatSettings
+from app.agent.plugins.memory.config import MemoryPluginConfig
 
 logger = logging.getLogger(__name__)
 
@@ -37,63 +38,60 @@ class MemoryManager:
     def __init__(
         self,
         session_id: str,
-        config: MemoryConfig | None = None,
-        chat_settings: ChatSettings | None = None,
-        *, sqlite_factory: SqliteFactory,
+        config: MemoryConfig,
+        chat_settings: ChatSettings,
+        *, sqlite_factory: SqliteFactory, options: MemoryPluginConfig,
     ):
-        """读取当前会话记忆配置，仅装配启用的日记、情景和语义记忆；全部禁用时不创建历史查询对象。
+        """保存本次操作的显式配置，首次使用某类记忆时才装配对应资源。
 
         Args:
             session_id (str): 当前操作所属的会话编号。
-            config (MemoryConfig | None): 调用方提供的配置。
-            chat_settings (ChatSettings | None): 当前会话的模型、角色及插件设置。
+            config (MemoryConfig): 提交时解析的环境和存储配置。
+            chat_settings (ChatSettings): 当前会话的独立模型和角色快照。
             sqlite_factory (SqliteFactory): 应用装配提供的 SQLite 连接配置。
+            options (MemoryPluginConfig): 本次操作明确选择的记忆能力范围。
         """
         self.session_id = session_id
-        self.config = config or MemoryConfig.from_env()
-        if chat_settings:
-            self.chat_settings = chat_settings
-        else:
-            self.chat_settings = ChatSettingsDao().get_chat_settings(session_id)
-        self.memory_options = self._memory_options()
+        self.config = config
+        self.chat_settings = chat_settings
+        self._sqlite_factory = sqlite_factory
+        self.options = options
 
-        needs_protocol_log = any(
-            self.memory_options.get(key, True)
-            for key in ("enable_diary", "enable_episodic", "enable_semantic")
-        )
-        self.chat_history_store = (
-            ChatHistoryStore(
-                timezone=self.config.timezone,
-                day_boundary_hour=self.config.day_boundary_hour,
-                sqlite_factory=sqlite_factory,
-            )
-            if needs_protocol_log
-            else None
-        )
-        if self.memory_options.get("enable_diary", True):
-            assert self.chat_history_store is not None
-            self.diary_memory = DiaryMemory(
-                session_id,
-                self.config,
-                self.chat_settings,
-                self.chat_history_store,
-                sqlite_factory=sqlite_factory,
-            )
-        else:
-            self.diary_memory = None
-        self.episodic_memory = (
-            EpisodicMemory(session_id, self.config, self.chat_settings, sqlite_factory=sqlite_factory)
-            if self.memory_options.get("enable_episodic", True)
-            else None
-        )
+    @cached_property
+    def chat_history_store(self) -> ChatHistoryStore:
+        """首次读取历史时创建查询对象，具体 SQLite 连接由单次查询拥有。"""
+        return ChatHistoryStore(timezone=self.config.timezone, day_boundary_hour=self.config.day_boundary_hour,
+                                sqlite_factory=self._sqlite_factory)
 
-        # 初始化语义记忆
-        if not self.memory_options.get("enable_semantic", True):
-            self.semantic_memory = None
-        else:
-            self.semantic_memory = Mem0SemanticMemory(
-                session_id, self.config, self.chat_settings
-            )
+    @cached_property
+    def diary_memory(self) -> DiaryMemory | None:
+        """首次读写日记时装配日记业务对象，模型客户端在生成时创建。"""
+        if self.options.enable_diary:
+            return DiaryMemory(self.session_id, self.config, self.chat_settings, self.chat_history_store,
+                               sqlite_factory=self._sqlite_factory)
+        return None
+
+    @cached_property
+    def episodic_memory(self) -> EpisodicMemory | None:
+        """首次处理情景记忆时创建当前操作独占的索引与存储。"""
+        if self.options.enable_episodic:
+            return EpisodicMemory(self.session_id, self.config, self.chat_settings, sqlite_factory=self._sqlite_factory)
+        return None
+
+    @cached_property
+    def semantic_memory(self) -> Mem0SemanticMemory | None:
+        """首次处理语义记忆时创建当前操作独占的 Mem0 客户端。"""
+        if self.options.enable_semantic:
+            return Mem0SemanticMemory(self.session_id, self.config, self.chat_settings)
+        return None
+
+    async def close(self) -> None:
+        """关闭本次已经使用的记忆能力，一项关闭失败时继续清理其余资源。"""
+        async with AsyncExitStack() as stack:
+            for name in ("diary_memory", "episodic_memory", "semantic_memory"):
+                resource = self.__dict__.pop(name, None)
+                if resource is not None:
+                    stack.push_async_callback(resource.close)
 
     # ==================== 核心方法 ====================
 
@@ -125,6 +123,8 @@ class MemoryManager:
         # 1. 固定本次交付列表；两个提取器分别接收列表副本，预算处理不影响另一方。
         messages = list(messages)
         history = list(history or [])
+        enable_episodic = enable_episodic and self.options.enable_episodic
+        enable_semantic = enable_semantic and self.options.enable_semantic
 
         async def process_episodic() -> tuple[int, str | None]:
             """交付当前批次给情景提取器，保留已保存数量和失败原因。
@@ -132,10 +132,13 @@ class MemoryManager:
             Returns:
                 tuple[int, str | None]: 本次保存数量和可选错误摘要。
             """
-            if not enable_episodic or self.episodic_memory is None:
+            if not enable_episodic:
                 return 0, None
             try:
-                episodic_ids = await self.episodic_memory.add(list(messages), list(history))
+                memory = self.episodic_memory
+                if memory is None:
+                    return 0, None
+                episodic_ids = await memory.add(list(messages), list(history))
                 return len(episodic_ids), None
             except MemoryExtractionError as e:
                 return e.saved_count, str(e)
@@ -149,20 +152,28 @@ class MemoryManager:
             Returns:
                 tuple[int, str | None]: 本次处理数量和可选错误摘要。
             """
-            if not enable_semantic or self.semantic_memory is None:
+            if not enable_semantic:
                 return 0, None
             try:
-                semantic_ids = await self.semantic_memory.add(list(messages), list(history))
+                memory = self.semantic_memory
+                if memory is None:
+                    return 0, None
+                semantic_ids = await memory.add(list(messages), list(history))
                 return len(semantic_ids), None
             except Exception as e:
                 logger.warning("[MemoryManager] 语义记忆处理失败: %s", e)
                 return 0, str(e)
 
-        # 2. 并行等待启用的提取器完成，保持两项结果和异常处理相互独立。
+        # 2. 两项提取均结束后再传播取消或错误，让操作退出时能够安全关闭资源。
         episodic_result, semantic_result = await asyncio.gather(
             process_episodic(),
             process_semantic(),
+            return_exceptions=True,
         )
+        if isinstance(episodic_result, BaseException):
+            raise episodic_result
+        if isinstance(semantic_result, BaseException):
+            raise semantic_result
 
         episodic_count, episodic_error = episodic_result
         semantic_count, semantic_error = semantic_result
@@ -170,18 +181,14 @@ class MemoryManager:
         if episodic_error is not None or semantic_error is not None:
             details = []
             for label, verb, count, error, enabled in (
-                ("情景记忆", "已保存", episodic_count, episodic_error,
-                 enable_episodic and self.episodic_memory is not None),
-                ("语义记忆", "处理", semantic_count, semantic_error,
-                 enable_semantic and self.semantic_memory is not None),
+                ("情景记忆", "已保存", episodic_count, episodic_error, enable_episodic),
+                ("语义记忆", "处理", semantic_count, semantic_error, enable_semantic),
             ):
                 text = f"{verb} {count} 条" if enabled else "未启用"
                 if error is not None:
                     text += f"，失败：{error}"
                 details.append(f"{label}：{text}")
-            enabled_count = int(enable_episodic and self.episodic_memory is not None) + int(
-                enable_semantic and self.semantic_memory is not None
-            )
+            enabled_count = int(enable_episodic) + int(enable_semantic)
             error_count = int(episodic_error is not None) + int(semantic_error is not None)
             status = "部分失败" if error_count < enabled_count else "失败"
             raise RuntimeError(f"长期记忆提取{status}；" + "；".join(details))
@@ -312,9 +319,8 @@ class MemoryManager:
             str: 格式化的记忆文本
         """
         results = []
-        memory_options = self._memory_options()
-        enable_episodic = bool(memory_options.get("enable_episodic", True))
-        enable_semantic = bool(memory_options.get("enable_semantic", True))
+        enable_episodic = self.options.enable_episodic
+        enable_semantic = self.options.enable_semantic
 
         async def search_episodic():
             """由本次并行检索调用，只在情景记忆启用且请求类型匹配时查询。
@@ -348,12 +354,18 @@ class MemoryManager:
                 logger.warning("[MemoryManager] 语义记忆检索失败: %s", e)
                 return []
 
-        # 并行检索
+        # 1. 两项检索均结束后再传播错误，保持资源和目录锁覆盖全部查询工作。
         episodic, semantic = await asyncio.gather(
             search_episodic(),
             search_semantic(),
+            return_exceptions=True,
         )
+        if isinstance(episodic, BaseException):
+            raise episodic
+        if isinstance(semantic, BaseException):
+            raise semantic
 
+        # 2. 沿用两类记忆的展示格式，语义查询失败仍由对应分支处理。
         results.extend([f"[情景记忆] {m.content}（{m.timestamp.strftime('%Y-%m-%d')}）" for m in episodic])
         results.extend([f"[语义记忆] {m.content}" for m in semantic])
 
@@ -397,33 +409,3 @@ class MemoryManager:
         if now.hour < self.config.day_boundary_hour:
             return (now - timedelta(days=1)).date()
         return now.date()
-
-    def _memory_options(self) -> dict[str, Any]:
-        """将记忆默认配置与会话插件配置合并，整个插件禁用时关闭三种记忆能力。
-
-        Returns:
-            dict[str, Any]: 本次使用的日记、情景和语义记忆开关及配置副本。
-        """
-        memory = (self.chat_settings.agent_plugins or {}).get("memory")
-        config = dict(MEMORY_DEFAULT_CONFIG)
-        if memory:
-            config.update(memory.config)
-            if not memory.enabled:
-                config["enable_diary"] = False
-                config["enable_episodic"] = False
-                config["enable_semantic"] = False
-        return config
-
-# ==================== 工厂函数 ====================
-
-@lru_cache(maxsize=32)
-def get_memory_manager(session_id: str, sqlite_factory: SqliteFactory) -> MemoryManager:
-    """获取或创建 MemoryManager 实例（带缓存）。
-
-    Args:
-        session_id (str): 当前操作所属的会话编号。
-        sqlite_factory (SqliteFactory): 应用装配提供的 SQLite 连接配置。
-    """
-    config = MemoryConfig.from_env()
-    chat_settings = ChatSettingsDao().get_chat_settings(session_id)
-    return MemoryManager(session_id, config, chat_settings, sqlite_factory=sqlite_factory)

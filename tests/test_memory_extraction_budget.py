@@ -10,10 +10,10 @@ from unittest.mock import Mock
 
 import pytest
 
-from app.agent.memory.config import MemoryConfig
-from app.agent.memory.manager import MemoryManager
-from app.agent.memory.memories.episodic import EpisodicMemory
-from app.agent.memory.memories.semantic_mem0 import Mem0SemanticMemory
+from app.agent.plugins.memory.config import MemoryConfig, MemoryPluginConfig
+from app.agent.plugins.memory.manager import MemoryManager
+from app.agent.plugins.memory.memories.episodic import EpisodicMemory
+from app.agent.plugins.memory.memories.semantic_mem0 import Mem0SemanticMemory
 from app.agent.state.messages import AssistantMessage, BaseMessage, HumanMessage, ToolCall, ToolMessage
 
 
@@ -155,6 +155,7 @@ def test_manager_respects_each_extractor_budget_and_only_coordinates_results() -
         episodic, semantic = make_extractors(1)
         semantic.config = MemoryConfig(extraction_max_context_tokens=100_000)
         manager = object.__new__(MemoryManager)
+        manager.options = MemoryPluginConfig()
         manager.episodic_memory = episodic
         manager.semantic_memory = semantic
         messages, history = extraction_messages()
@@ -184,6 +185,7 @@ def test_disabled_extractor_does_not_prepare_or_send_material(disabled: str) -> 
         else:
             del semantic.config
         manager = object.__new__(MemoryManager)
+        manager.options = MemoryPluginConfig()
         manager.episodic_memory = episodic
         manager.semantic_memory = semantic
         messages, history = extraction_messages()
@@ -204,6 +206,7 @@ def test_material_preparation_failure_does_not_prevent_other_extraction() -> Non
         episodic, semantic = make_extractors(1)
         del episodic.chat_settings
         manager = object.__new__(MemoryManager)
+        manager.options = MemoryPluginConfig()
         manager.episodic_memory = episodic
         manager.semantic_memory = semantic
         messages, history = extraction_messages()

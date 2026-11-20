@@ -1,3 +1,6 @@
+from tests.memory_support import bind_memory_manager
+from tests.memory_support import memory_count, set_memory_count
+from tests.memory_support import make_memory_plugin
 from app.schemas.runtime_types import AgentRunOutcomeKind, InterruptKind
 from app.agent.state.manager import RequiredSaveError
 from tests.runtime_support import collect_agent_result
@@ -22,7 +25,7 @@ from app.agent.runtime.turn_control import TurnControl
 from app.agent.context import ContextStrategyConfig, ModelInputCoordinator
 from app.agent.core.events import EventType
 from app.agent.core.pipeline import ExecutionPipeline
-from app.agent.plugins.base import BasePlugin, HookContext, PluginHook
+from app.agent.plugins.base import BasePlugin, HookContext, PluginContext, PluginHook
 from app.agent.plugins.memory.memory import MemoryPlugin
 from app.agent.state.manager import CheckpointType, SessionStateManager
 from app.agent.state.messages import (AssistantMessage, HumanMessage, ImageContent, ToolMessage, ToolCall, ToolMessage)
@@ -284,7 +287,7 @@ def test_all_interrupt_paths_save_hook_updates_before_emitting(
         agent = await make_agent(db_path, [calls], PhasedInterruptTool())
         plugin = InterruptRecordingPlugin()
         if plugin_fails:
-            agent.register_plugin(FailingInterruptPlugin())
+            agent.register_plugin(FailingInterruptPlugin(context=PluginContext(SqliteFactory())))
         agent.register_plugin(plugin)
         reader = SessionStateManager("checkpoint-test", sqlite_factory=SqliteFactory(str(db_path)))
 
@@ -312,7 +315,7 @@ def test_all_interrupt_paths_save_hook_updates_before_emitting(
                         ["second"] if expected_call == "first" else []
                     )
                     assert not saved.pending_tool_calls
-                    assert saved.long_term_memory_turn_counter == 1
+                    assert memory_count(saved) == 1
             outcome = await operation(*arguments, emit=receive)
             assert outcome.kind == AgentRunOutcomeKind.INTERRUPTED
             assert events[-1].type == EventType.INTERRUPT
@@ -447,6 +450,8 @@ async def make_agent(
         llm_client=llm_client, plugin_runtime_factory=plugin_runtime_factory,
     )
     agent.tool_manager.register(tool)
+    agent.register_plugin(make_memory_plugin(sqlite_factory=SqliteFactory(db_path), enable_diary=False,
+                                              enable_episodic=False, enable_semantic=False))
     return agent
 
 
@@ -663,7 +668,7 @@ class CommitOrderPlugin(BasePlugin):
         if context.hook == PluginHook.BEFORE_RESPONSE_COMMIT:
             self.order.append("before_commit")
             context.data["prepared"] = True
-            context.agent_state.long_term_memory_turn_counter += 1
+            set_memory_count(context.agent_state, memory_count(context.agent_state) + 1)
         elif context.hook == PluginHook.AFTER_RESPONSE_COMMIT:
             assert context.data == {"prepared": True}
             self.order.append("after_commit")
@@ -703,9 +708,9 @@ class ActivationInputCommitOrderPlugin(BasePlugin):
         Args:
             context (HookContext): Agent 分发的激活提交上下文。
         """
-        # 1. 输入前置钩子读取旧历史，准备的数据交给 ON_INVOKE 继续检查。
+        # 1. 提交前钩子读取已追加的本轮输入，准备的数据交给 ON_INVOKE 继续检查。
         if context.hook == PluginHook.BEFORE_ACTIVATION_INPUT_COMMIT:
-            assert not any(
+            assert any(
                 isinstance(message, HumanMessage) and message.text == "本轮新输入"
                 for message in context.agent_state.messages
             )
@@ -918,8 +923,8 @@ def test_failed_user_input_commit_keeps_pending_long_term_memory_batch(
         Args:
             agent (Agent): 本用例创建的 Agent 对象。
         """
-        plugin = MemoryPlugin(enable_diary=False, sqlite_factory=SqliteFactory())
-        monkeypatch.setattr(plugin, "_mm", lambda state: MemoryManager())
+        plugin = make_memory_plugin(enable_diary=False, sqlite_factory=SqliteFactory())
+        bind_memory_manager(monkeypatch, lambda self, session: MemoryManager())
         agent.plugin_manager.register(plugin)
 
     supervisor = None
@@ -940,7 +945,7 @@ def test_failed_user_input_commit_keeps_pending_long_term_memory_batch(
             state = AgentState.create_new("checkpoint-test")
             state.add_user_message("已完成的输入")
             state.add_assistant_message("已完成的回复")
-            state.long_term_memory_turn_counter = 10
+            set_memory_count(state, 10)
             await seed.save(state, checkpoint_type="completed")
         finally:
             await seed.close()
@@ -975,9 +980,7 @@ def test_failed_user_input_commit_keeps_pending_long_term_memory_batch(
 
         persisted = SessionStateManager("checkpoint-test", sqlite_factory=SqliteFactory(str(db_path)))
         try:
-            counter_after_failure = (
-                await persisted.load()
-            ).long_term_memory_turn_counter
+            counter_after_failure = memory_count(await persisted.load())
         finally:
             await persisted.close()
 
@@ -992,9 +995,7 @@ def test_failed_user_input_commit_keeps_pending_long_term_memory_batch(
         try:
             events = await collect_agent_events(retry_agent.run, '第二次重试')
             assert events[-1].type == EventType.DONE
-            counter_after_retry = (
-                await retry_agent.session_state_manager.load()
-            ).long_term_memory_turn_counter
+            counter_after_retry = memory_count(await retry_agent.session_state_manager.load())
         finally:
             await retry_agent.close()
 
@@ -1052,7 +1053,7 @@ def test_completed_checkpoint_failure_skips_after_commit_hook(tmp_path: Path) ->
         manager = SessionStateManager("checkpoint-test", sqlite_factory=SqliteFactory(str(db_path)))
         try:
             persisted = await manager.load()
-            return order, persisted.long_term_memory_turn_counter
+            return order, memory_count(persisted)
         finally:
             await manager.close()
 
@@ -1089,7 +1090,7 @@ def test_completed_tool_results_survive_later_llm_failure(tmp_path: Path) -> Non
             tool_messages = [item for item in state.messages if isinstance(item, ToolMessage)]
             assert [item.text for item in tool_messages] == ["完成 A", "完成 B", "完成 C"]
             assert state.pending_tool_calls == ()
-            assert state.long_term_memory_turn_counter == 1
+            assert memory_count(state) == 1
             assert await checkpoint_types(agent.session_state_manager) == ["completed"]
         finally:
             await agent.close()
@@ -1118,7 +1119,7 @@ def test_new_message_after_llm_failure_counts_each_committed_human_input(tmp_pat
             outcome, events = await collect_agent_result(first_agent.run, 'first human message')
             assert outcome.kind == AgentRunOutcomeKind.FAILED
             failed_state = await first_agent.session_state_manager.load()
-            assert failed_state.long_term_memory_turn_counter == 1
+            assert memory_count(failed_state) == 1
         finally:
             await first_agent.close()
 
@@ -1131,7 +1132,7 @@ def test_new_message_after_llm_failure_counts_each_committed_human_input(tmp_pat
             events = await collect_agent_events(second_agent.run, 'please continue')
             assert events[-1].type == EventType.DONE
             completed_state = await second_agent.session_state_manager.load()
-            assert completed_state.long_term_memory_turn_counter == 2
+            assert memory_count(completed_state) == 2
         finally:
             await second_agent.close()
 

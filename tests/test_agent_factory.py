@@ -19,7 +19,7 @@ def _settings(agent_plugins=None, context_strategy=None):
         openai_base_url="http://127.0.0.1:1/v1",
         temperature=0.1,
         system_prompt="test",
-        agent_plugins=agent_plugins,
+        agent_plugins=agent_plugins or {},
         context_strategy=context_strategy or ContextStrategyConfig(compression_trigger_tokens_k=100),
         name="Ayaya",
         feature="温柔",
@@ -29,7 +29,7 @@ def _settings(agent_plugins=None, context_strategy=None):
     )
 
 
-def test_memory_plugin_owns_image_processing(monkeypatch, repl_service) -> None:
+def test_agent_factory_leaves_missing_plugins_disabled(monkeypatch, repl_service) -> None:
     """验证图片处理由记忆插件负责。
 
     Args:
@@ -42,18 +42,15 @@ def test_memory_plugin_owns_image_processing(monkeypatch, repl_service) -> None:
         "Agent",
         lambda config, sqlite_factory, **kwargs: captured.update(kwargs) or SimpleNamespace(config=config, register_tool=lambda _: None),
     )
-    settings = _settings()
+    from app.services.chat_settings_service import ChatSettingsService
+    from app.crud.chat_settings_dao import ChatSettingsDao
+    settings = ChatSettingsService(ChatSettingsDao()).prepare(_settings()).settings
 
     config = agent_factory.build_agent(settings, sqlite_factory=SqliteFactory(), repl_service=repl_service).config
 
     assert config.context_strategy.compression_trigger_tokens_k == 100
     assert captured["chat_settings"] is settings
-    assert config.plugins == [{"name": "memory", "config": {
-        "enable_diary": True,
-        "enable_episodic": True,
-        "enable_semantic": True,
-        "long_term_memory_every_human_messages": 10,
-    }}]
+    assert config.plugins == []
 
 
 def test_agent_factory_uses_top_level_context_strategy(monkeypatch, repl_service) -> None:

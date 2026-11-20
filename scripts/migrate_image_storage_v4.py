@@ -19,7 +19,9 @@ from uuid import uuid4
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.agent.state.messages import ImageContent, TextContent, message_from_history
-from app.agent.state.model import AgentState, CHECKPOINT_SCHEMA_VERSION
+from scripts.legacy_checkpoint_validation import validate_legacy_checkpoint
+
+CHECKPOINT_SCHEMA_VERSION = 4
 from app.agent.utils.domain.images import resolve_image_path
 from app.schemas.agent_storage import AgentStorageScope
 from app.schemas.message_types import LEGACY_TOOL_NOTICE_KIND, MediaKind
@@ -202,7 +204,7 @@ class _ImageFiles:
                     pictures.append(converted)
             item["images"] = pictures
         result["schema_version"] = CHECKPOINT_SCHEMA_VERSION
-        AgentState.from_checkpoint(result)
+        validate_legacy_checkpoint(result)
         return result
 
     def write_targets(self) -> int:
@@ -266,7 +268,7 @@ def _validate_written_records(db: sqlite3.Connection) -> None:
     """
     for scope in AgentStorageScope:
         for (payload,) in db.execute(f"SELECT state_json FROM {scope.checkpoints_table}"):
-            AgentState.from_checkpoint(json.loads(payload))
+            validate_legacy_checkpoint(json.loads(payload))
         for payload, kind, message_type, message_id, created_at in db.execute(
                 f"SELECT message_json,record_kind,message_type,message_id,created_at FROM {scope.messages_table}"):
             if kind != LEGACY_TOOL_NOTICE_KIND:
