@@ -162,6 +162,8 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         application.state.subagent_service = subagents
         hub = InteractionEventHub(subscriptions=subscriptions)
         application.state.interaction_event_hub = hub
+        # 2.1. 准备 Python 和终端工具共用的工作目录，再装配执行入口。
+        WORKDIR.mkdir(exist_ok=True)
         repl = ReplService(workdir=WORKDIR, on_event=create_repl_plugin_event_handler(supervisor, runtime_queue))
         application.state.repl_service = repl
         scheduler = create_runtime_scheduler(supervisor, runtime_queue, sqlite_factory=sqlite_factory,

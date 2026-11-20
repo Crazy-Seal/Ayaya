@@ -1,7 +1,6 @@
 from pathlib import Path
 
 WORKDIR = Path.cwd() / "agent_workspace"
-WORKDIR.mkdir(exist_ok=True)
 
 def safe_path(p: str) -> Path:
     """把工具相对路径解析到 Agent 工作区，并拒绝解析后越过工作区的路径。
