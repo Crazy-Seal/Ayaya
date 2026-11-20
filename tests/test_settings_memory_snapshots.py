@@ -9,7 +9,7 @@ import pytest
 
 from app.agent.plugins.memory import MemoryPlugin
 from app.agent.plugins.base import PluginContext
-import app.dependencies as dependencies
+from app.agent.tools.authorization.catalog import LocalToolCatalogAdapter, MCPToolCatalogAdapter, UnifiedToolCatalog
 from app.agent.tools.authorization.manager import ToolAuthorization
 from app.agent.tools.authorization.models import (
     AuthorizationRequired, Granted, ToolDescriptor, ToolIdentity, ToolInvocation,
@@ -214,7 +214,7 @@ class ConnectionProbe:
 def permission_service(
     chat_dao: ChatSettingsDao, tmp_path: Path,
 ) -> tuple[ToolPermissionService, SettingsMutationCoordinator]:
-    """使用生产工厂装配权限服务，让测试能够控制与其他配置写入共用的锁。
+    """显式装配权限服务，让测试能够控制与其他配置写入共用的锁。
 
     Args:
         chat_dao (ChatSettingsDao): 本用例隔离的会话配置存储。
@@ -226,9 +226,11 @@ def permission_service(
     mcp_dao = MCPSettingsDao(tmp_path / "mcp_servers.yaml")
     mcp_dao.save(MCPServersConfig())
     coordinator = SettingsMutationCoordinator()
-    return dependencies.get_tool_permission_service(
-        chat_dao, mcp_dao, ConnectionProbe(), coordinator,
-    ), coordinator
+    catalog = UnifiedToolCatalog(
+        LocalToolCatalogAdapter(PluginService().local_tools),
+        MCPToolCatalogAdapter(mcp_dao, ConnectionProbe()),
+    )
+    return ToolPermissionService(chat_dao, catalog, coordinator), coordinator
 
 
 @pytest.mark.asyncio
@@ -434,13 +436,15 @@ async def test_mcp_without_saved_chat_changes_preserves_memory_cache(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("write_fails", [False, True])
 async def test_wired_tool_permissions_preserve_submitted_memory_snapshot(
-    chat_dao: ChatSettingsDao, monkeypatch: pytest.MonkeyPatch, write_fails: bool,
+    chat_dao: ChatSettingsDao, permission_service: tuple[ToolPermissionService, SettingsMutationCoordinator],
+    monkeypatch: pytest.MonkeyPatch, write_fails: bool,
 ) -> None:
-    """通过生产装配的服务修改权限，校验新权限生效且保留已提交的记忆快照。
+    """通过显式装配的服务修改权限，校验新权限生效且保留已提交的记忆快照。
 
     Args:
         chat_dao (ChatSettingsDao): 本用例隔离的会话配置存储。
-        monkeypatch (pytest.MonkeyPatch): 替换生产装配依赖并按需注入写入失败。
+        permission_service (tuple): 使用同一配置存储的权限服务及写入协调器。
+        monkeypatch (pytest.MonkeyPatch): 按需注入配置写入失败。
         write_fails (bool): 是否拒绝配置文件写入。
     """
     def fail_save(data: dict) -> None:
@@ -454,15 +458,11 @@ async def test_wired_tool_permissions_preserve_submitted_memory_snapshot(
         """
         raise OSError("保存失败")
 
-    mcp_dao = MCPSettingsDao(chat_dao.config_file.with_name("mcp_servers.yaml"))
-    mcp_dao.save(MCPServersConfig())
     previous = memory_snapshot(chat_dao, "session", _memory_sqlite_factory)
     if write_fails:
         monkeypatch.setattr(chat_dao, "_save_chat_settings_file", fail_save)
-    # 1. 使用生产工厂装配服务，读取和保存全部指向本用例的隔离配置。
-    service = dependencies.get_tool_permission_service(
-        chat_dao, mcp_dao, ConnectionProbe(), SettingsMutationCoordinator(),
-    )
+    # 1. 服务与记忆快照使用本用例的隔离配置，写入失败后仍可验证旧配置。
+    service, _ = permission_service
     if write_fails:
         with pytest.raises(OSError, match="保存失败"):
             await service.set_policies("session", {"local:read_file": ToolPolicy.DENY})

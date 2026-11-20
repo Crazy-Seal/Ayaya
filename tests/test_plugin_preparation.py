@@ -106,29 +106,21 @@ def test_preparation_reuses_validated_config_and_mcp_declarations(tmp_path, monk
     # 1. 从生产装配入口再准备一次，验证交给 Agent 的参数与 MCP 声明来自同次结果。
     from types import SimpleNamespace
     import asyncio
-    from app import dependencies
-    from app.agent.runtime import agent_factory
+    from app.agent.runtime import agent_factory, runtime_factory
     from app.agent.core.tool_manager import ToolManager
     from app.crud.sqlite_factory import SqliteFactory
 
-    for name, value in {
-        "get_chat_settings_dao": dao,
-        "get_mcp_settings_dao": object(),
-        "get_mcp_connection_manager": SimpleNamespace(disconnect_plugin=lambda session_id: None),
-        "get_tool_authorization": object(),
-        "get_settings_mutation_coordinator": service.mutation_coordinator,
-        "get_channel_subscription_service": object(),
-        "get_plugin_service": service.plugin_service,
-    }.items():
-        monkeypatch.setattr(dependencies, name, lambda value=value: value)
-    monkeypatch.setattr(dependencies, "get_chat_settings_service", lambda **kwargs: service)
-    monkeypatch.setattr(dependencies, "assemble_runtime_scheduler", lambda **kwargs: SimpleNamespace(**kwargs))
+    monkeypatch.setattr(runtime_factory, "assemble_runtime_scheduler", lambda **kwargs: SimpleNamespace(**kwargs))
     monkeypatch.setattr(agent_factory, "Agent", lambda config, sqlite_factory, **kwargs: SimpleNamespace(
         config=config, tool_manager=ToolManager(), register_tool=lambda tool: None))
     validations.clear()
     resolutions.clear()
-    scheduler = dependencies.create_runtime_scheduler(object(), asyncio.Queue(),
-        sqlite_factory=SqliteFactory(tmp_path / "runtime.sqlite3"), hub=object(), subscriptions=object(), identity=object(), subagents=object(), repl_service=repl_service)
+    scheduler = runtime_factory.create_runtime_scheduler(object(), asyncio.Queue(),
+        sqlite_factory=SqliteFactory(tmp_path / "runtime.sqlite3"), hub=object(), subscriptions=object(),
+        identity=object(), subagents=object(), repl_service=repl_service,
+        settings_dao=dao, settings_service=service, plugin_service=service.plugin_service,
+        mcp_manager=SimpleNamespace(disconnect_plugin=lambda session_id: None),
+        authorization=object(), mutation_coordinator=service.mutation_coordinator)
     agent_config = scheduler.agent_factory(settings.session_id, object()).config
     assert validations == [" game-server "]
     assert len(resolutions) == 1

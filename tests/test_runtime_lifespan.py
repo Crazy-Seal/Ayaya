@@ -96,6 +96,21 @@ def test_application_owns_resource_order_and_continues_cleanup(tmp_path, monkeyp
 
     class MCP:
         """替代外部 MCP 连接。"""
+
+        def __init__(self, config_loader, *, plugin_config_loader):
+            """接收应用显式提供的配置回调，测试中保持外部服务离线。
+
+            Args:
+                config_loader (Callable): 读取独立 MCP 配置的回调。
+                plugin_config_loader (Callable): 读取插件服务配置的回调。
+            """
+
+        async def disconnect_plugin(self, session_id):
+            """接收父会话清理请求，测试中没有实际外部连接。
+
+            Args:
+                session_id (str): 被删除配置所属的主会话编号。
+            """
         async def preconnect_enabled(self):
             """测试不连接外部服务器。"""
 
@@ -142,7 +157,7 @@ def test_application_owns_resource_order_and_continues_cleanup(tmp_path, monkeyp
     monkeypatch.setattr(main, "TaskSupervisor", Supervisor)
     monkeypatch.setattr(main, "create_runtime_scheduler", create_scheduler)
     monkeypatch.setattr(main, "ReplService", Repl)
-    monkeypatch.setattr(main, "get_mcp_connection_manager", lambda: MCP())
+    monkeypatch.setattr(main, "MCPConnectionManager", MCP)
     monkeypatch.setattr(main, "detect_shell", lambda: None)
 
     async def scenario():

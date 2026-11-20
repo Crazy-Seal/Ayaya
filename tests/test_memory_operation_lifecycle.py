@@ -432,14 +432,17 @@ async def test_failed_sdk_construction_closes_acquired_qdrant(monkeypatch, tmp_p
         reopened.close()
 
 
-def test_authorization_requires_explicit_plugin_enablement(monkeypatch, tmp_path: Path) -> None:
-    """缺少插件记录时拒绝调用，显式启用后可用，再次关闭后立即拒绝。"""
-    from app import dependencies
+def test_authorization_requires_explicit_plugin_enablement(tmp_path: Path) -> None:
+    """缺少插件记录时拒绝调用，显式启用后可用，再次关闭后立即拒绝。
+
+    Args:
+        tmp_path (Path): 本用例独立的会话配置目录。
+    """
+    from app.agent.tools.authorization.manager import ToolAuthorization
     from app.crud.chat_settings_dao import ChatSettingsDao
     from app.schemas.chat_settings import AgentPluginSettings
     from app.schemas.tool_identity import ToolIdentity
     from app.schemas.tool_permissions import ToolPolicy
-    from app.services.plugin_service import PluginService
 
     path = tmp_path / "settings.yaml"
     path.write_text("chat_models: []\n", encoding="utf-8")
@@ -447,18 +450,12 @@ def test_authorization_requires_explicit_plugin_enablement(monkeypatch, tmp_path
     settings = memory_settings()
     settings.agent_plugins = {}
     dao.add_chat_settings(settings)
-    monkeypatch.setattr(dependencies, "get_chat_settings_dao", lambda: dao)
-    monkeypatch.setattr(dependencies, "get_plugin_service", lambda: PluginService(dao))
-    dependencies.get_tool_authorization.cache_clear()
-    try:
-        authorization = dependencies.get_tool_authorization()
-        identity = ToolIdentity.local("search_diary", plugin_name="memory")
-        assert authorization.get_policy("session", identity) == ToolPolicy.DENY
-        settings.agent_plugins = {"memory": AgentPluginSettings(enabled=True)}
-        dao.update_chat_settings("session", settings)
-        assert authorization.get_policy("session", identity) == ToolPolicy.ASK
-        settings.agent_plugins = {"memory": AgentPluginSettings(enabled=False)}
-        dao.update_chat_settings("session", settings)
-        assert authorization.get_policy("session", identity) == ToolPolicy.DENY
-    finally:
-        dependencies.get_tool_authorization.cache_clear()
+    authorization = ToolAuthorization(dao.get_chat_settings)
+    identity = ToolIdentity.local("search_diary", plugin_name="memory")
+    assert authorization.get_policy("session", identity) == ToolPolicy.DENY
+    settings.agent_plugins = {"memory": AgentPluginSettings(enabled=True)}
+    dao.update_chat_settings("session", settings)
+    assert authorization.get_policy("session", identity) == ToolPolicy.ASK
+    settings.agent_plugins = {"memory": AgentPluginSettings(enabled=False)}
+    dao.update_chat_settings("session", settings)
+    assert authorization.get_policy("session", identity) == ToolPolicy.DENY

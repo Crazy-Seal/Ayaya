@@ -3,6 +3,7 @@ import asyncio
 import logging
 import os
 from contextlib import AsyncExitStack, asynccontextmanager
+from collections.abc import AsyncIterator
 
 from dotenv import load_dotenv
 
@@ -21,17 +22,31 @@ from app.routes.chat_history import router as memory_router
 from app.routes.tools import router as tools_router
 from app.routes.plugins import router as plugins_router
 from app.routes.mcp import router as mcp_router
-from app.dependencies import get_mcp_connection_manager, create_runtime_scheduler, get_chat_settings_dao
+from app.agent.runtime.runtime_factory import create_runtime_scheduler
+from app.agent.runtime.requests import RuntimeRequest
 from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
 from app.crud.task_record_dao import TaskRecordDao
 from app.crud.subagent_dao import SubagentDao
 from app.crud.chat_history_dao import ChatHistoryDao
+from app.crud.chat_settings_dao import ChatSettingsDao
+from app.crud.mcp_settings_dao import MCPSettingsDao
 from app.schemas.agent_storage import AgentStorageScope
 from app.agent.state.manager import SessionStateManager
 from app.services.agent_identity_service import AgentIdentityService
 from app.services.channel_subscription_service import ChannelSubscriptionService
 from app.services.subagent_service import SubagentService
-from app.schemas.runtime_types import RuntimePhase
+from app.schemas.chat_settings import ChatSettings
+from app.schemas.mcp import MCPConnectionConfig
+from app.schemas.subagent_types import SubagentDefinition
+from app.agent.tools.authorization.catalog import LocalToolCatalogAdapter, MCPToolCatalogAdapter, UnifiedToolCatalog
+from app.agent.tools.authorization.manager import ToolAuthorization
+from app.mcp.mcp_connection_manager import MCPConnectionManager
+from app.services.chat_history_service import ChatHistoryService
+from app.services.chat_settings_service import ChatSettingsService
+from app.services.mcp_service import MCPService
+from app.services.plugin_service import PluginService
+from app.services.settings_mutation import SettingsMutationCoordinator
+from app.services.tool_permission_service import ToolPermissionService
 from app.interaction.interaction_event_hub import InteractionEventHub
 from app.security.local_api import install_local_api_security, load_api_token
 from app.agent.tools.terminal.shell import detect_shell
@@ -60,39 +75,85 @@ async def begin_runtime_shutdown(application: FastAPI) -> None:
 
 
 @asynccontextmanager
-async def lifespan(application: FastAPI):
-    """装配唯一队列及运行时对象，生产者收尾完成后再结束消费。
+async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+    """创建应用共享服务和运行时，生产者收尾完成后再结束消费。
 
     Args:
         application (FastAPI): 本次启动的 FastAPI 应用及其共享对象。
+
+    Yields:
+        None: 共享依赖和运行时就绪后，允许应用处理 HTTP 请求。
     """
-    from app.dependencies import get_plugin_service
     from app.environment import PROJECT_ROOT
-    # 1. 在接收请求前完成插件发现；发现失败保留配置并通过目录接口公开错误。
-    await get_plugin_service().discover(PROJECT_ROOT / "plugins")
-    runtime_queue = asyncio.Queue()
-    mcp_manager = get_mcp_connection_manager()
+    # 1. 设置、插件发现和运行时共用本次应用的配置存储与写入协调器。
+    settings_dao = ChatSettingsDao()
+    application.state.chat_settings_dao = settings_dao
+    mcp_settings_dao = MCPSettingsDao()
+    application.state.mcp_settings_dao = mcp_settings_dao
+    mutations = SettingsMutationCoordinator()
+    application.state.settings_mutation_coordinator = mutations
+    plugins = PluginService(settings_dao, mutations)
+    application.state.plugin_service = plugins
+    await plugins.discover(PROJECT_ROOT / "plugins")
+    runtime_queue: asyncio.Queue[RuntimeRequest] = asyncio.Queue()
     async with AsyncExitStack() as cleanup:
+        # 2. 先登记连接清理，再装配借用连接和配置的应用服务。
+        mcp_manager = MCPConnectionManager(mcp_settings_dao.load, plugin_config_loader=plugins.connection_config)
         cleanup.push_async_callback(mcp_manager.close)
+        application.state.mcp_connection_manager = mcp_manager
+        settings_service = ChatSettingsService(
+            chat_settings_dao=settings_dao, mcp_settings_dao=mcp_settings_dao,
+            connection_manager=mcp_manager, mutation_coordinator=mutations, plugin_service=plugins,
+        )
+        application.state.chat_settings_service = settings_service
+        authorization = ToolAuthorization(settings_dao.get_chat_settings)
+        application.state.mcp_service = MCPService(
+            settings_dao=mcp_settings_dao, chat_settings_dao=settings_dao,
+            connection_manager=mcp_manager, plugin_service=plugins, mutation_coordinator=mutations,
+        )
+
+        def plugin_servers(settings: ChatSettings, plugin_name: str) -> tuple[MCPConnectionConfig, ...]:
+            """为权限目录查询指定启用插件在本次会话的 MCP 服务声明。
+
+            Args:
+                settings (ChatSettings): 权限页当前查询的会话设置。
+                plugin_name (str): 工具目录项所属的插件名称。
+
+            Returns:
+                tuple[MCPConnectionConfig, ...]: 启用插件的服务声明，禁用时为空。
+            """
+            item = settings.agent_plugins[plugin_name]
+            return plugins.prepare_plugin(plugin_name, item).mcp_servers if item.enabled else ()
+
+        catalog = UnifiedToolCatalog(
+            LocalToolCatalogAdapter(plugins.local_tools),
+            MCPToolCatalogAdapter(mcp_settings_dao, mcp_manager, plugin_servers),
+        )
+        application.state.tool_permission_service = ToolPermissionService(settings_dao, catalog, mutations)
         sqlite_factory = SqliteFactory()
         application.state.sqlite_factory = sqlite_factory
         subscriptions = ChannelSubscriptionService(sqlite_factory)
         application.state.channel_subscriptions = subscriptions
-        application.state.chat_history_dao = ChatHistoryDao(sqlite_factory)
+        history_dao = ChatHistoryDao(sqlite_factory)
+        application.state.chat_history_dao = history_dao
+        application.state.chat_history_service = ChatHistoryService(history_dao)
         definitions = SubagentDao(sqlite_factory)
         application.state.subagent_dao = definitions
         cleanup.push_async_callback(definitions.close)
-        identity = AgentIdentityService(get_chat_settings_dao(), definitions)
+        identity = AgentIdentityService(settings_dao, definitions)
         application.state.agent_identity = identity
         task_records = TaskRecordDao(sqlite_factory)
         cleanup.push_async_callback(task_records.close)
         supervisor = TaskSupervisor(runtime_queue=runtime_queue, records=task_records)
         application.state.task_supervisor = supervisor
-        def child_manager(definition):
+        def child_manager(definition: SubagentDefinition) -> SessionStateManager:
             """启动整理借用独立子历史连接，由使用该连接的业务负责关闭。
 
             Args:
-                definition (str): 已保存的子身份、所属父会话及保留政策。
+                definition (SubagentDefinition): 已保存的子身份、所属父会话及保留政策。
+
+            Returns:
+                SessionStateManager: 由使用它的启动整理操作负责关闭的状态对象。
             """
             return SessionStateManager(definition.subagent_id, sqlite_factory,
                 storage_scope=AgentStorageScope.SUBAGENT, parent_session_id=definition.session_id)
@@ -104,10 +165,12 @@ async def lifespan(application: FastAPI):
         repl = ReplService(workdir=WORKDIR, on_event=create_repl_plugin_event_handler(supervisor, runtime_queue))
         application.state.repl_service = repl
         scheduler = create_runtime_scheduler(supervisor, runtime_queue, sqlite_factory=sqlite_factory,
-            hub=hub, subscriptions=subscriptions, identity=identity, subagents=subagents, repl_service=repl)
+            hub=hub, subscriptions=subscriptions, identity=identity, subagents=subagents, repl_service=repl,
+            settings_dao=settings_dao, settings_service=settings_service, plugin_service=plugins,
+            mcp_manager=mcp_manager, authorization=authorization, mutation_coordinator=mutations)
         application.state.runtime_scheduler = scheduler
 
-        # 1. 逆序执行：封入口、等 worker、停任务、读完请求、关 Scheduler 和输出。
+        # 3. 逆序执行：封入口、等 worker、停任务、读完请求、关 Scheduler 和输出。
         cleanup.push_async_callback(hub.close)
         cleanup.push_async_callback(scheduler.close)
         cleanup.push_async_callback(supervisor.close)
@@ -124,7 +187,7 @@ async def lifespan(application: FastAPI):
         try:
             yield
         finally:
-            # 2. 预连接不再生产新连接，随后执行已登记的逆序资源清理。
+            # 4. 预连接任务结束后，执行已登记的逆序资源清理。
             preconnect_task.cancel()
             await asyncio.gather(preconnect_task, return_exceptions=True)
 

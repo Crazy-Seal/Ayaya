@@ -1,7 +1,28 @@
+from collections.abc import Iterator
+
+import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from main import app
+from app.dependencies import get_plugin_service
 from app.agent.plugins.registry import PluginRegistry
+from app.routes.plugins import router
+from app.services.plugin_service import PluginService
+
+
+@pytest.fixture
+def plugin_client() -> Iterator[TestClient]:
+    """为插件元数据路由提供独立服务，查询测试只使用声明目录。
+
+    Yields:
+        TestClient: 已注入插件服务的 HTTP 客户端。
+    """
+    application = FastAPI()
+    application.include_router(router)
+    service = PluginService()
+    application.dependency_overrides[get_plugin_service] = lambda: service
+    with TestClient(application, base_url="http://127.0.0.1") as client:
+        yield client
 
 
 def test_plugin_registry_auto_discovers_plugins() -> None:
@@ -10,12 +31,13 @@ def test_plugin_registry_auto_discovers_plugins() -> None:
     assert not PluginRegistry.has("runtime")
 
 
-def test_plugins_endpoint_exposes_metadata_from_config_model() -> None:
-    """验证插件接口公开配置模型的字段和默认值。"""
-    response = TestClient(app, base_url="http://127.0.0.1").get(
-        "/plugins",
-        headers={"Authorization": f"Bearer {'t' * 43}"},
-    )
+def test_plugins_endpoint_exposes_metadata_from_config_model(plugin_client: TestClient) -> None:
+    """验证插件接口公开配置模型的字段和默认值。
+
+    Args:
+        plugin_client (TestClient): 已提供独立插件服务的 HTTP 客户端。
+    """
+    response = plugin_client.get("/plugins")
 
     assert response.status_code == 200
     payload = response.json()
@@ -27,27 +49,29 @@ def test_plugins_endpoint_exposes_metadata_from_config_model() -> None:
     assert memory["default_config"]["long_term_memory_every_human_messages"] == 10
 
 
-def test_plugin_service_returns_metadata_and_discovery_errors(monkeypatch) -> None:
+def test_plugin_service_returns_metadata_and_discovery_errors(plugin_client: TestClient, monkeypatch) -> None:
     """插件服务提供完整目录结果，路由无需直接访问注册表。
 
     Args:
+        plugin_client (TestClient): 已提供独立插件服务的 HTTP 客户端。
         monkeypatch (pytest.MonkeyPatch): 设置本次发现失败的说明。
     """
-    from app.services.plugin_service import PluginService
-
     monkeypatch.setattr(PluginRegistry, "discovery_errors", ["插件包加载失败"])
     catalog = PluginService().list_plugins()
     assert catalog["errors"] == ["插件包加载失败"]
     assert any(plugin["name"] == "memory" for plugin in catalog["plugins"])
-    response = TestClient(app, base_url="http://127.0.0.1").get(
-        "/plugins", headers={"Authorization": f"Bearer {'t' * 43}"},
-    )
+    response = plugin_client.get("/plugins")
     assert response.status_code == 200
     assert response.json()["data"] == catalog
 
 
-def test_plugin_metadata_does_not_execute_data_dependent_defaults(monkeypatch) -> None:
-    """需要用户参数才能生成的默认值，不影响其他插件的目录查询。"""
+def test_plugin_metadata_does_not_execute_data_dependent_defaults(plugin_client: TestClient, monkeypatch) -> None:
+    """目录查询通过声明读取需要依赖用户参数才能生成的默认值。
+
+    Args:
+        plugin_client (TestClient): 已提供独立插件服务的 HTTP 客户端。
+        monkeypatch (pytest.MonkeyPatch): 为本次目录查询注册带动态默认值的插件。
+    """
     from pydantic import BaseModel, Field
     from app.agent.plugins.base import BasePlugin
 
@@ -66,8 +90,7 @@ def test_plugin_metadata_does_not_execute_data_dependent_defaults(monkeypatch) -
             """本测试只使用配置目录。"""
 
     monkeypatch.setitem(PluginRegistry._plugins, Plugin.name, Plugin)
-    response = TestClient(app, base_url="http://127.0.0.1").get(
-        "/plugins", headers={"Authorization": f"Bearer {'t' * 43}"})
+    response = plugin_client.get("/plugins")
     assert response.status_code == 200
     plugins = {item["name"]: item for item in response.json()["data"]["plugins"]}
     assert "memory" in plugins
