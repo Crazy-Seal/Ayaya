@@ -11,6 +11,7 @@ from app.schemas.subagent_types import SubagentAction
 class InteractSubagentTool(BaseTool):
     """子 Agent 交互工具"""
     name = "interact_subagent"
+    parent_only = True
     description = "与子 Agent 交互。command 给子 agent 发送消息；stop 停止子 agent 执行，destroy 销毁子 agent。"
     parameters_schema = {"type": "object", "properties": {
         "subagent_id": {"type": "string"}, "action": {"type": "string", "enum": [action.value for action in SubagentAction]},

@@ -127,7 +127,7 @@ def test_parent_model_public_names_become_source_specific_whitelist(tmp_path: Pa
             tool_runtime_factory=lambda name, run, call: ToolRuntime("parent", run, name, call, supervisor, queue))
         for tool in targets:
             agent.register_tool(tool)
-        agent.register_tool(CreateSubagentTool(agent.tool_manager.get_visible_tool_identities()))
+        agent.register_tool(CreateSubagentTool(agent.tool_manager.get_delegatable_tool_identities()))
         consumer = asyncio.create_task(receive_request())
         try:
             await asyncio.wait_for(_run_parent(agent), 5)
@@ -161,9 +161,9 @@ async def _run_parent(agent: Agent) -> None:
     await agent.run('开始委派', turn_control=make_execution_control('parent-run')[1], emit=receive_agent_event)
 
 
-@pytest.mark.parametrize("name", ["missing", "local:operation", "operation"])
+@pytest.mark.parametrize("name", ["missing", "local:operation", "operation", "parent_operation"])
 def test_unavailable_public_name_is_rejected_before_creation(tmp_path: Path, name: str) -> None:
-    """未知名称、内部权限键或已禁用工具不能通过白名单创建产生副作用。
+    """未知名称、内部权限键、已禁用或父侧专用工具在创建子 Agent 前被拒绝。
 
     Args:
         tmp_path (Path): 隔离任务记录目录。
@@ -175,13 +175,17 @@ def test_unavailable_public_name_is_rejected_before_creation(tmp_path: Path, nam
         supervisor = TaskSupervisor(runtime_queue=queue, records=TaskRecordDao(SqliteFactory(str(tmp_path / "state.sqlite3"))))
         settings = ChatSettings(session_id="parent", model_name="test", openai_api_key="test",
             openai_base_url="http://unused", temperature=0, system_prompt="测试", context_strategy={},
-            tool_permissions={"local:operation": ToolPolicy.DENY})
+            tool_permissions={"local:operation": ToolPolicy.DENY, "local:parent_operation": ToolPolicy.ALLOW})
         tools = ToolManager(session_id="parent", authorization=ToolAuthorization(lambda _: settings))
         tools.register(OperationTool())
+        parent_operation = OperationTool()
+        parent_operation.name = "parent_operation"
+        parent_operation.parent_only = True
+        tools.register(parent_operation)
         runtime = ToolRuntime("parent", "run", "create_subagent", "call", supervisor, queue)
         try:
-            with pytest.raises(ValueError, match="当前可见目录"):
-                await CreateSubagentTool(tools.get_visible_tool_identities()).execute({"name": "助手", "system_prompt": "test", "prompt": "任务",
+            with pytest.raises(ValueError, match="当前可委派目录"):
+                await CreateSubagentTool(tools.get_delegatable_tool_identities()).execute({"name": "助手", "system_prompt": "test", "prompt": "任务",
                     "tool_whitelist": [name]}, ToolContext("parent", AgentState.create_new("parent"), runtime=runtime))
             assert queue.empty()
         finally:
@@ -266,7 +270,7 @@ def test_cancelled_tool_wait_cancels_unneeded_receipt(
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("change", ["registered_later", "disabled", "removed", "replaced", "cleared"])
+@pytest.mark.parametrize("change", ["registered_later", "disabled", "removed", "replaced", "cleared", "parent_only"])
 def test_creation_uses_current_tool_identities_after_catalog_changes(tmp_path: Path, change: str) -> None:
     """创建工具使用装配后更新的目录，避免权限或热插拔变化后沿用旧白名单。
 
@@ -282,7 +286,7 @@ def test_creation_uses_current_tool_identities_after_catalog_changes(tmp_path: P
             openai_base_url="http://unused", temperature=0, system_prompt="测试", context_strategy={},
             tool_permissions={"local:create_subagent": ToolPolicy.ALLOW, "local:operation": ToolPolicy.ALLOW})
         manager = ToolManager(session_id="parent", authorization=ToolAuthorization(lambda _: settings))
-        create = CreateSubagentTool(manager.get_visible_tool_identities())
+        create = CreateSubagentTool(manager.get_delegatable_tool_identities())
         manager.register(create)
         if change != "registered_later":
             manager.register(OperationTool())
@@ -296,6 +300,10 @@ def test_creation_uses_current_tool_identities_after_catalog_changes(tmp_path: P
             settings.tool_permissions["local:operation"] = ToolPolicy.DENY
         elif change == "removed":
             manager.unregister("operation")
+        elif change == "parent_only":
+            operation = manager.get("operation")
+            assert operation is not None
+            operation.parent_only = True
         elif change == "replaced":
             manager.unregister("operation")
             replacement = OperationTool()
@@ -316,8 +324,8 @@ def test_creation_uses_current_tool_identities_after_catalog_changes(tmp_path: P
         assert tool is not None
         invocation = None
         try:
-            if change in {"disabled", "removed", "cleared"}:
-                with pytest.raises(ValueError, match="当前可见目录"):
+            if change in {"disabled", "removed", "cleared", "parent_only"}:
+                with pytest.raises(ValueError, match="当前可委派目录"):
                     await tool.execute(args, context)
                 assert queue.empty()
             else:

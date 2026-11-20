@@ -107,7 +107,7 @@ def test_factory_installs_native_tools_and_child_grant_fails(tmp_path) -> None:
             create = agent.tool_manager.get("create_subagent")
             assert create is not None
             for name in ("python", "python_reset"):
-                with pytest.raises(ValueError, match="子 Agent.*Python"):
+                with pytest.raises(ValueError, match="当前可委派目录"):
                     await create.execute({"name": "child", "system_prompt": "test", "prompt": "test", "tool_whitelist": [name]}, context)
             assert queue.empty()
         finally:

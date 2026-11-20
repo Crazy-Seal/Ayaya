@@ -11,6 +11,7 @@ from app.agent.tools._subagent_support import _runtime, _source
 class GetSubagentDetailsTool(BaseTool):
     """按 ID 查询定义、最近父子交互和最终结果。"""
     name = "get_subagent_details"
+    parent_only = True
     description = "查询单个子 Agent 的提示词、工具范围、状态、最近父子交互及最终报告。全部当前名单已在环境消息中提供。"
     parameters_schema = {"type": "object", "properties": {
         "subagent_id": {"type": "string"}, "interaction_limit": {"type": "integer", "minimum": 1, "default": 10},

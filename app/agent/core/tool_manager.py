@@ -41,8 +41,8 @@ class ToolManager:
         self._authorization = authorization
         self._tool_whitelist = tool_whitelist
         self._framework_tools: set[str] = set()
-        self._visible_tool_identities: dict[str, ToolIdentity] = {}
-        self._visible_identity_view: Mapping[str, ToolIdentity] = MappingProxyType(self._visible_tool_identities)
+        self._delegatable_tool_identities: dict[str, ToolIdentity] = {}
+        self._delegatable_identity_view: Mapping[str, ToolIdentity] = MappingProxyType(self._delegatable_tool_identities)
 
     def register_framework_tool(self, tool: BaseTool) -> None:
         """由 Agent 装配专用父子通信入口，不受普通工具白名单或真人审批控制。"""
@@ -55,11 +55,16 @@ class ToolManager:
         return name in self._framework_tools
 
     def _allowed(self, tool: BaseTool) -> bool:
-        """对模型目录和实际工具查找执行同一白名单及递归限制。
+        """对模型目录和实际工具查找统一检查父侧专用声明及子工具白名单。
 
         Args:
-            tool (BaseTool): 待检查白名单范围的实际工具。
+            tool (BaseTool): 待检查使用范围的实际工具。
+
+        Returns:
+            bool: 当前 Agent 是否允许使用该工具。
         """
+        if self._tool_whitelist is not None and tool.parent_only:
+            return False
         if tool.name in self._framework_tools:
             return True
         if self._tool_whitelist is None:
@@ -128,7 +133,7 @@ class ToolManager:
         return list(self._tools.values())
 
     def _visible_tools(self) -> list[BaseTool]:
-        """按白名单和当前权限筛选工具，并同步创建工具读取的身份目录。
+        """按使用范围和当前权限筛选工具，并同步创建子 Agent 时可委派的身份目录。
 
         Returns:
             list[BaseTool]: 当前允许模型看见的工具实例。
@@ -136,9 +141,10 @@ class ToolManager:
         visible = [tool for tool in self._tools.values() if self._allowed(tool) and (
             self._authorization is None or self._session_id is None or self.is_framework_tool(tool.name)
             or self._authorization.is_exposed(self._session_id, tool))]
-        self._visible_tool_identities.clear()
-        self._visible_tool_identities.update({
-            tool.name: getattr(tool, "identity", None) or ToolIdentity.local(tool.name) for tool in visible
+        self._delegatable_tool_identities.clear()
+        self._delegatable_tool_identities.update({
+            tool.name: getattr(tool, "identity", None) or ToolIdentity.local(tool.name)
+            for tool in visible if not tool.parent_only
         })
         return visible
 
@@ -146,23 +152,23 @@ class ToolManager:
         """将当前允许公开的工具转换为模型请求定义，deny 工具不加入列表。"""
         return [tool.definition() for tool in self._visible_tools()]
 
-    def get_visible_tool_identities(self) -> Mapping[str, ToolIdentity]:
-        """提供持续更新的只读身份目录，供创建工具作为专用依赖保存。
+    def get_delegatable_tool_identities(self) -> Mapping[str, ToolIdentity]:
+        """提供当前允许委派的只读身份目录，供创建子 Agent 时选择白名单。
 
         登记、注销、生成模型目录及实际查找工具时更新同一份映射，创建工具
         因而使用当前公开名称和稳定身份。目录只持有身份数据。
 
         Returns:
-            Mapping[str, ToolIdentity]: 当前可见的公开名称及身份，随工具目录刷新。
+            Mapping[str, ToolIdentity]: 当前可见且允许子 Agent 使用的公开名称及身份。
         """
         self._visible_tools()
-        return self._visible_identity_view
+        return self._delegatable_identity_view
 
     def clear(self) -> None:
         """清空本 Agent 的工具索引，不改变磁盘上保存的工具权限。"""
         self._tools.clear()
         self._framework_tools.clear()
-        self._visible_tool_identities.clear()
+        self._delegatable_tool_identities.clear()
         logger.info("已清空所有工具")
 
     def __len__(self) -> int:

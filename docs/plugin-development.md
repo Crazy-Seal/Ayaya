@@ -292,6 +292,8 @@ class GameHelperConfig(BaseModel):
 
 本地工具可以沿用当前 `@tool`。`description` 是发给模型的说明；函数文档注释帮助维护代码。模型参数的说明写在 `Annotated` 中。
 
+工具默认可由父子 Agent 使用；设置 `@tool(description="……", parent_only=True)`，或在 `BaseTool` 子类声明 `parent_only = True`，即可限定为仅主 Agent 使用。插件工具包装时保留该属性。工具管理器在生成子模型目录和查找实际调用工具时统一检查使用范围；创建子 Agent 的可委派目录也按该声明筛选。记忆查询、原生 Python 和子 Agent 管理工具使用这一声明。
+
 ```python
 from typing import Annotated
 from app.agent.tools.core.decorator import tool

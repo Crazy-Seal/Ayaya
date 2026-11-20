@@ -647,8 +647,11 @@ def test_direct_agent_initializes_memory_plugin_and_its_tools_with_explicit_fact
         try:
             await agent.initialize()
             assert agent.get_plugins() == ["memory"]
-            identities = agent.tool_manager.get_visible_tool_identities()
-            assert {identity.name for identity in identities.values() if identity.plugin_name == "memory"} == {"search_memory", "search_diary"}
+            queries = [tool for tool in agent.tool_manager.get_all()
+                       if getattr(getattr(tool, "identity", None), "plugin_name", None) == "memory"]
+            assert {tool.identity.name for tool in queries} == {"search_memory", "search_diary"}
+            assert {tool.name for tool in queries} <= {tool.name for tool in agent.tool_manager.get_tools()}
+            assert not {tool.name for tool in queries} & agent.tool_manager.get_delegatable_tool_identities().keys()
         finally:
             await agent.close()
     asyncio.run(scenario())

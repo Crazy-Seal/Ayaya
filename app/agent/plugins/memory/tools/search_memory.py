@@ -8,6 +8,7 @@ class SearchMemoryTool(BaseTool):
     """使用所属记忆插件绑定的管理器查询本会话记忆。"""
 
     name = 'search_memory'
+    parent_only = True
     description = '在长期记忆中搜索相关信息，并返回最相近的10条。当你有想要知道的关于用户或关于你自己的记忆时，调用此工具搜索。'
     compressible = True
     parameters_schema = {'type': 'object', 'properties': {'query': {'type': 'string', 'description': '搜索关键词/关键句。不要使用问句。'}}, 'required': ['query']}

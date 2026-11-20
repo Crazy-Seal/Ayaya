@@ -3,8 +3,6 @@
 import asyncio
 from typing import Any
 from app.crud.sqlite_factory import SqliteFactory
-from app.schemas.subagent_types import SUBAGENT_PARENT_TOOL_NAMES
-from app.schemas.tool_identity import ToolIdentity
 
 from app.agent.agent import Agent, AgentConfig
 from app.agent.runtime.requests import RuntimeRequest
@@ -92,25 +90,24 @@ def build_agent(
         plugin_runtime_factory=plugin_runtime_factory,
         bind_plugin_mcp=bind_plugin_mcp,
         permission_session_id=chat_settings.session_id,
-        tool_whitelist=frozenset(item for item in subagent.tool_whitelist
-            if item not in {ToolIdentity.local(name) for name in SUBAGENT_PARENT_TOOL_NAMES}) if subagent else None,
+        tool_whitelist=subagent.tool_whitelist if subagent else None,
         enable_plugin_hooks=subagent is None,
         environment_provider=environment if subagent is None and runtime_queue is not None else None,
     )
-    if subagent is None:
-        from app.agent.tools.python import PythonTool
-        from app.agent.tools.python_reset import PythonResetTool
-        agent.register_tool(PythonTool(repl_service, repl_capabilities))
-        agent.register_tool(PythonResetTool(repl_service))
+    # 2. 父子统一装配普通工具及其依赖，使用范围由工具声明和 ToolManager 筛选。
+    from app.agent.tools.python import PythonTool
+    from app.agent.tools.python_reset import PythonResetTool
+    agent.register_tool(PythonTool(repl_service, repl_capabilities))
+    agent.register_tool(PythonResetTool(repl_service))
     if tool_runtime_factory is not None:
         from app.agent.tools.create_subagent import CreateSubagentTool
         from app.agent.tools.interact_subagent import InteractSubagentTool
         from app.agent.tools.get_subagent_details import GetSubagentDetailsTool
         from app.agent.tools._subagent_support import MessageParentTool
-        if subagent is None:
-            for tool in (CreateSubagentTool(agent.tool_manager.get_visible_tool_identities()),
-                         InteractSubagentTool(), GetSubagentDetailsTool()):
-                agent.register_tool(tool)
-        else:
+        for tool in (CreateSubagentTool(agent.tool_manager.get_delegatable_tool_identities()),
+                     InteractSubagentTool(), GetSubagentDetailsTool()):
+            agent.register_tool(tool)
+        # 3. 子 Agent 另外装配框架提供的父子通信入口。
+        if subagent is not None:
             agent.tool_manager.register_framework_tool(MessageParentTool())
     return agent

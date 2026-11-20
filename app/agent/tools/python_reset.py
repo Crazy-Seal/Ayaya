@@ -9,6 +9,7 @@ class PythonResetTool(BaseTool):
     """空闲时清空持久命名空间及导入模块，下一调用重新装配能力。"""
 
     name = PYTHON_RESET_TOOL_NAME
+    parent_only = True
     description = "重置 Python REPL，清空变量、函数和导入等资源。"
     parameters_schema = {"type": "object", "properties": {}, "additionalProperties": False}
 

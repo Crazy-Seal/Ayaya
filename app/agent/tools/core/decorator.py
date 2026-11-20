@@ -230,6 +230,7 @@ def tool(
     *,
     description: str,
     name: str | None = None,
+    parent_only: bool = False,
     compressible: bool = False,
     persist_oversized_result: bool = True,
     authorization_timing: AuthorizationTiming = AuthorizationTiming.BEFORE_EXECUTE,
@@ -245,6 +246,7 @@ def tool(
     *,
     description: str,
     name: str | None = None,
+    parent_only: bool = False,
     compressible: bool = False,
     persist_oversized_result: bool = True,
     authorization_timing: AuthorizationTiming = AuthorizationTiming.BEFORE_EXECUTE,
@@ -259,6 +261,7 @@ def tool(
     *,
     description: str,
     name: str | None = None,
+    parent_only: bool = False,
     compressible: bool = False,
     persist_oversized_result: bool = True,
     authorization_timing: AuthorizationTiming = AuthorizationTiming.BEFORE_EXECUTE,
@@ -275,6 +278,7 @@ def tool(
     Args:
         description (str): 必填的非空模型说明，描述工具用途、调用时机及操作约束。
         name (str | None): 覆盖工具名（默认取函数名）。
+        parent_only (bool): 为 True 时仅主 Agent 可使用，默认父子均可使用。
         compressible (bool): 标记旧工具结果允许从活跃模型上下文回收，不代表允许重放工具。
         persist_oversized_result (bool): 超过模型预览预算时是否允许保存完整结果。
         authorization_timing (AuthorizationTiming): 授权发生在执行前，或只读准备完成后。
@@ -341,6 +345,7 @@ def tool(
         cls_name = "".join(p.capitalize() for p in tool_name.split("_")) + "Tool"
         return type(cls_name, (BaseTool,), {
             "name": tool_name,
+            "parent_only": parent_only,
             "description": description,
             "parameters_schema": schema,
             "compressible": compressible,

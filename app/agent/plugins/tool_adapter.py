@@ -22,6 +22,7 @@ class PluginToolAdapter(BaseTool):
         self.display_name = getattr(tool, "display_name", tool.name)
         self.description = tool.description
         self.parameters_schema = tool.parameters_schema
+        self.parent_only = tool.parent_only
         self.compressible = tool.compressible
         self.persist_oversized_result = tool.persist_oversized_result
         self.authorization_timing = tool.authorization_timing

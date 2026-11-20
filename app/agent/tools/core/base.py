@@ -191,11 +191,16 @@ class ToolResult:
 # ==================== 工具基类 ====================
 
 class BaseTool(ABC):
-    """约定模型工具定义与执行接口，具体工具由执行管道注入上下文后调用。"""
+    """约定工具使用范围、模型定义与执行接口，执行管道提供单次调用上下文。
+
+    Attributes:
+        parent_only (bool): 为 True 时仅向主 Agent 提供该工具，默认父子均可使用。
+    """
 
     name: str                    # 工具名称
     description: str             # 工具描述（给 LLM 看）
     parameters_schema: dict      # JSON Schema 格式的参数定义
+    parent_only: bool = False
     compressible: bool = False   # 旧结果是否允许从活跃模型上下文回收，不代表允许重放工具
     persist_oversized_result: bool = True  # 超长结果是否允许保存为 tool-result artifact
     authorization_timing: AuthorizationTiming = AuthorizationTiming.BEFORE_EXECUTE

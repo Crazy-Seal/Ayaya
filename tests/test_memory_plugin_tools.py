@@ -27,6 +27,47 @@ from app.services.plugin_service import PluginService
 MEMORY_TOOL_NAMES = {"search_memory", "search_diary"}
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_child", [False, True])
+async def test_memory_queries_are_exposed_only_to_parent_agents(tmp_path: Path, repl_service, is_child: bool) -> None:
+    """正式工厂装配记忆插件后，查询工具只向主 Agent 提供。
+
+    Args:
+        tmp_path (Path): 本用例隔离的数据库目录。
+        repl_service (ReplService): 尚未启动执行进程的应用 REPL。
+        is_child (bool): 是否装配子 Agent。
+    """
+    from datetime import datetime, timezone
+    from app.schemas.subagent_types import SubagentDefinition
+    from tests.memory_support import memory_settings
+
+    settings = memory_settings()
+    identities = frozenset(ToolIdentity.local(name, plugin_name="memory") for name in MEMORY_TOOL_NAMES)
+    definition = SubagentDefinition(
+        "child", settings.session_id, "助手", "完成委派任务", identities, True, datetime.now(timezone.utc),
+    ) if is_child else None
+    agent = agent_factory.build_agent(
+        settings, subagent=definition, sqlite_factory=SqliteFactory(tmp_path / "state.sqlite3"),
+        repl_service=repl_service,
+    )
+    try:
+        await agent.initialize()
+        queries = [tool for tool in agent.tool_manager.get_all()
+                   if getattr(getattr(tool, "identity", None), "plugin_name", None) == "memory"]
+        assert {tool.identity for tool in queries} == identities
+        exposed = {tool.name for tool in agent.tool_manager.get_tools()}
+        for tool in queries:
+            assert (tool.name in exposed) is (not is_child)
+            assert (agent.tool_manager.get(tool.name) is tool) is (not is_child)
+            assert tool.name not in agent.tool_manager.get_delegatable_tool_identities()
+        for name in ("python", "python_reset"):
+            assert agent.tool_manager.has(name)
+            assert (name in exposed) is (not is_child)
+            assert (agent.tool_manager.get(name) is not None) is (not is_child)
+    finally:
+        await agent.close()
+
+
 def test_memory_queries_are_declared_only_by_memory_plugin() -> None:
     """插件声明两个查询工具，独立工具注册表不再发现或装配它们。"""
     assert {tool.name for tool in MemoryPlugin.tools} == MEMORY_TOOL_NAMES

@@ -12,13 +12,99 @@ from app.agent.context import ContextStrategyConfig
 from app.agent.core.plugin_manager import PluginManager
 from app.agent.core.tool_manager import ToolManager
 from app.agent.plugins.base import BasePlugin, PluginContext, PluginHook
+from app.agent.plugins.tool_adapter import PluginToolAdapter
 from app.agent.state.model import AgentState
 from app.agent.tools.authorization.manager import ToolAuthorization
 from app.agent.tools.core.base import BaseTool, ToolContext, ToolResult
+from app.agent.tools.core.decorator import tool
 from app.agent.tools._subagent_support import MessageParentTool
 from app.schemas.chat_settings import AgentPluginSettings, ChatSettings
 from app.schemas.tool_identity import ToolIdentity
 from app.schemas.tool_permissions import ToolPolicy
+
+
+@pytest.mark.parametrize("definition", ["class", "decorator"])
+@pytest.mark.parametrize("plugin", [False, True])
+@pytest.mark.parametrize("parent_only", [False, True])
+def test_tool_scope_controls_exposure_lookup_and_delegation(
+    definition: str, plugin: bool, parent_only: bool,
+) -> None:
+    """类工具和装饰器工具沿用同一父子使用范围，插件包装后继续生效。
+
+    Args:
+        definition (str): 使用类定义或函数装饰器创建工具。
+        plugin (bool): 是否经过插件工具适配器包装。
+        parent_only (bool): 是否将工具限定为仅主 Agent 使用。
+    """
+    class Operation(BaseTool):
+        """提供默认可由父子 Agent 使用的普通工具。"""
+        name, description = "operation", "执行操作"
+        parameters_schema = {"type": "object", "properties": {}}
+
+        async def execute(self, args: dict, context: ToolContext) -> ToolResult:
+            """返回当前操作的执行结果。
+
+            Args:
+                args (dict): 本次模型调用的参数。
+                context (ToolContext): 本次工具调用的运行上下文。
+
+            Returns:
+                ToolResult: 当前操作的文字结果。
+            """
+            return ToolResult.success("完成")
+
+    async def operation() -> str:
+        """返回装饰器工具的执行结果。
+
+        Returns:
+            str: 当前操作的文字结果。
+        """
+        return "完成"
+
+    if definition == "class":
+        instance = Operation()
+        if parent_only:
+            instance.parent_only = True
+    else:
+        tool_class = (tool(description="执行操作", parent_only=True)(operation) if parent_only
+                      else tool(description="执行操作")(operation))
+        instance = tool_class()
+    instance = PluginToolAdapter("sample", instance) if plugin else instance
+    identity = ToolIdentity.local("operation", plugin_name="sample" if plugin else None)
+    parent = ToolManager()
+    child = ToolManager(tool_whitelist=frozenset({identity}))
+    parent.register(instance)
+    child.register(instance)
+    assert parent.get(instance.name) is instance
+    assert [item.name for item in parent.get_tools()] == [instance.name]
+    assert (instance.name in parent.get_delegatable_tool_identities()) is (not parent_only)
+    assert (child.get(instance.name) is instance) is (not parent_only)
+    assert [item.name for item in child.get_tools()] == ([] if parent_only else [instance.name])
+    assert "parent_only" not in instance.parameters_schema["properties"]
+
+
+@pytest.mark.parametrize("name", ["python", "python_reset", "create_subagent", "interact_subagent", "get_subagent_details"])
+def test_builtin_parent_tools_are_hidden_from_child_models(name: str) -> None:
+    """真实内置工具的使用范围声明同时约束子模型目录和调用查找。
+
+    Args:
+        name (str): 仅主 Agent 可使用的内置工具名称。
+    """
+    from app.agent.tools.core.registry import ToolRegistry
+
+    tool_class = ToolRegistry.get(name)
+    assert tool_class is not None
+    # 1. 本用例仅检查公开契约，省略工具执行时才使用的应用依赖。
+    instance = object.__new__(tool_class)
+    parent = ToolManager()
+    child = ToolManager(tool_whitelist=frozenset({ToolIdentity.local(name)}))
+    parent.register(instance)
+    child.register(instance)
+    assert [item.name for item in parent.get_tools()] == [name]
+    assert parent.get(name) is instance
+    assert name not in parent.get_delegatable_tool_identities()
+    assert child.get_tools() == []
+    assert child.get(name) is None
 
 
 def test_parent_management_tools_are_configurable_in_the_existing_permission_catalog() -> None:

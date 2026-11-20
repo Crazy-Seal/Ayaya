@@ -25,6 +25,7 @@ class PythonTool(BaseTool):
     """调用应用共享 REPL，把其有序输出转换成普通工具内容。"""
 
     name = PYTHON_TOOL_NAME
+    parent_only = True
     description = ("在 Python REPL 中执行 Python 代码。用 print 输出文字，"
                    "用 display_image(PIL图片或PNG/JPEG bytes) 输出图片；"
                    "变量、函数和导入等资源会在多次调用间保留，若需要清空请使用 python_reset 工具。"

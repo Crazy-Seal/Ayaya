@@ -76,7 +76,7 @@ def test_colliding_public_names_keep_the_original_registered_tool(
     with pytest.raises(ValueError, match="工具公开名称冲突"):
         manager.register(second)
     assert manager.get(first.name) is first
-    assert manager.get_visible_tool_identities()[first.name] == first.identity
+    assert manager.get_delegatable_tool_identities()[first.name] == first.identity
 
 
 def test_plugin_local_and_mcp_name_collision_is_rejected() -> None:

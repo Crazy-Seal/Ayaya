@@ -9,6 +9,7 @@ class SearchDiaryTool(BaseTool):
     """使用所属记忆插件绑定的管理器查询本会话记忆。"""
 
     name = 'search_diary'
+    parent_only = True
     description = '搜索指定日期范围的日记。返回[start, end]范围内的日记内容(包括end那天的)，按日期排序，最多显示前5篇日记，超出数量的会提示未显示的篇数。'
     compressible = True
     parameters_schema = {'type': 'object', 'properties': {'start': {'type': 'string', 'description': '开始日期，格式 YYYY-MM-DD'}, 'end': {'type': 'string', 'description': '结束日期，格式 YYYY-MM-DD'}}, 'required': ['start', 'end']}
