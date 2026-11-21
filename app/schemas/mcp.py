@@ -4,7 +4,7 @@ from enum import StrEnum
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 
 class MCPServerStatus(StrEnum):
@@ -190,3 +190,73 @@ class MCPServersConfig(BaseModel):
         if len(ids) != len(set(ids)):
             raise ValueError("MCP server_id 不能重复")
         return self
+
+
+class MCPRuntimeStatus(BaseModel):
+    """向设置页交付一个 MCP 连接的当前运行状态。
+
+    Attributes:
+        status (MCPServerStatus): 连接所处的状态。
+        tool_count (int): 当前连接提供的工具数量。
+        last_error (str | None): 最近一次连接错误。
+        instructions (str | None): 服务提供的使用说明。
+    """
+
+    status: MCPServerStatus
+    tool_count: int
+    last_error: str | None
+    instructions: str | None
+
+
+class MCPServerView(BaseModel):
+    """向 MCP 设置页交付服务配置及其使用情况。
+
+    Attributes:
+        config (MCPServerConfig): 保存后的服务配置。
+        runtime (MCPRuntimeStatus): 当前连接状态。
+        affected_model_count (int): 引用此服务的会话数量。
+    """
+
+    config: MCPServerConfig
+    runtime: MCPRuntimeStatus
+    affected_model_count: int
+
+
+class MCPToolInfo(BaseModel):
+    """向工具浏览页交付 MCP 服务公开的工具契约。
+
+    Attributes:
+        name (str): 服务中的工具名称。
+        description (str): 工具功能说明。
+        input_schema (dict[str, JsonValue]): 服务声明的参数 JSON Schema。
+        annotations (dict[str, JsonValue]): 服务提供的工具注解。
+    """
+
+    name: str
+    description: str
+    input_schema: dict[str, JsonValue]
+    annotations: dict[str, JsonValue]
+
+
+class MCPTestResult(BaseModel):
+    """向连接测试接口交付服务状态、说明及发现的工具。
+
+    Attributes:
+        status (MCPServerStatus): 本次测试取得的连接状态。
+        instructions (str | None): 服务提供的使用说明。
+        tools (list[MCPToolInfo]): 测试期间发现的工具。
+    """
+
+    status: MCPServerStatus
+    instructions: str | None
+    tools: list[MCPToolInfo]
+
+
+class MCPDeleteResult(BaseModel):
+    """删除 MCP 服务后交付被清理引用的会话列表。
+
+    Attributes:
+        affected_sessions (list[str]): 配置引用受到影响的会话编号。
+    """
+
+    affected_sessions: list[str]

@@ -95,3 +95,55 @@ def test_plugin_metadata_does_not_execute_data_dependent_defaults(plugin_client:
     plugins = {item["name"]: item for item in response.json()["data"]["plugins"]}
     assert "memory" in plugins
     assert plugins[Plugin.name]["default_config"] == {}
+
+
+def test_plugin_metadata_preserves_nested_schema_and_python_default_serialization(
+    plugin_client: TestClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """插件配置中的嵌套 Schema、日期和路径继续使用原 JSON 表达。
+
+    Args:
+        plugin_client (TestClient): 已注入插件服务的 HTTP 客户端。
+        monkeypatch (pytest.MonkeyPatch): 为本次查询注册独立插件。
+    """
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    from pydantic import BaseModel, Field
+    from app.agent.plugins.base import BasePlugin
+
+    class Options(BaseModel):
+        """声明供编辑器展开的嵌套插件配置。"""
+
+        active: bool = False
+        labels: list[str | None] = Field(default_factory=lambda: ["a", None], serialization_alias="displayLabels")
+
+    class Config(BaseModel):
+        """包含原接口已经支持的 Python 配置默认值。"""
+
+        directory: Path = Field(default_factory=lambda: Path("plugin-data"))
+        created_at: datetime = datetime(2026, 11, 21, tzinfo=timezone.utc)
+        choices: tuple[str, ...] = ("a", "b")
+        options: Options = Field(default_factory=Options)
+
+    class Plugin(BasePlugin):
+        """只为元数据查询提供配置声明。"""
+
+        name = "nested_defaults"
+        config_model = Config
+        hooks = []
+
+        async def execute(self, context) -> None:
+            """提供声明所需的钩子入口。
+
+            Args:
+                context (HookContext): 本次钩子执行的通用上下文。
+            """
+
+    monkeypatch.setitem(PluginRegistry._plugins, Plugin.name, Plugin)
+    response = plugin_client.get("/plugins")
+    assert response.status_code == 200
+    plugin = next(item for item in response.json()["data"]["plugins"] if item["name"] == Plugin.name)
+    assert plugin["default_config"] == {"directory": "plugin-data", "created_at": "2026-11-21T00:00:00Z",
+        "choices": ["a", "b"], "options": {"active": False, "displayLabels": ["a", None]}}
+    assert plugin["config_schema"]["$defs"]["Options"]["properties"]["active"]["default"] is False

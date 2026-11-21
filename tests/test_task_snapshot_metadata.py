@@ -51,7 +51,7 @@ def test_failed_save_preserves_terminal_metadata_without_reading_list_first(tmp_
             assert snapshot.output_path == persisted.output_path and snapshot.output_path
             assert snapshot.output_ref == persisted.output_ref == task_id
             page = await background_task_output("parent", task_id, 0, 1024, supervisor)
-            assert "123" in page["text"]
+            assert "123" in page.text
             # 1. 保存失败事件直接携带已落盘资料，消费端无需先查询列表。
             events = []
             while not queue.empty():

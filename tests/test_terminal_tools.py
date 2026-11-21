@@ -630,7 +630,7 @@ def test_task_list_exposes_persisted_creator_names_and_legacy_unknown(tmp_path: 
         restored = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(path)))
         try:
             response = await list_background_tasks("chat", restored)
-            assert {row["task_id"]: row["tool_name"] for row in response["tasks"]} == names
+            assert {row.task_id: row.tool_name for row in response.tasks} == names
         finally:
             await restored.close()
             await restored.records.close()

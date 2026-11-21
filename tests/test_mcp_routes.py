@@ -3,13 +3,34 @@ from fastapi.testclient import TestClient
 
 from app.dependencies import get_mcp_service
 from app.routes.mcp import router
+from app.schemas.mcp import StdioMCPServerConfig
+
+
+TOOL = {"name": "echo", "description": "回显文本", "input_schema": {"type": "object",
+        "properties": {"options": {"$ref": "#/$defs/Options"}},
+        "$defs": {"Options": {"type": "object", "properties": {"choice": {"enum": ["a", "b", None]}}}}},
+        "annotations": {"readOnlyHint": True, "extension": [1, {"optional": None}]}}
+
+
+def _view(config, status: str) -> dict:
+    """为路由替身构造与真实服务相同的完整视图。
+
+    Args:
+        config (MCPServerConfig): 当前服务配置。
+        status (str): 本用例指定的连接状态。
+
+    Returns:
+        dict: 包含配置、运行状态及引用数量的服务结果。
+    """
+    return {"config": config.model_dump(mode="json"), "runtime": {"status": status, "tool_count": 0,
+        "last_error": None, "instructions": None}, "affected_model_count": 0}
 
 
 class _Service:
     """提供当前用例所需的 _Service 测试替身，执行记录仅供外层断言使用。"""
     def list_servers(self):
         """返回用例准备的服务列表及状态。"""
-        return [{"config": {"id": "demo"}, "runtime": {"status": "available"}}]
+        return [_view(StdioMCPServerConfig(id="demo", name="Demo", command="python"), "available")]
 
     async def test_server(self, server):
         """模拟服务连接测试并返回工具目录和连接状态，供检查路由响应。
@@ -17,7 +38,7 @@ class _Service:
         Args:
             server (Any): 用例提供的 MCP 服务配置。
         """
-        return {"status": "available", "tools": [{"name": "echo"}], "id": server.id}
+        return {"status": "available", "tools": [TOOL], "instructions": None}
 
     async def create_server(self, server):
         """模拟创建服务并返回用例指定的配置。
@@ -25,7 +46,7 @@ class _Service:
         Args:
             server (Any): 用例提供的 MCP 服务配置。
         """
-        return {"config": server.model_dump(mode="json"), "runtime": {"status": "disconnected"}}
+        return _view(server, "disconnected")
 
     async def update_server(self, server_id, server):
         """模拟更新服务配置，供检查接口参数和返回包装。
@@ -35,7 +56,7 @@ class _Service:
             server (Any): 用例提供的 MCP 服务配置。
         """
         assert server_id == server.id
-        return {"config": server.model_dump(mode="json"), "runtime": {"status": "disconnected"}}
+        return _view(server, "disconnected")
 
     async def delete_server(self, server_id):
         """模拟删除服务，供检查级联配置处理。
@@ -51,7 +72,7 @@ class _Service:
         Args:
             server_id (Any): MCP 服务的稳定编号。
         """
-        return {"config": {"id": server_id}, "runtime": {"status": "available"}}
+        return _view(StdioMCPServerConfig(id=server_id, name="Demo", command="python"), "available")
 
     def list_tools(self, _server_id):
         """返回当前测试服务的工具目录。
@@ -59,7 +80,7 @@ class _Service:
         Args:
             _server_id (Any): MCP 服务的稳定编号。
         """
-        return [{"name": "echo"}]
+        return [TOOL]
 
 
 def _client() -> TestClient:
@@ -98,7 +119,7 @@ def test_mcp_server_routes_use_result_wrapper() -> None:
         )
 
     assert listed.json()["data"][0]["runtime"]["status"] == "available"
-    assert tested.json()["data"]["tools"] == [{"name": "echo"}]
+    assert tested.json()["data"]["tools"] == [TOOL]
     assert created.json()["code"] == 200
 
 
@@ -120,5 +141,5 @@ def test_mcp_server_routes_update_reconnect_tools_and_delete() -> None:
 
     assert updated.json()["data"]["config"]["name"] == "Demo 2"
     assert reconnected.json()["data"]["runtime"]["status"] == "available"
-    assert tools.json()["data"] == [{"name": "echo"}]
+    assert tools.json()["data"] == [TOOL]
     assert deleted.json()["data"]["affected_sessions"] == ["session-for-demo"]

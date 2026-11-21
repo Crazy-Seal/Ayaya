@@ -138,7 +138,7 @@ def test_diary_deduplicates_across_manager_instances_and_returns_result(tmp_path
             assert TARGET.isoformat() in record.result
             assert "成功" in record.result
             response = await list_background_tasks(first.session_id, supervisor)
-            assert response["tasks"][0]["result"] == record.result
+            assert response.tasks[0].result == record.result
             await start_diary(second, runtime)
             assert len(await supervisor.list_tasks(first.session_id)) == 1
         finally:
@@ -221,8 +221,8 @@ def test_long_term_task_reports_counts_and_extraction_failures(tmp_path: Path, f
             manager.episodic_memory.add.assert_awaited_once()
             manager.semantic_memory.add.assert_awaited_once()
             response = await list_background_tasks(manager.session_id, supervisor)
-            assert response["tasks"][0]["result"] == record.result
-            assert response["tasks"][0]["error"] == record.error
+            assert response.tasks[0].result == record.result
+            assert response.tasks[0].error == record.error
         finally:
             await supervisor.close()
             await supervisor.records.close()

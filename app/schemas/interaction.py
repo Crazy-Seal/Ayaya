@@ -1,6 +1,8 @@
-"""交互命令、渠道订阅和桌面执行器的 HTTP 请求模型。"""
+"""交互命令与渠道订阅的 HTTP 请求和响应模型。"""
 
 from pydantic import BaseModel, Field
+
+from app.schemas.runtime_types import CommandStatus
 
 
 class ChannelCommandRequest(BaseModel):
@@ -33,3 +35,47 @@ class ChannelSubscriptionRequest(BaseModel):
         enabled (bool): 渠道是否参与该会话的双向互通。
     """
     enabled: bool
+
+
+class CommandReceiptResponse(BaseModel):
+    """向命令调用方交付受理结果及实际目标。
+
+    Attributes:
+        status (CommandStatus): 命令的业务处理结果。
+        accepted (bool): 规定的受理操作是否完成。
+        context_id (str | None): 实际目标上下文编号。
+        run_id (str | None): 本次操作关联的轮次编号。
+        detail (str | None): 拒绝或失败的说明。
+    """
+
+    status: CommandStatus
+    accepted: bool
+    context_id: str | None
+    run_id: str | None
+    detail: str | None
+
+
+class ChannelSubscriptionResponse(BaseModel):
+    """向界面交付一个渠道的订阅与可用状态。
+
+    Attributes:
+        channel (str): 已注册渠道的标识。
+        display_name (str): 界面显示的渠道名称。
+        enabled (bool): 当前会话是否启用该渠道。
+        ready (bool): 渠道是否已经准备好交互。
+    """
+
+    channel: str
+    display_name: str
+    enabled: bool
+    ready: bool
+
+
+class ChannelListResponse(BaseModel):
+    """交付当前会话的全部渠道配置。
+
+    Attributes:
+        channels (list[ChannelSubscriptionResponse]): 渠道订阅列表。
+    """
+
+    channels: list[ChannelSubscriptionResponse]

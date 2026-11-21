@@ -30,3 +30,23 @@ class ToolPermissionsUpdate(BaseModel):
     """一次保存当前会话的完整工具策略映射。"""
 
     tool_permissions: dict[str, ToolPolicy]
+
+
+class ToolListResponse(BaseModel):
+    """向工具列表接口交付已注册工具的名称和说明。
+
+    Attributes:
+        tools (list[ToolInfo]): 当前已注册的工具。
+    """
+
+    tools: list[ToolInfo]
+
+
+class ToolPermissionsResponse(BaseModel):
+    """向权限设置页交付当前会话的工具目录。
+
+    Attributes:
+        tools (list[ToolPolicyView]): 工具权限及可用状态。
+    """
+
+    tools: list[ToolPolicyView]

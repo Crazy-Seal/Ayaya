@@ -208,7 +208,7 @@ def test_history_stops_at_tool_result_even_when_later_reply_is_saved(tmp_path: P
             response = await list_chat_history_last_n(
                 "s", n=100, through_message_id=tool.message_id, chat_history_service=ChatHistoryService(dao),
             )
-            assert [item["content"] for item in response.data] == [item["content"] for item in history]
+            assert [item.content for item in response.data] == [item["content"] for item in history]
             with pytest.raises(LookupError):
                 await dao.list_chat_history_last_n_async("other", through_message_id=tool.message_id)
             # 2. 其他会话的消息编号不能作为本会话的历史终点。

@@ -38,6 +38,7 @@ from app.services.subagent_service import SubagentService
 from app.schemas.chat_settings import ChatSettings
 from app.schemas.mcp import MCPConnectionConfig
 from app.schemas.subagent_types import SubagentDefinition
+from app.schemas.system import ActiveTaskSummary, ReadyResponse, RootResponse, ShutdownResponse
 from app.agent.tools.authorization.catalog import LocalToolCatalogAdapter, MCPToolCatalogAdapter, UnifiedToolCatalog
 from app.agent.tools.authorization.manager import ToolAuthorization
 from app.mcp.mcp_connection_manager import MCPConnectionManager
@@ -212,42 +213,50 @@ app.mount("/images", StaticFiles(directory=IMAGES_DIR), name="images")
 
 
 @app.get("/")
-async def root():
-    # 根路径用于快速确认服务是否启动
+async def root() -> RootResponse:
     """提供根路径简单响应，便于确认后端 HTTP 服务可访问。
 
     Returns:
-        dict[str, str]: 根路径响应中声明的服务信息。
+        RootResponse: 根路径响应中声明的服务信息。
     """
-    return {"message": "Ayaya server is running"}
+    return RootResponse(message="Ayaya server is running")
 
 
 @app.get("/internal/ready")
-async def internal_ready() -> dict[str, bool | int]:
+async def internal_ready() -> ReadyResponse:
     """向 Electron 交付就绪状态及当前进程编号，用于断线后的退出核对。
 
     Returns:
-        dict[str, bool | int]: 就绪标记和当前后端 PID。
+        ReadyResponse: 就绪标记和当前后端 PID。
     """
-    return {"ready": True, "pid": os.getpid()}
+    return ReadyResponse(ready=True, pid=os.getpid())
 
 
 @app.get("/internal/tasks/active-summary")
-async def active_task_summary(request: Request):
+async def active_task_summary(request: Request) -> ActiveTaskSummary:
     """退出确认前查询业务或结果保存尚未结束的任务，包含静默任务。
 
     Args:
-        request (Request): 本次 HTTP 请求或绑定来源的插件请求。
+        request (Request): 提供当前应用任务管理器的 HTTP 请求。
+
+    Returns:
+        ActiveTaskSummary: 退出前仍需等待的任务数量。
     """
-    return {"active_count": request.app.state.task_supervisor.active_task_count()}
+    return ActiveTaskSummary(active_count=request.app.state.task_supervisor.active_task_count())
 
 
 @app.post("/internal/shutdown")
-async def internal_shutdown(request: Request):
+async def internal_shutdown(request: Request) -> ShutdownResponse:
     """请求当前 Uvicorn 实例执行优雅关闭。
 
     Args:
         request (Request): FastAPI 当前请求，提供应用运行时和受控服务器实例。
+
+    Returns:
+        ShutdownResponse: 确认本次关闭请求已经受理。
+
+    Raises:
+        HTTPException: 后端未由受控启动器管理时返回 503。
     """
     server = getattr(request.app.state, "uvicorn_server", None)
     if server is None:
@@ -255,7 +264,7 @@ async def internal_shutdown(request: Request):
     # 1. 长连接与任务回调先失去执行资格，服务器等待请求退出期间也不能启动新轮次。
     await begin_runtime_shutdown(request.app)
     server.should_exit = True
-    return {"shutting_down": True}
+    return ShutdownResponse(shutting_down=True)
 
 
 if __name__ == "__main__":

@@ -5,15 +5,21 @@ from app.dependencies import get_tool_permission_service
 from app.schemas.tool import (
     ToolInfo,
     ToolPermissionsUpdate,
+    ToolListResponse,
+    ToolPermissionsResponse,
 )
 from app.services.tool_permission_service import ToolPermissionService
 
 router = APIRouter(tags=["tools"])
 
 
-@router.get("/tools", response_model=Result)
-def list_tools() -> Result:
-    """获取所有可用工具的名称和描述"""
+@router.get("/tools")
+def list_tools() -> Result[ToolListResponse]:
+    """获取所有可用工具的名称和描述。
+
+    Returns:
+        Result[ToolListResponse]: 当前已注册工具的列表。
+    """
     from app.agent.tools.core.registry import ToolRegistry
 
     tool_list: list[ToolInfo] = []
@@ -24,14 +30,14 @@ def list_tools() -> Result:
         description = getattr(tool_class, "description", "") or ""
         tool_list.append(ToolInfo(name=tool_class.name, description=description.strip()))
 
-    return Result(data={"tools": [t.model_dump() for t in tool_list]}, msg="success", code=200)
+    return Result[ToolListResponse](data=ToolListResponse(tools=tool_list), msg="success", code=200)
 
 
-@router.get("/tool-permissions/{session_id}", response_model=Result)
+@router.get("/tool-permissions/{session_id}")
 def list_tool_permissions(
     session_id: str,
     service: ToolPermissionService = Depends(get_tool_permission_service),
-) -> Result:
+) -> Result[ToolPermissionsResponse]:
     """设置页读取本地和 MCP 工具目录、权限及不可用原因。
 
     Args:
@@ -39,21 +45,21 @@ def list_tool_permissions(
         service (ToolPermissionService): FastAPI 注入的工具权限应用服务。
 
     Returns:
-        Result: 包含 tools 列表的统一接口结果。
+        Result[ToolPermissionsResponse]: 包含 tools 列表的统一接口结果。
     """
-    return Result(
-        data={"tools": [item.model_dump(mode="json") for item in service.list_policies(session_id)]},
+    return Result[ToolPermissionsResponse](
+        data=ToolPermissionsResponse(tools=service.list_policies(session_id)),
         msg="success",
         code=200,
     )
 
 
-@router.put("/tool-permissions/{session_id}", response_model=Result)
+@router.put("/tool-permissions/{session_id}")
 async def update_tool_permissions(
     session_id: str,
     payload: ToolPermissionsUpdate,
     service: ToolPermissionService = Depends(get_tool_permission_service),
-) -> Result:
+) -> Result[ToolPermissionsResponse]:
     """设置页提交权限时校验并保存，然后返回最新工具目录。
 
     Args:
@@ -62,7 +68,7 @@ async def update_tool_permissions(
         service (ToolPermissionService): FastAPI 注入的工具权限应用服务。
 
     Returns:
-        Result: 包含保存后 tools 列表的统一接口结果。
+        Result[ToolPermissionsResponse]: 包含保存后 tools 列表的统一接口结果。
 
     Raises:
         HTTPException: 会话不存在返回 404，权限更新无效返回 400。
@@ -73,8 +79,8 @@ async def update_tool_permissions(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return Result(
-        data={"tools": [item.model_dump(mode="json") for item in tools]},
+    return Result[ToolPermissionsResponse](
+        data=ToolPermissionsResponse(tools=tools),
         msg="success",
         code=200,
     )

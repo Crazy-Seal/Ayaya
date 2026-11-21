@@ -230,11 +230,11 @@ def test_active_summary_uses_real_supervisor_and_excludes_cleanup(tmp_path: Path
         request = Request({"type": "http", "app": app})
         try:
             task_id = await supervisor.submit(Work(), runtime=runtime, name="work", title="工作", notify_agent=False)
-            assert await active_task_summary(request) == {"active_count": 1}
+            assert (await active_task_summary(request)).active_count == 1
             release_run.set()
             await asyncio.wait_for(cleaning.wait(), 2)
             assert (await supervisor.wait(task_id, timeout_ms=100)).status == TaskStatus.COMPLETED
-            assert await active_task_summary(request) == {"active_count": 0}
+            assert (await active_task_summary(request)).active_count == 0
             closing = asyncio.create_task(supervisor.close())
             await asyncio.sleep(0)
             assert not closing.done()
