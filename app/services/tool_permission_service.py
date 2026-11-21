@@ -3,6 +3,7 @@
 from app.agent.tools.authorization.catalog import UnifiedToolCatalog
 from app.agent.tools.authorization.models import ToolIdentity
 from app.crud.chat_settings_dao import ChatSettingsDao
+from app.errors import InvalidOperationError
 from app.schemas.tool import ToolPolicyView
 from app.schemas.tool_permissions import ToolPolicy
 from app.schemas.chat_settings import AgentPluginSettings
@@ -86,8 +87,8 @@ class ToolPermissionService:
             list[ToolPolicyView]: 保存后的权限展示记录。
 
         Raises:
-            ValueError: 提交了不在工具目录中的标识，整批权限不保存。
-            KeyError: 指定会话没有配置。
+            InvalidOperationError: 提交了不在工具目录中的标识，整批权限不保存。
+            ResourceNotFoundError: 指定会话没有配置。
         """
         # 1. 先取得与会话设置、MCP 修改共用的锁，再读取配置，避免覆盖刚保存的变更。
         async with self._mutation_coordinator.lock:
@@ -95,7 +96,7 @@ class ToolPermissionService:
             known = {entry.stable_key for entry in self._catalog.list_entries(settings)}
             unknown = sorted(set(policies) - known)
             if unknown:
-                raise ValueError(f"包含未知工具权限: {', '.join(unknown)}")
+                raise InvalidOperationError(f"包含未知工具权限: {', '.join(unknown)}")
             # 2. 所有工具标识有效后才合并本次权限，保留模型、人设及未修改的权限字段。
             merged = dict(settings.tool_permissions)
             plugins = {name: item.model_copy(deep=True) for name, item in settings.agent_plugins.items()}

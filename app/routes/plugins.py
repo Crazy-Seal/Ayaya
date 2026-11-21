@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import TypeAdapter
 
 from app.schemas.result import Result
@@ -25,11 +25,11 @@ def list_plugins(service: PluginService = Depends(get_plugin_service)) -> Result
     return Result[PluginListResponse](data=data, msg="success", code=200)
 
 
-@router.get("/plugins/mcp-status/{session_id}")
+@router.get("/plugins/mcp-status/{session_id}", responses={404: {"description": "会话不存在"}})
 def plugin_mcp_status(
     session_id: str, service: MCPService = Depends(get_mcp_service),
 ) -> Result[PluginMCPStatusResponse]:
-    """返回应用服务组合的插件 MCP 状态，将会话不存在转换为 HTTP 404。
+    """返回设置页正在编辑的会话所启用的插件 MCP 状态。
 
     Args:
         session_id (str): 设置页正在编辑的会话。
@@ -39,11 +39,8 @@ def plugin_mcp_status(
         Result[PluginMCPStatusResponse]: 按插件分组的服务名称与运行状态。
 
     Raises:
-        HTTPException: 指定会话不存在。
+        ResourceNotFoundError: 指定会话不存在。
     """
-    try:
-        result = service.get_plugin_mcp_status(session_id)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    result = service.get_plugin_mcp_status(session_id)
     data = PluginMCPStatusResponse.model_validate({"plugins": result})
     return Result[PluginMCPStatusResponse](data=data, msg="success", code=200)

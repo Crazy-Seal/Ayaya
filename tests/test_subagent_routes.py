@@ -17,6 +17,7 @@ from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.agent.state.manager import SessionStateManager
 from app.crud.subagent_dao import SubagentDao
 from app.dependencies import get_runtime_scheduler
+from app.http_errors import install_http_error_handlers
 from app.routes.agent import router
 from app.schemas.subagent_types import SubagentDefinition
 
@@ -47,6 +48,7 @@ def test_subagent_queries_and_invalid_controls_preserve_http_business_contract(t
             await close_test_runtime(scheduler)
 
     application = FastAPI(lifespan=lifespan)
+    install_http_error_handlers(application)
     application.include_router(router)
     application.dependency_overrides[get_runtime_scheduler] = lambda: application.state.scheduler
     with TestClient(application) as client:

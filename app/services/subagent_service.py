@@ -8,6 +8,7 @@ from uuid import uuid4
 from app.agent.runtime.subagent_requests import CreateSubagentRequest
 from app.agent.state.manager import SessionStateManager
 from app.crud.subagent_dao import SubagentDao
+from app.errors import ResourceNotFoundError
 from app.crud.task_record_dao import TaskRecordDao
 from app.schemas.runtime_types import AgentRunOutcome, AgentRunOutcomeKind, InboxKind, TaskStatus, TurnInterruptReason
 from app.schemas.subagent_types import SubagentDefinition, SubagentRecord, TaskRecordKind
@@ -61,12 +62,19 @@ class SubagentService:
             session_id (str): 本次操作所属的父会话编号。
             subagent_id (str): 实际执行的子身份，父执行时为空。
             interaction_limit (int): 详情中最多返回的显式交互条数。
+
+        Returns:
+            dict[str, object]: 保存的子身份、交互和结果记录。
+
+        Raises:
+            ValueError: 交互数量小于 1。
+            ResourceNotFoundError: 子身份不存在或属于其他会话。
         """
         if interaction_limit < 1:
             raise ValueError("interaction_limit 必须为正数")
         record = await self.definitions.get(session_id, subagent_id)
         if record is None:
-            raise ValueError("子 Agent 不存在或不属于当前会话")
+            raise ResourceNotFoundError("子 Agent 不存在或不属于当前会话")
         definition = record.definition
         results = [asdict(item) for item in await self.results.list(session_id)
                    if item.subagent_id == subagent_id and item.kind == TaskRecordKind.SUBAGENT

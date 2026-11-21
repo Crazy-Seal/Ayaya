@@ -21,7 +21,7 @@ from app.agent.state.messages import ToolCall, ToolMessage
 from app.crud.chat_history_dao import ChatHistoryDao
 from app.routes.chat_history import list_chat_history_last_n
 from app.services.chat_history_service import ChatHistoryService
-from fastapi import HTTPException
+from app.errors import ResourceNotFoundError
 from tests.test_checkpoint_recovery import ImageStepTool, make_agent
 
 
@@ -209,14 +209,13 @@ def test_history_stops_at_tool_result_even_when_later_reply_is_saved(tmp_path: P
                 "s", n=100, through_message_id=tool.message_id, chat_history_service=ChatHistoryService(dao),
             )
             assert [item.content for item in response.data] == [item["content"] for item in history]
-            with pytest.raises(LookupError):
+            with pytest.raises(ResourceNotFoundError):
                 await dao.list_chat_history_last_n_async("other", through_message_id=tool.message_id)
             # 2. 其他会话的消息编号不能作为本会话的历史终点。
-            with pytest.raises(HTTPException) as error:
+            with pytest.raises(ResourceNotFoundError, match="历史查询终点不存在于当前会话"):
                 await list_chat_history_last_n(
                     "other", n=100, through_message_id=tool.message_id, chat_history_service=ChatHistoryService(dao),
                 )
-            assert error.value.status_code == 404
         finally:
             await manager.close()
 

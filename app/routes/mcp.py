@@ -1,11 +1,10 @@
 from typing import TypeVar
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 
 from app.dependencies import get_mcp_service
 from app.schemas.mcp import MCPDeleteResult, MCPServerConfig, MCPServerView, MCPTestResult, MCPToolInfo
 from app.schemas.result import Result
-from app.mcp.mcp_connection_manager import MCPConnectionError, MCPServerDisabledError
 from app.services.mcp_service import MCPService
 
 
@@ -38,7 +37,7 @@ def list_servers(service: MCPService = Depends(get_mcp_service)) -> Result[list[
     return _result([MCPServerView.model_validate(item) for item in service.list_servers()])
 
 
-@router.post("/servers/test")
+@router.post("/servers/test", responses={400: {"description": "MCP 连接测试失败"}})
 async def test_server(
     server: MCPServerConfig,
     service: MCPService = Depends(get_mcp_service),
@@ -53,15 +52,12 @@ async def test_server(
         Result[MCPTestResult]: 包含连接诊断结果的统一响应。
 
     Raises:
-        HTTPException: Server 连接测试失败。
+        MCPConnectionError: Server 连接测试失败。
     """
-    try:
-        return _result(MCPTestResult.model_validate(await service.test_server(server)))
-    except MCPConnectionError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _result(MCPTestResult.model_validate(await service.test_server(server)))
 
 
-@router.post("/servers")
+@router.post("/servers", responses={409: {"description": "MCP 服务编号已存在"}})
 async def create_server(
     server: MCPServerConfig,
     service: MCPService = Depends(get_mcp_service),
@@ -76,16 +72,13 @@ async def create_server(
         Result[MCPServerView]: 包含新 Server 视图的统一响应。
 
     Raises:
-        HTTPException: Server ID 已存在。
+        ResourceConflictError: Server ID 已存在。
     """
-    try:
-        data = await service.create_server(server)
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    data = await service.create_server(server)
     return _result(MCPServerView.model_validate(data))
 
 
-@router.put("/servers/{server_id}")
+@router.put("/servers/{server_id}", responses={404: {"description": "MCP 服务不存在"}, 409: {"description": "MCP 服务编号不能修改"}})
 async def update_server(
     server_id: str,
     server: MCPServerConfig,
@@ -102,18 +95,14 @@ async def update_server(
         Result[MCPServerView]: 包含更新后 Server 视图的统一响应。
 
     Raises:
-        HTTPException: Server 不存在或请求尝试修改 ID。
+        ResourceNotFoundError: 指定 Server 不存在。
+        ResourceConflictError: 请求尝试修改 Server ID。
     """
-    try:
-        data = await service.update_server(server_id, server)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    data = await service.update_server(server_id, server)
     return _result(MCPServerView.model_validate(data))
 
 
-@router.delete("/servers/{server_id}")
+@router.delete("/servers/{server_id}", responses={404: {"description": "MCP 服务不存在"}})
 async def delete_server(
     server_id: str,
     service: MCPService = Depends(get_mcp_service),
@@ -128,16 +117,13 @@ async def delete_server(
         Result[MCPDeleteResult]: 包含受影响会话 ID 的统一响应。
 
     Raises:
-        HTTPException: 指定 Server 不存在。
+        ResourceNotFoundError: 指定 Server 不存在。
     """
-    try:
-        affected = await service.delete_server(server_id)
-        return _result(MCPDeleteResult(affected_sessions=affected))
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    affected = await service.delete_server(server_id)
+    return _result(MCPDeleteResult(affected_sessions=affected))
 
 
-@router.post("/servers/{server_id}/reconnect")
+@router.post("/servers/{server_id}/reconnect", responses={400: {"description": "MCP 连接失败"}, 404: {"description": "MCP 服务不存在"}, 409: {"description": "MCP 服务已禁用"}})
 async def reconnect_server(
     server_id: str,
     service: MCPService = Depends(get_mcp_service),
@@ -152,19 +138,14 @@ async def reconnect_server(
         Result[MCPServerView]: 包含重连后 Server 视图的统一响应。
 
     Raises:
-        HTTPException: Server 不存在或重连失败。
+        ResourceNotFoundError: 指定 Server 不存在。
+        MCPServerDisabledError: Server 已禁用。
+        MCPConnectionError: Server 重连失败。
     """
-    try:
-        return _result(MCPServerView.model_validate(await service.reconnect(server_id)))
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except MCPServerDisabledError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except MCPConnectionError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _result(MCPServerView.model_validate(await service.reconnect(server_id)))
 
 
-@router.get("/servers/{server_id}/tools")
+@router.get("/servers/{server_id}/tools", responses={404: {"description": "MCP 服务不存在"}})
 def list_server_tools(
     server_id: str,
     service: MCPService = Depends(get_mcp_service),
@@ -179,9 +160,6 @@ def list_server_tools(
         Result[list[MCPToolInfo]]: 包含工具目录的统一响应。
 
     Raises:
-        HTTPException: 指定 Server 不存在。
+        ResourceNotFoundError: 指定 Server 不存在。
     """
-    try:
-        return _result([MCPToolInfo.model_validate(item) for item in service.list_tools(server_id)])
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return _result([MCPToolInfo.model_validate(item) for item in service.list_tools(server_id)])

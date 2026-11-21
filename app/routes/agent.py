@@ -2,13 +2,14 @@ from dataclasses import asdict
 from collections.abc import AsyncIterator
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 
 from app.dependencies import (
     get_chat_settings_dao, get_runtime_scheduler, get_task_supervisor,
     get_interaction_event_hub, get_channel_subscription_service,
 )
+from app.errors import InvalidOperationError, ResourceNotFoundError
 from app.interaction.interaction_event_hub import InteractionEventHub
 from app.services.channel_subscription_service import ChannelSubscriptionService
 from app.schemas.result import Result
@@ -83,7 +84,7 @@ async def observe_runtime(session_id: str, channel: str, hub: InteractionEventHu
         hub.unsubscribe(subscriber)
 
 
-@router.get("/agent/events/{session_id}")
+@router.get("/agent/events/{session_id}", responses={400: {"description": "渠道未注册或会话未订阅此渠道"}})
 async def subscribe_events(
     session_id: str,
     channel: str = DESKTOP_CHANNEL,
@@ -104,14 +105,11 @@ async def subscribe_events(
         StreamingResponse: 独立的会话 SSE，先发送接收方快照再发送增量。
 
     Raises:
-        HTTPException: 渠道未注册或在该会话未启用时返回 HTTP 400。
+        InvalidOperationError: 渠道未注册或在该会话未启用。
     """
-    try:
-        subscriptions.validate_source(channel)
-        if not await subscriptions.is_enabled(session_id, channel):
-            raise ValueError("该会话未订阅此渠道")
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    subscriptions.validate_source(channel)
+    if not await subscriptions.is_enabled(session_id, channel):
+        raise InvalidOperationError("该会话未订阅此渠道")
 
     # 1. 会话长期订阅共用分钟心跳和 JSON 投影，心跳不占业务事件序号。
     return StreamingResponse(stream_sse_json(
@@ -137,7 +135,7 @@ async def list_channels(
     return ChannelListResponse.model_validate({"channels": await subscriptions.list(session_id)})
 
 
-@router.put("/agent/channels/{session_id}/{channel}")
+@router.put("/agent/channels/{session_id}/{channel}", responses={400: {"description": "渠道未注册或试图修改桌面固定订阅"}})
 async def update_channel_subscription(
     session_id: str,
     channel: str,
@@ -156,12 +154,9 @@ async def update_channel_subscription(
         ChannelListResponse: 保存后以 channels 键包装的渠道列表。
 
     Raises:
-        HTTPException: 修改桌面固定订阅或未注册渠道时返回 HTTP 400。
+        InvalidOperationError: 修改桌面固定订阅或渠道未注册。
     """
-    try:
-        await subscriptions.set_enabled(session_id, channel, payload.enabled)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await subscriptions.set_enabled(session_id, channel, payload.enabled)
     return ChannelListResponse.model_validate({"channels": await subscriptions.list(session_id)})
 
 
@@ -181,7 +176,7 @@ async def list_subagents(
     return SubagentListResponse(subagents=list(await scheduler.snapshot_subagents(session_id)))
 
 
-@router.get("/agent/subagents/{session_id}/{subagent_id}")
+@router.get("/agent/subagents/{session_id}/{subagent_id}", responses={404: {"description": "子 Agent 不存在或不属于当前会话"}})
 async def subagent_details(
     session_id: str, subagent_id: str, interaction_limit: Annotated[int, Query(ge=1)] = 10,
     scheduler: AgentRuntimeScheduler = Depends(get_runtime_scheduler),
@@ -198,12 +193,9 @@ async def subagent_details(
         SubagentDetailResponse: 子身份详情和上下文可用状态。
 
     Raises:
-        HTTPException: 子身份不存在或属于其他会话时返回 404。
+        ResourceNotFoundError: 子身份不存在或属于其他会话。
     """
-    try:
-        detail = await scheduler.get_subagent_details(session_id, subagent_id, interaction_limit)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    detail = await scheduler.get_subagent_details(session_id, subagent_id, interaction_limit)
     return SubagentDetailResponse.model_validate(detail)
 
 
@@ -228,7 +220,7 @@ async def list_background_tasks(
     ])
 
 
-@router.get("/tasks/{session_id}/{task_id}/output")
+@router.get("/tasks/{session_id}/{task_id}/output", responses={400: {"description": "任务没有终端输出"}, 404: {"description": "任务不存在或不属于当前会话"}})
 async def background_task_output(
     session_id: str, task_id: str, offset: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=TASK_OUTPUT_PAGE_MAX_BYTES)] = TASK_OUTPUT_PAGE_DEFAULT_BYTES,
@@ -247,19 +239,17 @@ async def background_task_output(
         TaskOutputResponse: 当前页文本、下次读取位置及剩余内容标记。
 
     Raises:
-        HTTPException: 任务不属于该会话时返回 404，内部读取参数无效时返回 400。
+        ResourceNotFoundError: 任务不存在或不属于当前会话。
+        InvalidOperationError: 任务没有终端输出。
     """
     record = await supervisor.get_task_snapshot(task_id)
     if record is None or record.session_id != session_id:
-        raise HTTPException(status_code=404, detail="任务不存在")
-    try:
-        page = await read_terminal_output(record, offset, limit)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise ResourceNotFoundError("任务不存在")
+    page = await read_terminal_output(record, offset, limit)
     return TaskOutputResponse.model_validate(page)
 
 
-@router.get("/health")
+@router.get("/health", responses={404: {"description": "会话不存在"}})
 def health_check(
     session_id: str,
     chat_settings_dao: ChatSettingsDao = Depends(get_chat_settings_dao),

@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 from app.dependencies import (
     get_runtime_scheduler, get_interaction_event_hub, get_channel_subscription_service,
 )
+from app.http_errors import install_http_error_handlers
 from app.agent.core.events import AgentEvent, EventType
 from app.agent.state.manager import SessionStateManager
 from app.interaction.interaction_event_hub import InteractionEventHub
@@ -224,8 +225,18 @@ def test_http_command_reaches_real_scheduler_and_sse_subscriber(tmp_path, delive
         assert [frame["event_sequence"] for frame in frames] == list(range(5))
 
 
-def test_unknown_command_keeps_http_200_business_rejection() -> None:
-    """验证类型整理没有把未知命令提前变成 HTTP 422 或启动 Agent。"""
+@pytest.mark.parametrize("origin,status,detail", [
+    ("desktop", "invalid", "未知运行命令"),
+    ("unknown", "failed", "交互渠道未注册或已关闭"),
+])
+def test_unknown_command_keeps_http_200_business_rejection(origin: str, status: str, detail: str) -> None:
+    """未知命令和未注册渠道仍由调度器返回 HTTP 200 拒绝回执。
+
+    Args:
+        origin (str): 提交命令的渠道。
+        status (str): 调度器原有的拒绝状态。
+        detail (str): 调度器原有的错误正文。
+    """
     def unexpected_agent(session_id: str, _manager):
         """禁止未知命令触发真实执行。
 
@@ -251,6 +262,7 @@ def test_unknown_command_keeps_http_200_business_rejection() -> None:
 
     app = FastAPI(lifespan=lifespan)
     app.include_router(agent_router)
+    install_http_error_handlers(app)
 
     def runtime_override():
         """提供真实调度器，但不启动应用生命周期或生产存储。
@@ -263,10 +275,10 @@ def test_unknown_command_keeps_http_200_business_rejection() -> None:
     app.dependency_overrides[get_runtime_scheduler] = runtime_override
     with TestClient(app) as client:
         response = client.post("/agent/commands", json={
-            "session_id": "s", "origin_channel": "desktop", "kind": "future_command", "payload": {},
+            "session_id": "s", "origin_channel": origin, "kind": "future_command", "payload": {},
         })
     assert response.status_code == 200
-    assert response.json() == {"accepted": False, "status": "invalid", "context_id": "s", "detail": "未知运行命令", "run_id": None}
+    assert response.json() == {"accepted": False, "status": status, "context_id": "s", "detail": detail, "run_id": None}
 
 
 def test_idle_sse_heartbeats_preserve_pending_event_and_close_source(monkeypatch) -> None:

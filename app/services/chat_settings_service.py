@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from app.schemas.tool_types import LOCAL_TOOL_KEY_PREFIX, MCP_TOOL_KEY_PREFIX
 from app.agent.tools.core.registry import ToolRegistry
 from app.crud.chat_settings_dao import ChatSettingsDao
+from app.errors import ResourceNotFoundError
 from app.crud.mcp_settings_dao import MCPSettingsDao
 from app.mcp.identity import server_identity_fingerprint
 from app.schemas.chat_settings import ChatSettings
@@ -151,7 +152,7 @@ class ChatSettingsService:
             ChatSettings: 指定会话的配置。
 
         Raises:
-            KeyError: 指定会话不存在。
+            ResourceNotFoundError: 指定会话不存在。
         """
         return self.normalize(self.chat_settings_dao.get_chat_settings(session_id), validate_enabled=False)
 
@@ -167,7 +168,7 @@ class ChatSettingsService:
         async with self.mutation_coordinator.lock:
             try:
                 existing = self.chat_settings_dao.get_chat_settings(chat_settings.session_id)
-            except KeyError:
+            except ResourceNotFoundError:
                 existing = None
             normalized = self._sanitize_plugins(self.normalize(chat_settings), existing)
             sanitized = self._sanitize_mcp(normalized, existing)

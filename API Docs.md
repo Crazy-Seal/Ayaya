@@ -5,9 +5,36 @@
 ## 本地访问与通用格式
 
 - 默认监听回环地址 `http://127.0.0.1:8000`。除 `GET /` 外，请求均须带桌面启动器提供的 `Authorization: Bearer <临时令牌>`；浏览器 Origin 请求被拒绝。
-- 原有配置、权限及历史接口通常返回 `{"data": ..., "msg": "success", "code": 200}`。下述运行时新接口直接返回 JSON 对象或 SSE，不包在 `Result.data` 中。Pydantic 请求校验失败返回 HTTP 422；运行时命令的业务拒绝通常返回 HTTP 200 和 `accepted=false`，其他错误按路由返回 HTTP 错误及 `detail`。
+- 配置、权限及历史接口通常返回 `{"data": ..., "msg": "success", "code": 200}`。下述运行时接口直接返回 JSON 对象或 SSE，不包在 `Result.data` 中。
 - `GET /` 返回存活提示；`GET /internal/ready` 和 `POST /internal/shutdown` 分别供受控桌面启动器检查就绪和关闭后端。
-- `GET /health?session_id=<id>` 返回当前会话的模型名和健康状态。
+- `GET /health?session_id=<id>` 返回当前会话的模型名和健康状态；会话已删除时返回 404。
+
+### HTTP 错误
+
+| 状态码 | 触发情况 |
+| --- | --- |
+| 400 | 提交未知工具权限；渠道未注册、会话未订阅该渠道或试图修改桌面固定订阅；任务没有终端输出；MCP 测试或显式重连失败。 |
+| 404 | 会话、MCP 服务、子 Agent、任务或历史查询终点不存在；子 Agent、任务或历史终点属于其他会话。 |
+| 409 | 会话或 MCP 服务编号已存在；尝试修改 MCP 稳定编号；重连已禁用的 MCP 服务。 |
+| 422 | 请求字段或查询参数无效，包括非法分页；插件参数无效时 `detail` 为字段错误列表。 |
+| 500 | 保存的消息与当前消息契约不兼容，或接口遇到未预期的内部错误。 |
+| 503 | 请求关闭后端，但当前进程没有由受控启动器管理。 |
+
+普通业务错误返回 `detail` 字符串，例如查询不存在的任务：
+
+```json
+{"detail":"任务不存在"}
+```
+
+插件参数错误返回字段路径、说明和错误类型，例如记忆提取间隔填为 0：
+
+```json
+{"detail":[{"loc":["agent_plugins","memory","config","long_term_memory_every_human_messages"],"msg":"Input should be greater than or equal to 1","type":"greater_than_equal"}]}
+```
+
+请求字段校验沿用 FastAPI 的 422 格式。未授权访问仍按本地访问规则返回 401 或 403。未预期的 500 错误可能只有默认的 `Internal Server Error` 正文。
+
+命令被拒绝时仍返回 HTTP 200 和 `accepted=false`，原因在回执的 `detail` 中。SSE 连接建立后的运行错误继续作为事件发送，内容见下文；HTTP 错误表适用于普通请求及 SSE 建立连接前的检查。
 
 运行时取值由后端 `app/schemas/runtime_types.py` 的字符串枚举集中定义；前端 `ui/shared-types.ts` 使用同值的具名常量及联合类型。HTTP、SSE、SQLite 中仍保存既有字符串，不输出枚举成员名称。会话阶段 `SessionPhase`、轮次执行阶段 `TurnPhase`、受管进程 `TaskStatus` 和模型通知 `TaskResultStatus` 分别建模；任务停止仍从 `stopped` 映射为通知的 `cancelled`，混合终态仍为 `mixed`。Agent 内部 `done` 仍映射到交互 `run_completed`。
 
@@ -37,7 +64,7 @@
 | `cancel_queued` | `payload.input_sequence` 为 Inbox 消息编号；仅消息来源渠道能撤销尚未领取的排队输入。 |
 | `stop_background_task` | `task_id` 指向同一会话的后台任务。 |
 
-回执为 `{"accepted":true,"reason":null,"run_id":"..."}`；拒绝时 `accepted=false` 并附 `reason`，不一定有 `run_id`。`accepted=true` 只表示命令已受理，不表示输入已交付模型、工具已执行或本轮已经完成。本版没有通用 `command_id` 或自动重发／去重命令机制。
+回执包含 `status`、`accepted`、`context_id`、`run_id` 和 `detail`，例如 `{"status":"accepted","accepted":true,"context_id":"default","run_id":null,"detail":null}`。拒绝时 `accepted=false`，`detail` 说明原因，`context_id` 和 `run_id` 允许为空。未知命令仍返回 HTTP 200，例如 `{"status":"invalid","accepted":false,"context_id":"default","run_id":null,"detail":"未知运行命令"}`。`accepted=true` 只表示命令已受理，不表示输入已交付模型、工具已执行或本轮已经完成。本版没有通用 `command_id` 或自动重发／去重命令机制。
 
 例如，桌面发送一句话：
 
@@ -74,6 +101,13 @@ data: {"session_id":"default","kind":"text_chunk","payload":{"value":"你好"},"
 
 ## 桌面执行器与后台任务
 
+子 Agent 查询使用以下接口；查询只读取记录：
+
+| 接口 | 响应及错误 |
+| --- | --- |
+| `GET /agent/subagents/{session_id}` | 返回 `{"subagents":[...]}`；没有子 Agent 时返回空列表。 |
+| `GET /agent/subagents/{session_id}/{subagent_id}?interaction_limit=10` | 返回定义、最近交互、结果及当前状态；子 Agent 不存在或属于其他会话时返回 404。`interaction_limit` 至少为 1，无效时返回 422。 |
+
 屏幕工具由 **Electron 主进程**执行，不由聊天 Renderer 处理。它持续订阅 `GET /desktop-executor/requests`，这是一条与会话展示事件分开的 SSE；每条 `data:` JSON 包含 `session_id`、`request_id`、`kind`（`capture_screen` 或 `perform_screen_action`）和 `payload`。连接时先给出仍待领取的请求，断线后可重连。
 
 1. `POST /desktop-executor/claim`，请求 `{"session_id":"...","request_id":"..."}`，返回 `{"claimed":true|false}`。后端复核当前 continuation、工具授权和是否已领取；必须在截屏或点击之前调用。
@@ -86,6 +120,8 @@ data: {"session_id":"default","kind":"text_chunk","payload":{"value":"你好"},"
 | `GET /tasks/{session_id}/records` | 返回 `{"tasks":[...]}`；仅列显式后台或前台超时后移交的任务。每条包含 `task_id`、会话、命令、`status`、`background=true`、PID、退出码、输出路径、时间、来源运行／工具调用标识、`output_ref` 和 `recent_output`。状态为 `running`、`completed`、`failed`、`stopped` 或 `orphaned`。前台记录仍保留完整输出并可按 task_id 查询；旧任务记录缺少模式时保持可见。 |
 | `GET /tasks/{session_id}/{task_id}/output?offset=0&limit=16384` | 按字节偏移分页返回 `{"text":"...","next_offset":123,"has_more":false}`。`offset` 不小于 0，`limit` 范围为 1–65536；任务必须属于路径中的会话。 |
 
+任务不存在或属于其他会话时，输出接口返回 404；任务没有终端输出时返回 400；分页参数无效时返回 422。任务列表为空时仍返回成功。
+
 停止任务通过 `POST /agent/commands` 的 `stop_background_task` 命令。`run_ps` 的前台、显式后台及超时转后台使用同一任务记录和追加式输出文件；任务首次进入终态时，记录变更和一条 Agent Inbox 通知在同一 SQLite 事务中提交。任务通知只允许唤醒本次启动后已由新真人输入激活的会话；未激活会话的通知留在 Inbox，等新真人输入到达后一起交付。重启后遗留的 `running` 记录显示为 `orphaned`，其通知同样不能单独启动 Agent。
 
 `run_ps` 直接启动非交互 `powershell.exe`，继承后端进程的环境变量，并以仓库的 `agent_workspace/` 文件夹为工作目录；不自动激活同名 Conda 环境。程序已经输出并刷新的内容持续保存到任务日志，运行期间即可分页读取。
@@ -93,6 +129,8 @@ data: {"session_id":"default","kind":"text_chunk","payload":{"value":"你好"},"
 ## 渠道订阅与桌面 bridge
 
 `GET /agent/channels/{session_id}` 返回 `{"channels":[{"channel":"desktop","display_name":"桌面","enabled":true,"ready":true}]}`；`PUT /agent/channels/{session_id}/{channel}` 请求 `{"enabled":true|false}`，返回更新后的同形列表。订阅设置按会话持久化；桌面固定启用、不可修改。当前设置页仅能显示真实注册的桌面渠道；没有真实 QQ Adapter。
+
+修改未注册渠道或桌面固定订阅时返回 400。会话 SSE 建立连接前也会检查渠道；渠道未注册或该会话未订阅时返回 400。
 
 聊天 Renderer 不直接建立上述 HTTP/SSE 连接。Electron preload 向 Renderer 暴露 `submitInteractionCommand()`、`subscribeDesktopSession()`、`onInteractionEvent()`、`getChannelSubscriptions()`、`setChannelSubscription()`、`getBackgroundTasks()` 和 `getBackgroundTaskOutput()`；其类型在 `ui/shared-types.ts` 的 `DesktopPetApi` 中。主进程处理对应 IPC，把会话 SSE 事件通过 `desktop-pet:interaction-event` 转给 Renderer，并独立持有屏幕执行订阅。桌面提交命令时固定 `origin_channel=desktop`。
 
@@ -118,6 +156,8 @@ data: {"session_id":"default","kind":"text_chunk","payload":{"value":"你好"},"
 
 ChatSettings 包含 `session_id`、`model_name`、`openai_api_key`、`openai_base_url`、`temperature`、`system_prompt`、`context_strategy`，以及 `tool_permissions`、`tool_permissions_schema_version`、`agent_plugins`、`mcp.servers` 和可选角色资料。现行工具策略为稳定键映射，取值仅 `allow`、`ask`、`deny`；`mcp.servers[server_id]` 只保存 `enabled` 和可选 `identity_fingerprint`。请以 `/openapi.json` 中的 `ChatSettings` schema 获取全部约束，并参考 `config/chat_settings.sample.yaml` 的可运行示例。
 
+新增会话编号已存在时返回 409；读取、更新、删除设置以及读写工具权限时，会话已删除则返回 404。提交未知工具权限返回 400，整批权限不保存。新增或更新配置时，插件参数无效返回 422，原配置保持不变。`GET /plugins/mcp-status/{session_id}` 查询插件连接状态，会话不存在时也返回 404。
+
 ## MCP Server 管理
 
 所有接口位于 `/mcp`：
@@ -132,11 +172,15 @@ ChatSettings 包含 `session_id`、`model_name`、`openai_api_key`、`openai_bas
 
 服务配置使用 `transport=stdio`（`command`、`args`、`cwd`、`env`）或 `transport=streamable_http`（`url`、`headers`）；二者共有 `id`、`name`、`enabled`、连接和调用超时字段。启用服务不等于授予逐工具权限，应使用稳定键权限接口。
 
+新增编号重复或更新时试图修改编号，返回 409；更新、删除、重连和工具查询找不到服务时返回 404。测试连接或显式重连失败返回 400，重连已禁用的服务返回 409。新增和更新先保存配置，再尝试连接；连接失败仍返回 200，响应中的 `runtime.status` 为 `error`，`last_error` 说明原因。
+
 ## 历史与图片
 
 - `GET /chat_history/{session_id}?start=0&limit=200`：在可见消息投影后分页；`start` 不小于 0，`limit` 不小于 1。
-- `GET /chat_history_last_n/{session_id}?n=100`：读取最后 N 条可见消息，按时间升序返回；`n` 范围为 1–500。
+- `GET /chat_history_last_n/{session_id}?n=100`：读取最后 N 条可见消息，按时间升序返回；`n` 范围为 1–500。可加 `through_message_id` 限定读取到某条消息；该消息不存在或属于其他会话时返回 404。
 - 两者均返回 `Result.data` 数组，元素为 `{id,role,content,timestamp,images,origin_channel}`。`role` 可能是 `Human`、`AI` 或 `AI_Tool_Calling`；真人和 Assistant 的来源由 `origin_channel` 标识，旧记录按 `desktop` 解释。**工具产生的图片也可投影为带 `images` 的 `AI` 消息**，并非只有 `Human` 才有图片。
 - `GET /images/{relative_path}` 读取授权范围内的已保存图片；历史 `images` 字段是本地相对路径，请交给桌面端图片 URL 解析逻辑处理，不要假设它始终是根目录文件名。
 
 原始工具消息和旧记录不等同于历史 UI 投影；如果协议行与当前消息契约不兼容，历史接口返回 HTTP 500，而不会静默回退到旧表。
+
+未指定查询终点且没有历史时返回成功的空数组；分页参数无效时返回 422。

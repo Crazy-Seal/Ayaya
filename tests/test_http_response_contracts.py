@@ -9,6 +9,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.testclient import TestClient
 
 from app.dependencies import get_chat_history_service, get_mcp_service, get_runtime_scheduler, get_task_supervisor
+from app.http_errors import install_http_error_handlers
 from app.routes.agent import router
 from app.routes.chat_history import router as history_router
 from app.schemas.runtime_types import CommandReceipt, CommandStatus, TaskExecutionPhase, TaskStatus
@@ -314,6 +315,7 @@ def test_missing_required_response_field_fails_http_validation(method: str, path
     application = FastAPI()
     application.include_router(router)
     application.include_router(mcp_router)
+    install_http_error_handlers(application)
     application.dependency_overrides[get_runtime_scheduler] = BrokenService
     application.dependency_overrides[get_mcp_service] = BrokenService
     with TestClient(application, raise_server_exceptions=False) as client:

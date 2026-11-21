@@ -2,6 +2,8 @@
 
 from dataclasses import replace
 
+from app.errors import InvalidOperationError
+
 from app.crud.sqlite_factory import SqliteFactory
 from app.crud.channel_subscription_dao import ChannelSubscriptionDao
 from app.interaction.interaction_contract import ChannelDescriptor
@@ -60,10 +62,10 @@ class ChannelSubscriptionService:
             channel (str): 待检查标识。
 
         Raises:
-            ValueError: 标识未注册。
+            InvalidOperationError: 标识未注册。
         """
         if channel not in self._channels:
-            raise ValueError("交互渠道未注册或已关闭")
+            raise InvalidOperationError("交互渠道未注册或已关闭")
 
     def set_default_enabled(self, channel: str, enabled: bool) -> None:
         """修改注册默认值，已有持久覆盖值保持有效。
@@ -126,11 +128,11 @@ class ChannelSubscriptionService:
             enabled (bool): 本会话启用值。
 
         Raises:
-            ValueError: 未注册或试图修改桌面。
+            InvalidOperationError: 未注册或试图修改桌面。
         """
         self.validate_source(channel)
         if channel == DESKTOP_CHANNEL:
-            raise ValueError("桌面渠道不能修改")
+            raise InvalidOperationError("桌面渠道不能修改")
         await self._dao.set(session_id, channel, enabled)
         self._saved[(session_id, channel)] = enabled
 

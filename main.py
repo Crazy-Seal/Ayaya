@@ -15,6 +15,7 @@ if not is_test_environment():
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
+from app.http_errors import install_http_error_handlers
 
 from app.routes.agent import router as agent_router
 from app.routes.chat_settings import router as chat_settings_router
@@ -197,6 +198,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
 
 # FastAPI 应用入口：仅负责启动和挂载路由
 app = FastAPI(title="Ayaya server", version="0.1.0", lifespan=lifespan)
+install_http_error_handlers(app)
 install_local_api_security(app, load_api_token())
 # 挂载 Agent 相关 API
 app.include_router(agent_router)
@@ -245,7 +247,7 @@ async def active_task_summary(request: Request) -> ActiveTaskSummary:
     return ActiveTaskSummary(active_count=request.app.state.task_supervisor.active_task_count())
 
 
-@app.post("/internal/shutdown")
+@app.post("/internal/shutdown", responses={503: {"description": "后端不由受控启动器管理"}})
 async def internal_shutdown(request: Request) -> ShutdownResponse:
     """请求当前 Uvicorn 实例执行优雅关闭。
 

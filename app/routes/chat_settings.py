@@ -1,17 +1,16 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 
 from app.dependencies import get_chat_settings_service, get_runtime_scheduler
 from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.schemas.chat_settings import ChatSettings
 from app.schemas.result import Result
 from app.services.chat_settings_service import ChatSettingsService
-from app.services.plugin_service import PluginConfigurationError
 
 router = APIRouter(tags=["chat_settings"])
 
 
 # 增
-@router.post("/chat_settings")
+@router.post("/chat_settings", responses={409: {"description": "会话编号已存在"}, 422: {"description": "请求字段或插件配置无效"}})
 async def add_chat_settings(
     chat_settings: ChatSettings,
     chat_settings_service: ChatSettingsService = Depends(get_chat_settings_service),
@@ -26,19 +25,15 @@ async def add_chat_settings(
         Result[ChatSettings]: 实际保存后的完整会话配置。
 
     Raises:
-        HTTPException: 配置写入发生冲突。
+        ResourceConflictError: 会话编号已存在。
+        PluginConfigurationError: 插件配置字段无效。
     """
-    try:
-        saved = await chat_settings_service.add_chat_settings(chat_settings)
-    except PluginConfigurationError as exc:
-        raise HTTPException(status_code=422, detail=exc.errors) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    saved = await chat_settings_service.add_chat_settings(chat_settings)
     return Result[ChatSettings](data=saved, msg="success", code=200)
 
 
 # 删
-@router.delete("/chat_settings/{session_id}")
+@router.delete("/chat_settings/{session_id}", responses={404: {"description": "会话不存在"}})
 async def delete_chat_settings(
     session_id: str,
     chat_settings_service: ChatSettingsService = Depends(get_chat_settings_service),
@@ -55,20 +50,15 @@ async def delete_chat_settings(
         Result[None]: 确认配置已删除的空数据响应。
 
     Raises:
-        HTTPException: 指定配置不存在。
+        ResourceNotFoundError: 指定会话不存在。
     """
-    try:
-        await chat_settings_service.delete_chat_settings(session_id)
-        scheduler.schedule_parent_cleanup(session_id)
-        return Result[None](data=None, msg="success", code=200)
-    except PluginConfigurationError as exc:
-        raise HTTPException(status_code=422, detail=exc.errors) from exc
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    await chat_settings_service.delete_chat_settings(session_id)
+    scheduler.schedule_parent_cleanup(session_id)
+    return Result[None](data=None, msg="success", code=200)
 
 
 # 查
-@router.get("/chat_settings/{session_id}")
+@router.get("/chat_settings/{session_id}", responses={404: {"description": "会话不存在"}})
 def get_chat_settings(
     session_id: str,
     chat_settings_service: ChatSettingsService = Depends(get_chat_settings_service),
@@ -83,17 +73,14 @@ def get_chat_settings(
         Result[ChatSettings]: 包含会话配置的统一接口结果。
 
     Raises:
-        HTTPException: 指定会话不存在，返回 HTTP 404。
+        ResourceNotFoundError: 指定会话不存在。
     """
-    try:
-        data = chat_settings_service.get_chat_settings_by_session(session_id)
-        return Result[ChatSettings](data=data, msg="success", code=200)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    data = chat_settings_service.get_chat_settings_by_session(session_id)
+    return Result[ChatSettings](data=data, msg="success", code=200)
 
 
 # 改
-@router.put("/chat_settings")
+@router.put("/chat_settings", responses={404: {"description": "会话不存在"}, 422: {"description": "请求字段或插件配置无效"}})
 async def update_chat_settings(
     chat_settings: ChatSettings,
     chat_settings_service: ChatSettingsService = Depends(get_chat_settings_service),
@@ -108,12 +95,8 @@ async def update_chat_settings(
         Result[ChatSettings]: 实际保存后的完整会话配置。
 
     Raises:
-        HTTPException: 指定配置不存在。
+        ResourceNotFoundError: 指定会话不存在。
+        PluginConfigurationError: 插件配置字段无效。
     """
-    try:
-        saved = await chat_settings_service.update_chat_settings(chat_settings)
-        return Result[ChatSettings](data=saved, msg="success", code=200)
-    except PluginConfigurationError as exc:
-        raise HTTPException(status_code=422, detail=exc.errors) from exc
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    saved = await chat_settings_service.update_chat_settings(chat_settings)
+    return Result[ChatSettings](data=saved, msg="success", code=200)

@@ -15,6 +15,7 @@ from app.agent.plugins.registry import PluginRegistry
 from app.crud.chat_settings_dao import ChatSettingsDao
 from app.crud.mcp_settings_dao import MCPSettingsDao
 from app.dependencies import get_mcp_service
+from app.http_errors import install_http_error_handlers
 from app.mcp.mcp_connection_manager import MCPConnectionManager
 from app.mcp.types import PluginMCPKey
 from app.routes.plugins import router
@@ -151,6 +152,7 @@ async def test_plugin_status_queries_are_read_only_and_keep_http_contract(tmp_pa
         assert connected[Plugin.name][0]["runtime"]["status"] == "available"
         assert service.get_plugin_mcp_status("two")[Plugin.name][0]["runtime"]["status"] == "disconnected"
         app = FastAPI()
+        install_http_error_handlers(app)
         app.include_router(router)
         app.dependency_overrides[get_mcp_service] = lambda: service
         with TestClient(app) as client:

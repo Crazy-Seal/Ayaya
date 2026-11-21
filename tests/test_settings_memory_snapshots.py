@@ -16,6 +16,7 @@ from app.agent.tools.authorization.models import (
 )
 from app.agent.tools.core.base import ToolResult
 from app.crud.chat_settings_dao import ChatSettingsDao
+from app.errors import ResourceNotFoundError
 from app.crud.mcp_settings_dao import MCPSettingsDao
 from app.mcp.identity import server_identity_fingerprint
 from app.mcp.mcp_connection_manager import MCPConnectionError
@@ -104,7 +105,7 @@ async def test_chat_settings_service_provides_new_operation_snapshot(
         assert memory_snapshot(chat_dao, "session", _memory_sqlite_factory).settings.model_name == "new-model"
     else:
         await service.delete_chat_settings("session")
-        with pytest.raises(KeyError):
+        with pytest.raises(ResourceNotFoundError):
             memory_snapshot(chat_dao, "session", _memory_sqlite_factory)
         return
     assert previous.settings.model_name == "old-model"

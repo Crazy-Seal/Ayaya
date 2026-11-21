@@ -7,7 +7,11 @@ from pathlib import Path
 
 import aiosqlite
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from app.dependencies import get_chat_history_service
+from app.http_errors import install_http_error_handlers
+from app.routes.chat_history import router as history_router
 
 from app.agent.context._compaction import ContextCompressionPolicy
 from app.agent.state.manager import SessionStateManager
@@ -304,17 +308,12 @@ def test_chat_history_routes_map_contract_errors_to_explicit_500(route) -> None:
             """
             raise MessageContractError("需要先迁移旧格式")
 
-    async def invoke() -> None:
-        """调用当前测试路由，供外层检查状态码或异常转换。
-
-        该定义仅用于外层用例：验证历史路由把协议契约错误转为明确 HTTP 500。
-        """
-        if route is list_chat_history:
-            await route("session", 0, 200, BrokenHistoryService())
-        else:
-            await route("session", 100, through_message_id=None, chat_history_service=BrokenHistoryService())
-
-    with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(invoke())
-    assert exc_info.value.status_code == 500
-    assert "消息契约不兼容" in str(exc_info.value.detail)
+    application = FastAPI()
+    install_http_error_handlers(application)
+    application.include_router(history_router)
+    application.dependency_overrides[get_chat_history_service] = BrokenHistoryService
+    url = "/chat_history/session" if route is list_chat_history else "/chat_history_last_n/session"
+    with TestClient(application, raise_server_exceptions=False) as client:
+        response = client.get(url)
+    assert response.status_code == 500
+    assert response.json() == {"detail": "数据库与当前消息契约不兼容：需要先迁移旧格式"}

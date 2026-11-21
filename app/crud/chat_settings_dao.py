@@ -2,6 +2,7 @@ from pathlib import Path
 
 import yaml
 
+from app.errors import ResourceConflictError, ResourceNotFoundError
 from app.schemas.tool_types import MCP_TOOL_KEY_PREFIX
 from app.schemas.tool_permissions import ToolPolicy, TOOL_PERMISSIONS_SCHEMA_VERSION
 from app.schemas.chat_settings import ChatSettings
@@ -105,14 +106,14 @@ class ChatSettingsDao:
             ChatSettings: 已保存的会话设置。
 
         Raises:
-            ValueError: 会话编号已经存在。
+            ResourceConflictError: 会话编号已经存在。
         """
         data = self._load_chat_settings_file()
         chat_models = data["chat_models"]
         session_id = chat_settings.session_id
 
         if any(item["session_id"] == session_id for item in chat_models):
-            raise ValueError(f"session_id already exists: {session_id}")
+            raise ResourceConflictError(f"session_id already exists: {session_id}")
 
         chat_models.append(chat_settings.model_dump(mode="json"))
         self._save_chat_settings_file(data)
@@ -146,7 +147,7 @@ class ChatSettingsDao:
             ChatSettings: 当前会话设置，并缓存该结果。
 
         Raises:
-            KeyError: 指定会话不存在。
+            ResourceNotFoundError: 指定会话不存在。
         """
         if session_id in self._cache:
             return self._cache[session_id]
@@ -158,7 +159,7 @@ class ChatSettingsDao:
                 self._cache[session_id] = result
                 return result
 
-        raise KeyError(f"session_id not found: {session_id}")
+        raise ResourceNotFoundError(repr(f"session_id not found: {session_id}"))
 
     def delete_chat_settings(self, session_id: str) -> None:
         """删除指定会话配置，保存成功后清除本对象的设置缓存。
@@ -167,7 +168,7 @@ class ChatSettingsDao:
             session_id (str): 当前操作所属的会话编号。
 
         Raises:
-            KeyError: 指定会话不存在。
+            ResourceNotFoundError: 指定会话不存在。
         """
         data = self._load_chat_settings_file()
         chat_models = data["chat_models"]
@@ -179,7 +180,7 @@ class ChatSettingsDao:
                 self._clear_cache()
                 return
 
-        raise KeyError(f"session_id not found: {session_id}")
+        raise ResourceNotFoundError(repr(f"session_id not found: {session_id}"))
 
     def update_chat_settings(self, session_id: str, chat_settings: ChatSettings) -> ChatSettings:
         """替换已存在会话的整项设置，保存成功后清除本对象的设置缓存。
@@ -192,7 +193,7 @@ class ChatSettingsDao:
             ChatSettings: 已保存的新设置。
 
         Raises:
-            KeyError: 指定会话不存在。
+            ResourceNotFoundError: 指定会话不存在。
         """
         data = self._load_chat_settings_file()
         chat_models = data["chat_models"]
@@ -204,7 +205,7 @@ class ChatSettingsDao:
                 self._clear_cache()
                 return chat_settings
 
-        raise KeyError(f"session_id not found: {session_id}")
+        raise ResourceNotFoundError(repr(f"session_id not found: {session_id}"))
 
     def remove_mcp_server_references(self, server_id: str) -> list[str]:
         """移除全部模型对指定 MCP Server 的授权。

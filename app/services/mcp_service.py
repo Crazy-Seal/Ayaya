@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.crud.chat_settings_dao import ChatSettingsDao
+from app.errors import ResourceConflictError, ResourceNotFoundError
 from app.crud.mcp_settings_dao import MCPSettingsDao
 from app.schemas.mcp import MCPServerConfig, MCPServersConfig, MCPServerStatus
 from app.mcp.identity import server_identity_fingerprint
@@ -60,7 +61,7 @@ class MCPService:
             dict[str, list[dict[str, Any]]]: 按插件分组的服务名称与状态；单个插件查询失败时保留其他结果。
 
         Raises:
-            KeyError: 会话配置不存在，由路由转换为 HTTP 404。
+            ResourceNotFoundError: 会话配置不存在。
         """
         # 1. 读取保存的会话配置，声明解析和状态查询仅生成返回数据。
         settings = self.chat_settings_dao.get_chat_settings(session_id)
@@ -104,12 +105,12 @@ class MCPService:
             dict[str, Any]: 新 Server 的设置页视图。
 
         Raises:
-            ValueError: Server ID 已存在。
+            ResourceConflictError: Server ID 已存在。
         """
         async with self.mutation_coordinator.lock:
             config = self.settings_dao.load()
             if any(item.id == server.id for item in config.servers):
-                raise ValueError(f"MCP server_id already exists: {server.id}")
+                raise ResourceConflictError(f"MCP server_id already exists: {server.id}")
             config.servers.append(server)
             self.settings_dao.save(config)
             if server.enabled:
@@ -131,12 +132,12 @@ class MCPService:
             dict[str, Any]: 更新后的设置页视图。
 
         Raises:
-            ValueError: 请求尝试修改 Server ID。
-            KeyError: 指定 Server 不存在。
+            ResourceConflictError: 请求尝试修改 Server ID。
+            ResourceNotFoundError: 指定 Server 不存在。
         """
         async with self.mutation_coordinator.lock:
             if server.id != server_id:
-                raise ValueError("MCP server_id 不允许修改")
+                raise ResourceConflictError("MCP server_id 不允许修改")
             config = self.settings_dao.load()
             for index, current in enumerate(config.servers):
                 if current.id != server_id:
@@ -158,7 +159,7 @@ class MCPService:
                     if identity_changed:
                         self.chat_settings_dao.invalidate_mcp_server_identity(server_id)
                 return self._server_view(server)
-            raise KeyError(f"MCP server_id not found: {server_id}")
+            raise ResourceNotFoundError(repr(f"MCP server_id not found: {server_id}"))
 
     async def delete_server(self, server_id: str) -> list[str]:
         """删除 MCP Server 及全部模型引用。
@@ -170,12 +171,12 @@ class MCPService:
             list[str]: 权限引用受到清理的会话 ID 列表。
 
         Raises:
-            KeyError: 指定 Server 不存在。
+            ResourceNotFoundError: 指定 Server 不存在。
         """
         async with self.mutation_coordinator.lock:
             config = self.settings_dao.load()
             if not any(server.id == server_id for server in config.servers):
-                raise KeyError(f"MCP server_id not found: {server_id}")
+                raise ResourceNotFoundError(repr(f"MCP server_id not found: {server_id}"))
             affected = self.chat_settings_dao.remove_mcp_server_references(server_id)
             await self.connection_manager.disconnect(server_id)
             self.settings_dao.save(
@@ -193,7 +194,7 @@ class MCPService:
             dict[str, Any]: 重连后的设置页视图。
 
         Raises:
-            KeyError: 指定 Server 不存在。
+            ResourceNotFoundError: 指定 Server 不存在。
         """
         async with self.mutation_coordinator.lock:
             server = next(
@@ -201,7 +202,7 @@ class MCPService:
                 None,
             )
             if server is None:
-                raise KeyError(f"MCP server_id not found: {server_id}")
+                raise ResourceNotFoundError(repr(f"MCP server_id not found: {server_id}"))
             if not server.enabled:
                 raise MCPServerDisabledError(f"MCP Server '{server_id}' 已禁用")
             tools = await self.connection_manager.reconnect(server_id)
@@ -231,10 +232,10 @@ class MCPService:
             list[dict[str, Any]]: 面向 API 的工具信息列表。
 
         Raises:
-            KeyError: 指定 Server 不存在。
+            ResourceNotFoundError: 指定 Server 不存在。
         """
         if not any(server.id == server_id for server in self.settings_dao.load().servers):
-            raise KeyError(f"MCP server_id not found: {server_id}")
+            raise ResourceNotFoundError(repr(f"MCP server_id not found: {server_id}"))
         return [
             {
                 "name": tool.name,

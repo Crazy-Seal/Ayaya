@@ -12,6 +12,7 @@ from app.agent.state.messages import (
     message_from_history,
 )
 from app.crud.sqlite_factory import SqliteFactory
+from app.errors import ResourceNotFoundError
 
 logger = logging.getLogger(__name__)
 class ChatHistoryDao:
@@ -229,7 +230,7 @@ class ChatHistoryDao:
             through_message_id (str | None): 查询包含该消息及此前记录，省略时读取最新历史。
 
         Raises:
-            LookupError: 查询终点不属于当前会话或已被删除。
+            ResourceNotFoundError: 查询终点不属于当前会话或已被删除。
         """
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         n = max(n, 0)
@@ -241,6 +242,8 @@ class ChatHistoryDao:
             before_id: int | None = None
             async with self._sqlite_factory.connection() as conn:
                 if not await self._protocol_table_exists(conn):
+                    if through_message_id is not None:
+                        raise ResourceNotFoundError("历史查询终点不存在于当前会话")
                     return []
                 # 1. 按会话核对查询终点，后续倒序分块查询始终排除工具完成之后的新消息。
                 if through_message_id is not None:
@@ -249,7 +252,7 @@ class ChatHistoryDao:
                         (session_id, through_message_id),
                     )
                     if not anchors:
-                        raise LookupError("历史查询终点不存在于当前会话")
+                        raise ResourceNotFoundError("历史查询终点不存在于当前会话")
                     before_id = int(anchors[0][0]) + 1
                 # 2. 仍按可见消息数量分页；无图片的工具结果可以作为查询终点，但不占展示条数。
                 while visible_count < n:

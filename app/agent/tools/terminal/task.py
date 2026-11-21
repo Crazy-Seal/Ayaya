@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from app.errors import InvalidOperationError
 from app.agent.runtime.tasks.base import BaseTask
 from app.agent.tools.terminal.service import TerminalService
 from app.agent.tools.terminal.models import TaskLaunchResult
@@ -251,12 +252,13 @@ async def read_terminal_output(record: TaskRecord, offset: int, limit: int) -> d
 
     Raises:
         ValueError: 无效的输出分页参数。
+        InvalidOperationError: 任务没有终端输出。
     """
     # 1. 校验任务和分页预算，以字节偏移读取追加式完整输出。
     if offset < 0 or limit < 1 or limit > TASK_OUTPUT_PAGE_MAX_BYTES:
         raise ValueError("无效的输出分页参数")
     if record.output_path is None:
-        raise ValueError("此任务没有终端输出")
+        raise InvalidOperationError("此任务没有终端输出")
     with open(record.output_path, "rb") as spool:
         spool.seek(offset)
         data = spool.read(limit)

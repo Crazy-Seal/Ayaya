@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 
 from app.schemas.result import Result
 from app.dependencies import get_tool_permission_service
@@ -33,7 +33,7 @@ def list_tools() -> Result[ToolListResponse]:
     return Result[ToolListResponse](data=ToolListResponse(tools=tool_list), msg="success", code=200)
 
 
-@router.get("/tool-permissions/{session_id}")
+@router.get("/tool-permissions/{session_id}", responses={404: {"description": "会话不存在"}})
 def list_tool_permissions(
     session_id: str,
     service: ToolPermissionService = Depends(get_tool_permission_service),
@@ -54,7 +54,7 @@ def list_tool_permissions(
     )
 
 
-@router.put("/tool-permissions/{session_id}")
+@router.put("/tool-permissions/{session_id}", responses={400: {"description": "提交了未知工具权限"}, 404: {"description": "会话不存在"}})
 async def update_tool_permissions(
     session_id: str,
     payload: ToolPermissionsUpdate,
@@ -71,14 +71,10 @@ async def update_tool_permissions(
         Result[ToolPermissionsResponse]: 包含保存后 tools 列表的统一接口结果。
 
     Raises:
-        HTTPException: 会话不存在返回 404，权限更新无效返回 400。
+        ResourceNotFoundError: 指定会话不存在。
+        InvalidOperationError: 提交了未知工具权限。
     """
-    try:
-        tools = await service.set_policies(session_id, payload.tool_permissions)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    tools = await service.set_policies(session_id, payload.tool_permissions)
     return Result[ToolPermissionsResponse](
         data=ToolPermissionsResponse(tools=tools),
         msg="success",

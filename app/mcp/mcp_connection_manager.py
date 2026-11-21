@@ -14,6 +14,7 @@ from mcp.shared.exceptions import McpError
 from mcp.types import CONNECTION_CLOSED, CallToolResult, Tool
 
 from app.schemas.mcp import MCPServerStatus
+from app.errors import ResourceNotFoundError
 from app.mcp.identity import server_identity_fingerprint, tool_contract_fingerprint
 from app.mcp.process_env import build_mcp_process_env
 from app.mcp.limits import limit_instructions, validate_tool_catalog
@@ -153,7 +154,7 @@ class MCPConnectionManager:
                 raise MCPConnectionError("插件连接参数解析入口未配置")
             try:
                 return self._plugin_config_loader(server_id)
-            except (KeyError, ValueError) as exc:
+            except (KeyError, ValueError, ResourceNotFoundError) as exc:
                 raise MCPConnectionError(f"插件 MCP '{server_id}' 不可用: {exc}") from exc
         for config in self._config_loader().servers:
             if config.id == server_id:
