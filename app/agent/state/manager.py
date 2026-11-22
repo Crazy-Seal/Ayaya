@@ -232,9 +232,9 @@ class SessionStateManager:
             return await self._inbox_dao.submit_human(origin_channel, message, images=images, queued=queued, discarded_ids=discarded_ids)
 
     async def submit_plugin_notification(self, plugin_name: str, name: str, text: str) -> None:
-        """Scheduler 处理插件通知请求时，将通知存入 Inbox 等待 Agent 读取。
+        """父会话受理插件通知或引导时，将正文存入 Inbox 等待 Agent 读取。
 
-        保存成功后由 Scheduler 根据会话当前状态安排处理；消息在开始新轮次或
+        保存成功后由父会话根据当前执行资格安排处理；消息在开始新轮次或
         现有轮次的下一次模型请求前加入对话。
 
         Args:

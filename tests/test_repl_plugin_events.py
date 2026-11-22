@@ -69,7 +69,7 @@ def test_repl_capability_notices_keep_source_and_close_on_every_exit(tmp_path, e
             assert [event.payload.get("text") for event in events] == ["测试控制中", "更新后", None]
             assert len({event.payload["id"] for event in events}) == 1
             assert all(event.payload["plugin_name"] == "test_plugin" for event in events)
-            assert all(event.session_id == "capability" and event.run_id == "run" and event.task_id is None for event in events)
+            assert all(event.session_id == "capability" and event.run_id is None and event.task_id is None for event in events)
             state = await manager.load()
             assert state.messages == () and state.temporary_context == {}
             assert calls == []

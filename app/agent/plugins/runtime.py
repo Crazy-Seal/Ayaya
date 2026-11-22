@@ -21,7 +21,6 @@ class PluginRuntime:
     Attributes:
         plugin_name (str): 插件稳定名称。
         session_id (str): 请求所属会话。
-        run_id (str): 创建调用对象时的来源轮次，跨轮运行期间保持原值。
         task_id (str | None): 后台任务的执行编号，钩子调用时为空。
         _supervisor (TaskSupervisor): 内部任务提交、查询和有限等待能力。
         _runtime_queue (asyncio.Queue): 内部投递队列，由 Scheduler 独占消费。
@@ -29,14 +28,13 @@ class PluginRuntime:
 
     plugin_name: str
     session_id: str
-    run_id: str
     _supervisor: TaskSupervisor = field(repr=False)
     _runtime_queue: asyncio.Queue[RuntimeRequest] = field(repr=False)
     task_id: str | None = None
     subagent_id: str | None = None
 
     def bind_task(self, task_id: str) -> PluginRuntime:
-        """为具体任务绑定编号，保留原插件和调用轮次。
+        """为具体任务绑定编号，保留所属插件和会话。
 
         Args:
             task_id (str): 已登记的任务编号。
@@ -98,7 +96,7 @@ class PluginRuntime:
             kwargs (Any): 本次请求的任务目标、通知正文或前端事件内容。
         """
         await self._runtime_queue.put(PluginRequest(kind, self.plugin_name, self.session_id,
-            self.run_id, source_task_id=self.task_id, **kwargs))
+            source_task_id=self.task_id, **kwargs))
 
     async def stop_task(self, task_id: str) -> None:
         """投递停止任务请求，由 Scheduler 检查所属插件和会话。
@@ -118,11 +116,11 @@ class PluginRuntime:
         await self._send(PluginRequestKind.NOTIFY, name=name, text=text)
 
     async def stop_turn(self) -> None:
-        """请求结束来源轮次，保留会话已有自动执行资格。"""
+        """请求结束受理时会话的当前执行，保留已有自动执行资格。"""
         await self._send(PluginRequestKind.STOP_TURN)
 
     async def steer_turn(self, text: str) -> None:
-        """提交引导正文，Scheduler 先保存正文，再请求结束来源轮次。
+        """提交引导正文，Scheduler 先保存正文，再请求结束会话当前执行。
 
         Args:
             text (str): 需要保存或显示的正文。
@@ -140,4 +138,4 @@ class PluginRuntime:
         await self._send(PluginRequestKind.PUBLISH_EVENT, name=name, payload=deepcopy(payload))
 
 
-PluginRuntimeFactory = Callable[[str, str], PluginRuntime]
+PluginRuntimeFactory = Callable[[str], PluginRuntime]

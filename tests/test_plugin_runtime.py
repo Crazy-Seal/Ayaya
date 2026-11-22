@@ -24,6 +24,26 @@ from app.schemas.runtime_types import TaskStatus, TaskExecutionPhase
 from app.agent.state.manager import SessionStateManager
 
 
+def test_plugin_notifications_are_persisted_in_order(tmp_path):
+    """连续保存的插件通知保留独立输入，供后续执行按顺序交付。
+
+    Args:
+        tmp_path (Path): 本次测试的隔离数据库目录。
+    """
+    async def scenario() -> None:
+        """保存两条独立通知，并通过待交付输入查询核对保存顺序和正文。"""
+        manager = SessionStateManager("s", SqliteFactory(tmp_path / "state.sqlite3"))
+        try:
+            await manager.submit_plugin_notification("game", "danger", "先躲避攻击")
+            await manager.submit_plugin_notification("game", "danger", "再寻找掩体")
+            pending = await manager.read_activation_batch()
+            assert [item.payload["text"] for item in pending] == ["先躲避攻击", "再寻找掩体"]
+            assert pending[0].id < pending[1].id
+        finally:
+            await manager.close()
+    asyncio.run(scenario())
+
+
 def test_shutdown_repeated_cancellation_keeps_memory_work_active(tmp_path, monkeypatch):
     """关闭期间多次取消等待时，线程中的记忆工作仍计为活动任务。"""
     from types import SimpleNamespace
@@ -37,7 +57,7 @@ def test_shutdown_repeated_cancellation_keeps_memory_work_active(tmp_path, monke
     async def scenario():
         """通过真实线程屏障观察停止请求、关闭超时和最终保存。"""
         supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "state.sqlite3"))))
-        runtime = PluginRuntime("memory", "s", "r", _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue)
+        runtime = PluginRuntime("memory", "s", _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue)
         started, release = threading.Event(), threading.Event()
 
         class History:
@@ -112,7 +132,7 @@ def test_cancel_during_committed_submission_keeps_task_owned(tmp_path, monkeypat
     async def scenario():
         """仅在真实提交返回处注入外层取消，使用正式查询观察结果。"""
         supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "state.sqlite3"))))
-        runtime = PluginRuntime("game", "s", "r", _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue)
+        runtime = PluginRuntime("game", "s", _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue)
         cleaned = asyncio.Event()
         caller = asyncio.current_task()
         insert_running = TaskRecordDao.insert_running
@@ -195,7 +215,7 @@ def test_failed_terminal_persistence_reports_save_failure_to_waiter(tmp_path, mo
         """通过真实 SQLite 触发器制造持久化错误，不替换任务 DAO。"""
         path = str(tmp_path / "state.sqlite3")
         supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(path)))
-        runtime = PluginRuntime("game", "s", "r", _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue)
+        runtime = PluginRuntime("game", "s", _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue)
         release = asyncio.Event()
 
         class GreetingTask(BaseTask):
@@ -240,7 +260,7 @@ def test_shutdown_cleanup_cancellation_preserves_task_outcome(tmp_path, monkeypa
         """等待任务进入清理后关闭 Supervisor，再重新读取任务记录和 Inbox。"""
         database = str(tmp_path / "state.sqlite3")
         supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(database)))
-        runtime = PluginRuntime("game", "s", "r", _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue)
+        runtime = PluginRuntime("game", "s", _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue)
         cleaning, cleaned = asyncio.Event(), asyncio.Event()
         inspector = None
         inbox = SessionStateManager("s", SqliteFactory(database))
@@ -311,8 +331,8 @@ def test_silent_task_saves_result_without_notice_and_filters_plugin_access(tmp_p
         """使用真实队列与临时数据库提交一次任务。"""
         queue = asyncio.Queue()
         supervisor = TaskSupervisor(runtime_queue=queue, records=TaskRecordDao(SqliteFactory(str(tmp_path / "state.sqlite3"))))
-        runtime = PluginRuntime("game", "s", "r", _supervisor=supervisor, _runtime_queue=queue)
-        other = PluginRuntime("other", "s", "r", _supervisor=supervisor, _runtime_queue=queue)
+        runtime = PluginRuntime("game", "s", _supervisor=supervisor, _runtime_queue=queue)
+        other = PluginRuntime("other", "s", _supervisor=supervisor, _runtime_queue=queue)
         steps = []
 
         class GreetingTask(BaseTask):
@@ -333,6 +353,7 @@ def test_silent_task_saves_result_without_notice_and_filters_plugin_access(tmp_p
             assert record.status == TaskStatus.COMPLETED
             assert record.result == "Hello, World!"
             assert await other.get_task(task_id) is None
+            assert (await supervisor.records.get(task_id)).origin_run_id is None
             assert await other.wait_task(task_id, timeout_ms=0) is None
             assert await runtime.wait_task("missing", timeout_ms=0) is None
             manager = SessionStateManager("s", SqliteFactory(str(tmp_path / "state.sqlite3")))
@@ -349,8 +370,8 @@ def test_silent_task_saves_result_without_notice_and_filters_plugin_access(tmp_p
 
 
 @pytest.mark.parametrize("user_stop", [False, True])
-def test_plugin_stop_keeps_activation_and_late_control_does_not_stop_new_turn(tmp_path, user_stop):
-    """插件停止保留自动执行，用户停止暂停；旧 runtime 不能控制后续轮次。"""
+def test_plugin_stop_keeps_activation_and_controls_current_turn(tmp_path, user_stop):
+    """插件跨轮停止保留自动执行，用户停止暂停后由真人输入恢复资格。"""
     from app.agent.agent import Agent, AgentConfig
     from app.agent.context import ContextStrategyConfig
     from app.agent.models.llm_client import StreamChunk
@@ -396,7 +417,7 @@ def test_plugin_stop_keeps_activation_and_late_control_does_not_stop_new_turn(tm
             await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "开始"}))
             await asyncio.wait_for(first_call.wait(), 2)
             started = await next_kind("run_started")
-            runtime = PluginRuntime("game", "s", started.run_id, _supervisor=supervisor, _runtime_queue=queue)
+            runtime = PluginRuntime("game", "s", _supervisor=supervisor, _runtime_queue=queue)
             if user_stop:
                 assert (await scheduler.submit(ChannelCommand("s", "desktop", "stop_turn", target_run_id=started.run_id))).accepted
             else:
@@ -418,8 +439,11 @@ def test_plugin_stop_keeps_activation_and_late_control_does_not_stop_new_turn(tm
             assert current != started.run_id
             await runtime.stop_turn()
             await asyncio.wait_for(queue.join(), 1)
-            assert (await scheduler.snapshot("s")).payload["run_id"] == current
-            assert (await scheduler.snapshot("s")).payload["phase"] == "running"
+            stopped = await next_kind("run_completed")
+            assert stopped.run_id == current
+            snapshot = await scheduler.snapshot("s")
+            assert snapshot.payload["phase"] == "idle"
+            assert snapshot.payload["session_state"] == "enabled"
         finally:
             await close_test_runtime(scheduler)
             release.set()
@@ -434,7 +458,7 @@ def test_wait_timeout_and_cleanup_preserve_execution_and_result(tmp_path, fail_c
     async def scenario():
         """用执行和清理屏障检查公开查询、等待及活动任务数量。"""
         supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "state.sqlite3"))))
-        runtime = PluginRuntime("game", "s", "r", _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue)
+        runtime = PluginRuntime("game", "s", _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue)
         run_started, release_run = asyncio.Event(), asyncio.Event()
         cleaning, release_cleanup = asyncio.Event(), asyncio.Event()
 
@@ -503,7 +527,7 @@ def test_plugin_notification_is_persistent_and_reaches_real_model_encoding(tmp_p
         supervisor_settings = configured_settings()
         supervisor_mutations = SettingsMutationCoordinator()
         supervisor = TaskSupervisor(runtime_queue=queue, records=TaskRecordDao(SqliteFactory(path)))
-        runtime = PluginRuntime("game", "s", "old-run", _supervisor=supervisor, _runtime_queue=queue)
+        runtime = PluginRuntime("game", "s", _supervisor=supervisor, _runtime_queue=queue)
         captured, called = [], asyncio.Event()
 
         class GreetingTask(BaseTask):

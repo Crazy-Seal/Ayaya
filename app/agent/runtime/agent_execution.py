@@ -95,17 +95,16 @@ class AgentExecution:
         if self._state.phase == ExecutionPhase.STOPPING:
             await self.finish_waiting()
 
-    def request_steer(self, input_id: str, expected_run_id: str | None = None) -> CommandReceipt:
+    def request_steer(self, expected_run_id: str | None = None) -> CommandReceipt:
         """用已经保存的明确输入引导当前执行，空闲或提交时交由会话后续处理。
 
         Args:
-            input_id (str): 受理完成的输入身份。
             expected_run_id (str | None): 显式引导的目标轮次。
 
         Returns:
             CommandReceipt: 此次控制是否被接受，与消息保存回执分别返回。
         """
-        receipt = self._state.request_steer(input_id, expected_run_id)
+        receipt = self._state.request_steer(expected_run_id)
         if receipt.accepted and self._control:
             self._control.wake_interrupt()
         return receipt
@@ -170,7 +169,7 @@ class AgentExecution:
             {"outcome": AuthorizationResolutionKind(decision["kind"]), "actor_channel": command.origin_channel},
             origin_channel=origin, request_id=command.request_id, run_id=run_id))
         if decision["kind"] == ApprovalDecisionKind.STEER:
-            self.request_steer(command.request_id, run_id)
+            self.request_steer(expected_run_id=run_id)
         return CommandReceipt(CommandStatus.ACCEPTED, self.context_id, run_id)
 
     def check_queue_target(self) -> CommandReceipt:

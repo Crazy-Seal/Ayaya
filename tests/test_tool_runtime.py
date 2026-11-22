@@ -53,6 +53,7 @@ def test_tools_share_session_task_but_other_sessions_cannot_access(tmp_path):
             assert await writer.get_task('missing') is None
             record = await writer.get_task_snapshot(task_id)
             assert record.tool_name == 'exec_command' and record.origin_tool_call_id == 'call'
+            assert record.origin_run_id == 'run'
             release.set()
             await writer.wait_task(task_id, timeout_ms=1000)
             assert supervisor.get_task(task_id) is None

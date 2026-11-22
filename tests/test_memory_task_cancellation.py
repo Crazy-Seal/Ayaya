@@ -25,7 +25,7 @@ def test_diary_async_work_is_cancelled_without_waiting_for_unrelated_completion(
     async def scenario():
         """通过正式提交、停止和等待观察异步业务的取消。"""
         supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / 'state.db'))))
-        runtime = PluginRuntime('memory', 's', 'run', _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue)
+        runtime = PluginRuntime('memory', 's', _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue)
         started, cancelled = asyncio.Event(), asyncio.Event()
 
         class Memory:

@@ -74,7 +74,7 @@ def test_real_agent_control_preserves_runner_and_waits_for_cleanup(tmp_path, pol
                 invocation = asyncio.create_task(agent.run("执行", turn_control=control, emit=receive))
             await wait_for_file(tmp_path / "running")
             if action in {"steer", "steer_then_stop"}:
-                assert machine.request_steer("new-input", "run").accepted
+                assert machine.request_steer(expected_run_id="run").accepted
                 control.wake_interrupt()
                 assert not invocation.done()
             if action != "steer":

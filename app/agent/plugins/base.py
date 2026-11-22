@@ -80,7 +80,7 @@ class HookContext:
             state (AgentState): 当前会话的内存状态；保存由调用方负责。
             data (Any): 需要解析或保存的结构化数据。
             metadata (dict | None): 本次插件执行的附加调用信息。
-            runtime (PluginRuntime | None): 框架绑定插件、会话、来源轮次及任务编号的调用对象。
+            runtime (PluginRuntime | None): 框架绑定插件、会话及任务编号的调用对象。
         """
         return cls(
             hook=hook,

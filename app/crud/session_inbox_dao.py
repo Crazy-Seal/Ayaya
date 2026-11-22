@@ -309,7 +309,7 @@ class SessionInboxDao:
                      json.dumps({"plugin_name": plugin_name, "name": name, "text": text}, ensure_ascii=False),
                      prepared_at))
 
-        return await run_sqlite_save(save_attempt, timeout_seconds=SQLITE_SAVE_TIMEOUT_SECONDS)
+        await run_sqlite_save(save_attempt, timeout_seconds=SQLITE_SAVE_TIMEOUT_SECONDS)
 
     async def read_runtime_inputs(self) -> tuple[InboxEnvelope, ...]:
         """按输入编号读取任务和插件通知，留待统一的消息交付事务保存。"""

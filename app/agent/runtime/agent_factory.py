@@ -43,7 +43,7 @@ def build_agent(
         tool_authorization (ToolAuthorization | None): 工具单次授权验证器。
         tool_runtime_factory (ToolRuntimeFactory | None): 按工具、轮次及调用编号创建运行时。
         session_state_manager (SessionStateManager | None): worker 拥有并借给本次 Agent 的业务对象。
-        plugin_runtime_factory (PluginRuntimeFactory | None): 按插件名称和来源轮次创建 PluginRuntime 的注入工厂。
+        plugin_runtime_factory (PluginRuntimeFactory | None): 按插件名称创建所属会话 PluginRuntime 的注入工厂。
         bind_plugin_mcp (PluginMCPBinder | None): 连接成功后的应用身份保存入口。
         plugin_mcp (dict | None): 应用层根据会话参数准备的插件连接声明。
         subagent (SubagentDefinition | None): 子身份及固定定义；父配置仍作为授权和模型配置来源。

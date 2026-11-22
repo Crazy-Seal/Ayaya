@@ -21,7 +21,7 @@ from tests.runtime_support import build_test_scheduler, close_test_runtime, conf
 
 
 def test_status_notice_lifecycle_keeps_source_and_does_not_become_agent_input(tmp_path: Path) -> None:
-    """旧轮次插件仍可更新提示，事件保留可信来源且不写入对话或唤醒 Agent。
+    """插件可持续更新提示，事件保留可信来源且不写入对话或唤醒 Agent。
 
     Args:
         tmp_path (Path): 仅供本测试使用的临时存储目录。
@@ -52,7 +52,7 @@ def test_status_notice_lifecycle_keeps_source_and_does_not_become_agent_input(tm
             session_state_manager_factory=lambda session: SessionStateManager(session, sqlite))
         manager = SessionStateManager("s", sqlite)
         observer = observe_runtime("s", "desktop", runtime_hub(scheduler), scheduler)
-        runtime = PluginRuntime("demo", "s", "old-run", task_id="source-task",
+        runtime = PluginRuntime("demo", "s", task_id="source-task",
             _supervisor=supervisor, _runtime_queue=queue)
         try:
             await scheduler.start()
@@ -72,7 +72,7 @@ def test_status_notice_lifecycle_keeps_source_and_does_not_become_agent_input(tm
                 ("notice", {"plugin_name": "demo", "text": "普通短暂提示"}),
             ]
             for event in received[:3]:
-                assert event.session_id == "s" and event.run_id == "old-run" and event.task_id == "source-task"
+                assert event.session_id == "s" and event.run_id is None and event.task_id == "source-task"
                 assert event.event_sequence > initial.event_sequence
             state = await manager.load()
             assert state.messages == () and state.temporary_context == {}
@@ -122,7 +122,7 @@ def test_status_notice_rejects_invalid_payload_without_emitting(tmp_path: Path, 
         execution = AgentExecution("s", manager=manager, agent_factory=create_agent, events=queue)
         session = ParentSession("s", manager=manager, execution=execution, events=queue)
         try:
-            result = await session.accept_plugin(PluginRequest(PluginRequestKind.PUBLISH_EVENT, "demo", "s", "old",
+            result = await session.accept_plugin(PluginRequest(PluginRequestKind.PUBLISH_EVENT, "demo", "s",
                 name="status_notice", payload=payload))
             assert result.status == CommandStatus.INVALID
             assert queue.empty()

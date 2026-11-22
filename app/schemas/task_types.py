@@ -97,7 +97,6 @@ class PluginRequest:
         kind (PluginRequestKind): 通知、任务停止、轮次控制或前端发布。
         plugin_name (str): 发出请求的插件名称。
         session_id (str): 请求所属会话。
-        run_id (str): 固定来源轮次，控制请求只能作用于此编号。
         source_task_id (str | None): 发出请求的后台任务编号，钩子中为空。
         task_id (str | None): 停止任务请求的目标编号，区别于请求来源。
         name (str): 通知稳定名称或框架前端事件名称。
@@ -108,7 +107,6 @@ class PluginRequest:
     kind: PluginRequestKind
     plugin_name: str
     session_id: str
-    run_id: str
     source_task_id: str | None = None
     task_id: str | None = None
     name: str = ""

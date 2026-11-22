@@ -52,7 +52,7 @@ class ParentSession:
         """让命令入口核验来源轮次，关闭后拒绝新的显式请求。
 
         Args:
-            run_id (str): 工具或插件绑定的原轮次。
+            run_id (str): 显式 Agent 请求绑定的原轮次。
         """
         return self._session_state != SessionState.CLOSED and self._execution.matches_run(run_id)
 
@@ -105,7 +105,7 @@ class ParentSession:
                 self._events.put_nowait(InteractionEvent(self.context_id, InteractionEventKind.QUEUED_MESSAGE,
                     {"input_sequence": envelope.id, "message": text, "images": images or []}, origin_channel=command.origin_channel))
             else:
-                self._execution.request_steer(str(envelope.id), command.target_run_id)
+                self._execution.request_steer(expected_run_id=command.target_run_id)
             self._wake_worker()
             return CommandReceipt(CommandStatus.ACCEPTED, self.context_id)
 
@@ -179,7 +179,7 @@ class ParentSession:
             return receipt
 
     async def accept_plugin(self, request: PluginRequest) -> CommandReceipt:
-        """按来源轮次处理插件控制，普通通知沿用父会话的启用政策。
+        """保存插件内容并控制会话当前执行，通知沿用父会话的启用政策。
 
         Args:
             request (PluginRequest): 框架已经绑定来源的插件请求。
@@ -191,7 +191,7 @@ class ParentSession:
             if self._session_state == SessionState.CLOSED:
                 return CommandReceipt(CommandStatus.CLOSED, self.context_id)
             if request.kind == PluginRequestKind.STOP_TURN:
-                receipt = self._execution.request_stop(request.run_id)
+                receipt = self._execution.request_stop()
                 if receipt.accepted:
                     self._wake_worker()
                 return receipt
@@ -212,20 +212,17 @@ class ParentSession:
                         payload["text"] = text
                 else:
                     return CommandReceipt(CommandStatus.INVALID, self.context_id)
-                # 2. 持续提示随实际业务显式关闭，来源轮次结束后仍可发布更新和关闭事件。
+                # 2. 持续提示随插件业务更新和显式关闭，任务编号用于标识发布来源。
                 self._events.put_nowait(InteractionEvent(self.context_id, request.name, payload,
-                    run_id=request.run_id if request.name == InteractionEventKind.STATUS_NOTICE else None,
                     task_id=request.source_task_id))
                 return CommandReceipt(CommandStatus.ACCEPTED, self.context_id)
-            if request.kind == PluginRequestKind.STEER_TURN and not self.matches_run(request.run_id):
-                return CommandReceipt(CommandStatus.STALE, self.context_id)
             try:
                 name = PluginRequestKind.STEER_TURN.value if request.kind == PluginRequestKind.STEER_TURN else request.name
                 await self._manager.submit_plugin_notification(request.plugin_name, name, request.text)
             except Exception as exc:
                 return CommandReceipt(CommandStatus.FAILED, self.context_id, detail=str(exc))
             if request.kind == PluginRequestKind.STEER_TURN:
-                self._execution.request_steer(f"plugin:{request.run_id}:{request.name}", request.run_id)
+                self._execution.request_steer()
             self.notify_inbox_changed()
             return CommandReceipt(CommandStatus.ACCEPTED, self.context_id)
 

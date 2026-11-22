@@ -954,7 +954,7 @@ def test_failed_user_input_commit_keeps_pending_long_term_memory_batch(
             db_path,
             [[StreamChunk(content="不应执行")]],
             StepTool(),
-            plugin_runtime_factory=lambda name, run_id: PluginRuntime(name, "checkpoint-test", run_id,
+            plugin_runtime_factory=lambda name: PluginRuntime(name, "checkpoint-test",
                 _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue),
         )
         await register_memory(failed_agent)
@@ -988,7 +988,7 @@ def test_failed_user_input_commit_keeps_pending_long_term_memory_batch(
             db_path,
             [[StreamChunk(content="完成")]],
             StepTool(),
-            plugin_runtime_factory=lambda name, run_id: PluginRuntime(name, "checkpoint-test", run_id,
+            plugin_runtime_factory=lambda name: PluginRuntime(name, "checkpoint-test",
                 _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue),
         )
         await register_memory(retry_agent)

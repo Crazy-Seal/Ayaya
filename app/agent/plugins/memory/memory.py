@@ -148,7 +148,7 @@ class MemoryPlugin(BasePlugin):
         Args:
             session_id (str): 本次日记检查所属的会话。
             cutoff (int): 本次输入保存前的历史最大编号。
-            runtime (PluginRuntime): 固定来源会话和轮次的任务提交入口。
+            runtime (PluginRuntime): 绑定所属会话和插件的任务提交入口。
         """
         generation = None
         try:

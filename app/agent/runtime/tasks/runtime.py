@@ -10,7 +10,6 @@ class TaskRuntime(Protocol):
 
     Attributes:
         session_id (str): 来源会话。
-        run_id (str): 固定来源轮次。
         plugin_name (str | None): 插件来源，工具任务为空。
         task_id (str | None): 本次任务编号，提交前为空。
     """
@@ -18,11 +17,6 @@ class TaskRuntime(Protocol):
     @property
     def session_id(self) -> str:
         """读取固定来源父会话编号。"""
-        ...
-
-    @property
-    def run_id(self) -> str:
-        """读取固定来源轮次编号。"""
         ...
 
     @property

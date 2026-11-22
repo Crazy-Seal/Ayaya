@@ -140,7 +140,7 @@ class SubagentSession:
                 self._last_explicit_input = input_id
                 self._session_state = SessionState.ENABLED
                 self._error = None
-                self._execution.request_steer(source_id)
+                self._execution.request_steer()
                 self._wake_worker()
                 self._publish()
             return CommandReceipt(CommandStatus.ACCEPTED, self.context_id)

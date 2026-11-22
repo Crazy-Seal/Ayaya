@@ -6,9 +6,9 @@
 
 import logging
 from collections import defaultdict
-from typing import Any, Callable
+from typing import Any
 
-from app.agent.plugins.runtime import PluginRuntime
+from app.agent.plugins.runtime import PluginRuntimeFactory
 from app.agent.state.model import AgentState
 
 from app.agent.plugins.base import BasePlugin, HookContext, PluginHook
@@ -19,12 +19,12 @@ logger = logging.getLogger(__name__)
 class PluginManager:
     """登记当前 Agent 使用的插件，并按执行时机分发业务钩子。"""
 
-    def __init__(self, runtime_factory: Callable[[str, str], PluginRuntime] | None = None, *,
+    def __init__(self, runtime_factory: PluginRuntimeFactory | None = None, *,
                  enable_plugin_hooks: bool = True):
         """建立插件名称和执行时机的内存索引，注册插件时再填充。
 
         Args:
-            runtime_factory (Callable[[str, str], PluginRuntime] | None): 按插件名称和来源轮次创建调用对象的注入工厂。
+            runtime_factory (PluginRuntimeFactory | None): 按插件名称创建所属会话调用对象的注入工厂。
             enable_plugin_hooks (bool): 是否执行已登记插件的自动业务钩子。
         """
         # 按钩子点组织的插件列表
@@ -32,7 +32,6 @@ class PluginManager:
         # 所有已注册的插件
         self._plugins: dict[str, BasePlugin] = {}
         self._runtime_factory = runtime_factory
-        self.run_id = ""
         self.if_enable_plugin_hooks = enable_plugin_hooks
 
     def register(self, plugin: BasePlugin) -> None:
@@ -113,7 +112,7 @@ class PluginManager:
         for plugin in plugins:
             try:
                 # 1. 来源绑定到当前插件；同次调用的准备数据和附加信息沿用原对象。
-                runtime = self._runtime_factory(plugin.name, self.run_id) if self._runtime_factory else None
+                runtime = self._runtime_factory(plugin.name) if self._runtime_factory else None
                 context = HookContext.create(hook, state, data, shared_metadata, runtime)
                 await plugin.execute(context)
             except Exception as e:

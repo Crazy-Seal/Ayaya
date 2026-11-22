@@ -23,7 +23,7 @@ from app.agent.tools.authorization.manager import ToolAuthorization
 from app.crud.sqlite_factory import SqliteFactory
 from app.crud.task_record_dao import TaskRecordDao
 from app.interaction.interaction_contract import ChannelCommand
-from app.schemas.runtime_types import InboxKind, InboxStatus, SessionState, TaskStatus
+from app.schemas.runtime_types import CommandStatus, InboxKind, InboxStatus, SessionState, TaskStatus
 from app.schemas.runtime_types import AgentRunOutcomeKind
 from app.schemas.chat_settings import ChatSettings
 from app.schemas.agent_storage import AgentStorageScope
@@ -106,7 +106,7 @@ def test_stop_overrides_steer_and_keeps_pending_input_until_next_explicit_messag
             assert tool.cleaned.is_set()
             assert await reader.status(pending.id) == InboxStatus.PENDING
             assert (await runtime.snapshot("s")).payload["session_state"] == SessionState.PAUSED
-            plugin = PluginRuntime("test", "s", run_id, _supervisor=runtime.task_supervisor, _runtime_queue=queue)
+            plugin = PluginRuntime("test", "s", _supervisor=runtime.task_supervisor, _runtime_queue=queue)
             await plugin.notify(name="background", text="后台通知")
             await asyncio.wait_for(queue.join(), 3)
             assert (await runtime.snapshot("s")).payload["session_state"] == SessionState.PAUSED
@@ -128,7 +128,7 @@ def test_stop_overrides_steer_and_keeps_pending_input_until_next_explicit_messag
 
 
 def test_stop_during_waiting_cleanup_saves_latest_control_reason(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """等待审批收尾期间停止接管引导，保存时使用状态机最终确定的 STOP 原因。
+    """审批收尾期间后续引导留存，停止接管后按最终 STOP 原因保存。
 
     Args:
         tmp_path (Path): 本用例独占的审批和会话数据库。
@@ -177,7 +177,7 @@ def test_stop_during_waiting_cleanup_saves_latest_control_reason(tmp_path: Path,
             human = await manager.submit_human("desktop", "执行")
             assert (await execution.execute((human,), prepare=prepare)).kind == AgentRunOutcomeKind.INTERRUPTED
             steer = await manager.submit_human("desktop", "保留的引导")
-            assert execution.request_steer(str(steer.id)).accepted
+            assert execution.request_steer().accepted
             cancel = manager.cancel_pending_interrupt
 
             async def delayed_cancel():
@@ -193,12 +193,17 @@ def test_stop_during_waiting_cleanup_saves_latest_control_reason(tmp_path: Path,
             monkeypatch.setattr(manager, "cancel_pending_interrupt", delayed_cancel)
             completion = asyncio.create_task(execution.finish_waiting())
             await asyncio.wait_for(entered.wait(), 3)
+            await manager.submit_plugin_notification("watch", "steer_turn", "后来的插件引导")
+            assert execution.request_steer().status == CommandStatus.TOO_LATE
             assert execution.request_stop().accepted
             release.set()
             await asyncio.wait_for(completion, 3)
             saved = await manager.load()
             assert [item.text for item in saved.messages if isinstance(item, ToolMessage)] == ["被用户取消，工具调用未完成"]
             assert await manager.status(steer.id) == InboxStatus.PENDING
+            notifications = [item for item in await manager.read_activation_batch() if item.kind == InboxKind.PLUGIN_NOTIFICATION]
+            assert len(notifications) == 1
+            assert notifications[0].payload["text"] == "后来的插件引导"
         finally:
             release.set()
             if completion is not None:
@@ -247,7 +252,7 @@ def test_stop_during_prepared_turn_cleanup_returns_stopped(tmp_path: Path, monke
                 Returns:
                     bool: 会话业务准备成功，执行仍需遵循已受理控制。
                 """
-                assert execution.request_steer(str(steer.id), run_id).accepted
+                assert execution.request_steer(expected_run_id=run_id).accepted
                 return True
 
             async def delayed_cancel() -> tuple[str, str] | None:

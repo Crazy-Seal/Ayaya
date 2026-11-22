@@ -76,8 +76,8 @@ def create_runtime_scheduler(supervisor: TaskSupervisor, runtime_queue: asyncio.
             lambda tool_name, run_id, tool_call_id: ToolRuntime(
                 session_id, run_id, tool_name, tool_call_id, _supervisor=supervisor, _runtime_queue=runtime_queue),
             session_state_manager=session_state_manager,
-            plugin_runtime_factory=lambda plugin_name, run_id: PluginRuntime(
-                plugin_name, session_id, run_id, _supervisor=supervisor, _runtime_queue=runtime_queue),
+            plugin_runtime_factory=lambda plugin_name: PluginRuntime(
+                plugin_name, session_id, _supervisor=supervisor, _runtime_queue=runtime_queue),
             bind_plugin_mcp=plugin_service.bind_mcp,
             plugin_mcp={name: plugin.mcp_servers for name, plugin in prepared.plugins.items()
                         if (prepared.settings.agent_plugins or {})[name].enabled},

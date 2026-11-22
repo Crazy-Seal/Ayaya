@@ -209,12 +209,11 @@ def test_plugin_control_advances_waiting_parent(tmp_path: Path, kind):
             await runtime.start()
             await runtime.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "开始"}))
             event = await next_kind(runtime, InteractionEventKind.INTERRUPT)
-            await runtime.runtime_queue.put(PluginRequest(kind=kind, session_id="s", run_id=event.run_id,
-                plugin_name="test", name="control", text="改做新工作"))
+            await runtime.runtime_queue.put(PluginRequest(kind=kind, session_id="s", plugin_name="test", name="control", text="改做新工作"))
             await next_kind(runtime, InteractionEventKind.AUTHORIZATION_RESOLVED)
             if kind == PluginRequestKind.STOP_TURN:
                 await runtime.runtime_queue.put(PluginRequest(kind=PluginRequestKind.NOTIFY, session_id="s",
-                    run_id=event.run_id, plugin_name="test", name="notice", text="后续工作"))
+                    plugin_name="test", name="notice", text="后续工作"))
             await asyncio.wait_for(continued.wait(), 3)
             assert (await runtime.snapshot("s")).payload["session_state"] == SessionState.ENABLED
             assert calls == 2

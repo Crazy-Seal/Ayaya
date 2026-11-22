@@ -7,7 +7,6 @@ from app.crud.sqlite_factory import SqliteFactory
 
 import asyncio
 import sqlite3
-from uuid import uuid4
 import logging
 from contextlib import aclosing
 from dataclasses import dataclass, field
@@ -115,7 +114,7 @@ class Agent:
             tool_authorization (ToolAuthorization | None): 工具单次授权验证器。
             tool_runtime_factory (ToolRuntimeFactory | None): 按工具、轮次及调用编号创建运行时。
             session_state_manager (SessionStateManager | None): worker 借给本次执行的对象；省略时由 Agent 创建并关闭。
-            plugin_runtime_factory (PluginRuntimeFactory | None): 按插件名称和来源轮次创建 PluginRuntime 的注入工厂。
+            plugin_runtime_factory (PluginRuntimeFactory | None): 按插件名称创建所属会话 PluginRuntime 的注入工厂。
             bind_plugin_mcp (PluginMCPBinder | None): 连接成功后由应用层保存身份与工具默认权限。
             permission_session_id (str | None): 子执行使用父会话的实时授权和共享连接身份。
             tool_whitelist (frozenset[ToolIdentity] | None): 子普通工具可见范围；空集合表示无普通工具。
@@ -347,7 +346,6 @@ class Agent:
             AgentRunOutcome: 本次执行的明确结果，过程事件由 emit 交付。
         """
         await self.initialize()
-        self.plugin_manager.run_id = turn_control.run_id if turn_control else uuid4().hex
         runtime_context = RuntimeContext.capture()
         runtime_context.origin_channel = origin_channel
         runtime_context.turn_control = turn_control
@@ -438,7 +436,6 @@ class Agent:
             AgentRunOutcome: 本次执行的明确结果，过程事件由 emit 交付。
         """
         await self.initialize()
-        self.plugin_manager.run_id = turn_control.run_id if turn_control else uuid4().hex
         state = await self.session_state_manager.load()
         # 1. 用户输入开始新执行，为旧工具补上取消或结束结果；父命令来源由 Inbox 保留。
         has_user_input = (
@@ -552,7 +549,6 @@ class Agent:
             AgentRunOutcome: 本次执行的明确结果，过程事件由 emit 交付。
         """
         await self.initialize()
-        self.plugin_manager.run_id = turn_control.run_id if turn_control else uuid4().hex
         state = await self.session_state_manager.load_for_resume(request_id)
         if state is None:
             return AgentRunOutcome(AgentRunOutcomeKind.STOPPED)

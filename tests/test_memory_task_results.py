@@ -96,7 +96,7 @@ def test_unneeded_diary_does_not_create_task(tmp_path: Path, skip: str) -> None:
         else:
             manager.diary_memory.chat_history_store.get_messages_by_date.return_value = []
         supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "tasks.db"))))
-        runtime = PluginRuntime("memory", manager.session_id, "run", supervisor, supervisor.runtime_queue)
+        runtime = PluginRuntime("memory", manager.session_id, supervisor, supervisor.runtime_queue)
         try:
             await start_diary(manager, runtime)
             assert await supervisor.list_tasks(manager.session_id) == []
@@ -124,7 +124,7 @@ def test_diary_deduplicates_across_manager_instances_and_returns_result(tmp_path
         first.diary_memory.generate.side_effect = generate
         second.diary_memory.generate.side_effect = generate
         supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "tasks.db"))))
-        runtime = PluginRuntime("memory", first.session_id, "run", supervisor, supervisor.runtime_queue)
+        runtime = PluginRuntime("memory", first.session_id, supervisor, supervisor.runtime_queue)
         try:
             await asyncio.gather(start_diary(first, runtime), start_diary(second, runtime))
             await asyncio.wait_for(started.wait(), 1)
@@ -165,7 +165,7 @@ def test_diary_failure_or_stop_releases_reservation_for_retry(tmp_path: Path, st
 
         manager.diary_memory.generate.side_effect = generate
         supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "tasks.db"))))
-        runtime = PluginRuntime("memory", manager.session_id, "run", supervisor, supervisor.runtime_queue)
+        runtime = PluginRuntime("memory", manager.session_id, supervisor, supervisor.runtime_queue)
         try:
             await start_diary(manager, runtime)
             await asyncio.wait_for(started.wait(), 1)
@@ -199,7 +199,7 @@ def test_long_term_task_reports_counts_and_extraction_failures(tmp_path: Path, f
         if failed in ("semantic", "both"):
             manager.semantic_memory.add.side_effect = RuntimeError("语义模型失败")
         supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "tasks.db"))))
-        runtime = PluginRuntime("memory", manager.session_id, "run", supervisor, supervisor.runtime_queue)
+        runtime = PluginRuntime("memory", manager.session_id, supervisor, supervisor.runtime_queue)
         try:
             task_id = await runtime.submit_task(
                 LongTermMemoryTask(operation_for(manager), manager.session_id, 42, 1, True, True),
@@ -269,7 +269,7 @@ def test_diary_generation_and_save_errors_reach_task_record(tmp_path: Path, fail
         else:
             diary.store.add.side_effect = RuntimeError("日记保存失败")
         supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "tasks.db"))))
-        runtime = PluginRuntime("memory", manager.session_id, "run", supervisor, supervisor.runtime_queue)
+        runtime = PluginRuntime("memory", manager.session_id, supervisor, supervisor.runtime_queue)
         try:
             await start_diary(manager, runtime)
             record, = await supervisor.list_tasks(manager.session_id)
@@ -320,7 +320,7 @@ def test_diary_submission_rejection_releases_reservation(tmp_path: Path) -> None
         """使用正式提交拒绝路径验证没有遗留无法重试的标记。"""
         manager = make_manager()
         supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "tasks.db"))))
-        runtime = PluginRuntime("memory", manager.session_id, "run", supervisor, supervisor.runtime_queue)
+        runtime = PluginRuntime("memory", manager.session_id, supervisor, supervisor.runtime_queue)
         try:
             await supervisor.begin_shutdown()
             await start_diary(manager, runtime)
@@ -341,7 +341,7 @@ def test_cancelled_diary_submission_keeps_registered_task_reserved(tmp_path: Pat
         manager = make_manager()
         registering, allow_register, generating = asyncio.Event(), asyncio.Event(), asyncio.Event()
         supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "tasks.db"))))
-        runtime = PluginRuntime("memory", manager.session_id, "run", supervisor, supervisor.runtime_queue)
+        runtime = PluginRuntime("memory", manager.session_id, supervisor, supervisor.runtime_queue)
         original_insert = supervisor.records.insert_running
 
         async def insert(*args, **kwargs) -> None:
@@ -476,7 +476,7 @@ def test_diary_stopped_before_run_releases_reservation(tmp_path: Path, monkeypat
         """登记后立即停止，确认没有调用模型并可重新准备同一天的日记。"""
         manager = make_manager()
         supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "tasks.db"))))
-        runtime = PluginRuntime("memory", manager.session_id, "run", supervisor, supervisor.runtime_queue)
+        runtime = PluginRuntime("memory", manager.session_id, supervisor, supervisor.runtime_queue)
         allow_run = asyncio.Event()
         original_lifecycle = supervisor._run_task
 

@@ -462,7 +462,7 @@ def test_memory_jobs_start_only_after_input_commit_with_frozen_history(tmp_path,
     async def scenario():
         """通过钩子提交任务，再通过正式记录和等待接口验证。"""
         supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "state.sqlite3"))))
-        runtime = PluginRuntime("memory", "session", "r", _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue)
+        runtime = PluginRuntime("memory", "session", _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue)
         plugin = make_memory_plugin(sqlite_factory=SqliteFactory())
         state = AgentState.create_new("session")
         set_memory_count(state, 12)
@@ -556,7 +556,7 @@ def test_long_term_memory_uses_frozen_protocol_cutoff(tmp_path) -> None:
         from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
         from app.schemas.runtime_types import TaskStatus
         supervisor = TaskSupervisor(runtime_queue=asyncio.Queue(), records=TaskRecordDao(SqliteFactory(str(tmp_path / "state.sqlite3"))))
-        runtime = PluginRuntime("memory", "session", "r", _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue)
+        runtime = PluginRuntime("memory", "session", _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue)
         try:
             task_id = await runtime.submit_task(LongTermMemoryTask(operation_for(MemoryManager()), "session", 42, 12, True, True),
                 name="memory.persist_long_term", title="提取长期记忆", notify_agent=False)

@@ -27,7 +27,6 @@ class AgentRunStateMachine:
         _run_id (str | None): 当前轮次编号。
         _wait (ExecutionWait | None): WAITING 对应的等待材料。
         _reason (TurnInterruptReason | None): STOPPING 及其协议保存对应的控制原因。
-        _input_id (str | None): 引导对应的已保存输入编号。
         _error (str | None): FAULTED 对应的保存故障。
     """
 
@@ -42,7 +41,6 @@ class AgentRunStateMachine:
         self._run_id: str | None = None
         self._wait: ExecutionWait | None = None
         self._reason: TurnInterruptReason | None = None
-        self._input_id: str | None = None
         self._error: str | None = None
 
     def _change(self, target: ExecutionPhase) -> None:
@@ -99,26 +97,24 @@ class AgentRunStateMachine:
         Returns:
             CommandReceipt: accepted、stale 或 too_late。
         """
-        return self._request_interrupt(TurnInterruptReason.STOP, None, expected_run_id)
+        return self._request_interrupt(TurnInterruptReason.STOP, expected_run_id)
 
-    def request_steer(self, input_id: str, expected_run_id: str | None = None) -> CommandReceipt:
+    def request_steer(self, expected_run_id: str | None = None) -> CommandReceipt:
         """用已保存的明确输入引导当前执行。
 
         Args:
-            input_id (str): 已保存的输入编号。
             expected_run_id (str | None): 显式引导指定轮次时提供。
         Returns:
             CommandReceipt: 引导控制的结果；消息保存回执由 Session 单独提供。
         """
-        return self._request_interrupt(TurnInterruptReason.STEER, input_id, expected_run_id)
+        return self._request_interrupt(TurnInterruptReason.STEER, expected_run_id)
 
-    def _request_interrupt(self, reason: TurnInterruptReason, input_id: str | None,
+    def _request_interrupt(self, reason: TurnInterruptReason,
                            expected_run_id: str | None) -> CommandReceipt:
         """受理本轮停止或引导，用户停止优先于尚未结束的引导。
 
         Args:
             reason (TurnInterruptReason): 停止或引导。
-            input_id (str | None): 引导输入身份。
             expected_run_id (str | None): 可选目标轮次。
         Returns:
             CommandReceipt: 本地控制受理结果。
@@ -126,19 +122,17 @@ class AgentRunStateMachine:
         if expected_run_id is not None and expected_run_id != self._run_id:
             return self._receipt(CommandStatus.STALE)
         if self._phase == ExecutionPhase.STOPPING:
-            # 1. 停止接管仍在等待工具边界的引导，消息正文继续由 Inbox 保存。
-            if reason == TurnInterruptReason.STOP and self._reason == TurnInterruptReason.STEER:
-                self._reason, self._input_id = TurnInterruptReason.STOP, None
+            # 1. 停止接管正在结束当前回答的引导，已保存正文继续由 Inbox 留存。
+            if reason == TurnInterruptReason.STOP:
+                self._reason = TurnInterruptReason.STOP
                 return self._receipt(CommandStatus.ACCEPTED)
-            status = (CommandStatus.ACCEPTED if self._reason == reason and self._input_id == input_id
-                      else CommandStatus.TOO_LATE)
-            return self._receipt(status)
+            return self._receipt(CommandStatus.TOO_LATE)
         if self._phase == ExecutionPhase.IDLE:
             return self._receipt(CommandStatus.STALE)
         if self._phase in {ExecutionPhase.COMMITTING, ExecutionPhase.FAULTED}:
             return self._receipt(CommandStatus.TOO_LATE)
         self._change(ExecutionPhase.STOPPING)
-        self._reason, self._input_id = reason, input_id
+        self._reason = reason
         self._wait = None
         return self._receipt(CommandStatus.ACCEPTED)
 
@@ -200,7 +194,7 @@ class AgentRunStateMachine:
             raise InvalidStateTransitionError("引导需要已受理的输入及新的轮次编号")
         self._change(ExecutionPhase.RUNNING if next_run_id is not None else ExecutionPhase.IDLE)
         self._run_id = next_run_id
-        self._reason, self._input_id = None, None
+        self._reason = None
 
     def commit_failed(self, run_id: str, error: str) -> None:
         """必需保存耗尽后终止本轮，等待读取最后已保存上下文。
@@ -212,7 +206,7 @@ class AgentRunStateMachine:
         self._require_run(run_id)
         self._change(ExecutionPhase.FAULTED)
         self._wait = None
-        self._reason, self._input_id = None, None
+        self._reason = None
         self._error = error
 
     def restore_succeeded(self, run_id: str) -> None:

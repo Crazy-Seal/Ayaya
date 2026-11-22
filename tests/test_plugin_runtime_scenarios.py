@@ -44,6 +44,198 @@ async def next_event_kind(scheduler: AgentRuntimeScheduler, kind: str):
             return event
 
 
+@pytest.mark.parametrize("action", ["stop", "steer"])
+def test_queued_plugin_control_targets_execution_at_acceptance(tmp_path, action):
+    """A 轮取得的插件入口在 B 轮排队，到 C 轮受理时控制 C 轮。
+
+    Args:
+        tmp_path (Path): 本场景独占的数据库目录。
+        action (str): 对受理时执行发出的停止或引导请求。
+    """
+    from app.agent.runtime.requests import RuntimeRequest
+    from app.schemas.task_types import PluginRequest, PluginRequestKind
+    from tests.model_capture import capture_input
+
+    async def scenario():
+        """在共享队列取出插件控制后等待，期间让真人输入替换当前轮次。"""
+        blocked, accept_control, release_model = (asyncio.Event() for _ in range(3))
+        started = asyncio.Queue()
+        requests = []
+        target_kind = PluginRequestKind.STOP_TURN if action == "stop" else PluginRequestKind.STEER_TURN
+
+        class DelayedControlQueue(asyncio.Queue[RuntimeRequest]):
+            """保留正式队列行为，在插件控制受理前提供确定的等待屏障。"""
+
+            async def get(self):
+                """取得请求后等待测试放行，让当前会话能够先处理真人输入。
+
+                Returns:
+                    RuntimeRequest: 等待结束后交给消费者的原始请求。
+                """
+                item = await super().get()
+                if isinstance(item, PluginRequest) and item.kind == target_kind:
+                    blocked.set()
+                    await accept_control.wait()
+                return item
+
+        class Model:
+            """保持每轮模型调用等待，供真实会话执行处理引导或停止。"""
+
+            async def astream(self, messages, tools=None):
+                """记录每轮实际收到的正文，并报告调用已经开始。
+
+                Args:
+                    messages (Sequence[InputMessage]): 当前轮次的模型输入。
+                    tools (Sequence[ToolDefinition] | None): 当前可用工具。
+
+                Yields:
+                    StreamChunk: 放行后生成的最终回答。
+                """
+                requests.append(capture_input(messages))
+                started.put_nowait(len(requests))
+                await release_model.wait()
+                yield StreamChunk(content="完成")
+
+            async def close(self):
+                """模型替身的等待由所属执行结束，无需释放外部连接。"""
+
+        queue = DelayedControlQueue()
+        factory = SqliteFactory(tmp_path / "state.sqlite3")
+        supervisor = TaskSupervisor(runtime_queue=queue, records=TaskRecordDao(factory))
+        scheduler = build_test_scheduler(runtime_queue=queue, task_supervisor=supervisor,
+            agent_factory=lambda session, manager: Agent(AgentConfig(session_id=session, model_name="test", api_key="test",
+                context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100)),
+                llm_client=Model(), session_state_manager=manager, sqlite_factory=factory),
+            session_state_manager_factory=lambda session: SessionStateManager(session, factory),
+            chat_settings_dao=configured_settings())
+        try:
+            await scheduler.start()
+            await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "A 轮"}))
+            assert await asyncio.wait_for(started.get(), 2) == 1
+            runtime = PluginRuntime("game", "s", _supervisor=supervisor, _runtime_queue=queue)
+            await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "B 轮"}))
+            assert await asyncio.wait_for(started.get(), 2) == 2
+            if action == "stop":
+                await runtime.stop_turn()
+            else:
+                await runtime.steer_turn("优先躲避攻击")
+            await asyncio.wait_for(blocked.wait(), 2)
+            await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "C 轮"}))
+            assert await asyncio.wait_for(started.get(), 2) == 3
+            accept_control.set()
+            runs = [await next_event_kind(scheduler, "run_started") for _ in range(3)]
+            current = runs[-1].run_id
+            if action == "steer":
+                assert await asyncio.wait_for(started.get(), 2) == 4
+                assert (await scheduler.snapshot("s")).payload["run_id"] != current
+                notifications = [item for item in requests[3] if item.get("name") == "runtime_plugin_notification"]
+                assert len(notifications) == 1 and "优先躲避攻击" in notifications[0]["content"]
+            else:
+                while True:
+                    event = await next_event_kind(scheduler, "run_completed")
+                    if event.run_id == current:
+                        break
+                snapshot = (await scheduler.snapshot("s")).payload
+                assert snapshot["phase"] == "idle"
+                assert snapshot["session_state"] == "enabled"
+                assert len(requests) == 3
+        finally:
+            accept_control.set()
+            release_model.set()
+            await close_test_runtime(scheduler)
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("kind", ["stop_turn", "steer_turn"])
+def test_plugin_control_respects_idle_and_final_save_policy(tmp_path, kind):
+    """插件控制沿用空闲与最终保存规则，已保存的引导按会话资格留存。
+
+    Args:
+        tmp_path (Path): 本场景独占的数据库目录。
+        kind (str): 插件停止或引导请求的种类。
+    """
+    from app.agent.runtime.agent_execution import AgentExecution
+    from app.agent.runtime.parent_session import ParentSession
+    from app.schemas.runtime_types import CommandStatus, ExecutionPhase
+    from app.schemas.task_types import PluginRequest, PluginRequestKind
+
+    async def scenario():
+        """在真实最终保存入口等待，直接核对会话受理回执与执行阶段。"""
+        saving, release_save, saved = (asyncio.Event() for _ in range(3))
+
+        class WaitingSaveManager(SessionStateManager):
+            """使用真实持久化，在最终保存开始后等待测试确认控制行为。"""
+
+            async def complete_turn(self, state, *, release_queued=False):
+                """报告最终提交已开始，放行后保存完整回答。
+
+                Args:
+                    state (AgentState): 当前回答的实际会话状态。
+                    release_queued (bool): 正常结束时是否放行排队输入。
+
+                Returns:
+                    int: 实际保存的 checkpoint 编号。
+                """
+                saving.set()
+                await release_save.wait()
+                result = await super().complete_turn(state, release_queued=release_queued)
+                saved.set()
+                return result
+
+        class Model:
+            """立即完成回答，使执行进入最终提交阶段。"""
+
+            async def astream(self, messages, tools=None):
+                """提供正常回答，持久化继续由真实 Agent 完成。
+
+                Args:
+                    messages (Sequence[InputMessage]): 当前请求消息。
+                    tools (Sequence[ToolDefinition] | None): 当前可用工具。
+
+                Yields:
+                    StreamChunk: 最终回答正文。
+                """
+                yield StreamChunk(content="已完成回答")
+
+            async def close(self):
+                """模型替身没有外部资源。"""
+
+        factory = SqliteFactory(tmp_path / "state.sqlite3")
+        manager = WaitingSaveManager("s", factory)
+        events = asyncio.Queue()
+        execution = AgentExecution("s", manager=manager, events=events,
+            agent_factory=lambda state_manager: Agent(AgentConfig(session_id="s", model_name="test", api_key="test",
+                context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100)),
+                llm_client=Model(), session_state_manager=state_manager, sqlite_factory=factory))
+        session = ParentSession("s", manager=manager, execution=execution, events=events)
+        request_kind = PluginRequestKind(kind)
+        try:
+            idle = await session.accept_plugin(PluginRequest(request_kind, "game", "s", text="空闲时的引导"))
+            assert idle.status == (CommandStatus.STALE if request_kind == PluginRequestKind.STOP_TURN else CommandStatus.ACCEPTED)
+            assert session.snapshot()["session_state"] == "paused"
+            assert execution.snapshot().phase == ExecutionPhase.IDLE
+            pending = await manager.read_activation_batch()
+            assert len(pending) == (0 if request_kind == PluginRequestKind.STOP_TURN else 1)
+            await session.accept_human(ChannelCommand("s", "desktop", "human_turn", {"message": "开始回答"}))
+            await asyncio.wait_for(saving.wait(), 2)
+            before = execution.snapshot()
+            assert before.phase == ExecutionPhase.COMMITTING
+            receipt = await session.accept_plugin(PluginRequest(request_kind, "game", "s", text="提交时的新引导"))
+            assert receipt.status == (CommandStatus.TOO_LATE if request_kind == PluginRequestKind.STOP_TURN else CommandStatus.ACCEPTED)
+            assert execution.snapshot() == before
+            assert session.snapshot()["session_state"] == "enabled"
+            pending = await manager.read_activation_batch()
+            assert len(pending) == (0 if request_kind == PluginRequestKind.STOP_TURN else 1)
+            if pending:
+                assert pending[0].payload["text"] == "提交时的新引导"
+            release_save.set()
+            await asyncio.wait_for(saved.wait(), 2)
+        finally:
+            release_save.set()
+            await session.close("测试结束")
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("decision", ["human", "steer", "approve", "stop"])
 def test_background_task_survives_approval_and_turn_end_until_explicit_stop(tmp_path, decision):
     """审批、停止和引导均保留后台任务，显式停止时才执行任务清理。
@@ -150,7 +342,7 @@ def test_background_task_survives_approval_and_turn_end_until_explicit_stop(tmp_
             await scheduler.start()
             await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "连接游戏"}))
             pending = await next_event_kind(scheduler, "interrupt")
-            runtime = PluginRuntime("game", "s", pending.run_id, _supervisor=supervisor, _runtime_queue=queue)
+            runtime = PluginRuntime("game", "s", _supervisor=supervisor, _runtime_queue=queue)
             task_id = await runtime.submit_task(GameWatchTask(), name="watch", title="游戏观察", notify_agent=False)
             await asyncio.wait_for(task_started.wait(), 1)
             await runtime.notify(name="battle_started", text="审批期间发现敌人")
@@ -241,7 +433,7 @@ def test_steer_storage_failure_keeps_current_model_waiting(tmp_path):
             await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "开始"}))
             await asyncio.wait_for(entered.wait(), 2)
             original = (await scheduler.snapshot("s")).payload["run_id"]
-            runtime = PluginRuntime("game", "s", original, _supervisor=supervisor, _runtime_queue=queue)
+            runtime = PluginRuntime("game", "s", _supervisor=supervisor, _runtime_queue=queue)
             with sqlite3.connect(path) as db:
                 db.execute("CREATE TRIGGER refuse_plugin BEFORE INSERT ON session_inbox WHEN NEW.kind = 'plugin_notification' BEGIN SELECT RAISE(ABORT, 'plugin storage unavailable'); END")
             await runtime.steer_turn("未保存的引导")
@@ -265,8 +457,8 @@ def test_steer_storage_failure_keeps_current_model_waiting(tmp_path):
     asyncio.run(scenario())
 
 
-def test_game_watch_reports_changes_controls_source_and_cleans_connection(tmp_path):
-    """受控游戏连接贯穿通知、引导、迟到停止、结果和资源释放。"""
+def test_game_watch_reports_changes_controls_current_turn_and_cleans_connection(tmp_path):
+    """游戏任务跨轮引导和停止当前执行，释放连接后交付最终结果。"""
     from tests.model_capture import capture_input
 
     async def scenario():
@@ -307,10 +499,10 @@ def test_game_watch_reports_changes_controls_source_and_cleans_connection(tmp_pa
         class GameWatchTask(BaseTask):
             """按游戏状态投递内容和控制请求，释放连接后保存最终结果。"""
             async def run(self, runtime):
-                """持续观察事件，游戏关闭后请求结束来源轮次并返回结果。
+                """持续观察事件，游戏关闭后请求结束会话当前执行并返回结果。
 
                 Args:
-                    runtime (PluginRuntime): 固定来源轮次和本任务编号的调用对象。
+                    runtime (PluginRuntime): 绑定所属会话、插件和本任务编号的调用对象。
 
                 Returns:
                     str: 供任务结果通知交付的最终说明。
@@ -360,7 +552,7 @@ def test_game_watch_reports_changes_controls_source_and_cleans_connection(tmp_pa
             await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "开始游戏"}))
             await asyncio.wait_for(waiting.wait(), 2)
             source = (await scheduler.snapshot("s")).payload["run_id"]
-            runtime = PluginRuntime("game", "s", source, _supervisor=supervisor, _runtime_queue=queue)
+            runtime = PluginRuntime("game", "s", _supervisor=supervisor, _runtime_queue=queue)
             task_id = await runtime.submit_task(GameWatchTask(), name="game_watch", title="游戏观察", notify_agent=True)
             await connection.incoming.put(("battle_started", "发现两名敌人"))
             assert await asyncio.wait_for(connection.processed.get(), 1) == "battle_started"
@@ -378,9 +570,8 @@ def test_game_watch_reports_changes_controls_source_and_cleans_connection(tmp_pa
             await asyncio.wait_for(queue.join(), 1)
             assert record.status == TaskStatus.COMPLETED and record.result == "游戏已关闭，观察结束。"
             assert connection.closed.is_set()
-            assert (await scheduler.snapshot("s")).payload["run_id"] == current
-            release.set()
             await asyncio.wait_for(result_seen.wait(), 2)
+            assert (await scheduler.snapshot("s")).payload["run_id"] != current
         finally:
             release.set()
             await close_test_runtime(scheduler)
@@ -424,7 +615,7 @@ def test_after_response_commit_notifications_start_followup_turns(tmp_path):
                 Args:
                     context (HookContext): 真实 Agent 的本次提交上下文。
                 """
-                committed.append(context.runtime.run_id)
+                committed.append(context.runtime.session_id)
                 if len(committed) < 3:
                     await context.runtime.notify(name="follow_up", text=f"继续处理第{len(committed)}项")
 
@@ -456,15 +647,15 @@ def test_after_response_commit_notifications_start_followup_turns(tmp_path):
         scheduler = build_test_scheduler(runtime_queue=queue, task_supervisor=supervisor,
             agent_factory=lambda session, manager: AgentWithFollowups(AgentConfig(session_id=session, model_name="test", api_key="test",
                 context_strategy=ContextStrategyConfig(compression_trigger_tokens_k=100)), llm_client=Model(), session_state_manager=manager,
-                plugin_runtime_factory=lambda name, run_id: PluginRuntime(name, session, run_id, _supervisor=supervisor, _runtime_queue=queue), sqlite_factory=SqliteFactory(path)),
+                plugin_runtime_factory=lambda name: PluginRuntime(name, session, _supervisor=supervisor, _runtime_queue=queue), sqlite_factory=SqliteFactory(path)),
             session_state_manager_factory=lambda session: SessionStateManager(session, SqliteFactory(path)), chat_settings_dao=supervisor_settings, mutation_coordinator=supervisor_mutations)
         manager = SessionStateManager("s", SqliteFactory(path))
         try:
             await scheduler.start()
             await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "开始"}))
-            for _ in range(3):
-                await next_event_kind(scheduler, "run_completed")
-            assert len(requests) == 3 and len(set(committed)) == 3
+            completed = [await next_event_kind(scheduler, "run_completed") for _ in range(3)]
+            assert len(requests) == 3 and len({event.run_id for event in completed}) == 3
+            assert committed == ["s", "s", "s"]
             state = await manager.load()
             assert memory_count(state) == 0
             messages = [message for message in state.messages if isinstance(message, PluginNotificationMessage)]

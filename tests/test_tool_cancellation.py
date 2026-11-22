@@ -80,7 +80,7 @@ def test_steer_waits_for_tool_result_and_later_stop_can_cancel() -> None:
         invocation = asyncio.create_task(control.run_tool(tool))
         try:
             await asyncio.wait_for(entered.wait(), 1)
-            assert machine.request_steer("input", "run").accepted
+            assert machine.request_steer(expected_run_id="run").accepted
             control.wake_interrupt()
             inspect.set()
             await asyncio.wait_for(inspected.wait(), 1)
@@ -264,7 +264,7 @@ def test_agent_steer_saves_current_tool_before_closing_later_calls(tmp_path: Pat
         invocation = asyncio.create_task(agent.run("执行", turn_control=control, emit=receive))
         try:
             await asyncio.wait_for(tool.entered.wait(), 3)
-            assert machine.request_steer("input", "run").accepted
+            assert machine.request_steer(expected_run_id="run").accepted
             control.wake_interrupt()
             tool.release.set()
             assert (await asyncio.wait_for(invocation, 3)).kind == AgentRunOutcomeKind.STEERED

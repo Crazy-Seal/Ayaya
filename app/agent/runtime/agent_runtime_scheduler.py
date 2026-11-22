@@ -456,7 +456,7 @@ class AgentRuntimeScheduler:
         """显式插件请求经过应用入口核验，通知政策由父会话决定。
 
         Args:
-            request (PluginRequest): 已绑定插件和轮次来源的请求。
+            request (PluginRequest): 已绑定插件和所属会话的请求。
         """
         async with self._lifecycle_lock, self._mutation_coordinator.admission_lock:
             if self.phase != RuntimePhase.RUNNING or not self._settings_dao.exists(request.session_id):

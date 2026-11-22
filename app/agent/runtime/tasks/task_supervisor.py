@@ -44,7 +44,8 @@ class TaskSupervisor:
 
     async def submit(self, task: BaseTask, *, runtime: TaskRuntime, name: str,
                      title: str, notify_agent: bool, background: bool = True,
-                     tool_name: str | None = None, origin_tool_call_id: str | None = None) -> str:
+                     tool_name: str | None = None, origin_tool_call_id: str | None = None,
+                     origin_run_id: str | None = None) -> str:
         """保存初始记录并接管执行，来源编号用于记录和按范围停止。
 
         Args:
@@ -56,16 +57,17 @@ class TaskSupervisor:
             background (bool): 是否显示后台任务。
             tool_name (str | None): 来源工具。
             origin_tool_call_id (str | None): 来源工具调用编号。
+            origin_run_id (str | None): 工具任务创建时的轮次，仅用于来源记录。
         Returns:
             str: 已登记任务编号。
         """
         return await complete_owned_work(self._register(task, runtime=runtime, name=name, title=title,
             notify_agent=notify_agent, background=background, tool_name=tool_name,
-            origin_tool_call_id=origin_tool_call_id))
+            origin_tool_call_id=origin_tool_call_id, origin_run_id=origin_run_id))
 
     async def _register(self, task: BaseTask, *, runtime: TaskRuntime, name: str, title: str,
                         notify_agent: bool, background: bool, tool_name: str | None,
-                        origin_tool_call_id: str | None) -> str:
+                        origin_tool_call_id: str | None, origin_run_id: str | None) -> str:
         """与管理器关闭排序登记，保存后立即持有任务。
 
         Args:
@@ -77,6 +79,7 @@ class TaskSupervisor:
             background (bool): 后台展示政策。
             tool_name (str | None): 工具来源。
             origin_tool_call_id (str | None): 工具调用编号。
+            origin_run_id (str | None): 工具任务的创建轮次。
         Returns:
             str: 新任务编号。
         Raises:
@@ -87,7 +90,7 @@ class TaskSupervisor:
                 raise RuntimeError("任务管理器正在关闭")
             task_id = uuid4().hex
             await self.records.insert_running(task_id, runtime.session_id, name=name, title=title,
-                plugin_name=runtime.plugin_name, origin_run_id=runtime.run_id, notify_agent=notify_agent,
+                plugin_name=runtime.plugin_name, origin_run_id=origin_run_id, notify_agent=notify_agent,
                 background=background, tool_name=tool_name, origin_tool_call_id=origin_tool_call_id,
                 subagent_id=runtime.subagent_id, notification_context_id=runtime.subagent_id or runtime.session_id,
                 notification_scope=AgentStorageScope.SUBAGENT if runtime.subagent_id else AgentStorageScope.MAIN)

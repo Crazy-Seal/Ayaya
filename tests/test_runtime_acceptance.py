@@ -338,7 +338,7 @@ def test_approval_notice_and_queue_events_share_order_without_slow_observer_bloc
                 await reader.close()
             for index in range(260):
                 runtime.runtime_queue.put_nowait(PluginRequest(kind=PluginRequestKind.PUBLISH_EVENT, session_id="s",
-                    run_id=approval.run_id, plugin_name="acceptance", name="notice", payload={"text": str(index)}))
+                    plugin_name="acceptance", name="notice", payload={"text": str(index)}))
             await asyncio.wait_for(runtime.runtime_queue.join(), 3)
             assert slow is not None and slow.queue.get_nowait() is None
             assert (await asyncio.wait_for(runtime.submit(ChannelCommand("s", "desktop", "stop_turn")), 1)).accepted

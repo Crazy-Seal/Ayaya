@@ -35,7 +35,7 @@ class DiaryTask(BaseTask):
         """生成并保存日记，成功返回摘要，失败由 Supervisor 记录错误。
 
         Args:
-            runtime (TaskRuntime): 框架绑定插件、会话、来源轮次及任务编号的调用对象。
+            runtime (TaskRuntime): 框架绑定插件、会话及任务编号的调用对象。
 
         Returns:
             str: 包含日记日期的成功摘要。
@@ -72,7 +72,7 @@ class LongTermMemoryTask(BaseTask):
         """读取固定轮次并返回提取数量，跳过返回原因，失败交给 Supervisor 保存。
 
         Args:
-            runtime (TaskRuntime): 框架绑定插件、会话、来源轮次及任务编号的调用对象。
+            runtime (TaskRuntime): 框架绑定插件、会话及任务编号的调用对象。
 
         Returns:
             str: 两类记忆的完成数量，或跳过本次提取的具体原因。

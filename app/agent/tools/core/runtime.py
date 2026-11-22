@@ -81,7 +81,7 @@ class ToolRuntime:
         """
         return await self._supervisor.submit(task, runtime=self, name=name, title=title,
             notify_agent=notify_agent, background=background,
-            tool_name=self.tool_name, origin_tool_call_id=self.tool_call_id)
+            tool_name=self.tool_name, origin_tool_call_id=self.tool_call_id, origin_run_id=self.run_id)
 
     async def get_task_snapshot(self, task_id: str) -> TaskSnapshot | None:
         """查询当前会话内的任务摘要，允许不同工具协作。

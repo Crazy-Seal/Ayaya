@@ -196,8 +196,8 @@ class RuntimeTestAgent(Agent):
         self.test_supervisor = supervisor
         from app.agent.plugins.runtime import PluginRuntime
         session_id = args[0].session_id
-        super().__init__(*args, plugin_runtime_factory=lambda name, run_id: PluginRuntime(
-            name, session_id, run_id, _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue), **kwargs)
+        super().__init__(*args, plugin_runtime_factory=lambda name: PluginRuntime(
+            name, session_id, _supervisor=supervisor, _runtime_queue=supervisor.runtime_queue), **kwargs)
 
     async def close(self):
         """测试应用结束时先关闭 Agent，再关闭应用持有的任务资源。"""

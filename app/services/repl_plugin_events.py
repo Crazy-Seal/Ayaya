@@ -48,7 +48,7 @@ def create_repl_plugin_event_handler(supervisor: TaskSupervisor,
                 execution_id = ""
             return
         execution_id = event.execution_id
-        runtime = PluginRuntime(event.capability.plugin_name, event.context.session_id, event.context.run_id,
+        runtime = PluginRuntime(event.capability.plugin_name, event.context.session_id,
                                 _supervisor=supervisor, _runtime_queue=runtime_queue)
         await runtime.publish_event(event.name, event.payload)
         # 1. 载荷受理由 ParentSession 负责；此处只记下可用于关闭提示的编号。

@@ -49,7 +49,7 @@ Ayaya 是运行在用户电脑上的桌面智能体应用。插件可以给它�
 | 临时背景条目 | 本轮供模型参考的一项标题、正文和图片，按来源名称保存，可更新和删除，审批恢复后继续使用 |
 | 请求临时消息 | 每次模型请求前由临时背景条目组装的消息，只发送给本次模型请求 |
 | 任务结果通知 | 后台任务结束后交给 Agent 的状态和结果 |
-| 控制请求 | 请求 Scheduler 停止来源轮次，或保存引导正文后结束来源轮次 |
+| 控制请求 | 请求停止会话当前执行，或保存引导正文后结束当前执行 |
 | 前端消息 | 发给界面的事件，由前端代码决定怎样显示 |
 | 投递 | 插件请求已放入共享运行时队列，随后由 Scheduler 受理 |
 | 受理 | 框架接受请求；内容请求受理成功时，内容已经保存 |
@@ -81,7 +81,7 @@ Ayaya 是运行在用户电脑上的桌面智能体应用。插件可以给它�
 | `SessionStateManager` | 框架 | 受理内容，读取 Inbox，保存会话状态和交付结果 | 由 Scheduler、Agent 和执行流程使用 |
 | `PluginRuntime` | 框架注入，已实现 | 给插件提供后台任务、通知、控制和前端消息方法 | 从 `context.runtime` 或后台任务的 `run(runtime)` 取得 |
 
-`PluginRuntime` 定义在 `app.agent.plugins.runtime`，是框架按插件和调用来源创建的类实例。它保存 `plugin_name`、`session_id`、`run_id`、可选的 `subagent_id` 和 `task_id`，内部使用应用共享的 Supervisor 和队列。公共任务父类 `BaseTask` 定义在 `app.agent.runtime.tasks.base`。
+`PluginRuntime` 定义在 `app.agent.plugins.runtime`，是框架为所属会话中的插件创建的类实例。它保存 `plugin_name`、`session_id`、可选的 `subagent_id` 和 `task_id`，内部使用应用共享的 Supervisor 和队列。公共任务父类 `BaseTask` 定义在 `app.agent.runtime.tasks.base`。
 
 Supervisor 使用 `app.agent.runtime.tasks.runtime.TaskRuntime` 约定运行时共有的来源字段和任务编号绑定方法。插件任务实际收到 `PluginRuntime`；工具任务收到 `ToolRuntime`。本指南的通知和控制示例使用插件的运行时能力。
 
@@ -127,9 +127,9 @@ flowchart TD
 | `context.metadata` | 读取或原地补充该次调用的附加信息 |
 | `context.runtime` | 提交后台任务、查询记录、投递通知、控制及前端发布请求 |
 
-应用已注入 `context.runtime: PluginRuntime`，每个插件取得自己的 Context，原状态、钩子数据和公共 metadata 继续共享；传入空字典时也沿用原对象。后台任务收到的 `runtime` 提供相同方法，并额外绑定自己的 `task_id`。框架自动绑定 `plugin_name`、`session_id`、来源 `run_id` 及子上下文 `subagent_id`。独立构造 Agent 或 PluginManager 的测试若使用这些能力，需要注入 `plugin_runtime_factory` 或 `runtime_factory`；未注入时 `context.runtime` 为 `None`。
+应用已注入 `context.runtime: PluginRuntime`，每个插件取得自己的 Context，原状态、钩子数据和公共 metadata 继续共享；传入空字典时也沿用原对象。后台任务收到的 `runtime` 提供相同方法，并额外绑定自己的 `task_id`。框架自动绑定 `plugin_name`、`session_id` 及子上下文 `subagent_id`。独立构造 Agent 或 PluginManager 的测试若使用这些能力，需要注入 `plugin_runtime_factory` 或 `runtime_factory`；工厂只接收插件名称，所属会话由应用装配固定。未注入时 `context.runtime` 为 `None`。
 
-`runtime.run_id` 一直表示创建该调用对象的来源轮次。后台任务跨轮次继续运行时，它发送的停止或引导仍指向原轮次，Scheduler 拒绝过期请求并记录原因。普通插件通知可以继续投递到所属会话。
+插件调用对象绑定所属会话。后台任务跨轮次继续运行时，停止或引导作用于请求实际受理时的当前执行。例如 A 轮创建的任务在 B 轮发出请求，排队期间开始了 C 轮，请求受理时就控制 C 轮。普通插件通知继续投递到所属会话。
 
 ### 1.6 公共方法
 
@@ -142,8 +142,8 @@ flowchart TD
 | `await runtime.wait_task(task_id, timeout_ms=...)` | `TaskSnapshot` 或 `None` | 等到结果保存结束或本次等待超时，返回任务摘要 |
 | `await runtime.stop_task(task_id)` | `None` | 投递停止后台任务的请求 |
 | `await runtime.notify(name=..., text=...)` | `None` | 投递给 Agent 的插件通知请求 |
-| `await runtime.stop_turn()` | `None` | 投递停止来源轮次的请求 |
-| `await runtime.steer_turn(text)` | `None` | 投递引导请求，由 Scheduler 保存正文并请求结束来源轮次 |
+| `await runtime.stop_turn()` | `None` | 投递停止会话当前执行的请求 |
+| `await runtime.steer_turn(text)` | `None` | 投递引导请求，由会话保存正文并请求结束当前执行 |
 | `await runtime.publish_event(name, payload)` | `None` | 投递前端消息发布请求 |
 
 上述五个投递方法正常返回表示请求已入队。Scheduler 随后完成校验、保存或控制处理，拒绝及处理失败由框架统一记录。插件调用继续自己的工作，不等待受理结果或目标轮次结束。前端 HTTP 入口仍使用已有的 `CommandReceipt`，插件投递方法不返回该对象。
@@ -166,7 +166,7 @@ await runtime.publish_event(InteractionEventKind.STATUS_NOTICE, {
 })
 ```
 
-`id` 为非空字符串，`active` 必须是布尔值；开启和更新还需提供非空 `text`。同一会话中，一个插件使用同一 id 会更新原提示，其他插件的同名提示分别显示。重复关闭已经移除的提示可以完成。框架从调用对象绑定插件、会话、来源轮次和任务编号，只提取规定的展示字段。
+`id` 为非空字符串，`active` 必须是布尔值；开启和更新还需提供非空 `text`。同一会话中，一个插件使用同一 id 会更新原提示，其他插件的同名提示分别显示。重复关闭已经移除的提示可以完成。框架从调用对象绑定插件、会话和来源任务编号，只提取规定的展示字段；事件的 `run_id` 留空。
 
 提示一直显示到显式关闭、切换会话或当前连接断开。插件负责在业务结束时关闭；后台任务可以跨轮次更新和关闭。刷新聊天历史保留当前提示，断线重连则从新事件开始显示。
 
@@ -708,13 +708,13 @@ if context.hook == PluginHook.ON_INVOKE:
 | `title` | 这次工作给用户看的说明 |
 | `notify_agent` | 是否在任务终态保存时生成结果通知 |
 
-框架从 `context.runtime` 绑定插件、会话和来源轮次。返回 `task_id` 表示任务提交成功。提交失败抛出异常，由调用处或现有钩子异常处理记录；原任务若已返回编号，后续查询和等待始终使用这个编号。
+框架从 `context.runtime` 绑定插件和所属会话。返回 `task_id` 表示任务提交成功。提交失败抛出异常，由调用处或现有钩子异常处理记录；原任务若已返回编号，后续查询和等待始终使用这个编号。
 
 ### 4.3 后台任务的结束方式
 
 后台任务跨回答轮次独立运行，直到任务自行完成或收到显式停止请求。主 Agent 和保留型子 Agent 的正常完成、停止、引导、失败及审批等待均保留正在运行的后台任务；一次性子 Agent 工作结束、子身份被销毁或父会话配置删除时，框架停止当时已登记的所属任务。关闭身份后迟到登记的普通任务仍可完成；应用退出封闭 Supervisor 后拒绝新的任务登记。
 
-`runtime.run_id` 记录任务的来源轮次，并用于校验停止或引导该轮次的控制请求；轮次结束后，后台任务仍可继续运行。任务提交参数见第 4.2 节。
+轮次结束后，后台任务仍可继续运行。公共 `TaskRuntime` 描述任务所属会话、插件及任务身份；Supervisor 登记入口的可选 `origin_run_id` 记录来源元数据。插件任务默认留空，工具任务由 `ToolRuntime` 显式传入工具所在轮次。任务提交参数见第 4.2 节。
 
 任务通过 `cleanup()` 释放自己持有的资源，Supervisor 负责执行、保存并交付结果，随后调用一次清理。具体任务在自己的清理方法内限制总预算和尝试次数，首次后最多重试三次。输出落盘和退出码属于 `run()` 的业务工作。`notify_agent` 单独控制终态是否写入结果通知，静默任务同样由 Supervisor 持有和清理。
 
@@ -809,7 +809,7 @@ OpenAI 模型转换使用 `role="user"`、`name="runtime_plugin_notification"`�
 
 ## 6 控制信号
 
-前端和插件入口共用目标轮次核验及最终打断动作。
+插件控制作用于受理时所属会话的当前执行；用户显式指定目标轮次时仍核验该轮次。两者共用执行阶段检查和最终打断动作。
 
 ### 6.1 请求停止
 
@@ -817,7 +817,7 @@ OpenAI 模型转换使用 `role="user"`、`name="runtime_plugin_notification"`�
 await runtime.stop_turn()
 ```
 
-请求入队后调用返回，Scheduler 随后检查 `runtime.run_id` 指向的轮次是否仍在运行。请求受理后，模型等待及工具收尾按现有打断流程处理。目标过期或已经进入最终提交时，Scheduler 拒绝请求并记录原因。
+请求入队后调用返回，Scheduler 将请求路由到所属会话。会话向当前执行调用 `request_stop()`，受理后模型等待及工具收尾按现有打断流程处理。空闲时返回现有的无活动执行结果，最终提交阶段返回 `TOO_LATE`；拒绝原因由框架记录。
 
 调用完成后，后台任务或钩子继续执行下一行。观察任务希望同时结束自己的工作时正常 `return`。
 
@@ -827,17 +827,17 @@ await runtime.stop_turn()
 await runtime.steer_turn("优先处理刚出现的敌人，稍后继续原目标。")
 ```
 
-调用先投递引导请求。Scheduler 受理时先将带插件来源的引导正文保存为第5章的持久插件输入，再请求结束来源轮次。后续执行读取已保存的 `PluginNotificationMessage`。消息的通知名称表达引导用途；实现集中使用 `PluginRequestKind.STEER_TURN.value`，即 `steer_turn`。引导正文通过 Inbox 交付，临时背景继续按第8章处理。
+调用先投递引导请求。会话受理时先将带插件来源的引导正文保存为第5章的持久插件输入，保存成功后调用当前执行的 `request_steer()`。保存失败时保持当前执行。后续执行读取已保存的 `PluginNotificationMessage`。消息的通知名称表达引导用途；实现集中使用 `PluginRequestKind.STEER_TURN.value`，即 `steer_turn`。引导正文通过 Inbox 交付，临时背景继续按第8章处理。
 
-引导请求同样绑定来源轮次。旧观察任务的迟到请求得到明确拒绝，新的轮次按自己的输入继续执行。
+引导作用于请求实际受理时的当前执行。当前执行已经进入 `STOPPING` 时，后续引导控制返回 `TOO_LATE`。空闲、停止中或最终提交阶段收到的引导正文仍会保存，随后由 worker 按会话资格处理；会话暂停时继续留在 Inbox。
 
 ### 6.3 与用户操作同时发生时
 
 前端请求直接进入 Scheduler，插件请求通过共享运行时队列进入同一处理逻辑。相同会话按锁依次受理，没有固定的前端或插件优先级。
 
-同一轮次的 `TurnControl` 保留首个停止或引导原因。引导正文另行保存，因此后来的引导正文可能已经受理，打断原因仍保留先前值。插件投递方法返回只表示请求已入队。
+同一轮次的控制原因由执行状态机决定。停止可以接管尚未结束的引导；引导正文另行保存，因此后来的引导正文可能已经受理，打断原因仍保留先前值。插件投递方法返回只表示请求已入队。
 
-用户主动停止还有暂停自动执行的含义，直到下一次真人输入成功受理才恢复。插件停止只结束来源轮次，保留会话已有的自动执行资格；之后的任务结果或插件通知仍可按第5章的规则启动新轮次。插件内容请求本身不恢复用户暂停的资格。
+用户主动停止还有暂停自动执行的含义，直到下一次真人输入成功受理才恢复。插件停止只结束会话当前执行，保留会话已有的自动执行资格；之后的任务结果或插件通知仍可按第5章的规则启动新轮次。插件内容请求本身不恢复用户暂停的资格。
 
 ## 7 前端展示
 
@@ -1055,7 +1055,7 @@ host.publish_event(execution_id, "status_notice", {
 })
 ```
 
-同一编号更新文字或发布 `active=False` 即可更新、关闭提示。事件经应用接入代码调用既有 `PluginRuntime.publish_event`，会话、插件及来源轮次由框架绑定；原生 REPL 没有 Supervisor 后台任务编号。发布返回表示子进程已排队，前端展示仍由后端事件链处理。
+同一编号更新文字或发布 `active=False` 即可更新、关闭提示。事件经应用接入代码调用既有 `PluginRuntime.publish_event`，会话和插件由框架绑定，事件的 `run_id` 留空；原生 REPL 没有 Supervisor 后台任务编号。`host.execution_id` 继续标识 REPL 自身执行，供提示编号和资源清理使用。发布返回表示子进程已排队，前端展示仍由后端事件链处理。
 
 能力通过 `defer_cleanup` 登记本次资源释放。正常、异常或中断结束时，runner 尝试全部清理，再报告结束；清理错误随工具结果返回。应用端随后将本次尚未关闭的提示关闭入队，再释放 REPL 占用。进程崩溃或超时时，应用端也会关闭已经收到的提示。提示仍遵循第 7 章的非持久化和断线清空规则。
 
@@ -1089,7 +1089,7 @@ from app.agent.runtime.tasks.base import BaseTask
 from app.agent.plugins.runtime import PluginRuntime
 
 class GameWatchTask(BaseTask):
-    """观察游戏事件，发送变化通知，并在游戏关闭时请求停止来源轮次。"""
+    """观察游戏事件，发送变化通知，并在游戏关闭时请求停止当前执行。"""
 
     def __init__(self, endpoint: str) -> None:
         """保存这次观察需要的连接地址。
@@ -1104,7 +1104,7 @@ class GameWatchTask(BaseTask):
         """持续读取状态，在游戏关闭后结束观察。
 
         Args:
-            runtime (PluginRuntime): 绑定来源轮次和当前任务的调用对象。
+            runtime (PluginRuntime): 绑定所属会话、插件和当前任务的调用对象。
 
         Returns:
             str: 观察结束的说明。
@@ -1181,7 +1181,7 @@ async def execute(self, context: HookContext) -> None:  # 框架调用的插件�
             context.agent_state.remove_temporary_context(GAME_STATUS_CONTEXT_KEY)  # 删除失效背景，详情见第8章
 ```
 
-这里每次真人输入启动一项独立观察，任务终态保持静默，运行中通过 `runtime.notify()` 报告战斗等持久事件。审批暂停和回答结束后观察继续运行，直到游戏关闭、显式停止或应用退出。游戏关闭时发出的停止请求仍只针对该任务的来源轮次，过期请求沿现有规则拒绝。
+这里每次真人输入启动一项独立观察，任务终态保持静默，运行中通过 `runtime.notify()` 报告战斗等持久事件。审批暂停和回答结束后观察继续运行，直到游戏关闭、显式停止或应用退出。游戏关闭时发出的停止请求作用于所属会话受理时的当前执行。
 
 本例每次读取临时状态时建立并释放一条短期状态连接。每次请求的状态由 `temporary_context` 提供，工具和 MCP 的发现、用户权限及连接配置继续使用第2章设置流程。
 
@@ -1218,8 +1218,8 @@ async def execute(self, context: HookContext) -> None:  # 框架调用的插件�
 | 钩子数据 | `HookContext.agent_state` | 取得当前会话状态 | [第1章](#1-规约)、[第3章](#3-插件钩子) |
 | 钩子数据 | `agent_state.messages`、`agent_state.extra` | 读取当前消息，保存插件自己的少量会话数据 | [第3章](#3-插件钩子) |
 | 钩子数据 | `context.data["runtime_context"].latest_human_message_id` | 在 `ON_INVOKE` 中取得本轮真人输入编号，纯通知轮次为空 | [第3章](#3-插件钩子)、[第4章](#4-后台任务) |
-| 运行时对象 | `HookContext.runtime`、`run(runtime)` 的参数 | 取得框架绑定插件、会话及来源轮次的 `PluginRuntime` | [第1章](#1-规约)、[第4章](#4-后台任务) |
-| 运行时对象 | `runtime.plugin_name`、`session_id`、`run_id`、`subagent_id`、`task_id` | 识别插件、所属会话、来源轮次、子上下文和当前后台任务；`task_id` 用于任务中的运行时对象 | [第1章](#1-规约) |
+| 运行时对象 | `HookContext.runtime`、`run(runtime)` 的参数 | 取得框架绑定插件和会话的 `PluginRuntime` | [第1章](#1-规约)、[第4章](#4-后台任务) |
+| 运行时对象 | `runtime.plugin_name`、`session_id`、`subagent_id`、`task_id` | 识别插件、所属会话、子上下文和当前后台任务；`task_id` 用于任务中的运行时对象 | [第1章](#1-规约) |
 | 后台任务 | `BaseTask`、`TaskRuntime` | 定义任务执行和清理，以及 Supervisor 使用的运行时来源契约；插件任务实际收到 `PluginRuntime` | [第1章](#1-规约)、[第4章](#4-后台任务) |
 | 后台任务 | `task.run(runtime)` | 执行任务，返回 `str` 记录结果正文，或返回 `None` 表示无正文 | [第4章](#4-后台任务) |
 | 后台任务 | `task.cleanup()` | 由 Supervisor 在收尾时调用，释放任务资源 | [第4章](#4-后台任务) |
@@ -1232,8 +1232,8 @@ async def execute(self, context: HookContext) -> None:  # 框架调用的插件�
 | 消息投递 | `await runtime.notify(name=..., text=...)` | 提交保留在会话中的插件通知 | [第5章](#5-消息投递) |
 | 消息投递 | `PluginNotificationMessage` | 表示持久插件通知，保留插件来源、通知名称和正文 | [第5章](#5-消息投递) |
 | 消息投递 | `TaskResultMessage` | 表示后台任务结束后的结果通知 | [第4章](#4-后台任务)、[第5章](#5-消息投递) |
-| 控制信号 | `await runtime.stop_turn()` | 请求停止调用对象绑定的来源轮次 | [第6章](#6-控制信号) |
-| 控制信号 | `await runtime.steer_turn(text)` | 保存带插件来源的引导正文，并请求结束来源轮次 | [第6章](#6-控制信号) |
+| 控制信号 | `await runtime.stop_turn()` | 请求停止受理时所属会话的当前执行 | [第6章](#6-控制信号) |
+| 控制信号 | `await runtime.steer_turn(text)` | 保存带插件来源的引导正文，并请求结束当前执行 | [第6章](#6-控制信号) |
 | 前端展示 | `await runtime.publish_event(name, payload)` | 使用框架支持的类型向前端发布消息 | [第7章](#7-前端展示) |
 | 临时消息 | `TemporaryContextItem(title=..., text=..., images=...)` | 保存一项临时背景的标题、正文和图片 | [第8章](#8-临时消息) |
 | 临时消息 | `agent_state.set_temporary_context(key, item)` | 新增临时背景，或替换同一键的已有内容 | [第8章](#8-临时消息) |
