@@ -539,7 +539,7 @@ class SessionInboxDao:
             async with self._transaction() as db:
                 await db.execute(f"DELETE FROM {self.storage_scope.inbox_table} WHERE session_id=? AND status=? "
                              "AND kind IN (?,?,?)", (self.session_id, InboxStatus.PENDING.value, InboxKind.HUMAN.value,
-                                                     InboxKind.AGENT_COMMAND.value, InboxKind.PARENT_REPLY.value))
+                                                     InboxKind.AGENT_COMMAND.value))
 
         return await run_sqlite_save(save_attempt, timeout_seconds=SQLITE_SAVE_TIMEOUT_SECONDS)
 

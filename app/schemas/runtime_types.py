@@ -318,8 +318,6 @@ class InboxKind(str, Enum):
     PLUGIN_NOTIFICATION = "plugin_notification"
     AGENT_COMMAND = "agent_command"
     SUBAGENT = "subagent"
-    # 兼容已有数据库中的父回复记录；新父回复按普通 AGENT_COMMAND 交付。
-    PARENT_REPLY = "parent_reply"
 
 
 class InboxStatus(str, Enum):
