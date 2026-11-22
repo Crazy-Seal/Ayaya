@@ -1,3 +1,4 @@
+from dataclasses import asdict
 from tests.runtime_support import runtime_hub, close_test_runtime
 from app.routes.agent import observe_runtime
 from app.schemas.runtime_types import AgentRunOutcome, AgentRunOutcomeKind
@@ -30,7 +31,7 @@ from app.schemas.runtime_types import CommandReceipt, CommandStatus
 from app.interaction.interaction_contract import InteractionEvent
 from app.agent.state.messages import ToolCall
 from app.agent.tools.core.base import InterruptEvent
-from app.routes.agent import subscribe_events
+from app.routes.agent import subscribe_events, get_session_snapshot
 from app.routes import agent as agent_routes
 from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
 
@@ -184,7 +185,7 @@ def test_http_command_reaches_real_scheduler_and_sse_subscriber(tmp_path, delive
                 for frame in message.get("body", b"").decode().split("\n\n"):
                     if frame.startswith("data: "):
                         kind = json.loads(frame[6:])["kind"]
-                        if kind == "session_snapshot":
+                        if kind == "stream_ready":
                             snapshot_sent.set()
                         elif kind in {"run_completed", "error"}:
                             completed_sent.set()
@@ -192,9 +193,12 @@ def test_http_command_reaches_real_scheduler_and_sse_subscriber(tmp_path, delive
 
     with TestClient(observed_app) as client, ThreadPoolExecutor(max_workers=1) as pool:
         # 1. TestClient 缓存流响应；独立线程发起 GET，等待实际初始帧后再提交命令。
-        response_future = pool.submit(client.get, "/agent/events/s")
+        response_future = pool.submit(client.get, "/agent/events")
         try:
             assert snapshot_sent.wait(3), "SSE 未交付初始状态"
+            snapshot_response = client.get("/agent/snapshot/s")
+            assert snapshot_response.status_code == 200
+            assert snapshot_response.json()["payload"]["phase"] == "idle"
             response = client.post("/agent/commands", json={
                 "session_id": "s", "origin_channel": "desktop", "kind": "human_turn",
                 "payload": {"message": "你好"},
@@ -209,20 +213,21 @@ def test_http_command_reaches_real_scheduler_and_sse_subscriber(tmp_path, delive
     assert events_response.status_code == 200
     assert events_response.headers["content-type"].startswith("text/event-stream")
     frames = [json.loads(line[6:]) for line in events_response.iter_lines() if line.startswith("data: ")]
-    assert frames[0]["payload"]["phase"] == "idle"
-    assert frames[1]["run_id"] and frames[1]["run_id"] == frames[-1]["run_id"]
+    assert frames[0]["kind"] == "stream_ready"
+    frames = frames[1:]
+    assert frames[0]["run_id"] and frames[0]["run_id"] == frames[-1]["run_id"]
     assert len({frame["stream_epoch"] for frame in frames}) == 1
     if delivery_failure:
-        assert [frame["kind"] for frame in frames] == ["session_snapshot", "run_started", "error"]
+        assert [frame["kind"] for frame in frames] == ["run_started", "error"]
         assert frames[-1]["payload"]["save_failed"] is True
-        assert [frame["event_sequence"] for frame in frames] == [0, 1, 2]
+        assert [frame["event_sequence"] for frame in frames] == [1, 2]
     else:
         assert [frame["kind"] for frame in frames] == [
-            "session_snapshot", "run_started", "human_message", "text_chunk", "run_completed",
+            "run_started", "human_message", "text_chunk", "run_completed",
         ]
-        assert frames[2]["payload"]["message_id"]
-        assert frames[3]["payload"]["value"] == "收到：你好"
-        assert [frame["event_sequence"] for frame in frames] == list(range(5))
+        assert frames[1]["payload"]["message_id"]
+        assert frames[2]["payload"]["value"] == "收到：你好"
+        assert [frame["event_sequence"] for frame in frames] == list(range(1, 5))
 
 
 @pytest.mark.parametrize("origin,status,detail", [
@@ -315,14 +320,13 @@ def test_idle_sse_heartbeats_preserve_pending_event_and_close_source(monkeypatch
         subscriptions = ChannelSubscriptionService(SqliteFactory())
         hub = Hub(subscriptions=subscriptions)
         source = Source()
-        response = await subscribe_events("s", "desktop", hub, subscriptions, source)
+        response = await subscribe_events("desktop", hub, subscriptions)
         stream = response.body_iterator
         try:
-            # 1. 快照读取跨越心跳周期，心跳保持原查询和订阅缓冲有效。
+            # 1. 就绪帧之后空闲两次，心跳保持订阅缓冲有效。
+            assert json.loads((await anext(stream))[6:])["kind"] == "stream_ready"
             assert await asyncio.wait_for(anext(stream), 0.5) == ": ping\n\n"
             assert await asyncio.wait_for(anext(stream), 0.5) == ": ping\n\n"
-            release.set()
-            assert json.loads((await anext(stream))[6:])["kind"] == "session_snapshot"
             # 2. 快照后的增量仍从同一个订阅缓冲读取。
             hub.publish(InteractionEvent("s", "text_chunk", {"value": "继续"}))
             assert json.loads((await anext(stream))[6:])["kind"] == "text_chunk"
@@ -358,10 +362,12 @@ def test_approval_arguments_are_json_objects_in_increment_and_snapshot() -> None
                 return InteractionEvent(session_id, "session_snapshot", {"interrupt": approval},
                     stream_epoch=epoch, event_sequence=sequence)
 
-        response = await subscribe_events("s", "desktop", hub, subscriptions, Events())
+        response = await subscribe_events("desktop", hub, subscriptions)
         stream = response.body_iterator
         try:
-            frames = [json.loads((await anext(stream))[6:])]
+            assert json.loads((await anext(stream))[6:])["kind"] == "stream_ready"
+            from app.agent.state.messages import to_json_value
+            frames = [to_json_value(asdict(await get_session_snapshot("s", "desktop", hub, subscriptions, Events())))]
             hub.publish(InteractionEvent("s", "interrupt", {"value": approval}))
             frames.append(json.loads((await anext(stream))[6:]))
         finally:

@@ -1,6 +1,6 @@
 """通过持久输入、快照与生命周期入口验证退出后的执行意图作废。"""
 from tests.runtime_support import runtime_hub, close_test_runtime
-from app.routes.agent import observe_runtime
+from tests.runtime_event_source import observe_session
 from app.schemas.runtime_types import AgentRunOutcome, AgentRunOutcomeKind, CheckpointType
 from tests.runtime_support import next_runtime_event
 from tests.runtime_support import build_test_scheduler
@@ -594,7 +594,7 @@ def test_shutdown_captures_real_agent_partial_and_closes_subscription(tmp_path, 
         hub = runtime_hub(scheduler)
         pass
         await scheduler.start()
-        stream = observe_runtime("s", "desktop", hub, scheduler)
+        stream = observe_session("s", "desktop", hub, scheduler)
         await anext(stream)
         try:
             await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "新任务"}))

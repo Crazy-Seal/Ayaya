@@ -19,21 +19,21 @@ class InProcessInteractionAdapter:
     Attributes:
         channel (str): 当前测试渠道的固定标识。
         _command_handler (Callable[[ChannelCommand], Awaitable[CommandReceipt]]): 测试提供的命令处理函数。
-        _event_source (Callable[[str, str], AsyncIterator[InteractionEvent]]): 测试 EventHub 的订阅方法。
+        _event_source (Callable[[str], AsyncIterator]): 测试 EventHub 的订阅方法。
     """
 
     def __init__(
         self,
         channel: str,
         command_handler: Callable[[ChannelCommand], Awaitable[CommandReceipt]],
-        event_source: Callable[[str, str], AsyncIterator[InteractionEvent]],
+        event_source: Callable[[str], AsyncIterator],
     ) -> None:
         """保存测试渠道身份、命令处理函数和事件订阅方法。
 
         Args:
             channel (str): 当前测试渠道的固定标识。
             command_handler (Callable[[ChannelCommand], Awaitable[CommandReceipt]]): 测试提供的命令处理函数。
-            event_source (Callable[[str, str], AsyncIterator[InteractionEvent]]): 测试 EventHub 的订阅方法。
+            event_source (Callable[[str], AsyncIterator]): 测试 EventHub 的订阅方法。
         """
         self.channel = channel
         self._command_handler = command_handler
@@ -52,16 +52,13 @@ class InProcessInteractionAdapter:
             return CommandReceipt(CommandStatus.INVALID, detail="命令来源与 Adapter 渠道不匹配")
         return await self._command_handler(command)
 
-    def subscribe(self, session_id: str) -> AsyncIterator[InteractionEvent]:
-        """将会话编号和固定渠道身份交给测试 EventHub，取得事件迭代器。
-
-        Args:
-            session_id (str): 本次测试订阅的会话编号。
+    def subscribe(self) -> AsyncIterator:
+        """将固定渠道身份交给测试 EventHub，取得所有会话的事件迭代器。
 
         Returns:
-            AsyncIterator[InteractionEvent]: 测试 EventHub 提供的当前状态及后续事件。
+            AsyncIterator: 测试 EventHub 提供的就绪帧及后续事件。
         """
-        return self._event_source(session_id, self.channel)
+        return self._event_source(self.channel)
 
 
 def test_event_hub_routes_only_to_desktop_and_origin() -> None:
@@ -76,13 +73,13 @@ def test_event_hub_routes_only_to_desktop_and_origin() -> None:
         pass
         subscriptions.register_channel("qq")
         subscriptions.register_channel("telegram")
-        desktop = observe_runtime("shared", "desktop", hub, source)
-        qq = observe_runtime("shared", "qq", hub, source)
-        telegram = observe_runtime("shared", "telegram", hub, source)
+        desktop = observe_runtime("desktop", hub)
+        qq = observe_runtime("qq", hub)
+        telegram = observe_runtime("telegram", hub)
         # 2. 核对公开结果和持久状态，确保场景中的输入、通知或副作用未重复。
-        assert (await anext(desktop)).kind == "session_snapshot"
-        assert (await anext(qq)).kind == "session_snapshot"
-        assert (await anext(telegram)).kind == "session_snapshot"
+        assert (await anext(desktop)).kind == "stream_ready"
+        assert (await anext(qq)).kind == "stream_ready"
+        assert (await anext(telegram)).kind == "stream_ready"
 
         await source.publish(InteractionEvent(
             session_id="shared", kind="human_message_committed",
@@ -134,10 +131,10 @@ def test_in_process_adapter_uses_shared_command_and_event_contract() -> None:
             ))
             return CommandReceipt(CommandStatus.ACCEPTED)
 
-        adapter: InteractionAdapter = InProcessInteractionAdapter("test", submit, lambda session, channel: observe_runtime(session, channel, hub, source))
-        events = adapter.subscribe("s")
+        adapter: InteractionAdapter = InProcessInteractionAdapter("test", submit, lambda channel: observe_runtime(channel, hub))
+        events = adapter.subscribe()
         # 2. 核对公开结果和持久状态，确保场景中的输入、通知或副作用未重复。
-        assert (await anext(events)).kind == "session_snapshot"
+        assert (await anext(events)).kind == "stream_ready"
         wrong = await adapter.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "x"}))
         assert not wrong.accepted and not commands
         accepted = await adapter.submit(ChannelCommand("s", "test", "human_turn", {"message": "你好"}))
@@ -160,10 +157,10 @@ def test_slow_subscriber_reconnects_from_snapshot_watermark() -> None:
         hub = InteractionEventHub(subscriptions=subscriptions, queue_size=1)
         source = EventSource(hub)
         pass
-        stream = observe_runtime("s", "desktop", hub, source)
+        stream = observe_runtime("desktop", hub)
         initial = await anext(stream)
         # 2. 核对公开结果和持久状态，确保场景中的输入、通知或副作用未重复。
-        assert initial.event_sequence == 0
+        assert initial.kind == "stream_ready"
         await source.publish(InteractionEvent("s", "text_chunk", {"value": "a"}))
         await source.publish(InteractionEvent("s", "text_chunk", {"value": "b"}))
         try:
@@ -172,10 +169,11 @@ def test_slow_subscriber_reconnects_from_snapshot_watermark() -> None:
             pass
         else:
             raise AssertionError("慢订阅者应断开并从快照恢复")
-        replacement = observe_runtime("s", "desktop", hub, source)
-        snapshot = await anext(replacement)
+        replacement = observe_runtime("desktop", hub)
+        ready = await anext(replacement)
+        snapshot = await source.snapshot("s")
         assert snapshot.kind == "session_snapshot"
-        assert snapshot.stream_epoch == initial.stream_epoch
+        assert snapshot.stream_epoch == ready.stream_epoch == initial.stream_epoch
         assert snapshot.event_sequence == 2
         await replacement.aclose()
         await hub.close()

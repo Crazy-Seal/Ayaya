@@ -11,7 +11,7 @@ import path from "node:path";
 import { FRONTEND_SETTINGS_PATH } from "./config.js";
 import { readFrontendSettings, saveFrontendSettings } from "./frontend-settings-store.js";
 import { backendFetch } from "./backend-client.js";
-import { submitInteractionCommand, subscribeDesktopSession } from "./interaction-adapter.js";
+import { submitInteractionCommand, initializeDesktopSession, ensureDesktopStream } from "./interaction-adapter.js";
 import type { ChannelCommand, ChatAttentionUpdate } from "../shared-types.js";
 import { DESKTOP_CHANNEL } from "../shared-types.js";
 import type {
@@ -883,9 +883,8 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
    *     value (ChatAttentionUpdate | null): 去重后的提醒变化。
    */
   (event, value: ChatAttentionUpdate | null) => {
-    if (BrowserWindow.fromWebContents(event.sender) !== getChatWindow() || !value || typeof value !== "object") return;
-    const update: ChatAttentionUpdate = { newMessage: value.newMessage === true, reset: value.reset === true };
-    if (value.approvalId === null || (typeof value.approvalId === "string" && value.approvalId.length <= 256)) update.approvalId = value.approvalId;
+    if (BrowserWindow.fromWebContents(event.sender) !== getChatWindow() || !value || typeof value !== "object" || typeof value.sessionId !== "string") return;
+    const update: ChatAttentionUpdate = { sessionId: value.sessionId, newMessage: value.newMessage === true, viewed: value.viewed === true };
     updateChatAttention(update);
   });
   trustedIpc.handle(IpcChannel.GET_ACTIVE_TASK_SUMMARY, /**
@@ -1108,16 +1107,17 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
     if (command.origin_channel !== DESKTOP_CHANNEL) throw new Error("桌面入口不能冒用其他渠道");
     return await submitInteractionCommand(command);
   });
-  trustedIpc.handle(IpcChannel.SUBSCRIBE_DESKTOP_SESSION, /**
-   * 桌面页订阅会话时建立或复用事件连接，新页面请求刷新则等待新快照。
+  trustedIpc.handle(IpcChannel.ENSURE_DESKTOP_STREAM, /** 等待应用全局事件连接就绪。 */
+  async () => { await ensureDesktopStream(); });
+  trustedIpc.handle(IpcChannel.INITIALIZE_DESKTOP_SESSION, /**
+   * 为聊天页面初始化当前会话，等待快照及查询期间的增量转发。
    *
    * Args:
    *     _event (IpcMainInvokeEvent): Electron 传入的事件对象，不作为业务载荷使用。
    *     sessionId (string): 当前操作所属的会话编号。
-   *     options ({ refreshSnapshot?: boolean }): 调用方提供的配置或运行选项。
    */
-  async (_event, sessionId: string, options?: { refreshSnapshot?: boolean }) => {
-    await subscribeDesktopSession(sessionId, { refreshSnapshot: options?.refreshSnapshot === true });
+  async (_event, sessionId: string) => {
+    await initializeDesktopSession(sessionId);
   });
 
   // 获取前端设置

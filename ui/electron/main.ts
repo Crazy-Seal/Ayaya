@@ -19,7 +19,7 @@ import {
 } from "./window-manager.js";
 import { startCursorTracking, stopCursorTracking } from "./cursor-tracker.js";
 import { registerIpcHandlers } from "./ipc-handlers.js";
-import { stopDesktopSession } from "./interaction-adapter.js";
+import { startDesktopStream, stopDesktopSession } from "./interaction-adapter.js";
 import { clearChatSettingsCache } from "./chat-settings.js";
 import { initAyayaImageProtocolHandler } from "./ayaya-image-protocol.js";
 import {
@@ -206,6 +206,7 @@ async () => {
   // 1. 用户可能在后端启动等待时确认退出，启动成功也不能再创建窗口或订阅。
   if (applicationShutdownCoordinator.isShuttingDown()) return;
   appendFrontendLog("info", "startup", "后端已就绪");
+  startDesktopStream();
   // 创建主窗口
   const mainWindow = createMainWindow();
   mainWindow.once("closed", requestApplicationShutdown);

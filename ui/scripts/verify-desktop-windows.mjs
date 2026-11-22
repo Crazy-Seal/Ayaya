@@ -74,7 +74,7 @@ const history = [
  */
 const event = (kind, payload, extra = {}) => ({
   kind, payload, session_id: currentSession, stream_epoch: "desktop-test",
-  event_sequence: sequence++, origin_channel: "desktop", ...extra,
+  event_sequence: ++sequence, origin_channel: "desktop", ...extra,
 });
 
 /**
@@ -106,23 +106,27 @@ async (input, init = {}) => {
   const route = url.pathname;
   requests.push(route);
   if (route === "/internal/ready") return json({ ready: true, pid: process.pid });
-  if (route.startsWith("/agent/events/")) {
+  if (route === "/agent/events") {
     subscriptions++;
-    currentSession = decodeURIComponent(route.split("/").at(-1));
     return new Response(new ReadableStream({
       /**
-       * 实际订阅建立后先交付快照，后续事件由 emit 推送。
+       * 全局订阅登记后先发送就绪，后续会话事件由 emit 推送。
        * Args:
        *     controller (ReadableStreamDefaultController): 本次流控制器。
        */
       start(controller) {
         stream = controller;
-        emit(event("session_snapshot", { phase: "idle", queued_inputs: [], tasks: [], interrupt: null,
-          ...(process.argv.includes("--subagents") ? { subagents } : {}) }));
+        emit({ kind: "stream_ready", stream_epoch: "desktop-test" });
         init.signal?.addEventListener("abort", /** 取消订阅只关闭测试流，不访问任何后台进程。 */
         () => { try { controller.close(); } catch { /* 流可能已经关闭。 */ } }, { once: true });
       },
     }), { headers: { "Content-Type": "text/event-stream" } });
+  }
+  if (route.startsWith("/agent/snapshot/")) {
+    currentSession = decodeURIComponent(route.split("/").at(-1));
+    return json({ kind: "session_snapshot", session_id: currentSession, stream_epoch: "desktop-test", event_sequence: sequence,
+      payload: { phase: "idle", queued_inputs: [], tasks: [], interrupt: null,
+        ...(process.argv.includes("--subagents") ? { subagents } : {}) } });
   }
   if (route.startsWith("/chat_history")) return json({ code: 200, data: history });
   if (route === "/chat_settings" && init.method === "POST") { settings = JSON.parse(init.body); return json({ code: 200, data: settings }); }
@@ -320,8 +324,8 @@ try {
     await waitFor(chat, "!document.getElementById('plugin-status-notices').hidden");
     stream.close();
     await waitFor(chat, "document.getElementById('plugin-status-notices').hidden");
-    for (let attempt = 0; attempt < 40 && subscriptions < 2; attempt += 1) await pause(100);
-    assert.ok(subscriptions >= 2);
+    for (let attempt = 0; attempt < 40 && requests.filter((route) => route.startsWith("/agent/snapshot/")).length < 2; attempt += 1) await pause(100);
+    assert.equal(subscriptions, 1);
     await waitFor(chat, "!document.getElementById('send-btn').disabled");
     assert.equal(await chat.webContents.executeJavaScript("document.getElementById('plugin-status-notices').hidden"), true);
     emit(event(InteractionEventKind.STATUS_NOTICE, { ...notice, text: "新连接开始的任务" }));

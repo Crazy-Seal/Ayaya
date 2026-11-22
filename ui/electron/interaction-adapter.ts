@@ -1,12 +1,12 @@
 /** 桌面交互 Adapter：提交统一命令，将订阅控制器的事件转发给窗口。 */
 import { IpcChannel } from "../ipc-channels.js";
 import { backendFetch } from "./backend-client.js";
-import { getChatWindow, getSettingsWindow } from "./window-manager.js";
+import { getChatWindow, getSettingsWindow, beginChatView, invalidateChatView, receiveChatEvent } from "./window-manager.js";
 import { appendFrontendLog } from "./logging/app-logger.js";
 import { DesktopSessionController } from "./desktop-session-controller.js";
 import { refreshExternalBackendIdentity, checkExternalBackendExit } from "./backend-process.js";
 import type {
-  ChannelCommand, CommandReceipt, DesktopSessionSubscriptionOptions, InteractionEvent,
+  ChannelCommand, CommandReceipt, InteractionEvent,
 } from "../shared-types.js";
 
 /**
@@ -36,21 +36,24 @@ const logDesktopStream = (level: "info" | "warn", message: string, error?: unkno
 const desktopSession = new DesktopSessionController({
   fetchBackend: backendFetch,
   deliverEvent: deliverDesktopEvent,
+  observeEvent: receiveChatEvent,
   log: logDesktopStream,
   /** 每次连接前刷新外部后端进程身份，迟到请求受订阅取消信号约束。 */
   onConnected: (signal) => refreshExternalBackendIdentity(signal),
   /**
    * 断线时检查已连接的外部后端进程，并通知聊天页结束本连接的提示显示。
-   *
-   * Args:
-   *     sessionId (string): 已由订阅控制器核对归属的会话编号。
    */
-  onDisconnected: (sessionId) => {
+  onDisconnected: () => {
+    invalidateChatView();
     checkExternalBackendExit();
     const chatWindow = getChatWindow();
     if (chatWindow && !chatWindow.isDestroyed()) {
-      chatWindow.webContents.send(IpcChannel.INTERACTION_DISCONNECTED, sessionId);
+      chatWindow.webContents.send(IpcChannel.INTERACTION_DISCONNECTED);
     }
+  },
+  /** 自动重连的快照失败送达当前聊天页面。 */
+  onSnapshotError: (sessionId, error) => {
+    getChatWindow()?.webContents.send(IpcChannel.INTERACTION_SNAPSHOT_FAILED, { sessionId, detail: String(error) });
   },
 });
 
@@ -71,21 +74,25 @@ export const submitInteractionCommand = async (command: ChannelCommand): Promise
   return await response.json() as CommandReceipt;
 };
 
-/**
- * 建立或复用桌面会话订阅，新页面要求刷新时等待新的快照。
- *
- * Args:
- *     sessionId (string): 共享 Ayaya 会话标识。
- *     options (DesktopSessionSubscriptionOptions): 新页面的刷新要求，普通发送可省略。
- *
- * Returns:
- *     Promise<void>: 当前连接首次快照已转发，或旧连接被取消。
- */
-export const subscribeDesktopSession = (
-  sessionId: string, options?: DesktopSessionSubscriptionOptions,
-): Promise<void> => desktopSession.subscribe(sessionId, options);
+/** 后端就绪后启动应用拥有的唯一桌面事件流。 */
+export const startDesktopStream = (): void => desktopSession.start();
 
-/**
- *  停止当前展示连接，释放快照和重试等待，不停止 Agent。
+/** 等待后端登记全局订阅，供用户提交命令前复用。
+ * Returns:
+ *     Promise<void>: 当前全局连接已就绪。
  */
+export const ensureDesktopStream = (): Promise<void> => desktopSession.ensureReady();
+
+/** 为当前页面查询快照并衔接查询期间的会话事件。
+ * Args:
+ *     sessionId (string): 当前页面选择展示的主会话。
+ * Returns:
+ *     Promise<void>: 快照和缓冲事件已经转发，或页面已经切换。
+ */
+export const initializeDesktopSession = (sessionId: string): Promise<void> => {
+  beginChatView(sessionId);
+  return desktopSession.initializeSession(sessionId);
+};
+
+/** 应用退出时释放全局连接和当前快照查询。 */
 export const stopDesktopSession = (): void => desktopSession.stop();

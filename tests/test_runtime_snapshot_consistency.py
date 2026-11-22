@@ -1,6 +1,6 @@
 """用公开事件流验证状态查询和增量交付的并发顺序。"""
 from tests.runtime_support import runtime_hub, close_test_runtime
-from app.routes.agent import observe_runtime
+from tests.runtime_event_source import observe_session
 from app.schemas.runtime_types import AgentRunOutcome, AgentRunOutcomeKind, CheckpointType
 from tests.runtime_support import build_test_scheduler
 from app.crud.sqlite_factory import SqliteFactory
@@ -40,7 +40,7 @@ def test_snapshot_failure_or_cancellation_allows_reconnection(cancelled: bool) -
         try:
             for _ in range(3):
                 source.snapshot_entered.clear()
-                stream = observe_runtime("s", "desktop", hub, source)
+                stream = observe_session("s", "desktop", hub, source)
                 waiting = asyncio.create_task(anext(stream))
                 await asyncio.wait_for(source.snapshot_entered.wait(), 1)
                 if cancelled:
@@ -53,7 +53,7 @@ def test_snapshot_failure_or_cancellation_allows_reconnection(cancelled: bool) -
                 await stream.aclose()
             source.fail_snapshot = False
             source.release_snapshot = None
-            recovered = observe_runtime("s", "desktop", hub, source)
+            recovered = observe_session("s", "desktop", hub, source)
             try:
                 assert (await anext(recovered)).payload["phase"] == "idle"
                 await source.publish(InteractionEvent("s", "text_chunk", {"value": "恢复后输出"}))
@@ -177,8 +177,8 @@ def test_event_during_inbox_query_reaches_old_and_new_connection(
         hub = runtime_hub(scheduler)
         await scheduler.start()
         pass
-        old = observe_runtime("s", "desktop", hub, scheduler)
-        new = observe_runtime("s", "desktop", hub, scheduler)
+        old = observe_session("s", "desktop", hub, scheduler)
+        new = observe_session("s", "desktop", hub, scheduler)
         waiting = None
         try:
             await anext(old)
@@ -222,7 +222,7 @@ def test_event_already_reflected_in_snapshot_is_not_delivered_again() -> None:
         source = EventSource(InteractionEventHub(subscriptions=ChannelSubscriptionService(SqliteFactory())))
         await source.publish(InteractionEvent("s", "text_chunk", {"value": "状态之前"}))
         hub = source.hub
-        stream = observe_runtime("s", "desktop", hub, source)
+        stream = observe_session("s", "desktop", hub, source)
         try:
             assert (await anext(stream)).event_sequence == 1
             pass

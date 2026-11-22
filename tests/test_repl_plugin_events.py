@@ -10,7 +10,7 @@ from app.agent.state.manager import SessionStateManager
 from app.crud.sqlite_factory import SqliteFactory
 from app.crud.task_record_dao import TaskRecordDao
 from app.repl.repl_service import ReplService
-from app.routes.agent import observe_runtime
+from tests.runtime_event_source import observe_session
 from app.services.repl_plugin_events import create_repl_plugin_event_handler
 from tests.runtime_support import build_test_scheduler, close_test_runtime, configured_settings, runtime_hub
 from tests.test_repl_service import capability_context
@@ -44,7 +44,7 @@ def test_repl_capability_notices_keep_source_and_close_on_every_exit(tmp_path, e
         scheduler = build_test_scheduler(runtime_queue=queue, task_supervisor=supervisor,
             chat_settings_dao=configured_settings("capability"), agent_factory=unexpected_agent,
             session_state_manager_factory=lambda session: SessionStateManager(session, sqlite))
-        observer = observe_runtime("capability", "desktop", runtime_hub(scheduler), scheduler)
+        observer = observe_session("capability", "desktop", runtime_hub(scheduler), scheduler)
         service = ReplService(workdir=tmp_path, execution_timeout=1,
                               on_event=create_repl_plugin_event_handler(supervisor, queue))
         manager = SessionStateManager("capability", sqlite)

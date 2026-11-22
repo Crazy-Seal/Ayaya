@@ -645,14 +645,15 @@ export type ImportPreview = {
 };
 
 /**
- * 指定桌面页面是否需要新的初始化快照，不改变后端事件协议。
+ * 标识全局订阅已登记，可以开始查询当前会话快照。
  *
  * Attributes:
- *     refreshSnapshot (boolean | undefined): 新页面传 true，普通命令省略以复用连接。
+ *     READY (string): 后端登记完成的连接控制帧类别。
  */
-export interface DesktopSessionSubscriptionOptions {
-  refreshSnapshot?: boolean;
-}
+export const InteractionStreamControlKind = { READY: "stream_ready" } as const;
+
+/** 后端登记全局订阅后发送的连接控制帧。 */
+export type InteractionStreamReady = { kind: typeof InteractionStreamControlKind.READY; stream_epoch: string };
 
 /**
  * 约定页面可通过 preload 调用的桌面接口，统一聊天、设置、模型、日志和事件订阅能力。
@@ -719,16 +720,17 @@ export interface DesktopPetApi {
    */
   submitInteractionCommand: (command: ChannelCommand) => Promise<CommandReceipt>;
   /**
-   * 建立或复用桌面会话事件订阅。
+   * 初始化当前会话视图，复用应用的全局事件流。
    *
    * Args:
    *     sessionId (string): 共享会话标识。
-   *     options (DesktopSessionSubscriptionOptions | undefined): 新页面传入刷新选项，普通发送省略以复用连接。
    *
    * Returns:
    *     Promise<void>: 首次会话快照到达后完成。
    */
-  subscribeDesktopSession: (sessionId: string, options?: DesktopSessionSubscriptionOptions) => Promise<void>;
+  initializeDesktopSession: (sessionId: string) => Promise<void>;
+  /** 等待后端确认全局订阅已登记。 */
+  ensureDesktopStream: () => Promise<void>;
   /**
    * 注册当前 Renderer 的统一事件监听。
    *
@@ -740,15 +742,17 @@ export interface DesktopPetApi {
    */
   onInteractionEvent: (callback: (event: InteractionEvent) => void) => () => void;
   /**
-   * 监听当前订阅断线，让聊天页清空连接内的持续提示。
+   * 监听全局连接断线，让聊天页清理持续提示并等待状态恢复。
    *
    * Args:
-   *     callback ((sessionId: string) => void): 接收断线所属会话编号的页面回调。
+   *     callback (() => void): 接收全局断线的页面回调。
    *
    * Returns:
    *     () => void: 移除本次监听的函数。
    */
-  onInteractionDisconnected: (callback: (sessionId: string) => void) => () => void;
+  onInteractionDisconnected: (callback: () => void) => () => void;
+  /** 接收重连后当前会话的快照查询失败。 */
+  onInteractionSnapshotFailed: (callback: (failure: { sessionId: string; detail: string }) => void) => () => void;
   selectImages: () => Promise<Array<{ path: string; dataUrl: string }> | null>;
   setMousePassthrough: (enabled: boolean) => void;
   setPointerInteractive: (enabled: boolean) => void;
@@ -919,11 +923,11 @@ export interface DesktopPetApi {
 /**
  * 表示聊天页经过事件去重后提交的窗口提醒变化。
  * Attributes:
- *     newMessage (boolean | undefined): 本次出现新的回复正文。
- *     approvalId (string | null | undefined): 当前待审批请求，null 表示已处理。
- *     reset (boolean | undefined): 会话切换时清除上一会话提醒。
+ *     sessionId (string): 页面本次报告所对应的主会话。
+ *     newMessage (boolean | undefined): 历史恢复时发现新的回复正文。
+ *     viewed (boolean | undefined): 当前会话的历史和状态已经展示完成。
  */
-export type ChatAttentionUpdate = { newMessage?: boolean; approvalId?: string | null; reset?: boolean };
+export type ChatAttentionUpdate = { sessionId: string; newMessage?: boolean; viewed?: boolean };
 
 /** 当前应用窗口标题栏移动或八个边缘方向的缩放，不接受页面提供的窗口坐标。 */
 export type WindowGesture = "move" | "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";

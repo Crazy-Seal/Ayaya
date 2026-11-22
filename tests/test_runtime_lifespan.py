@@ -52,9 +52,9 @@ def test_shutdown_request_ends_existing_sse_before_lifespan_cleanup(tmp_path):
         try:
             await scheduler.start()
             pass
-            response = await subscribe_events("s", "desktop", hub, subscriptions, scheduler)
+            response = await subscribe_events("desktop", hub, subscriptions)
             stream = response.body_iterator
-            assert "session_snapshot" in await anext(stream)
+            assert "stream_ready" in await anext(stream)
             assert (await main.internal_shutdown(Request({"type": "http", "app": application}))).shutting_down
             assert application.state.uvicorn_server.should_exit
             with pytest.raises(StopAsyncIteration):

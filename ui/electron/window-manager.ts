@@ -1,6 +1,7 @@
 /**
  * Electron 窗口管理
  */
+import { ChatAttention } from "./chat-attention.js";
 import { IpcChannel } from "../ipc-channels.js";
 
 import { app, BrowserWindow, screen } from "electron";
@@ -17,7 +18,7 @@ import {
   LOG_WINDOW_MIN_WIDTH,
   LOG_WINDOW_MIN_HEIGHT,
 } from "./config.js";
-import type { LogBatch, ChatAttentionUpdate, WindowGesture } from "../shared-types.js";
+import type { LogBatch, ChatAttentionUpdate, InteractionEvent, WindowGesture } from "../shared-types.js";
 import { WINDOW_PALETTE } from "../window-palette.js";
 import { WindowGestureController } from "./window-gesture.js";
 import { applicationOperations } from "./application-operations.js";
@@ -122,8 +123,8 @@ const windowGestures = new Map<BrowserWindow, WindowGestureController>();
 const activeWindowGestures = new Set<BrowserWindow>();
 let requestedPetInteractive = false;
 let appliedPetInteractive = false;
-let unread = false;
-let approvalId: string | null = null;
+const chatAttention = new ChatAttention();
+let flashing = false;
 let modelError: string | null = null;
 
 /**
@@ -231,28 +232,43 @@ export const beginWindowShutdown = (): void => {
  */
 const refreshChatTitle = (): void => {
   if (!chatWindow || chatWindow.isDestroyed()) return;
-  chatWindow.setTitle(approvalId ? "Ayaya · 等待审批" : unread ? "Ayaya · 有新消息" : "Ayaya 聊天");
+  const summary = chatAttention.summary();
+  chatWindow.setTitle(summary.approval ? "Ayaya · 等待审批" : summary.unread ? "Ayaya · 有新消息" : "Ayaya 聊天");
+  if (flashing !== summary.flash) { flashing = summary.flash; chatWindow.flashFrame(flashing); }
 };
 
 /**
- * 接收已经通过会话和事件水位检查的提醒，不主动显示或聚焦窗口。
+ * 当前会话开始读取快照，其他会话的提醒继续保留。
  * Args:
- *     update (ChatAttentionUpdate): 当前回复或审批变化。
+ *     sessionId (string): 聊天页面准备展示的会话编号。
+ */
+export const beginChatView = (sessionId: string): void => {
+  chatAttention.beginView(sessionId); refreshChatTitle();
+};
+
+/** 全局断线后等待页面重新展示当前会话。 */
+export const invalidateChatView = (): void => {
+  chatAttention.invalidateView(); refreshChatTitle();
+};
+
+/**
+ * 在向聊天页面转发前接收所有会话的实时提醒事实。
+ * Args:
+ *     event (InteractionEvent): 全局流收到的会话事件或按需查询的快照。
+ */
+export const receiveChatEvent = (event: InteractionEvent): void => {
+  chatAttention.setFocused(!!chatWindow && chatWindow.isFocused() && !chatWindow.isMinimized());
+  chatAttention.receive(event); refreshChatTitle();
+};
+
+/**
+ * 接收页面已展示当前会话及历史恢复发现新回复的事实。
+ * Args:
+ *     update (ChatAttentionUpdate): 页面报告的会话编号、展示完成状态及新回复。
  */
 export const updateChatAttention = (update: ChatAttentionUpdate): void => {
-  if (!chatWindow || chatWindow.isDestroyed()) return;
-  // 1. 会话切换只清除旧会话的窗口提醒，不提交停止或审批命令。
-  if (update.reset) { unread = false; approvalId = null; chatWindow.flashFrame(false); }
-  // 2. 回复正文到达但用户未查看时记录未读，连续分片不会累计多个提示。
-  if (update.newMessage && (!chatWindow.isFocused() || chatWindow.isMinimized())) unread = true;
-  // 3. 同一审批编号只启动一次闪烁；处理完成后关闭闪烁但不改变窗口可见状态。
-  if (update.approvalId !== undefined) {
-    const changed = update.approvalId !== approvalId;
-    approvalId = update.approvalId;
-    if (!approvalId) chatWindow.flashFrame(false);
-    else if (changed && (!chatWindow.isFocused() || chatWindow.isMinimized())) chatWindow.flashFrame(true);
-  }
-  refreshChatTitle();
+  chatAttention.setFocused(!!chatWindow && chatWindow.isFocused() && !chatWindow.isMinimized());
+  chatAttention.report(update); refreshChatTitle();
 };
 
 /**
@@ -341,8 +357,10 @@ export const openChatWindow = (): BrowserWindow => {
     persist();
     if (!applicationOperations.isShuttingDown()) { event.preventDefault(); win.minimize(); }
   });
-  win.on("focus", /** 恢复焦点后清除普通未读和闪烁，待审批标题保留至处理完成。 */
-  () => { unread = false; win.flashFrame(false); refreshChatTitle(); });
+  win.on("focus", /** 当前会话已展示完成时，获得焦点清除其普通未读。 */
+  () => { chatAttention.setFocused(true); refreshChatTitle(); });
+  win.on("blur", /** 失去焦点后保留后续回复提醒。 */
+  () => { chatAttention.setFocused(false); refreshChatTitle(); });
   /** 显示器工作区变化后修正离屏位置，保留用户最小化状态。 */
   const fitToDisplay = (): void => {
     if (win.isDestroyed()) return;

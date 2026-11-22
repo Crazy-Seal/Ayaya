@@ -1,7 +1,7 @@
 from tests.runtime_support import make_execution_control
 """从公共输入输出接口验证单向事件读取与多连接分发。"""
 from tests.runtime_support import runtime_hub, close_test_runtime
-from app.routes.agent import observe_runtime
+from tests.runtime_event_source import observe_session
 from app.schemas.runtime_types import AgentRunOutcome, AgentRunOutcomeKind
 from tests.runtime_support import next_runtime_event
 from tests.runtime_support import build_test_scheduler
@@ -78,8 +78,8 @@ def test_receipt_does_not_reserve_run_and_hub_fans_out(tmp_path) -> None:
         hub = runtime_hub(scheduler)
         await scheduler.start()
         pass
-        first = observe_runtime("s", "desktop", hub, scheduler)
-        second = observe_runtime("s", "desktop", hub, scheduler)
+        first = observe_session("s", "desktop", hub, scheduler)
+        second = observe_session("s", "desktop", hub, scheduler)
         try:
             assert (await anext(first)).payload["phase"] == "idle"
             await anext(second)

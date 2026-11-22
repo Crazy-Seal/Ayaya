@@ -1,9 +1,55 @@
 """为 Hub 的公开读取接口提供可控制事件源，不启动模型或数据库。"""
 
 import asyncio
+from collections.abc import AsyncIterator
+from typing import Protocol
 from dataclasses import replace
 
 from app.interaction.interaction_contract import InteractionEvent
+from app.interaction.interaction_event_hub import InteractionEventHub
+from app.routes.agent import observe_runtime
+
+
+class SnapshotSource(Protocol):
+    """提供测试客户端恢复当前会话所需的状态查询。"""
+
+    async def snapshot(self, session_id: str) -> InteractionEvent:
+        """取得待展示会话的快照。
+
+        Args:
+            session_id (str): 测试客户端选择展示的主会话。
+
+        Returns:
+            InteractionEvent: 带输出水位的会话快照。
+        """
+        ...
+
+
+async def observe_session(session_id: str, channel: str, hub: InteractionEventHub,
+                          source: SnapshotSource) -> AsyncIterator[InteractionEvent]:
+    """模拟客户端连接全局流后查询当前快照，再衔接该会话增量。
+
+    Args:
+        session_id (str): 测试客户端正在展示的主会话。
+        channel (str): 观察渠道。
+        hub (InteractionEventHub): 真实的全局事件分发对象。
+        source (SnapshotSource): 调度器或可控快照源。
+
+    Yields:
+        InteractionEvent: 当前会话快照和后续可见事件。
+    """
+    stream = observe_runtime(channel, hub)
+    try:
+        await anext(stream)
+        snapshot = hub.visible_snapshot(await source.snapshot(session_id), channel)
+        yield snapshot
+        sequence = snapshot.event_sequence
+        async for event in stream:
+            if isinstance(event, InteractionEvent) and event.session_id == session_id and event.event_sequence > sequence:
+                sequence = event.event_sequence
+                yield event
+    finally:
+        await stream.aclose()
 
 
 class EventSource:

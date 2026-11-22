@@ -2,7 +2,7 @@ from tests.memory_support import memory_count, set_memory_count
 """验证输入提交事实、原子交付，以及生成器关闭和取消时的执行顺序。"""
 from tests.runtime_support import collect_agent_events
 from tests.runtime_support import runtime_hub, close_test_runtime
-from app.routes.agent import observe_runtime
+from tests.runtime_event_source import observe_session
 from tests.runtime_support import build_test_scheduler
 from app.crud.sqlite_factory import SqliteFactory
 
@@ -371,7 +371,7 @@ def test_hub_preserves_human_payload_before_blocked_on_invoke(tmp_path, with_ima
         hub = runtime_hub(scheduler)
         await scheduler.start()
         pass
-        stream = observe_runtime("s", "desktop", hub, scheduler)
+        stream = observe_session("s", "desktop", hub, scheduler)
         observer = SessionStateManager("s", SqliteFactory(path))
         try:
             await anext(stream)

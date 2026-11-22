@@ -43,7 +43,9 @@ async () => {
      * Returns:
      *     Promise<void>: 当前异步处理完成的等待结果。
      */
-    subscribeDesktopSession: async (_sessionId: string) => {},
+    ensureDesktopStream: async () => {},
+    onInteractionSnapshotFailed: () => () => {},
+    initializeDesktopSession: async (_sessionId: string) => {},
     onInteractionDisconnected: subscribeWithoutDisconnect,
     /**
      * 保存事件注入回调，并返回测试清理占位函数。
@@ -288,7 +290,9 @@ async () => {
          * Returns:
          *     Promise<void>: 当前异步处理完成的等待结果。
          */
-        subscribeDesktopSession: async () => {},
+        ensureDesktopStream: async () => {},
+    onInteractionSnapshotFailed: () => () => {},
+    initializeDesktopSession: async () => {},
         onInteractionDisconnected: subscribeWithoutDisconnect,
         /**
          * 保存事件注入回调，并返回测试清理占位函数。
@@ -472,7 +476,9 @@ async () => {
          * Returns:
          *     Promise<void>: 当前异步处理完成的等待结果。
          */
-        subscribeDesktopSession: async () => {},
+        ensureDesktopStream: async () => {},
+    onInteractionSnapshotFailed: () => () => {},
+    initializeDesktopSession: async () => {},
         onInteractionDisconnected: subscribeWithoutDisconnect,
         /**
          * 保存事件注入回调，并返回测试清理占位函数。
@@ -692,7 +698,9 @@ async () => {
          * Returns:
          *     Promise<void>: 当前异步处理完成的等待结果。
          */
-        subscribeDesktopSession: async () => {},
+        ensureDesktopStream: async () => {},
+    onInteractionSnapshotFailed: () => () => {},
+    initializeDesktopSession: async () => {},
         onInteractionDisconnected: subscribeWithoutDisconnect,
         /**
          * 保存事件注入回调，并返回测试清理占位函数。
@@ -874,7 +882,9 @@ async () => {
          * Returns:
          *     Promise<void>: 当前异步处理完成的等待结果。
          */
-        subscribeDesktopSession: async () => {},
+        ensureDesktopStream: async () => {},
+    onInteractionSnapshotFailed: () => () => {},
+    initializeDesktopSession: async () => {},
         onInteractionDisconnected: subscribeWithoutDisconnect,
         /**
          * 保存事件注入回调，并返回测试清理占位函数。

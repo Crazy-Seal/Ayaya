@@ -17,7 +17,6 @@ INTERACTION_SUBSCRIBER_QUEUE_SIZE = 256
 class InteractionSubscription:
     """持有一个连接的缓冲，结束连接只影响本连接的观察。"""
 
-    session_id: str
     channel: str
     queue: asyncio.Queue[InteractionEvent | None]
 
@@ -43,7 +42,7 @@ class InteractionEventHub:
         if queue_size < 1:
             raise ValueError("订阅队列容量必须为正数")
         self._subscriptions, self._queue_size = subscriptions, queue_size
-        self._subscribers: dict[tuple[str, str], set[InteractionSubscription]] = defaultdict(set)
+        self._subscribers: dict[str, set[InteractionSubscription]] = defaultdict(set)
         self._epoch = uuid4().hex
         self._sequences: dict[str, int] = defaultdict(int)
         self._closed = False
@@ -59,6 +58,15 @@ class InteractionEventHub:
         """
         return self._epoch, self._sequences[session_id]
 
+    @property
+    def stream_epoch(self) -> str:
+        """取得全局连接就绪时使用的后端启动身份。
+
+        Returns:
+            str: 当前后端的事件编号命名空间。
+        """
+        return self._epoch
+
     def publish(self, event: InteractionEvent) -> InteractionEvent:
         """同步编号并投递可见连接，连接溢出时只结束该连接。
 
@@ -70,10 +78,10 @@ class InteractionEventHub:
         """
         self._sequences[event.session_id] += 1
         event = replace(event, stream_epoch=self._epoch, event_sequence=self._sequences[event.session_id])
-        for (session_id, channel), subscribers in tuple(self._subscribers.items()):
-            if session_id != event.session_id or channel not in {DESKTOP_CHANNEL, event.origin_channel}:
+        for channel, subscribers in tuple(self._subscribers.items()):
+            if channel not in {DESKTOP_CHANNEL, event.origin_channel}:
                 continue
-            if not self._subscriptions.enabled_for_delivery(session_id, channel):
+            if not self._subscriptions.enabled_for_delivery(event.session_id, channel):
                 continue
             for subscriber in tuple(subscribers):
                 try:
@@ -82,32 +90,21 @@ class InteractionEventHub:
                     self.unsubscribe(subscriber)
         return event
 
-    async def register(self, session_id: str, channel: str) -> InteractionSubscription | None:
-        """登记并开始缓冲本连接，运行快照查询随后由路由发起。
+    async def register(self, channel: str) -> InteractionSubscription | None:
+        """加载渠道配置后登记全局观察连接，开始缓冲各会话事件。
 
         Args:
-            session_id (str): 要观察的父会话编号。
             channel (str): 已注册的接收渠道。
 
         Returns:
             InteractionSubscription | None: 已登记连接，Hub 关闭时为空。
         """
-        self._subscriptions.validate_source(channel)
-        if not await self._subscriptions.is_enabled(session_id, channel):
-            raise ValueError("该会话未订阅此渠道")
+        await self._subscriptions.load_channel(channel)
         if self._closed:
             return None
-        subscriber = InteractionSubscription(session_id, channel, asyncio.Queue(self._queue_size))
-        self._subscribers[(session_id, channel)].add(subscriber)
+        subscriber = InteractionSubscription(channel, asyncio.Queue(self._queue_size))
+        self._subscribers[channel].add(subscriber)
         return subscriber
-
-    def contains(self, subscriber: InteractionSubscription) -> bool:
-        """快照查询后核验本连接仍可观察，溢出的连接通过重连取得新快照。
-
-        Args:
-            subscriber (InteractionSubscription): 本连接登记句柄。
-        """
-        return subscriber in self._subscribers.get((subscriber.session_id, subscriber.channel), ())
 
     def unsubscribe(self, subscriber: InteractionSubscription) -> None:
         """移除本连接并释放积压，唤醒仍在等待的网络消费者。
@@ -115,7 +112,7 @@ class InteractionEventHub:
         Args:
             subscriber (InteractionSubscription): 需要释放的连接。
         """
-        key = (subscriber.session_id, subscriber.channel)
+        key = subscriber.channel
         self._subscribers[key].discard(subscriber)
         if not self._subscribers[key]:
             self._subscribers.pop(key, None)

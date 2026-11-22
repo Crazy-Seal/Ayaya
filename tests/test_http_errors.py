@@ -223,8 +223,8 @@ def test_missing_resources_return_404(
     ("PUT", "/tool-permissions/session", {"tool_permissions": {"local:unknown": "allow"}}, 400, "包含未知工具权限: local:unknown"),
     ("PUT", "/agent/channels/session/desktop", {"enabled": False}, 400, "桌面渠道不能修改"),
     ("PUT", "/agent/channels/session/unknown", {"enabled": True}, 400, "交互渠道未注册或已关闭"),
-    ("GET", "/agent/events/session?channel=unknown", None, 400, "交互渠道未注册或已关闭"),
-    ("GET", "/agent/events/session?channel=external", None, 400, "该会话未订阅此渠道"),
+    ("GET", "/agent/events?channel=unknown", None, 400, "交互渠道未注册或已关闭"),
+    ("GET", "/agent/snapshot/session?channel=external", None, 400, "该会话未订阅此渠道"),
     ("POST", "/mcp/servers/demo/reconnect", None, 409, "MCP Server 'demo' 已禁用"),
 ])
 def test_rejected_operations_keep_saved_configuration(

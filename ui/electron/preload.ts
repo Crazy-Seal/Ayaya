@@ -100,17 +100,20 @@ const desktopPetApi: DesktopPetApi = {
   submitInteractionCommand: (command) =>
     ipcRenderer.invoke(IpcChannel.INTERACTION_COMMAND, command),
   /**
-   * 订阅当前桌面会话，重连先取快照；返回首次快照到达的等待 Promise。
+   * 初始化当前会话视图，使用主进程持有的全局事件流。
    *
    * Args:
    *     sessionId (string): 共享 Ayaya 会话标识。
-   *     options (DesktopSessionSubscriptionOptions | undefined): 新页面要求刷新快照，普通发送省略。
    *
    * Returns:
-   *     Promise<any>: 当前连接首次快照已交付后的完成结果。
+   *     Promise<void>: 当前会话快照及缓冲事件已经转发。
    */
-  subscribeDesktopSession: (sessionId, options) =>
-    ipcRenderer.invoke(IpcChannel.SUBSCRIBE_DESKTOP_SESSION, sessionId, options),
+  initializeDesktopSession: (sessionId) =>
+    ipcRenderer.invoke(IpcChannel.INITIALIZE_DESKTOP_SESSION, sessionId),
+  /** 等待全局流就绪后允许提交用户命令。 */
+  ensureDesktopStream: () => ipcRenderer.invoke(IpcChannel.ENSURE_DESKTOP_STREAM),
+  /** 接收自动重连时的快照查询错误。 */
+  onInteractionSnapshotFailed: (listener) => subscribe(IpcChannel.INTERACTION_SNAPSHOT_FAILED, listener),
   /**
    * 监听主进程转发的渠道事件，返回只移除当前监听器的函数。
    *

@@ -1,5 +1,5 @@
 from tests.runtime_support import runtime_hub, close_test_runtime
-from app.routes.agent import observe_runtime
+from tests.runtime_event_source import observe_session
 from app.schemas.runtime_types import AgentRunOutcome, AgentRunOutcomeKind
 from tests.runtime_support import build_test_scheduler
 from app.crud.sqlite_factory import SqliteFactory
@@ -590,7 +590,7 @@ def test_terminal_notification_wakes_idle_agent_on_desktop_channel(tmp_path, mon
         pass
         await scheduler.start()
         from app.interaction.interaction_contract import ChannelCommand
-        desktop = observe_runtime("s", "desktop", hub, scheduler)
+        desktop = observe_session("s", "desktop", hub, scheduler)
         await anext(desktop)
         try:
             # 1. 受理不代表开始执行；先观察首轮完整结束，再检查后台通知启动的新轮次。

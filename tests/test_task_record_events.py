@@ -1,6 +1,6 @@
 """验证任务记录的单向传递、持久事实和消费者生命周期。"""
 from tests.runtime_support import runtime_hub, close_test_runtime
-from app.routes.agent import observe_runtime
+from tests.runtime_event_source import observe_session
 from tests.runtime_support import next_runtime_event
 from tests.runtime_support import build_test_scheduler
 from app.crud.sqlite_factory import SqliteFactory
@@ -178,7 +178,7 @@ def test_hub_receives_background_status_but_not_foreground_status(tmp_path) -> N
         hub = runtime_hub(scheduler)
         await scheduler.start()
         pass
-        stream = observe_runtime("s", "desktop", hub, scheduler)
+        stream = observe_session("s", "desktop", hub, scheduler)
         try:
             assert (await anext(stream)).kind == "session_snapshot"
             await insert_task(supervisor, "foreground", background=False)

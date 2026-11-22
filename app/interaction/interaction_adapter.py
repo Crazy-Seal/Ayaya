@@ -6,7 +6,7 @@ from app.schemas.runtime_types import CommandReceipt
 from collections.abc import AsyncIterator
 from typing import Protocol
 
-from app.interaction.interaction_contract import ChannelCommand, InteractionEvent
+from app.interaction.interaction_contract import ChannelCommand, InteractionEvent, InteractionStreamReady
 
 
 class InteractionAdapter(Protocol):
@@ -28,13 +28,10 @@ class InteractionAdapter(Protocol):
         """
         ...
 
-    def subscribe(self, session_id: str) -> AsyncIterator[InteractionEvent]:
-        """取得指定会话中本渠道可见的事件迭代器。
-
-        Args:
-            session_id (str): 共享 Ayaya 会话标识。
+    def subscribe(self) -> AsyncIterator[InteractionEvent | InteractionStreamReady]:
+        """取得本渠道在各会话中可见的全局事件迭代器。
 
         Returns:
-            AsyncIterator[InteractionEvent]: 当前会话渠道的展示事件迭代器，不因建立订阅而启动 Agent。
+            AsyncIterator[InteractionEvent | InteractionStreamReady]: 就绪控制帧和会话展示事件。
         """
         ...

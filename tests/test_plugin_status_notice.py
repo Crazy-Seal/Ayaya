@@ -14,7 +14,7 @@ from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
 from app.agent.state.manager import SessionStateManager
 from app.crud.sqlite_factory import SqliteFactory
 from app.crud.task_record_dao import TaskRecordDao
-from app.routes.agent import observe_runtime
+from tests.runtime_event_source import observe_session
 from app.schemas.runtime_types import CommandStatus
 from app.schemas.task_types import PluginRequest, PluginRequestKind
 from tests.runtime_support import build_test_scheduler, close_test_runtime, configured_settings, runtime_hub
@@ -51,7 +51,7 @@ def test_status_notice_lifecycle_keeps_source_and_does_not_become_agent_input(tm
             chat_settings_dao=configured_settings("s"), agent_factory=create_agent,
             session_state_manager_factory=lambda session: SessionStateManager(session, sqlite))
         manager = SessionStateManager("s", sqlite)
-        observer = observe_runtime("s", "desktop", runtime_hub(scheduler), scheduler)
+        observer = observe_session("s", "desktop", runtime_hub(scheduler), scheduler)
         runtime = PluginRuntime("demo", "s", task_id="source-task",
             _supervisor=supervisor, _runtime_queue=queue)
         try:

@@ -332,7 +332,7 @@ def test_openapi_exposes_pagination_and_concrete_json_responses() -> None:
     for path, methods in schema["paths"].items():
         for operation in methods.values():
             content = operation["responses"]["200"].get("content", {})
-            if path == "/agent/events/{session_id}":
+            if path == "/agent/events":
                 continue
             response_schema = content["application/json"]["schema"]
             response_schema = schemas[response_schema["$ref"].rsplit("/", 1)[-1]]

@@ -82,8 +82,19 @@ class ChannelSubscriptionService:
             raise ValueError("桌面渠道不能关闭")
         self._channels[channel] = replace(self._channels[channel], enabled=enabled)
 
+    async def load_channel(self, channel: str) -> None:
+        """登记全局观察前加载该渠道各会话的订阅设置。
+
+        Args:
+            channel (str): 已注册的观察渠道。
+        """
+        self.validate_source(channel)
+        if channel != DESKTOP_CHANNEL:
+            for session_id, enabled in (await self._dao.list_for_channel(channel)).items():
+                self._saved.setdefault((session_id, channel), enabled)
+
     def enabled_for_delivery(self, session_id: str, channel: str) -> bool:
-        """分发时同步读取配置，订阅入口已加载覆盖值。
+        """按全局订阅加载及写入口维护的配置决定是否投递。
 
         Args:
             session_id (str): 会话编号。

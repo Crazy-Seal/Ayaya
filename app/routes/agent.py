@@ -1,4 +1,4 @@
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from collections.abc import AsyncIterator
 from typing import Annotated
 
@@ -21,11 +21,12 @@ from app.schemas.system import HealthResponse
 from app.schemas.task_responses import TaskListItem, TaskListResponse, TaskOutputResponse
 from app.crud.chat_settings_dao import ChatSettingsDao
 from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
+from app.agent.state.messages import to_json_value
 from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
 from app.agent.tools.terminal.task import (
     TASK_OUTPUT_PAGE_DEFAULT_BYTES, TASK_OUTPUT_PAGE_MAX_BYTES, read_terminal_tail, read_terminal_output,
 )
-from app.interaction.interaction_contract import ChannelCommand
+from app.interaction.interaction_contract import ChannelCommand, InteractionEvent, InteractionStreamReady
 from app.schemas.runtime_types import DESKTOP_CHANNEL
 from app.utils.sse_stream import SSE_HEARTBEAT_SECONDS, stream_sse_json
 
@@ -51,71 +52,83 @@ async def submit_command(
     return CommandReceiptResponse(**asdict(receipt), accepted=receipt.accepted)
 
 
-async def observe_runtime(session_id: str, channel: str, hub: InteractionEventHub,
-                          scheduler: AgentRuntimeScheduler) -> AsyncIterator:
-    """先登记连接再查询运行快照，消费水位之后的事件并在所有退出路径注销。
+async def observe_runtime(channel: str, hub: InteractionEventHub) -> AsyncIterator[InteractionEvent | InteractionStreamReady]:
+    """登记全局连接后发送就绪帧，持续消费所有可见会话事件。
 
     Args:
-        session_id (str): 本次观察的父会话。
         channel (str): 已注册接收渠道。
         hub (InteractionEventHub): 应用输出缓冲。
-        scheduler (AgentRuntimeScheduler): 业务快照查询入口。
 
     Yields:
-        InteractionEvent: 当前快照和与之对应的后续增量。
+        InteractionEvent | InteractionStreamReady: 就绪控制帧及之后的会话事件。
     """
-    subscriber = await hub.register(session_id, channel)
+    subscriber = await hub.register(channel)
     if subscriber is None:
         return
     try:
-        snapshot = await scheduler.snapshot(session_id)
-        if not hub.contains(subscriber):
-            return
-        yield hub.visible_snapshot(snapshot, channel)
-        sequence = snapshot.event_sequence
+        yield InteractionStreamReady(hub.stream_epoch)
         while True:
             event = await subscriber.queue.get()
             if event is None:
                 return
-            if event.event_sequence > sequence:
-                sequence = event.event_sequence
-                yield event
+            yield event
     finally:
         hub.unsubscribe(subscriber)
 
 
-@router.get("/agent/events/{session_id}", responses={400: {"description": "渠道未注册或会话未订阅此渠道"}})
+@router.get("/agent/events", responses={400: {"description": "渠道未注册"}})
 async def subscribe_events(
+    channel: str = DESKTOP_CHANNEL,
+    hub: InteractionEventHub = Depends(get_interaction_event_hub),
+    subscriptions: ChannelSubscriptionService = Depends(get_channel_subscription_service),
+) -> StreamingResponse:
+    """校验渠道后建立全局观察流，按各会话订阅配置分发事件。
+
+    Args:
+        channel (str): 已注册渠道标识。
+        hub (InteractionEventHub): 保存序号、订阅和输出缓冲的共享分发对象。
+        subscriptions (ChannelSubscriptionService): 共享渠道配置。
+
+    Returns:
+        StreamingResponse: 就绪帧及各会话可见事件组成的 SSE。
+
+    Raises:
+        InvalidOperationError: 渠道未注册。
+    """
+    subscriptions.validate_source(channel)
+
+    # 1. 会话长期订阅共用分钟心跳和 JSON 投影，心跳不占业务事件序号。
+    return StreamingResponse(stream_sse_json(
+        observe_runtime(channel, hub),
+        heartbeat_interval=SSE_HEARTBEAT_SECONDS,
+    ), media_type="text/event-stream")
+
+
+@router.get("/agent/snapshot/{session_id}", responses={400: {"description": "渠道未注册或会话未订阅此渠道"}})
+async def get_session_snapshot(
     session_id: str,
     channel: str = DESKTOP_CHANNEL,
     hub: InteractionEventHub = Depends(get_interaction_event_hub),
     subscriptions: ChannelSubscriptionService = Depends(get_channel_subscription_service),
     scheduler: AgentRuntimeScheduler = Depends(get_runtime_scheduler),
-) -> StreamingResponse:
-    """校验渠道订阅后建立会话观察流，连接结束不取消 Agent。
+) -> InteractionEvent:
+    """查询当前页面需要展示的会话状态，按渠道过滤后返回快照。
 
     Args:
-        session_id (str): 共享 Ayaya 会话标识。
-        channel (str): 已注册渠道标识。
-        hub (InteractionEventHub): 保存序号、订阅和输出缓冲的共享分发对象。
-        subscriptions (ChannelSubscriptionService): 共享渠道配置。
-        scheduler (AgentRuntimeScheduler): 应用注入的运行快照查询入口。
+        session_id (str): 页面准备展示的主会话。
+        channel (str): 请求查看状态的渠道。
+        hub (InteractionEventHub): 提供渠道可见性投影。
+        subscriptions (ChannelSubscriptionService): 校验会话的渠道订阅。
+        scheduler (AgentRuntimeScheduler): 提供运行状态及输出水位。
 
     Returns:
-        StreamingResponse: 独立的会话 SSE，先发送接收方快照再发送增量。
-
-    Raises:
-        InvalidOperationError: 渠道未注册或在该会话未启用。
+        InteractionEvent: 可用于衔接实时事件的会话快照。
     """
     subscriptions.validate_source(channel)
     if not await subscriptions.is_enabled(session_id, channel):
         raise InvalidOperationError("该会话未订阅此渠道")
-
-    # 1. 会话长期订阅共用分钟心跳和 JSON 投影，心跳不占业务事件序号。
-    return StreamingResponse(stream_sse_json(
-        observe_runtime(session_id, channel, hub, scheduler),
-        heartbeat_interval=SSE_HEARTBEAT_SECONDS,
-    ), media_type="text/event-stream")
+    snapshot = hub.visible_snapshot(await scheduler.snapshot(session_id), channel)
+    return replace(snapshot, payload=to_json_value(snapshot.payload))
 
 
 @router.get("/agent/channels/{session_id}")

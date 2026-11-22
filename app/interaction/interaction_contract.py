@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from app.agent.state.time import utc_now
 from app.schemas.runtime_types import CommandKind, InteractionEventKind
@@ -38,6 +38,19 @@ class ChannelCommand:
             pass
 
 
+
+
+@dataclass(frozen=True, slots=True)
+class InteractionStreamReady:
+    """通知接收方全局订阅已登记，可以开始查询会话快照。
+
+    Attributes:
+        stream_epoch (str): 当前后端的事件编号命名空间。
+        kind (Literal["stream_ready"]): 连接就绪控制帧类别。
+    """
+
+    stream_epoch: str
+    kind: Literal["stream_ready"] = "stream_ready"
 
 
 @dataclass(frozen=True, slots=True)

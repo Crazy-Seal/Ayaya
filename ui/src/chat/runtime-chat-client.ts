@@ -18,7 +18,7 @@ import type {
  * 限定聊天视图所需的主进程命令、订阅及任务查询端口。
  */
 type RuntimeBridge = Pick<DesktopPetApi,
-  "submitInteractionCommand" | "subscribeDesktopSession" | "onInteractionEvent" | "onInteractionDisconnected" |
+  "submitInteractionCommand" | "initializeDesktopSession" | "ensureDesktopStream" | "onInteractionSnapshotFailed" | "onInteractionEvent" | "onInteractionDisconnected" |
   "getBackgroundTasks" | "getBackgroundTaskOutput"
 >;
 
@@ -187,18 +187,23 @@ export class RuntimeChatClient {
       });
     });
     this.bridge.onInteractionDisconnected(/**
-     * 将断线清理排在已经收到的事件之后，旧会话的清理不影响当前页面。
-     *
-     * Args:
-     *     sessionId (string): Electron 确认断开的订阅所属会话。
+      * 将全局断线清理排在已接收事件之后，等待当前会话的新快照。
      */
-    (sessionId) => {
-      const revision = this.sessionRevision;
+    () => {
+      const revision = ++this.sessionRevision;
+      this.initialized = false;
+      this.updateSendButton();
       this.eventTail = this.eventTail.then(/** 按当前页面代次清空本连接显示的持续提示。 */
       () => {
-        if (revision === this.sessionRevision && sessionId === this.sessionId) this.options.statusNotices.clear();
+        if (revision === this.sessionRevision) {
+          this.options.statusNotices.clear();
+        }
       });
     });
+    this.bridge.onInteractionSnapshotFailed(/** 当前会话恢复失败时展示查询错误。 */
+      (failure) => {
+        if (failure.sessionId === this.sessionId) this.options.chatHistory.showErrorMessage(failure.detail);
+      });
     if (this.sessionId) this.setSessionId(this.sessionId);
   }
 
@@ -221,7 +226,6 @@ export class RuntimeChatClient {
       this.failedRuns.clear();
       this.saveFailure = null;
       this.clearFailedInput(this.failedInput);
-      this.options.onAttention?.({ reset: true });
       this.attentionApprovalId = null;
       this.historyReplyIds = null;
       this.phase = SessionPhase.IDLE;
@@ -241,7 +245,7 @@ export class RuntimeChatClient {
         this.dialog.dismiss();
       }
     }
-    // 2. 同步历史及任务子视图，再由主进程建立新的会话订阅。
+    // 2. 同步历史及任务子视图，由主进程查询快照并衔接全局流。
     this.sessionId = sessionId;
     this.options.chatHistory.setSessionId?.(sessionId);
     this.taskEntry?.setSessionId(sessionId);
@@ -250,8 +254,8 @@ export class RuntimeChatClient {
     this.approvalSubagentId = null;
     this.updateSendButton();
     const revision = this.sessionRevision;
-    void this.bridge.subscribeDesktopSession(sessionId, { refreshSnapshot: true }).catch(/**
-     * 会话订阅失败时只向仍属于该版本的页面显示错误，旧会话失败不污染新会话。
+    void this.bridge.initializeDesktopSession(sessionId).catch(/**
+     * 快照查询失败时，向仍展示该会话的页面显示错误。
      *
      * Args:
      *     error (unknown): 本次捕获的异常。
@@ -416,6 +420,8 @@ export class RuntimeChatClient {
         break;
       }
       this.options.bubble.setText(latestText);
+      // 2.1. 已应用快照的页面在后续历史刷新成功时报告展示完成，恢复首次读取失败后的已读状态。
+      if (this.initialized) this.options.onAttention?.({ sessionId: this.sessionId, viewed: true });
       return true;
     } catch (error) {
       if (revision === this.sessionRevision && sessionId === this.sessionId) {
@@ -447,7 +453,7 @@ export class RuntimeChatClient {
     }
     // 2. 首次成功读取只建立旧历史基线；重连、审批或终态刷新发现新编号时才通知窗口。
     this.historyReplyIds = current;
-    if (hasNewReply) this.options.onAttention?.({ newMessage: true });
+    if (hasNewReply) this.options.onAttention?.({ sessionId: this.sessionId, newMessage: true });
   }
 
   /**
@@ -493,7 +499,6 @@ export class RuntimeChatClient {
     this.approvalId = null;
     this.approvalSubagentId = null;
     this.attentionApprovalId = null;
-    this.options.onAttention?.({ approvalId: null });
     this.dialog.dismiss();
     return true;
   }
@@ -634,7 +639,7 @@ export class RuntimeChatClient {
     this.options.chatHistory.setFailedInputRetrying?.(true);
     this.updateSendButton();
     try {
-      await this.bridge.subscribeDesktopSession(sessionId);
+      await this.bridge.ensureDesktopStream();
       // 2. 等待期间会话可能切换；只向发起点击时的会话重发原正文和图片。
       if (sessionId !== this.sessionId) return;
       const receipt = await this.bridge.submitInteractionCommand({
@@ -673,7 +678,7 @@ export class RuntimeChatClient {
     this.submitting = true;
     this.updateSendButton();
     try {
-      await this.bridge.subscribeDesktopSession(sessionId);
+      await this.bridge.ensureDesktopStream();
       if (this.sessionId !== sessionId || !this.initialized) return;
       // 2. 提交之前设置引导等待标记，SSE 可能先于命令回执到达。
       if (kind === CommandKind.HUMAN_STEER) {
@@ -796,15 +801,15 @@ export class RuntimeChatClient {
         this.options.bubble.setText("正在回答…");
       }
       this.attentionApprovalId = pendingInterrupt?.type === InterruptKind.AUTHORIZATION_REQUEST ? String(pendingInterrupt.request_id) : null;
-      this.options.onAttention?.({ approvalId: this.attentionApprovalId });
       if (pendingInterrupt) {
         if (historyLoaded && pendingInterrupt.type === InterruptKind.AUTHORIZATION_REQUEST) {
           this.refreshedApprovals.add(`${this.epoch}:${String(pendingInterrupt.request_id || "")}`);
         }
         void this.showApproval(pendingInterrupt, typeof prompt?.subagent_id === "string" ? prompt.subagent_id : null);
       }
-      // 2.2. 主进程收到快照不等于页面已初始化；此处历史查询和当前状态应用都已结束。
+      // 2.2. 当前状态应用完成后开放输入，历史成功展示后通知主进程清除本会话未读。
       this.initialized = true;
+      if (historyLoaded) this.options.onAttention?.({ sessionId: this.sessionId, viewed: true });
       if (this.saveFailure) this.options.chatHistory.showErrorMessage(this.saveFailure.detail);
       this.updateSendButton();
       return;
@@ -843,7 +848,6 @@ export class RuntimeChatClient {
     if (event.kind === InteractionEventKind.SUBAGENT_INTERRUPT) {
       const value = event.payload.value as Record<string, unknown>;
       this.attentionApprovalId = String(value.request_id);
-      this.options.onAttention?.({ approvalId: this.attentionApprovalId });
       void this.showApproval(value, String(event.payload.subagent_id));
       return;
     }
@@ -906,7 +910,6 @@ export class RuntimeChatClient {
         this.startStreaming();
       }
     } else if (event.kind === InteractionEventKind.TEXT_CHUNK) {
-      this.options.onAttention?.({ newMessage: true });
       if (this.deferredRuns.has(this.replyKey(event.run_id || this.runId))) return;
       this.currentToolActive = false;
       this.runOrigin = event.origin_channel || DESKTOP_CHANNEL;
@@ -933,7 +936,6 @@ export class RuntimeChatClient {
       // 6.2. 自动桌面操作只更新状态；人工审批先显示已保存说明，同请求成功刷新一次。
       if (this.phase === SessionPhase.PENDING_INTERRUPT) {
         this.attentionApprovalId = String(value.request_id);
-        this.options.onAttention?.({ approvalId: this.attentionApprovalId });
         const approvalKey = `${this.epoch}:${String(value.request_id || "")}`;
         if (!this.refreshedApprovals.has(approvalKey)) {
           const loaded = await this.refreshHistory();
@@ -944,10 +946,9 @@ export class RuntimeChatClient {
       }
     // 7. 跨端首个决定按 request_id 关闭本地审批，不能提交第二个决定。
     } else if (event.kind === InteractionEventKind.AUTHORIZATION_RESOLVED) {
-      // 1. 用户提交决定后本地弹窗已关闭，但提醒要等后端确认同一请求处理完成才清除。
+      // 1. 后端确认决定后清除当前页面持有的审批身份。
       if (this.attentionApprovalId === event.request_id) {
         this.attentionApprovalId = null;
-        this.options.onAttention?.({ approvalId: null });
       }
       if (this.approvalId === event.request_id) {
         this.approvalId = null;
@@ -957,7 +958,6 @@ export class RuntimeChatClient {
     } else if (event.kind === InteractionEventKind.RUN_COMPLETED) {
       if (!this.approvalSubagentId) {
         this.attentionApprovalId = null;
-        this.options.onAttention?.({ approvalId: null });
       }
       const completedKey = this.replyKey(event.run_id || this.runId);
       this.phase = SessionPhase.IDLE;
@@ -990,7 +990,6 @@ export class RuntimeChatClient {
       }
       if (!this.approvalSubagentId && !dismissedApproval) {
         this.attentionApprovalId = null;
-        this.options.onAttention?.({ approvalId: null });
       }
       const failedKey = this.replyKey(event.run_id || this.runId);
       this.pendingSteerMessage = null;

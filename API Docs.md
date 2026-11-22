@@ -72,7 +72,11 @@
 {"session_id":"default","origin_channel":"desktop","kind":"human_turn","payload":{"message":"你好","images":[]}}
 ```
 
-`GET /agent/events/{session_id}?channel=desktop` 是**独立的会话 SSE 订阅**，不拥有 Agent 生命周期。每条记录是 `data: <InteractionEvent JSON>\n\n`；没有旧版的具名 `event:` 行或 `[DONE]` 哨兵。连接建立时先发送 `session_snapshot`，随后发送增量。事件流断开不停止 Agent；重连从当前快照恢复状态，不补发掉线期间全部增量或聊天历史。慢订阅者的有界队列满时会被断开。
+`GET /agent/events?channel=desktop` 是覆盖所有会话的全局 SSE 订阅，不拥有 Agent 生命周期。每条记录是 `data: <JSON>\n\n`。后端加载渠道订阅配置并登记连接后，首先发送 `{"kind":"stream_ready","stream_epoch":"..."}`，随后发送各会话的 `InteractionEvent`；就绪控制帧由主进程消费。桌面固定接收所有会话，其他渠道按会话启用配置和事件来源筛选。连接不批量查询快照；断线和慢订阅溢出结束当前连接，Agent 继续执行。
+
+`GET /agent/snapshot/{session_id}?channel=desktop` 直接返回该会话的 `session_snapshot` 事件 JSON。未注册或未启用的渠道返回 HTTP 400。查询复用运行状态及水位，保持事件编号。客户端先收到全局流就绪，再缓冲当前会话事件并查询快照；先应用快照和历史，再处理同 epoch 且序号更大的增量。不同会话分别比较序号。
+
+Electron 主进程在后端就绪后维持一条流，切换会话和刷新页面复用连接。启动、切换及重连只初始化当前会话的快照与历史；已有待审批通过快照恢复。后台会话的实时未读和审批参与窗口标题及任务栏闪烁，打开当前会话只清除它的普通未读。其他会话在连接建立前或断线期间的状态按需恢复，不保证立即补出提醒；事件分片不留存重放。
 
 会话展示流和桌面执行流在连续空闲 60 秒后发送注释心跳 `: ping\n\n`，不占事件序号、不进入聊天，也不逐帧写日志。心跳不会取消待取的业务事件；连接关闭时只释放订阅读取。审批的 `data.arguments` 和 `prepared_action` 必须是标准 JSON 容器，不输出 Python 内部不可变对象的字符串表示。
 
@@ -130,11 +134,11 @@ data: {"session_id":"default","kind":"text_chunk","payload":{"value":"你好"},"
 
 `GET /agent/channels/{session_id}` 返回 `{"channels":[{"channel":"desktop","display_name":"桌面","enabled":true,"ready":true}]}`；`PUT /agent/channels/{session_id}/{channel}` 请求 `{"enabled":true|false}`，返回更新后的同形列表。订阅设置按会话持久化；桌面固定启用、不可修改。当前设置页仅能显示真实注册的桌面渠道；没有真实 QQ Adapter。
 
-修改未注册渠道或桌面固定订阅时返回 400。会话 SSE 建立连接前也会检查渠道；渠道未注册或该会话未订阅时返回 400。
+修改未注册渠道或桌面固定订阅时返回 400。全局 SSE 建立连接前检查渠道是否注册；快照接口还会检查该会话是否启用本渠道，无效请求返回 400。
 
-聊天 Renderer 不直接建立上述 HTTP/SSE 连接。Electron preload 向 Renderer 暴露 `submitInteractionCommand()`、`subscribeDesktopSession()`、`onInteractionEvent()`、`getChannelSubscriptions()`、`setChannelSubscription()`、`getBackgroundTasks()` 和 `getBackgroundTaskOutput()`；其类型在 `ui/shared-types.ts` 的 `DesktopPetApi` 中。主进程处理对应 IPC，把会话 SSE 事件通过 `desktop-pet:interaction-event` 转给 Renderer，并独立持有屏幕执行订阅。桌面提交命令时固定 `origin_channel=desktop`。
+聊天 Renderer 不直接建立上述 HTTP/SSE 连接。Electron preload 向 Renderer 暴露 `submitInteractionCommand()`、`initializeDesktopSession()`、`ensureDesktopStream()`、`onInteractionEvent()`、`getChannelSubscriptions()`、`setChannelSubscription()`、`getBackgroundTasks()` 和 `getBackgroundTaskOutput()`；其类型在 `ui/shared-types.ts` 的 `DesktopPetApi` 中。主进程处理对应 IPC，把全局 SSE 中的会话事件通过 `desktop-pet:interaction-event` 转给 Renderer，并独立持有屏幕执行订阅。桌面提交命令时固定 `origin_channel=desktop`。
 
-新聊天页面通过 `subscribeDesktopSession(sessionId, { refreshSnapshot: true })` 重新建立展示连接；普通发送省略该选项以复用连接。页面先注册事件监听，应用首次快照并结束历史查询后才允许发送或排队；历史查询失败会显示错误，但仍应用快照中的当前运行状态。主进程只转发当前订阅代次的事件，旧连接的迟到回调不会进入新页面。
+新聊天页面通过 `initializeDesktopSession(sessionId)` 查询当前会话快照，用户提交命令前通过 `ensureDesktopStream()` 等待全局流就绪。页面先注册事件监听，应用快照并结束历史查询后允许发送或排队；历史查询失败时显示错误，并应用快照中的运行状态。全局断线会使旧视图查询失效，重连后仅恢复当前会话。主进程先处理全部会话提醒，再将事件转发给页面；页面只处理当前会话。
 
 任务快捷入口位于聊天记录标题栏，数量只计运行中的后台任务；全部结束后四秒通知消失并隐藏标题栏。`openSettingsWindow("tasks")` 直接进入已有设置窗口的任务页，新窗口通过页面查询参数初始化，已有窗口通过 `onOpenSettingsPage()` 导航。设置窗口复用桌面事件转发，并仅在任务页可见且有运行任务时每两秒刷新耗时和最近输出；关闭或切页后停止刷新。真实断线、重连和结果回传失败进入统一前端日志，同一断线期间连续重试不重复刷日志。
 

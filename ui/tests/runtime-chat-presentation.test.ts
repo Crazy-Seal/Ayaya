@@ -97,7 +97,7 @@ function createPresentation(withTaskEntry = false) {
    * Args:
    *     _sessionId (string): 断线所属会话。
    */
-  let disconnectListener = (_sessionId: string): void => {};
+  let disconnectListener = (): void => {};
   globalThis.document = {
     /**
      *  返回不存在的可选任务和排队 DOM。
@@ -189,7 +189,7 @@ function createPresentation(withTaskEntry = false) {
      * 保存 Electron 提供的断线通知端口，供场景控制连接结束。
      *
      * Args:
-     *     callback ((sessionId: string) => void): 聊天客户端的监听器。
+     *     callback (() => void): 聊天客户端的监听器。
      *
      * Returns:
      *     () => void: 当前场景的监听移除函数。
@@ -202,7 +202,9 @@ function createPresentation(withTaskEntry = false) {
     /**
      *  模拟事件订阅已经就绪。
      */
-    subscribeDesktopSession: async () => {},
+    ensureDesktopStream: async () => {},
+    onInteractionSnapshotFailed: () => () => {},
+    initializeDesktopSession: async () => {},
     /**
      * 保存公共事件入口，返回监听清理占位函数。
      *
@@ -302,8 +304,8 @@ function createPresentation(withTaskEntry = false) {
      * Returns:
      *     Promise<void>: 断线清理已经有机会执行。
      */
-    async disconnect(sessionId = "s"): Promise<void> {
-      disconnectListener(sessionId);
+    async disconnect(): Promise<void> {
+      disconnectListener();
       await flushEvents();
     },
     /**
@@ -364,7 +366,7 @@ async () => {
   }
 });
 
-test("断线清空持续提示，迟到的其他会话通知不清除新提示", /**
+test("全局断线清空持续提示，快照恢复后继续显示新提示", /**
  * 从页面公开 bridge 触发断线，验证提示清理和重新连接后的增量。
  *
  * Returns:
@@ -381,8 +383,9 @@ async () => {
     await view.emit("session_snapshot", { phase: "idle" }, 1);
     assert.equal(view.statusRoot.textContent, "");
     await view.emit("status_notice", { plugin_name: "demo", id: "control", active: true, text: "再次执行" }, 2);
-    await view.disconnect("other");
     assert.equal(view.statusRoot.textContent, "[插件 demo] 再次执行");
+    await view.disconnect();
+    assert.equal(view.statusRoot.textContent, "");
   } finally {
     view.close();
   }
@@ -417,7 +420,6 @@ async () => {
       stream_epoch: "new-epoch", event_sequence: 0 });
     await view.receive({ session_id: "other", kind: "status_notice", payload: { ...active, text: "另一会话" },
       stream_epoch: "new-epoch", event_sequence: 1 });
-    await view.disconnect("s");
     assert.equal(view.statusRoot.textContent, "[插件 demo] 另一会话");
   } finally {
     view.close();
@@ -434,19 +436,19 @@ async () => {
   try {
     view.persisted.push({ id: "old-reply", role: "ai", content: "启动前的回答", timestamp: "2026-10-11T00:00:00Z" });
     await view.emit("session_snapshot", { phase: "idle" }, 0);
-    assert.deepEqual(view.attention, [{ approvalId: null }]);
+    assert.deepEqual(view.attention, [{ sessionId: "s", viewed: true }]);
     view.attention.length = 0;
 
     // 1. 模拟连接中断期间后端保存回复，重连仅交付快照与完整历史。
     view.persisted.push({ id: "offline-reply", role: "ai", content: "断线期间完成的回答", timestamp: "2026-10-11T00:01:00Z" });
     await view.emit("session_snapshot", { phase: "idle" }, 1);
-    assert.deepEqual(view.attention, [{ newMessage: true }, { approvalId: null }]);
+    assert.deepEqual(view.attention, [{ sessionId: "s", newMessage: true }, { sessionId: "s", viewed: true }]);
     assert.ok(view.root.textContent.includes("断线期间完成的回答"));
 
-    // 2. 相同历史再次恢复只同步审批状态，不把旧回复当作新消息。
+    // 2. 相同历史再次恢复只上报展示完成，不把旧回复当作新消息。
     view.attention.length = 0;
     await view.emit("session_snapshot", { phase: "idle" }, 2);
-    assert.deepEqual(view.attention, [{ approvalId: null }]);
+    assert.deepEqual(view.attention, [{ sessionId: "s", viewed: true }]);
   } finally { view.close(); }
 });
 
@@ -463,17 +465,36 @@ async () => {
     await view.emit("run_started", {}, 1);
     view.persisted.push({ id: "completed-reply", role: "ai", content: "完整回答", timestamp: "2026-10-11T00:01:00Z" });
     await view.emit("run_completed", {}, 2);
-    assert.deepEqual(view.attention, [{ approvalId: null }, { newMessage: true }]);
+    assert.deepEqual(view.attention, [{ sessionId: "s", newMessage: true }, { sessionId: "s", viewed: true }]);
 
     view.attention.length = 0;
     view.persisted.push({ id: "later-reply", role: "assistant", content: "后续回答", timestamp: "2026-10-11T00:02:00Z" });
     view.historyReads.failure = "模拟历史读取失败";
     await view.emit("session_snapshot", { phase: "idle" }, 3);
-    assert.deepEqual(view.attention, [{ approvalId: null }]);
+    assert.deepEqual(view.attention, []);
     view.attention.length = 0;
     view.historyReads.failure = null;
     await view.emit("session_snapshot", { phase: "idle" }, 4);
-    assert.deepEqual(view.attention, [{ newMessage: true }, { approvalId: null }]);
+    assert.deepEqual(view.attention, [{ sessionId: "s", newMessage: true }, { sessionId: "s", viewed: true }]);
+  } finally { view.close(); }
+});
+
+test("快照历史读取失败后，回答完成成功展示历史才上报已查看", /**
+ * 验证首次历史失败后，后续事件恢复完整展示即可清除当前会话普通未读。
+ * Returns:
+ *     Promise<void>: 历史失败与回答完成恢复已通过真实客户端处理。
+ */
+async () => {
+  const view = createPresentation();
+  try {
+    view.historyReads.failure = "模拟历史读取失败";
+    await view.emit("session_snapshot", { phase: "running", run_id: "run" }, 0);
+    assert.deepEqual(view.attention, []);
+    view.persisted.push({ id: "reply", role: "ai", content: "恢复后展示的回答", timestamp: "2026-10-11T00:01:00Z" });
+    view.historyReads.failure = null;
+    await view.emit("run_completed", {}, 1);
+    assert.ok(view.root.textContent.includes("恢复后展示的回答"));
+    assert.deepEqual(view.attention, [{ sessionId: "s", viewed: true }]);
   } finally { view.close(); }
 });
 
@@ -1478,6 +1499,29 @@ async () => {
 });
 
 
+test("快照加载历史期间断线，旧查询不能弹出审批或上报展示完成", /** 验证连接失效立即使旧页面查询过期。 */
+async () => {
+  const view = createPresentation();
+  let release = (): void => {};
+  try {
+    view.historyReads.barrier = new Promise<void>(/** 保存历史查询放行入口。 */
+      (resolve) => { release = resolve; });
+    await view.emit("session_snapshot", { phase: "pending_interrupt", interrupt: {
+      type: "authorization_request", request_id: "old-request",
+    } }, 0);
+    await view.disconnect();
+    release(); view.historyReads.barrier = null;
+    await flushEvents();
+    assert.equal(view.approvals.opened, 0);
+    assert.deepEqual(view.attention, []);
+    await view.emit("session_snapshot", { phase: "pending_interrupt", interrupt: {
+      type: "authorization_request", request_id: "current-request",
+    } }, 1);
+    assert.equal(view.approvals.opened, 1);
+    assert.deepEqual(view.attention, [{ sessionId: "s", viewed: true }]);
+  } finally { release(); view.close(); }
+});
+
 test("未交付失败显示原输入和重试按钮，拒绝保留、受理移除且不改草稿", /**
  * 验证临时失败消息的正文、附件、按钮禁用和原内容重发。
  * Returns:
@@ -1628,7 +1672,7 @@ for (const child of [false, true]) {
       release!({ kind: "approve" });
       await flushEvents();
       assert.equal(view.submissions.commands.length, 0);
-      assert.deepEqual(view.attention.at(-1), { approvalId: null });
+      assert.deepEqual(view.attention.at(-1), { sessionId: "s", viewed: true });
       await view.emit("history_restored", { ...(child ? { subagent_id: "child" } : {}) }, 3);
       assert.match(view.root.textContent, /审批整理保存失败/);
     } finally {

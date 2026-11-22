@@ -81,6 +81,24 @@ class ChannelSubscriptionDao:
         finally:
             await close_resources(((self.db_path, db.close),), logger=logger)
 
+    async def list_for_channel(self, channel: str) -> dict[str, bool]:
+        """读取全局观察渠道在各会话中的已保存配置。
+
+        Args:
+            channel (str): 准备接收全局事件的渠道。
+
+        Returns:
+            dict[str, bool]: 会话编号对应的启用设置。
+        """
+        db = await self._connect()
+        try:
+            async with db.execute(
+                "SELECT session_id, enabled FROM channel_subscriptions WHERE channel = ?", (channel,),
+            ) as cursor:
+                return {row[0]: bool(row[1]) for row in await cursor.fetchall()}
+        finally:
+            await close_resources(((self.db_path, db.close),), logger=logger)
+
     async def set(self, session_id: str, channel: str, enabled: bool) -> None:
         """按会话渠道主键插入或更新启用状态。
 

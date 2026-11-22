@@ -4,7 +4,7 @@ from tests.memory_support import make_memory_plugin
 """通过真实激活入口与临时 SQLite 验证记忆批次和内部通知的提交时机。"""
 from tests.runtime_support import collect_agent_events
 from tests.runtime_support import runtime_hub, close_test_runtime
-from app.routes.agent import observe_runtime
+from tests.runtime_event_source import observe_session
 from tests.runtime_support import build_test_scheduler
 from app.crud.sqlite_factory import SqliteFactory
 
@@ -404,7 +404,7 @@ def test_mid_turn_notification_preserves_batch_until_next_activation(tmp_path: P
         )
         hub = runtime_hub(scheduler)
         pass
-        stream = observe_runtime(SESSION_ID, "desktop", hub, scheduler)
+        stream = observe_session(SESSION_ID, "desktop", hub, scheduler)
         try:
             # 1. 保存旧完整轮次后启动真实运行时，再提交达到阈值的真人输入。
             await seed_history(manager, completed, 9)

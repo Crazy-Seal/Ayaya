@@ -19,7 +19,7 @@ from app.crud.chat_settings_dao import ChatSettingsDao
 from app.crud.sqlite_factory import SqliteFactory
 from app.errors import InvalidOperationError
 from app.interaction.interaction_contract import ChannelCommand
-from app.routes.agent import observe_runtime
+from tests.runtime_event_source import observe_session
 from app.schemas.runtime_types import TaskStatus
 from app.schemas.task_types import TaskRecord
 from app.utils.sse_stream import stream_sse_json
@@ -81,7 +81,7 @@ async def test_missing_subagent_keeps_tool_error_text(tmp_path: Path) -> None:
         agent_factory=create_agent, session_state_manager_factory=lambda sid: SessionStateManager(sid, sqlite))
     hub = runtime_hub(scheduler)
     await scheduler.start()
-    stream = observe_runtime("session", "desktop", hub, scheduler)
+    stream = observe_session("session", "desktop", hub, scheduler)
     try:
         await anext(stream)
         receipt = await scheduler.submit(ChannelCommand("session", "desktop", "human_turn", {"message": "查询"}))
@@ -121,7 +121,7 @@ async def test_configuration_lookup_failure_keeps_sse_error_text(tmp_path: Path)
         agent_factory=create_agent, session_state_manager_factory=lambda sid: SessionStateManager(sid, sqlite))
     hub = runtime_hub(scheduler)
     await scheduler.start()
-    stream = stream_sse_json(observe_runtime("session", "desktop", hub, scheduler))
+    stream = stream_sse_json(observe_session("session", "desktop", hub, scheduler))
     try:
         first = await asyncio.wait_for(anext(stream), 3)
         assert json.loads(first.removeprefix("data: "))["kind"] == "session_snapshot"

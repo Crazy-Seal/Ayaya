@@ -1,5 +1,5 @@
 from tests.runtime_support import runtime_hub, close_test_runtime, next_runtime_event
-from app.routes.agent import observe_runtime
+from tests.runtime_event_source import observe_session
 from app.schemas.runtime_types import AgentRunOutcome, AgentRunOutcomeKind
 from tests.runtime_support import build_test_scheduler
 from app.crud.sqlite_factory import SqliteFactory
@@ -173,7 +173,7 @@ def test_committed_human_is_visible_before_first_model_chunk(tmp_path: Path) -> 
         hub = runtime_hub(scheduler)
         pass
         await scheduler.start()
-        events = observe_runtime("s", "desktop", hub, scheduler)
+        events = observe_session("s", "desktop", hub, scheduler)
         await anext(events)
         try:
             # 2. 模型首片保持阻塞，仍必须从订阅中收到已经提交的真人消息。
@@ -269,9 +269,9 @@ def test_subscriber_disconnect_does_not_cancel_run_and_origin_is_scoped(tmp_path
         hub = runtime_hub(scheduler)
         pass
         await scheduler.start()
-        desktop = observe_runtime("s", "desktop", hub, scheduler)
-        qq = observe_runtime("s", "qq", hub, scheduler)
-        telegram = observe_runtime("s", "telegram", hub, scheduler)
+        desktop = observe_session("s", "desktop", hub, scheduler)
+        qq = observe_session("s", "qq", hub, scheduler)
+        telegram = observe_session("s", "telegram", hub, scheduler)
         await anext(desktop)
         await anext(qq)
         await anext(telegram)
@@ -733,7 +733,7 @@ def test_queued_turn_receives_new_run_id(tmp_path) -> None:
         hub = runtime_hub(scheduler)
         pass
         await scheduler.start()
-        desktop = observe_runtime("s", "desktop", hub, scheduler)
+        desktop = observe_session("s", "desktop", hub, scheduler)
         await anext(desktop)
         try:
             await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "first"}))
@@ -1252,7 +1252,7 @@ def test_failed_input_commit_never_publishes_human_message(tmp_path) -> None:
         hub = runtime_hub(scheduler)
         pass
         await scheduler.start()
-        stream = observe_runtime("s", "desktop", hub, scheduler)
+        stream = observe_session("s", "desktop", hub, scheduler)
         await anext(stream)
         try:
             await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "不可幽灵显示"}))
@@ -1331,7 +1331,7 @@ def test_queued_message_waits_during_approval_and_can_be_cancelled(tmp_path, mon
         hub = runtime_hub(scheduler)
         pass
         await scheduler.start()
-        stream = observe_runtime("s", "qq", hub, scheduler)
+        stream = observe_session("s", "qq", hub, scheduler)
         await anext(stream)
         await scheduler.submit(ChannelCommand("s", "qq", "human_turn", {"message": "启动审批"}))
         while (await asyncio.wait_for(anext(stream), 1)).kind != "interrupt":
@@ -1462,8 +1462,8 @@ def test_authorization_is_first_wins_across_channels(tmp_path) -> None:
         hub = runtime_hub(scheduler)
         pass
         await scheduler.start()
-        desktop = observe_runtime("s", "desktop", hub, scheduler)
-        qq = observe_runtime("s", "qq", hub, scheduler)
+        desktop = observe_session("s", "desktop", hub, scheduler)
+        qq = observe_session("s", "qq", hub, scheduler)
         await anext(desktop)
         await anext(qq)
         await scheduler.submit(ChannelCommand("s", "qq", "human_turn", {"message": "请操作"}))
