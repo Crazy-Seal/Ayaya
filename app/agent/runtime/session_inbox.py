@@ -20,7 +20,6 @@ class InboxEnvelope:
         id (int): SQLite 自增输入序号，在事件中作为 input_sequence。
         session_id (str): 共享 Ayaya 会话标识。
         kind (InboxKind): 真人输入或后台终态通知。
-        origin_channel (str): 输入或本轮回复所属的渠道。
         payload (dict[str, Any]): 该类别携带的专用载荷。
         status (InboxStatus): 尚未交付或随 checkpoint 交付完成。
         delivery_mode (InboxDeliveryMode): 立即交付或等待正常轮次完成后放行。
@@ -28,7 +27,6 @@ class InboxEnvelope:
     id: int
     session_id: str
     kind: InboxKind
-    origin_channel: str
     payload: dict[str, Any]
     status: InboxStatus
     delivery_mode: InboxDeliveryMode = InboxDeliveryMode.IMMEDIATE

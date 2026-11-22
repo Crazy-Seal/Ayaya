@@ -6,7 +6,7 @@ import { appendFrontendLog } from "./logging/app-logger.js";
 import { DesktopSessionController } from "./desktop-session-controller.js";
 import { refreshExternalBackendIdentity, checkExternalBackendExit } from "./backend-process.js";
 import type {
-  ChannelCommand, CommandReceipt, InteractionEvent,
+  InteractionCommand, CommandReceipt, InteractionEvent,
 } from "../shared-types.js";
 
 /**
@@ -61,12 +61,12 @@ const desktopSession = new DesktopSessionController({
  * 提交统一命令并返回受理结果，Agent 回复通过独立订阅送达。
  *
  * Args:
- *     command (ChannelCommand): 带桌面来源的入站命令。
+ *     command (InteractionCommand): 包含会话、命令类别及业务内容的入站命令。
  *
  * Returns:
  *     Promise<CommandReceipt>: 后端命令受理回执。
  */
-export const submitInteractionCommand = async (command: ChannelCommand): Promise<CommandReceipt> => {
+export const submitInteractionCommand = async (command: InteractionCommand): Promise<CommandReceipt> => {
   const response = await backendFetch("/agent/commands", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(command),
   });

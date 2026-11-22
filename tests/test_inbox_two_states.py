@@ -23,7 +23,7 @@ from app.agent.state.model import AgentState
 from app.agent.agent import Agent, AgentConfig
 from app.agent.context import ContextStrategyConfig
 from app.agent.core.events import AgentEvent, EventType
-from app.interaction.interaction_contract import ChannelCommand
+from app.interaction.interaction_contract import InteractionCommand
 from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
 from tests.runtime_support import configured_settings, finish_test_turn
@@ -42,12 +42,12 @@ def test_read_does_not_claim_and_cancelled_input_rolls_back(tmp_path) -> None:
         manager = SessionStateManager("s", SqliteFactory(path))
         try:
             # 1. 放行排队输入后只读取，不占用它，也不禁止撤销。
-            item = await inbox.submit_human("desktop", "排队", queued=True)
+            item = await inbox.submit_human("排队", queued=True)
             await inbox.release_queued()
             batch = await inbox.read_activation_batch()
             assert batch[0].id == item.id
             assert await inbox.status(item.id) == "pending"
-            assert await inbox.cancel_queued(item.id, "desktop")
+            assert await inbox.cancel_queued(item.id)
             # 2. 保存时输入已经删除，整个事务回滚，聊天历史不接受该输入。
             state = AgentState.create_new("s")
             state.add_user_message("排队")
@@ -86,7 +86,7 @@ def test_task_notice_failure_stops_until_human_reactivates(tmp_path) -> None:
                     AgentEvent: 完成事件。
                 """
                 outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
-                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": kwargs.get("origin_channel", "desktop"), "resumed": False}))
+                await emit(AgentEvent(EventType.RUN_STARTED, {"resumed": False}))
                 await finish_test_turn(path, kwargs.get("inbox_inputs", (inbox_input,)), message=message,
                     runtime_inputs=kwargs.get("runtime_inputs", ()), release_queued=True)
                 await emit(AgentEvent(EventType.DONE, None))
@@ -104,7 +104,7 @@ def test_task_notice_failure_stops_until_human_reactivates(tmp_path) -> None:
                     AgentEvent: 本用例在交付前失败，不产生执行事件。
                 """
                 outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
-                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False}))
+                await emit(AgentEvent(EventType.RUN_STARTED, {"resumed": False}))
                 nonlocal attempts
                 attempts += 1
                 raise RuntimeError("通知保存失败")
@@ -151,7 +151,7 @@ def test_task_notice_failure_stops_until_human_reactivates(tmp_path) -> None:
         await scheduler.start()
         try:
             # 1. 本次真人输入先取得激活资格，随后任务终态才允许自动交付。
-            await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "启动"}))
+            await scheduler.submit(InteractionCommand("s", "human_turn", {"message": "启动"}))
             await until("run_completed")
             await records.insert_running("task", "s", "任务", 1, str(tmp_path / "output"))
             await finish_task_record(supervisor, "task", "completed")
@@ -163,7 +163,7 @@ def test_task_notice_failure_stops_until_human_reactivates(tmp_path) -> None:
             await finish_task_record(supervisor, "later", "completed")
             await until("task_status")
             assert attempts == 1
-            await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "继续"}))
+            await scheduler.submit(InteractionCommand("s", "human_turn", {"message": "继续"}))
             await until("run_completed")
             assert await inbox.read_task_terminals() == ()
         finally:
@@ -226,12 +226,12 @@ def test_cancel_during_agent_initialization_finishes_without_model(tmp_path) -> 
         work = None
         try:
             # 1. 排队输入已经被读取，Agent 在初始化屏障处等待，此时仍允许撤销。
-            item = await inbox.submit_human("desktop", "取消我", queued=True)
+            item = await inbox.submit_human("取消我", queued=True)
             await inbox.release_queued()
             item = await inbox.read_next()
             work = asyncio.create_task(consume())
             await asyncio.wait_for(entered.wait(), 1)
-            assert await inbox.cancel_queued(item.id, "desktop")
+            assert await inbox.cancel_queued(item.id)
             # 2. 撤销提交后放行，真实保存事务拒绝失效输入，只产生正常结束事件。
             release.set()
             events = await asyncio.wait_for(work, 1)
@@ -299,7 +299,7 @@ def test_delivery_retries_only_transaction_and_never_replays_agent(tmp_path, mon
         try:
             await scheduler.start()
             monkeypatch.setattr(AgentStateDao, "_write_state_in_transaction", save)
-            await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "原始输入"}))
+            await scheduler.submit(InteractionCommand("s", "human_turn", {"message": "原始输入"}))
             events = []
             ending = "history_restored" if failures == 4 else "run_completed"
             while not events or events[-1].kind != ending:

@@ -7,7 +7,7 @@ import logging
 from app.agent.runtime.agent_execution import AgentExecution
 from app.agent.runtime.requests import RuntimeRequest, SessionClosed
 from app.agent.state.manager import SessionStateManager
-from app.interaction.interaction_contract import ChannelCommand, InteractionEvent
+from app.interaction.interaction_contract import InteractionCommand, InteractionEvent
 from app.schemas.runtime_types import AgentRunOutcomeKind, ApprovalDecisionKind, CommandKind, CommandStatus, InboxKind, InteractionEventKind, SessionState
 from app.schemas.task_types import PluginRequest, PluginRequestKind
 
@@ -69,11 +69,11 @@ class ParentSession:
         if self._session_state == SessionState.ENABLED:
             self._wake_worker()
 
-    async def accept_human(self, command: ChannelCommand) -> CommandReceipt:
+    async def accept_human(self, command: InteractionCommand) -> CommandReceipt:
         """先保存真人输入，再恢复本会话工作资格并请求允许的引导。
 
         Args:
-            command (ChannelCommand): 普通真人消息、固定轮次引导或显式排队。
+            command (InteractionCommand): 普通真人消息、固定轮次引导或显式排队。
 
         Returns:
             CommandReceipt: 按输入保存结果产生的受理回执。
@@ -95,7 +95,7 @@ class ParentSession:
                 if not permission.accepted:
                     return permission
             try:
-                envelope = await self._manager.submit_human(command.origin_channel, text, images=images, queued=queued,
+                envelope = await self._manager.submit_human(text, images=images, queued=queued,
                     discarded_ids=tuple(self._failed_input_ids))
             except Exception as exc:
                 return CommandReceipt(CommandStatus.FAILED, self.context_id, detail=str(exc))
@@ -103,17 +103,17 @@ class ParentSession:
             self._session_state = SessionState.ENABLED
             if queued:
                 self._events.put_nowait(InteractionEvent(self.context_id, InteractionEventKind.QUEUED_MESSAGE,
-                    {"input_sequence": envelope.id, "message": text, "images": images or []}, origin_channel=command.origin_channel))
+                    {"input_sequence": envelope.id, "message": text, "images": images or []}))
             else:
                 self._execution.request_steer(expected_run_id=command.target_run_id)
             self._wake_worker()
             return CommandReceipt(CommandStatus.ACCEPTED, self.context_id)
 
-    async def cancel_queued(self, command: ChannelCommand) -> CommandReceipt:
-        """撤销同渠道尚未交付的排队输入，保存成功后发布移除事件。
+    async def cancel_queued(self, command: InteractionCommand) -> CommandReceipt:
+        """撤销本会话尚未交付的排队输入，保存成功后发布移除事件。
 
         Args:
-            command (ChannelCommand): 携带 input_sequence 的撤销请求。
+            command (InteractionCommand): 携带 input_sequence 的撤销请求。
 
         Returns:
             CommandReceipt: 实际撤销或已交付的结果。
@@ -125,12 +125,12 @@ class ParentSession:
             if self._session_state == SessionState.CLOSED:
                 return CommandReceipt(CommandStatus.CLOSED, self.context_id)
             try:
-                changed = await self._manager.cancel_queued(identifier, command.origin_channel)
+                changed = await self._manager.cancel_queued(identifier)
             except Exception as exc:
                 return CommandReceipt(CommandStatus.FAILED, self.context_id, detail=str(exc))
             if changed:
                 self._events.put_nowait(InteractionEvent(self.context_id, InteractionEventKind.QUEUED_CANCELLED,
-                    {"input_sequence": identifier}, origin_channel=command.origin_channel))
+                    {"input_sequence": identifier}))
             return CommandReceipt(CommandStatus.ACCEPTED if changed else CommandStatus.STALE, self.context_id)
 
     async def stop_current(self, run_id: str | None = None) -> CommandReceipt:
@@ -155,11 +155,11 @@ class ParentSession:
                 self._wake_worker()
             return receipt
 
-    async def resolve_authorization(self, command: ChannelCommand) -> CommandReceipt:
+    async def resolve_authorization(self, command: InteractionCommand) -> CommandReceipt:
         """保存有效的首次审批决定，再安排原轮恢复或处理新明确输入。
 
         Args:
-            command (ChannelCommand): 匹配请求编号的审批决定。
+            command (InteractionCommand): 匹配请求编号的审批决定。
 
         Returns:
             CommandReceipt: 决定已保存、过期或存储失败。

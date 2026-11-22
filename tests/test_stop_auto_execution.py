@@ -20,7 +20,7 @@ import pytest
 from app.agent.core.events import AgentEvent, EventType
 from app.agent.runtime.turn_control import TurnInterrupted
 from app.agent.state.manager import SessionStateManager
-from app.interaction.interaction_contract import ChannelCommand
+from app.interaction.interaction_contract import InteractionCommand
 from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
 from app.schemas.runtime_types import InteractionEventKind, SessionPhase
@@ -68,7 +68,7 @@ def test_stop_preserves_notifications_until_human_input(tmp_path: Path, arrival:
                 outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
                 self.old_turn = message == "旧轮"
                 calls.append(message)
-                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False}))
+                await emit(AgentEvent(EventType.RUN_STARTED, {"resumed": False}))
                 await finish_test_turn(path, inbox_inputs, message=message)
                 if self.old_turn:
                     turn_control.start_llm()
@@ -105,7 +105,7 @@ def test_stop_preserves_notifications_until_human_input(tmp_path: Path, arrival:
                 """
                 outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
                 runtime_started.set()
-                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False}))
+                await emit(AgentEvent(EventType.RUN_STARTED, {"resumed": False}))
                 await finish_test_turn(path, inbox_inputs)
                 await emit(AgentEvent(EventType.DONE, None))
 
@@ -129,19 +129,19 @@ def test_stop_preserves_notifications_until_human_input(tmp_path: Path, arrival:
         manager = SessionStateManager("s", SqliteFactory(path))
         try:
             await scheduler.start()
-            assert (await scheduler.submit(ChannelCommand(
-                "s", "desktop", "human_turn", {"message": "旧轮"},
+            assert (await scheduler.submit(InteractionCommand(
+                "s", "human_turn", {"message": "旧轮"},
             ))).accepted
             await asyncio.wait_for(started.wait(), 2)
             run_id = (await scheduler.snapshot("s")).payload["run_id"]
             worker = scheduler._parent("s")._worker
             # 2. 过期停止不能撤销资格；有效停止才暂停后续自动执行。
-            assert not (await scheduler.submit(ChannelCommand(
-                "s", "desktop", "stop_turn", target_run_id="过期轮次",
+            assert not (await scheduler.submit(InteractionCommand(
+                "s", "stop_turn", target_run_id="过期轮次",
             ))).accepted
             assert (await scheduler.snapshot("s")).payload["session_state"] == "enabled"
-            assert (await scheduler.submit(ChannelCommand(
-                "s", "desktop", "stop_turn", target_run_id=run_id,
+            assert (await scheduler.submit(InteractionCommand(
+                "s", "stop_turn", target_run_id=run_id,
             ))).accepted
             await asyncio.wait_for(cleaning.wait(), 2)
 
@@ -157,8 +157,8 @@ def test_stop_preserves_notifications_until_human_input(tmp_path: Path, arrival:
             assert not runtime_started.is_set()
 
             if arrival == "reactivate_during_cleanup":
-                assert (await scheduler.submit(ChannelCommand(
-                    "s", "desktop", "human_turn", {"message": "恢复"},
+                assert (await scheduler.submit(InteractionCommand(
+                    "s", "human_turn", {"message": "恢复"},
                 ))).accepted
                 release_cleanup.set()
             else:
@@ -167,8 +167,8 @@ def test_stop_preserves_notifications_until_human_input(tmp_path: Path, arrival:
                 # 4. 已存在的 worker 和后来的提醒均保持暂停，内容留待真人恢复。
                 assert len(await manager.read_task_terminals()) == 1
                 assert not runtime_started.is_set()
-                assert (await scheduler.submit(ChannelCommand(
-                    "s", "desktop", "human_turn", {"message": "恢复"},
+                assert (await scheduler.submit(InteractionCommand(
+                    "s", "human_turn", {"message": "恢复"},
                 ))).accepted
 
             await asyncio.wait_for(resumed.wait(), 2)
@@ -230,7 +230,7 @@ def test_save_failure_stays_paused_during_cleanup_and_only_new_input_runs(tmp_pa
                 outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
                 calls.append(message)
                 if reported_start or len(calls) > 1:
-                    await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False}))
+                    await emit(AgentEvent(EventType.RUN_STARTED, {"resumed": False}))
                 if len(calls) == 1:
                     self.failed = True
                     raise RequiredSaveError("模拟输入保存失败")
@@ -256,8 +256,8 @@ def test_save_failure_stays_paused_during_cleanup_and_only_new_input_runs(tmp_pa
         try:
             await scheduler.start()
             # 1. 首次输入已保存到 Inbox，Agent 交付失败后停在实例清理中，当前轮次可查询。
-            assert (await scheduler.submit(ChannelCommand(
-                "s", "desktop", "human_turn", {"message": "原始输入"},
+            assert (await scheduler.submit(InteractionCommand(
+                "s", "human_turn", {"message": "原始输入"},
             ))).accepted
             await asyncio.wait_for(cleaning.wait(), 2)
             snapshot = await scheduler.snapshot("s")
@@ -265,8 +265,8 @@ def test_save_failure_stays_paused_during_cleanup_and_only_new_input_runs(tmp_pa
             assert snapshot.payload["session_state"] == "paused"
             assert snapshot.payload["save_failure"]["restored"]
             failed_run = snapshot.payload["save_failure"]["run_id"]
-            assert not (await scheduler.submit(ChannelCommand(
-                "s", "desktop", "stop_turn", target_run_id=failed_run))).accepted
+            assert not (await scheduler.submit(InteractionCommand(
+                "s", "stop_turn", target_run_id=failed_run))).accepted
             # 1. 保存故障立即显示错误和恢复位置，旧轮没有假成功完成事件。
             events = []
             while not any(event.kind == "history_restored" for event in events):
@@ -278,7 +278,7 @@ def test_save_failure_stays_paused_during_cleanup_and_only_new_input_runs(tmp_pa
             assert calls == ["原始输入"]
             assert [item.payload["message"] for item in await manager.pending_humans()] == ["原始输入"]
             # 2. 用户新的明确输入替换失败批次，原始输入始终只尝试一次。
-            assert (await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "恢复"}))).accepted
+            assert (await scheduler.submit(InteractionCommand("s", "human_turn", {"message": "恢复"}))).accepted
             await asyncio.wait_for(resumed.wait(), 2)
             kinds = [ (await asyncio.wait_for(next_runtime_event(scheduler), 2)).kind for _ in range(2)]
             assert kinds == [InteractionEventKind.RUN_STARTED, InteractionEventKind.RUN_COMPLETED]

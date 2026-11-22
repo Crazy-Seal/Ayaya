@@ -21,7 +21,7 @@ from app.agent.state.manager import SessionStateManager
 from app.agent.state import AgentState
 from app.agent.state.messages import ToolCall
 from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
-from app.interaction.interaction_contract import ChannelCommand
+from app.interaction.interaction_contract import InteractionCommand
 
 
 def approval_state() -> AgentState:
@@ -38,7 +38,7 @@ def approval_state() -> AgentState:
     state.set_interrupt({
         "type": "authorization_request", "request_id": "approval", "message": "允许读取？",
         "tool_call_id": current.id, "tool_name": current.name, "tool_args": current.args,
-        "origin_channel": "desktop", "data": {"display": "文件读取"},
+        "data": {"display": "文件读取"},
         "resume_state": {
             "authorization_request": {"snapshot": "original"},
             "tool_resume_state": {"phase": "prepared"}, "prepared_action": {"path": "a.py"},
@@ -135,7 +135,7 @@ class WaitingAgent(RuntimeAgentStub):
             AgentEvent: 屏障结束时的完成事件，测试正常清理会先取消等待。
         """
         outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
-        await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": kwargs.get("origin_channel", "desktop"), "resumed": False}))
+        await emit(AgentEvent(EventType.RUN_STARTED, {"resumed": False}))
         if message == "建立本次审批":
             manager = SessionStateManager("s", SqliteFactory(self.path))
             try:
@@ -218,13 +218,13 @@ def test_stop_pending_parent_approval_cancels_decision_and_ignores_stale_target(
         scheduler, manager = make_scheduler(path), SessionStateManager("s", SqliteFactory(path))
         try:
             await scheduler.start()
-            await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "建立本次审批"}))
+            await scheduler.submit(InteractionCommand("s", "human_turn", {"message": "建立本次审批"}))
             while (event := await asyncio.wait_for(next_runtime_event(scheduler), 2)).kind != "interrupt":
                 pass
-            assert not (await scheduler.submit(ChannelCommand("s", "desktop", "stop_turn",
+            assert not (await scheduler.submit(InteractionCommand("s", "stop_turn",
                 target_run_id="old-run"))).accepted
             assert (await manager.load()).get_pending_authorization("approval") is not None
-            receipt = await scheduler.submit(ChannelCommand("s", "desktop", "stop_turn", target_run_id=event.run_id))
+            receipt = await scheduler.submit(InteractionCommand("s", "stop_turn", target_run_id=event.run_id))
             assert receipt.accepted
             resolved = await asyncio.wait_for(next_runtime_event(scheduler), 2)
             assert resolved.kind == "authorization_resolved" and resolved.payload["outcome"] == "cancelled"
@@ -232,7 +232,7 @@ def test_stop_pending_parent_approval_cancels_decision_and_ignores_stale_target(
             snapshot = (await scheduler.snapshot("s")).payload
             assert snapshot["phase"] == "idle"
             assert (await manager.load()).interrupt_data is None
-            assert not (await scheduler.submit(ChannelCommand("s", "desktop", "resolve_authorization",
+            assert not (await scheduler.submit(InteractionCommand("s", "resolve_authorization",
                 {"kind": "approve"}, request_id="approval"))).accepted
         finally:
             await manager.close()
@@ -262,7 +262,7 @@ def test_decision_save_failure_publishes_nothing_and_retry_uses_persisted_state(
             state = approval_state()
             await manager.save(state, checkpoint_type="intermediate")
             if operation in {"approve", "cancel"}:
-                await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "建立本次审批"}))
+                await scheduler.submit(InteractionCommand("s", "human_turn", {"message": "建立本次审批"}))
                 while (await asyncio.wait_for(next_runtime_event(scheduler), 1)).kind != "interrupt":
                     pass
             next_event = asyncio.create_task(next_runtime_event(scheduler))
@@ -273,9 +273,9 @@ def test_decision_save_failure_publishes_nothing_and_retry_uses_persisted_state(
                     "WHEN NEW.session_id = 's' BEGIN SELECT RAISE(ABORT, 'reject decision'); END",
                 )
                 await inspection.commit()
-            command = ChannelCommand("s", "desktop", "resolve_authorization", {"kind": "approve"},
-                                     request_id="approval") if operation == "approve" else ChannelCommand(
-                "s", "desktop", "human_turn", {"message": "取消旧审批并开始新指令"},
+            command = InteractionCommand("s", "resolve_authorization", {"kind": "approve"},
+                                     request_id="approval") if operation == "approve" else InteractionCommand(
+                "s", "human_turn", {"message": "取消旧审批并开始新指令"},
             )
             failed = await scheduler.submit(command)
             if operation == "approve":
@@ -327,11 +327,11 @@ def test_steer_inbox_failure_preserves_approval_and_retry_saves_input_first(tmp_
         manager = SessionStateManager("s", SqliteFactory(path))
         try:
             await scheduler.start()
-            await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "建立本次审批"}))
+            await scheduler.submit(InteractionCommand("s", "human_turn", {"message": "建立本次审批"}))
             await next_runtime_event(scheduler)
             await next_runtime_event(scheduler)
-            command = ChannelCommand(
-                "s", "desktop", "resolve_authorization", {"kind": "steer", "message": "新指令"},
+            command = InteractionCommand(
+                "s", "resolve_authorization", {"kind": "steer", "message": "新指令"},
                 request_id="approval",
             )
             # 1. Inbox 拒绝新输入时，旧审批仍未决，也不留下待执行新输入。

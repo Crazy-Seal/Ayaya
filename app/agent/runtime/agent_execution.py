@@ -19,8 +19,8 @@ from app.agent.runtime.turn_control import TurnControl
 from app.agent.state.manager import RequiredSaveError, SessionStateManager
 from app.crud.sqlite_save import SqliteRollbackError
 from app.agent.utils.infra.bounded_operation import OperationTimeoutError
-from app.interaction.interaction_contract import ChannelCommand, InteractionEvent
-from app.schemas.runtime_types import AgentRunOutcome, AgentRunOutcomeKind, ApprovalDecisionKind, ApprovalWait, AuthorizationResolutionKind, CommandStatus, DESKTOP_CHANNEL, ExecutionPhase, ExecutionSnapshot, InboxKind, InteractionEventKind, SessionPhase, TurnInterruptReason
+from app.interaction.interaction_contract import InteractionCommand, InteractionEvent
+from app.schemas.runtime_types import AgentRunOutcome, AgentRunOutcomeKind, ApprovalDecisionKind, ApprovalWait, AuthorizationResolutionKind, CommandStatus, ExecutionPhase, ExecutionSnapshot, InboxKind, InteractionEventKind, SessionPhase, TurnInterruptReason
 
 
 logger = logging.getLogger(__name__)
@@ -54,7 +54,6 @@ class AgentExecution:
         self._agent: Agent | None = None
         self._control: TurnControl | None = None
         self._active: asyncio.Task[AgentRunOutcome] | None = None
-        self._origin = DESKTOP_CHANNEL
         self._approval: dict[str, object] | None = None
         self._last_fault: dict[str, object] | None = None
 
@@ -71,8 +70,7 @@ class AgentExecution:
         snapshot = self.snapshot()
         phase = (SessionPhase.IDLE if snapshot.phase in {ExecutionPhase.IDLE, ExecutionPhase.FAULTED} else
                  SessionPhase.PENDING_INTERRUPT if isinstance(snapshot.wait, ApprovalWait) else SessionPhase.RUNNING)
-        return {"phase": phase, "run_id": snapshot.run_id, "origin_channel": self._origin,
-                "interrupt": self.approval(), "execution": asdict(snapshot), "save_failure": self._last_fault}
+        return {"phase": phase, "run_id": snapshot.run_id, "interrupt": self.approval(), "execution": asdict(snapshot), "save_failure": self._last_fault}
 
     def approval(self) -> dict[str, object] | None:
         """返回当前已保存审批的展示副本，停止或决定后自动失效。"""
@@ -132,17 +130,15 @@ class AgentExecution:
         run_id = self._state.run_id
         if run_id is None:
             raise RuntimeError("空闲执行不能发布本轮事件")
-        if event.type == EventType.RUN_STARTED:
-            self._origin = str(event.data["origin_channel"])
-        elif event.type == EventType.INTERRUPT and isinstance(self._state.wait, ApprovalWait):
+        if event.type == EventType.INTERRUPT and isinstance(self._state.wait, ApprovalWait):
             self._approval = dict(event.data)
-        self._events.put_nowait(ExecutionEvent(self.context_id, run_id, self._origin, event))
+        self._events.put_nowait(ExecutionEvent(self.context_id, run_id, event))
 
-    async def resolve_authorization(self, command: ChannelCommand) -> CommandReceipt:
+    async def resolve_authorization(self, command: InteractionCommand) -> CommandReceipt:
         """核验当前审批并保存首个有效决定，父子会话随后按自己的政策安排工作。
 
         Args:
-            command (ChannelCommand): 审批编号、决定内容和操作渠道。
+            command (InteractionCommand): 审批编号与决定内容。
 
         Returns:
             CommandReceipt: 决定已保存、请求过期、参数错误或最终保存失败。
@@ -159,15 +155,14 @@ class AgentExecution:
         if command.target_run_id is not None and command.target_run_id != run_id:
             return CommandReceipt(CommandStatus.STALE, self.context_id)
         try:
-            origin = await self._manager.record_authorization_decision(command.request_id, decision, command.origin_channel)
+            saved = await self._manager.record_authorization_decision(command.request_id, decision)
         except Exception as exc:
             return CommandReceipt(CommandStatus.FAILED, self.context_id, run_id, detail=str(exc))
-        if origin is None:
+        if not saved:
             return CommandReceipt(CommandStatus.STALE, self.context_id, run_id)
         self._approval = None
         self._events.put_nowait(InteractionEvent(self.context_id, InteractionEventKind.AUTHORIZATION_RESOLVED,
-            {"outcome": AuthorizationResolutionKind(decision["kind"]), "actor_channel": command.origin_channel},
-            origin_channel=origin, request_id=command.request_id, run_id=run_id))
+            {"outcome": AuthorizationResolutionKind(decision["kind"])}, request_id=command.request_id, run_id=run_id))
         if decision["kind"] == ApprovalDecisionKind.STEER:
             self.request_steer(expected_run_id=run_id)
         return CommandReceipt(CommandStatus.ACCEPTED, self.context_id, run_id)
@@ -184,13 +179,12 @@ class AgentExecution:
             CommandStatus.TOO_LATE if snapshot.phase == ExecutionPhase.COMMITTING else CommandStatus.STALE)
         return CommandReceipt(status, self.context_id, snapshot.run_id, detail=None if status == CommandStatus.ACCEPTED else "当前没有可排队的执行")
 
-    async def execute(self, batch: tuple[InboxEnvelope, ...], origin_channel: str = DESKTOP_CHANNEL,
+    async def execute(self, batch: tuple[InboxEnvelope, ...],
                       *, prepare: Callable[[str], Awaitable[bool]]) -> AgentRunOutcome:
         """处理已受理批次，先结束被新输入替代的等待，再开始新轮。
 
         Args:
             batch (tuple[InboxEnvelope, ...]): 会话按政策选定的待交付输入。
-            origin_channel (str): 没有真人输入时的默认渠道。
             prepare (Callable): 会话准备本轮业务记录，并确认输入仍可开始执行。
 
         Returns:
@@ -205,7 +199,6 @@ class AgentExecution:
                 await self.finish_waiting()
             next_run_id = uuid4().hex
             self._state.begin_run(next_run_id)
-            self._origin = origin_channel
             self._control = TurnControl(next_run_id, self._state)
             # 2. 业务记录保存属于本轮准备；期间停止仍由同一执行状态机接受。
             permitted = await prepare(next_run_id)
@@ -219,8 +212,7 @@ class AgentExecution:
                 self._agent = self._agent_factory(self._manager)
             human = next((item for item in batch if item.kind == InboxKind.HUMAN), None)
             if human is not None:
-                operation = self._agent.run(human.payload["message"], images=human.payload.get("images"),
-                    origin_channel=human.origin_channel, inbox_input=human, inbox_inputs=batch,
+                operation = self._agent.run(human.payload["message"], images=human.payload.get("images"), inbox_input=human, inbox_inputs=batch,
                     turn_control=self._control, receive_task_notifications=True, emit=self._emit_agent)
             else:
                 operation = self._agent.run_runtime_inputs(inbox_inputs=batch, turn_control=self._control,
@@ -278,7 +270,7 @@ class AgentExecution:
             return outcome
         if outcome.kind == AgentRunOutcomeKind.FAILED:
             self._events.put_nowait(InteractionEvent(self.context_id, InteractionEventKind.ERROR,
-                {"detail": outcome.error}, origin_channel=self._origin, run_id=run_id))
+                {"detail": outcome.error}, run_id=run_id))
         # 2. Agent 已交还结束结果；资源关闭在结果交付之后另行发生。
         if self._state.phase != ExecutionPhase.COMMITTING:
             self._state.begin_commit(run_id)
@@ -300,7 +292,7 @@ class AgentExecution:
         cancelled = await self._manager.cancel_pending_interrupt()
         if cancelled is not None:
             self._events.put_nowait(InteractionEvent(self.context_id, InteractionEventKind.AUTHORIZATION_RESOLVED,
-                {"outcome": AuthorizationResolutionKind.CANCELLED}, origin_channel=cancelled[1], request_id=cancelled[0]))
+                {"outcome": AuthorizationResolutionKind.CANCELLED}, request_id=cancelled))
         if self._state.phase != ExecutionPhase.COMMITTING:
             self._state.begin_commit(run_id)
         # 1. 审批取消期间仍可接受停止，最终保存采用进入提交阶段时的控制原因。
@@ -310,10 +302,10 @@ class AgentExecution:
         control = self._control
         await self._manager.finish_interrupted_turn(state, reason=reason,
             partial=control.partial if control else "",
-            partial_persisted=control.partial_persisted if control else False, origin_channel=self._origin)
+            partial_persisted=control.partial_persisted if control else False)
         self._state.commit_succeeded(run_id)
         self._events.put_nowait(InteractionEvent(self.context_id, InteractionEventKind.RUN_COMPLETED,
-            {"value": {"interrupted": True}}, origin_channel=self._origin, run_id=run_id))
+            {"value": {"interrupted": True}}, run_id=run_id))
         self._control, self._approval = None, None
         return reason
 
@@ -334,11 +326,11 @@ class AgentExecution:
             if self._control is not None:
                 self._control.begin_failed_commit()
             state = await self._manager.load()
-            await self._manager.finish_failed_turn(state, error=str(exc), origin_channel=self._origin)
+            await self._manager.finish_failed_turn(state, error=str(exc))
         except Exception as save_error:
             return await self._fault(save_error)
         self._events.put_nowait(InteractionEvent(self.context_id, InteractionEventKind.ERROR,
-            {"detail": str(exc)}, origin_channel=self._origin, run_id=run_id))
+            {"detail": str(exc)}, run_id=run_id))
         if run_id is not None and self._state.phase != ExecutionPhase.FAULTED:
             if self._state.phase != ExecutionPhase.COMMITTING:
                 self._state.begin_commit(run_id)
@@ -364,7 +356,7 @@ class AgentExecution:
         self._events.put_nowait(ApprovalInvalidated(self.context_id))
         self._last_fault = {"run_id": run_id, "detail": str(exc), "restored": False}
         self._events.put_nowait(InteractionEvent(self.context_id, InteractionEventKind.ERROR,
-            {**self._last_fault, "save_failed": True}, origin_channel=self._origin, run_id=run_id))
+            {**self._last_fault, "save_failed": True}, run_id=run_id))
         await self.restore_committed_state()
         return AgentRunOutcome(AgentRunOutcomeKind.SAVE_FAILED, error=str(exc), context_id=self.context_id, run_id=run_id)
 
@@ -388,7 +380,7 @@ class AgentExecution:
         self._control, self._approval = None, None
         self._last_fault = {**(self._last_fault or {}), "restored": True, "through_message_id": position}
         self._events.put_nowait(InteractionEvent(self.context_id, InteractionEventKind.HISTORY_RESTORED,
-            {**self._last_fault, "execution": asdict(self.snapshot())}, origin_channel=self._origin, run_id=snapshot.run_id))
+            {**self._last_fault, "execution": asdict(self.snapshot())}, run_id=snapshot.run_id))
         return True
 
     async def close_current_agent(self) -> None:

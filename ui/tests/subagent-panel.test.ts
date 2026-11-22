@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { SubagentPanel } from "../src/settings/pages/subagent-panel.js";
-import { SubagentStatus, type ChannelCommand, type SubagentDetail, type SubagentSummary } from "../shared-types.js";
+import { SubagentStatus, type InteractionCommand, type SubagentDetail, type SubagentSummary } from "../shared-types.js";
 
 /** 为页面提供可观察的文本及按钮事件，不模拟后台状态机。 */
 class Element {
@@ -33,7 +33,7 @@ test("独立子面板显示空闲保留型和运行一次性，停止只发送�
 async () => {
   const list = new Element();
   const refresh = new Element("button");
-  const commands: ChannelCommand[] = [];
+  const commands: InteractionCommand[] = [];
   const records: SubagentSummary[] = [
     { subagent_id: "a", name: "代码探索助手", if_retain_context: true, status: SubagentStatus.IDLE, created_at: "2026-10-31", started_at: null },
     { subagent_id: "b", name: "测试助手", if_retain_context: false, status: SubagentStatus.RUNNING, created_at: "2026-10-31", started_at: "2026-10-31" },

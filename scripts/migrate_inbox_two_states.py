@@ -53,8 +53,8 @@ def migrate(path: Path, *, apply: bool = False, confirm_app_stopped: bool = Fals
             db.execute(INBOX_SCHEMA_SQL.replace("IF NOT EXISTS session_inbox", "session_inbox_two_states"))
             # 2. 真人旧意图作废；任务终态是事实，未交付通知回到 pending。
             db.execute("""INSERT INTO session_inbox_two_states
-                (id,session_id,kind,origin_channel,payload_json,delivery_mode,queue_ready,status,created_at,delivered_at)
-                SELECT id,session_id,kind,origin_channel,payload_json,delivery_mode,queue_ready,
+                (id,session_id,kind,payload_json,delivery_mode,queue_ready,status,created_at,delivered_at)
+                SELECT id,session_id,kind,payload_json,delivery_mode,queue_ready,
                     CASE WHEN status='claimed' THEN 'pending' ELSE status END,
                     created_at,CASE WHEN status='delivered' THEN delivered_at ELSE NULL END
                 FROM session_inbox WHERE kind<>'human' OR status='delivered'""")

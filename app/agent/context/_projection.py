@@ -1,11 +1,8 @@
-"""为历史消息补充时间和渠道，在请求末尾组装本轮环境背景。"""
+"""为历史消息补充时间，在请求末尾组装本轮环境背景。"""
 
 from dataclasses import replace
 from typing import Sequence
 
-from app.schemas.runtime_types import (
-    DESKTOP_CHANNEL,
-)
 from app.agent.state.messages import (
     AssistantMessage,
     BaseMessage,
@@ -23,7 +20,7 @@ from app.agent.state.messages import TextContent, notification_text
 
 
 def project_messages_with_time(messages: Sequence[BaseMessage]) -> tuple:
-    """在临时业务副本加入时间和渠道，不生成供应商请求字段。"""
+    """在临时业务副本加入时间，不生成供应商请求字段。"""
     projected = []
     for message in messages:
         if isinstance(message, RuntimeInputMessage):
@@ -33,8 +30,6 @@ def project_messages_with_time(messages: Sequence[BaseMessage]) -> tuple:
         if isinstance(message, HumanMessage) or isinstance(message, AssistantMessage) and not message.tool_calls:
             parts = list(message.content)
             prefix = f"[发送时间：{format_local_time(message.created_at)}] "
-            if isinstance(message, HumanMessage) and message.origin_channel != DESKTOP_CHANNEL:
-                prefix += f"[来源渠道：{message.origin_channel}] "
             # 1. 只改第一个文字块，图片及文字的相对顺序保持；无文字时插入时间。
             position = next((index for index, part in enumerate(parts) if isinstance(part, TextContent)), None)
             if position is None:

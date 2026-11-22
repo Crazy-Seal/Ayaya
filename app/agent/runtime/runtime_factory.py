@@ -23,7 +23,6 @@ from app.repl.repl_service import ReplService
 from app.schemas.agent_storage import AgentStorageScope
 from app.schemas.subagent_types import SubagentDefinition
 from app.services.agent_identity_service import AgentIdentityService
-from app.services.channel_subscription_service import ChannelSubscriptionService
 from app.services.chat_settings_service import ChatSettingsService
 from app.services.plugin_service import PluginService
 from app.services.settings_mutation import SettingsMutationCoordinator
@@ -31,8 +30,7 @@ from app.services.subagent_service import SubagentService
 
 
 def create_runtime_scheduler(supervisor: TaskSupervisor, runtime_queue: asyncio.Queue[RuntimeRequest], *,
-    sqlite_factory: SqliteFactory, hub: InteractionEventHub, subscriptions: ChannelSubscriptionService,
-    identity: AgentIdentityService, subagents: SubagentService, repl_service: ReplService,
+    sqlite_factory: SqliteFactory, hub: InteractionEventHub, identity: AgentIdentityService, subagents: SubagentService, repl_service: ReplService,
     settings_dao: ChatSettingsDao, settings_service: ChatSettingsService, plugin_service: PluginService,
     mcp_manager: MCPConnectionManager, authorization: ToolAuthorization,
     mutation_coordinator: SettingsMutationCoordinator,
@@ -44,7 +42,6 @@ def create_runtime_scheduler(supervisor: TaskSupervisor, runtime_queue: asyncio.
         runtime_queue (asyncio.Queue[RuntimeRequest]): 应用创建、Scheduler 独占消费的共享请求队列。
         sqlite_factory (SqliteFactory): 应用装配提供的 SQLite 连接配置。
         hub (InteractionEventHub): 应用拥有的事件编号及订阅缓冲。
-        subscriptions (ChannelSubscriptionService): 命令与输出共用的渠道设置。
         identity (AgentIdentityService): 显式 Agent 命令使用的身份核验服务。
         subagents (SubagentService): 子定义、交互和最终报告的持久业务。
         repl_service (ReplService): 应用提供的唯一原生 Python 执行组件。
@@ -134,8 +131,7 @@ def create_runtime_scheduler(supervisor: TaskSupervisor, runtime_queue: asyncio.
 
     return assemble_runtime_scheduler(runtime_queue=runtime_queue, agent_factory=create_agent,
         subagent_factory=create_subagent, manager_factory=create_manager, child_manager_factory=create_child_manager,
-        identity=identity, subagents=subagents, task_supervisor=supervisor, subscriptions=subscriptions,
-        mutation_coordinator=mutation_coordinator, hub=hub,
+        identity=identity, subagents=subagents, task_supervisor=supervisor, mutation_coordinator=mutation_coordinator, hub=hub,
         cleanup_session_connections=mcp_manager.disconnect_plugin)
 
 
@@ -145,8 +141,7 @@ def assemble_runtime_scheduler(*, runtime_queue: asyncio.Queue[RuntimeRequest],
     manager_factory: Callable[[str], SessionStateManager],
     child_manager_factory: Callable[[SubagentDefinition], SessionStateManager],
     identity: AgentIdentityService, subagents: SubagentService,
-    task_supervisor: TaskSupervisor, subscriptions: ChannelSubscriptionService,
-    mutation_coordinator: SettingsMutationCoordinator, hub: InteractionEventHub,
+    task_supervisor: TaskSupervisor, mutation_coordinator: SettingsMutationCoordinator, hub: InteractionEventHub,
     cleanup_session_connections: Callable[[str], Awaitable[None]] | None = None) -> AgentRuntimeScheduler:
     """为应用或隔离实例装配父子会话工厂及 Scheduler。
 
@@ -159,7 +154,6 @@ def assemble_runtime_scheduler(*, runtime_queue: asyncio.Queue[RuntimeRequest],
         identity (AgentIdentityService): 显式命令身份规则。
         subagents (SubagentService): 子持久业务。
         task_supervisor (TaskSupervisor): 普通任务管理器。
-        subscriptions (ChannelSubscriptionService): 渠道设置。
         mutation_coordinator (SettingsMutationCoordinator): 应用短操作协调。
         hub (InteractionEventHub): 应用拥有的发布和缓冲对象。
         cleanup_session_connections (Callable | None): 父删除后释放其共享连接。
@@ -192,5 +186,5 @@ def assemble_runtime_scheduler(*, runtime_queue: asyncio.Queue[RuntimeRequest],
 
     return AgentRuntimeScheduler(runtime_queue=runtime_queue, parent_factory=create_parent, child_factory=create_child,
         manager_factory=manager_factory, identity=identity, subagents=subagents, task_supervisor=task_supervisor,
-        subscriptions=subscriptions, mutation_coordinator=mutation_coordinator, publish=hub.publish,
+        mutation_coordinator=mutation_coordinator, publish=hub.publish,
         watermark=hub.watermark, cleanup_session_connections=cleanup_session_connections)

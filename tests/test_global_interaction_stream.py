@@ -6,22 +6,42 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.crud.sqlite_factory import SqliteFactory
-from app.dependencies import get_runtime_scheduler, get_interaction_event_hub, get_channel_subscription_service
+from app.dependencies import get_runtime_scheduler, get_interaction_event_hub
 from app.http_errors import install_http_error_handlers
 from app.interaction.interaction_contract import InteractionEvent, InteractionStreamReady
 from app.interaction.interaction_event_hub import InteractionEventHub
 from app.routes.agent import observe_runtime, router
-from app.services.channel_subscription_service import ChannelSubscriptionService
 from app.agent.state.messages import ToolCall
 from tests.runtime_event_source import EventSource
+
+
+def test_global_observers_receive_all_sessions_with_independent_buffers() -> None:
+    """各观察连接接收所有会话，慢连接溢出后快速连接继续工作。"""
+    async def scenario() -> None:
+        """让快速连接持续读取，同时保留慢连接积压。"""
+        hub = InteractionEventHub(queue_size=2)
+        fast, slow = await hub.register(), await hub.register()
+        assert fast is not None and slow is not None
+        first = hub.publish(InteractionEvent("A", "text_chunk", {"value": "A"}))
+        assert await fast.queue.get() == first
+        second = hub.publish(InteractionEvent("B", "text_chunk", {"value": "B"}))
+        assert await fast.queue.get() == second
+        third = hub.publish(InteractionEvent("A", "run_completed", {}))
+        assert await fast.queue.get() == third
+        assert await slow.queue.get() is None
+        assert (first.event_sequence, second.event_sequence, third.event_sequence) == (1, 1, 2)
+        hub.unsubscribe(fast)
+        assert await fast.queue.get() is None
+        await hub.close()
+    asyncio.run(scenario())
 
 
 def test_global_stream_interleaves_sessions_and_includes_future_sessions() -> None:
     """A 的较大序号与新会话的较小序号均能通过同一连接。"""
     async def scenario() -> None:
         """登记全局流后发布三组独立会话事件。"""
-        hub = InteractionEventHub(subscriptions=ChannelSubscriptionService(SqliteFactory()))
-        stream = observe_runtime("desktop", hub)
+        hub = InteractionEventHub()
+        stream = observe_runtime(hub)
         try:
             ready = await anext(stream)
             assert isinstance(ready, InteractionStreamReady)
@@ -39,39 +59,12 @@ def test_global_stream_interleaves_sessions_and_includes_future_sessions() -> No
     asyncio.run(scenario())
 
 
-def test_global_channel_loads_saved_settings_and_applies_live_changes(tmp_path) -> None:
-    """首次订阅时读取持久禁用设置，写入配置后立即改变投递范围。"""
-    async def scenario() -> None:
-        """先保存配置，再由全新服务接收多会话事件。"""
-        factory = SqliteFactory(str(tmp_path / "channels.sqlite3"))
-        writer = ChannelSubscriptionService(factory)
-        writer.register_channel("qq")
-        await writer.set_enabled("disabled", "qq", False)
-        service = ChannelSubscriptionService(factory)
-        service.register_channel("qq")
-        hub = InteractionEventHub(subscriptions=service)
-        stream = observe_runtime("qq", hub)
-        try:
-            assert isinstance(await anext(stream), InteractionStreamReady)
-            hub.publish(InteractionEvent("disabled", "text_chunk", {}, origin_channel="qq"))
-            hub.publish(InteractionEvent("other-origin", "text_chunk", {}, origin_channel="telegram"))
-            hub.publish(InteractionEvent("enabled", "text_chunk", {}, origin_channel="qq"))
-            event = await asyncio.wait_for(anext(stream), 1)
-            assert isinstance(event, InteractionEvent) and event.session_id == "enabled"
-            await service.set_enabled("disabled", "qq", True)
-            hub.publish(InteractionEvent("disabled", "text_chunk", {}, origin_channel="qq"))
-            event = await asyncio.wait_for(anext(stream), 1)
-            assert isinstance(event, InteractionEvent) and event.session_id == "disabled"
-        finally:
-            await stream.aclose()
-            await hub.close()
-    asyncio.run(scenario())
 
 
 def test_snapshot_http_preserves_approval_arguments_without_publishing_events() -> None:
     """按需快照能序列化审批参数，查询不会推进事件编号或要求全局订阅。"""
-    service = ChannelSubscriptionService(SqliteFactory())
-    hub = InteractionEventHub(subscriptions=service)
+
+    hub = InteractionEventHub()
     call = ToolCall("call", "exec_command", {"cmd": "echo test", "options": {"values": [1, 2]}})
 
     class Source(EventSource):
@@ -94,13 +87,13 @@ def test_snapshot_http_preserves_approval_arguments_without_publishing_events() 
     app.include_router(router)
     install_http_error_handlers(app)
     app.dependency_overrides[get_interaction_event_hub] = lambda: hub
-    app.dependency_overrides[get_channel_subscription_service] = lambda: service
     app.dependency_overrides[get_runtime_scheduler] = lambda: Source(hub)
     before = hub.watermark("A")
     with TestClient(app) as client:
         response = client.get("/agent/snapshot/A")
         assert response.status_code == 200
         assert response.json()["payload"]["interrupt"]["data"]["arguments"] == {"cmd": "echo test", "options": {"values": [1, 2]}}
-        assert client.get("/agent/snapshot/A?channel=unknown").status_code == 400
         assert client.get("/agent/events/A").status_code == 404
+        assert client.get("/agent/channels/A").status_code == 404
+        assert client.put("/agent/channels/A/desktop", json={"enabled": True}).status_code == 404
     assert hub.watermark("A") == before

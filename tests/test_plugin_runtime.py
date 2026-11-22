@@ -375,7 +375,7 @@ def test_plugin_stop_keeps_activation_and_controls_current_turn(tmp_path, user_s
     from app.agent.agent import Agent, AgentConfig
     from app.agent.context import ContextStrategyConfig
     from app.agent.models.llm_client import StreamChunk
-    from app.interaction.interaction_contract import ChannelCommand
+    from app.interaction.interaction_contract import InteractionCommand
     from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
 
     async def scenario():
@@ -414,12 +414,12 @@ def test_plugin_stop_keeps_activation_and_controls_current_turn(tmp_path, user_s
 
         try:
             await scheduler.start()
-            await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "开始"}))
+            await scheduler.submit(InteractionCommand("s", "human_turn", {"message": "开始"}))
             await asyncio.wait_for(first_call.wait(), 2)
             started = await next_kind("run_started")
             runtime = PluginRuntime("game", "s", _supervisor=supervisor, _runtime_queue=queue)
             if user_stop:
-                assert (await scheduler.submit(ChannelCommand("s", "desktop", "stop_turn", target_run_id=started.run_id))).accepted
+                assert (await scheduler.submit(InteractionCommand("s", "stop_turn", target_run_id=started.run_id))).accepted
             else:
                 assert await runtime.stop_turn() is None
                 await asyncio.wait_for(queue.join(), 1)
@@ -433,7 +433,7 @@ def test_plugin_stop_keeps_activation_and_controls_current_turn(tmp_path, user_s
                     assert len(calls) == 1
                 finally:
                     await manager.close()
-                await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "继续"}))
+                await scheduler.submit(InteractionCommand("s", "human_turn", {"message": "继续"}))
             await asyncio.wait_for(second_call.wait(), 2)
             current = (await scheduler.snapshot("s")).payload["run_id"]
             assert current != started.run_id
@@ -516,7 +516,7 @@ def test_plugin_notification_is_persistent_and_reaches_real_model_encoding(tmp_p
     from app.agent.context import ContextStrategyConfig
     from app.agent.models.llm_client import StreamChunk
     from app.agent.state.messages import PluginNotificationMessage
-    from app.interaction.interaction_contract import ChannelCommand
+    from app.interaction.interaction_contract import InteractionCommand
     from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
     from tests.model_capture import capture_input
 
@@ -565,7 +565,7 @@ def test_plugin_notification_is_persistent_and_reaches_real_model_encoding(tmp_p
                     assert event.task_id == task_id
                     break
             assert not called.is_set()
-            assert (await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "继续"}))).accepted
+            assert (await scheduler.submit(InteractionCommand("s", "human_turn", {"message": "继续"}))).accepted
             await asyncio.wait_for(called.wait(), 2)
             state = await manager.load()
             notice = next(message for message in state.messages if isinstance(message, PluginNotificationMessage))

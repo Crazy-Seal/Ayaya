@@ -1,5 +1,5 @@
 import type { BackgroundTaskRecord } from "../../types.js";
-import { CommandKind, DESKTOP_CHANNEL, TaskStatus, TaskExecutionPhase } from "../../../shared-types.js";
+import { CommandKind, TaskStatus, TaskExecutionPhase } from "../../../shared-types.js";
 import { TASK_REFRESH_INTERVAL_MS } from "../../../runtime-constants.js";
 import { appendErrorMessage, type SettingsNotifier } from "../components/settings-toast.js";
 
@@ -213,8 +213,7 @@ export class BackgroundTasksPage {
          */
         () => {
           void window.desktopPetApi.submitInteractionCommand({
-            session_id: this.sessionId, origin_channel: DESKTOP_CHANNEL,
-            kind: CommandKind.STOP_BACKGROUND_TASK, task_id: record.task_id,
+            session_id: this.sessionId, kind: CommandKind.STOP_BACKGROUND_TASK, task_id: record.task_id,
           }).then(/**
            * 停止回执到达后只在已受理时刷新任务状态，拒绝则交给错误提示。
            *

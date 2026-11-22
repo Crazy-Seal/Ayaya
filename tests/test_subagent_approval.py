@@ -11,7 +11,7 @@ from app.agent.models.contracts import ProjectedMessage, StreamChunk
 from app.agent.state.messages import HumanMessage, ToolCall, ToolMessage
 from app.agent.tools.authorization.manager import ToolAuthorization
 from app.agent.tools.core.base import BaseTool, ToolResult
-from app.interaction.interaction_contract import ChannelCommand
+from app.interaction.interaction_contract import InteractionCommand
 from app.schemas.chat_settings import ChatSettings
 from app.schemas.runtime_types import CommandKind, InteractionEventKind
 from app.schemas.subagent_types import SubagentAction
@@ -140,7 +140,7 @@ def test_destroy_closes_displayed_approval_and_rejects_late_decision(tmp_path: P
             assert event.request_id == request_id
             assert event.payload["subagent_id"] == receipt.context_id
             assert event.payload["outcome"] == "cancelled"
-            rejected = await harness.scheduler.submit(ChannelCommand("parent", "desktop", CommandKind.RESOLVE_AUTHORIZATION,
+            rejected = await harness.scheduler.submit(InteractionCommand("parent", CommandKind.RESOLVE_AUTHORIZATION,
                 {"kind": "approve"}, request_id=request_id, subagent_id=receipt.context_id))
             assert not rejected.accepted
     asyncio.run(scenario())
@@ -190,12 +190,12 @@ def test_child_approvals_are_fifo_and_resolve_in_actual_child_context(tmp_path: 
                 await asyncio.sleep(0.01)
             snapshot = await harness.scheduler.snapshot("parent")
             assert snapshot.payload["approval_prompt"]["subagent_id"] == first.context_id
-            approved = await harness.scheduler.submit(ChannelCommand("parent", "desktop", CommandKind.RESOLVE_AUTHORIZATION,
+            approved = await harness.scheduler.submit(InteractionCommand("parent", CommandKind.RESOLVE_AUTHORIZATION,
                 {"kind": "approve"}, request_id=prompt.request_id, subagent_id=first.context_id))
             assert approved.accepted
             next_request = (await harness.scheduler.snapshot("parent")).payload["approval_prompt"]
             assert next_request["subagent_id"] == second.context_id
-            rejected = await harness.scheduler.submit(ChannelCommand("parent", "desktop", CommandKind.RESOLVE_AUTHORIZATION,
+            rejected = await harness.scheduler.submit(InteractionCommand("parent", CommandKind.RESOLVE_AUTHORIZATION,
                 {"kind": "reject"}, request_id=next_request["request_id"], subagent_id=second.context_id))
             assert rejected.accepted
             await asyncio.wait_for(asyncio.gather(wait_for_subagent_worker(harness.scheduler, first.context_id), wait_for_subagent_worker(harness.scheduler, second.context_id)), 3)
@@ -270,7 +270,7 @@ def test_parent_command_closes_cancelled_child_approval(
             assert (await harness.scheduler.snapshot("parent")).payload["approval_prompt"] is None
 
             # 3. 已取消的审批不能再恢复旧操作，也不会影响新指令的最终结果。
-            stale = await harness.scheduler.submit(ChannelCommand("parent", "desktop", CommandKind.RESOLVE_AUTHORIZATION,
+            stale = await harness.scheduler.submit(InteractionCommand("parent", CommandKind.RESOLVE_AUTHORIZATION,
                 {"kind": "approve"}, request_id=request_id, subagent_id=receipt.context_id))
             assert not stale.accepted
     asyncio.run(asyncio.wait_for(scenario(), 15))

@@ -23,7 +23,7 @@ from app.schemas.agent_storage import AgentStorageScope
 from app.schemas.subagent_types import SubagentAction, SubagentRecord
 from tests.subagent_support import SubagentHarness, wait_for_subagent_worker, subagent_worker_running
 from app.services.chat_settings_service import ChatSettingsService
-from app.interaction.interaction_contract import ChannelCommand
+from app.interaction.interaction_contract import InteractionCommand
 from app.agent.tools.core.runtime import ToolRuntime
 from app.agent.runtime.tasks.base import BaseTask
 from app.agent.runtime.tasks.runtime import TaskRuntime
@@ -386,7 +386,7 @@ def test_parent_delete_preserves_response_and_waits_for_final_commit(
         service = ChatSettingsService(supervisor_settings, mutation_coordinator=supervisor_mutations)
         try:
             await scheduler.start()
-            assert (await scheduler.submit(ChannelCommand("parent", "desktop", "human_turn", {"message": "开始"}))).accepted
+            assert (await scheduler.submit(InteractionCommand("parent", "human_turn", {"message": "开始"}))).accepted
             await asyncio.wait_for(entered.wait(), 3)
             if shutdown:
                 # 删除刚提交、后台清理尚未开始时退出，退出捕获的正文仍由原清理流程保存。
@@ -396,7 +396,7 @@ def test_parent_delete_preserves_response_and_waits_for_final_commit(
                 assert (await asyncio.wait_for(delete_chat_settings("parent", service, scheduler), 0.5)).code == 200
             await asyncio.wait_for(cleaning.wait(), 3)
             assert not supervisor_settings.exists("parent")
-            assert not (await scheduler.submit(ChannelCommand("parent", "desktop", "human_turn", {"message": "迟到消息"}))).accepted
+            assert not (await scheduler.submit(InteractionCommand("parent", "human_turn", {"message": "迟到消息"}))).accepted
             if committing:
                 assert not save_cancelled.is_set()
                 assert not disconnected.is_set()
@@ -470,7 +470,7 @@ def test_deleted_parent_retries_failed_agent_close_before_shared_connections(tmp
         service = ChatSettingsService(supervisor_settings, mutation_coordinator=supervisor_mutations)
         try:
             await scheduler.start()
-            assert (await scheduler.submit(ChannelCommand("parent", "desktop", "human_turn", {"message": "开始"}))).accepted
+            assert (await scheduler.submit(InteractionCommand("parent", "human_turn", {"message": "开始"}))).accepted
             await asyncio.wait_for(running.wait(), 3)
             assert (await delete_chat_settings("parent", service, scheduler)).code == 200
             await asyncio.wait_for(failed.wait(), 3)
@@ -544,12 +544,12 @@ def test_parent_retries_interrupted_save_before_closing_agent(tmp_path: Path, mo
         monkeypatch.setattr(AgentStateDao, "_write_state_in_transaction", save)
         try:
             await scheduler.start()
-            await scheduler.submit(ChannelCommand("parent", "desktop", "human_turn", {"message": "开始"}))
+            await scheduler.submit(InteractionCommand("parent", "human_turn", {"message": "开始"}))
             await asyncio.wait_for(running.wait(), 3)
             if delete_parent:
                 assert (await asyncio.wait_for(delete_chat_settings("parent", service, scheduler), 0.5)).code == 200
             else:
-                assert (await scheduler.submit(ChannelCommand("parent", "desktop", "stop_turn"))).accepted
+                assert (await scheduler.submit(InteractionCommand("parent", "stop_turn"))).accepted
             await asyncio.wait_for(retrying.wait(), 3)
             assert not closed.is_set()
             released.set()
@@ -631,9 +631,9 @@ def test_parent_shutdown_closes_resources_when_interrupted_save_keeps_failing(
         monkeypatch.setattr(SessionStateManager, "finish_interrupted_turn", fail)
         try:
             await scheduler.start()
-            await scheduler.submit(ChannelCommand("parent", "desktop", "human_turn", {"message": "开始"}))
+            await scheduler.submit(InteractionCommand("parent", "human_turn", {"message": "开始"}))
             await asyncio.wait_for(running.wait(), 3)
-            await scheduler.submit(ChannelCommand("parent", "desktop", "stop_turn"))
+            await scheduler.submit(InteractionCommand("parent", "stop_turn"))
             await asyncio.wait_for(failed.wait(), 3)
             if delete_parent:
                 assert (await delete_chat_settings("parent", service, scheduler)).code == 200
@@ -740,7 +740,7 @@ def test_parent_delete_returns_before_cleanup_and_allows_late_task(tmp_path: Pat
             assert result.code == 200
             try:
                 assert not await scheduler.snapshot_subagents("parent")
-                assert not (await scheduler.submit(ChannelCommand("parent", "desktop", "human_turn", {"message": "迟到消息"}))).accepted
+                assert not (await scheduler.submit(InteractionCommand("parent", "human_turn", {"message": "迟到消息"}))).accepted
                 await asyncio.wait_for(entered.wait(), 3)
                 task_id = await runtime.submit_task(Work(), name="late", title="迟到任务", notify_agent=True)
                 assert (await harness.supervisor.wait(task_id, timeout_ms=1000)).result == "迟到任务完成"
@@ -797,8 +797,8 @@ def test_retire_transaction_failure_keeps_identity_and_pending_input(tmp_path: P
             await asyncio.wait_for(entered.wait(), 3)
             # 1. 直接保留一次尚未交付的真实命令，令删除 SQL 的失败可观测。
             with closing(sqlite3.connect(harness.path)) as db:
-                db.execute("INSERT INTO subagent_session_inbox(session_id,kind,origin_channel,payload_json,created_at) "
-                    "VALUES(?,'agent_command','system','{}','now')", (receipt.context_id,))
+                db.execute("INSERT INTO subagent_session_inbox(session_id,kind,payload_json,created_at) "
+                    "VALUES(?,'agent_command','{}','now')", (receipt.context_id,))
                 db.execute("CREATE TRIGGER refuse_discard BEFORE DELETE ON subagent_session_inbox "
                     "BEGIN SELECT RAISE(ABORT,'discard failed'); END")
                 db.commit()
@@ -917,11 +917,11 @@ def test_new_input_arriving_during_previous_worker_close_runs_without_another_me
                 context_strategy=ContextStrategyConfig()), session_state_manager=manager, llm_client=Model(), enable_plugin_hooks=False, sqlite_factory=SqliteFactory()))
         try:
             await scheduler.start()
-            assert (await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "第一条"}))).accepted
+            assert (await scheduler.submit(InteractionCommand("s", "human_turn", {"message": "第一条"}))).accepted
             await asyncio.wait_for(first.wait(), 3)
-            assert (await scheduler.submit(ChannelCommand("s", "desktop", "stop_turn"))).accepted
+            assert (await scheduler.submit(InteractionCommand("s", "stop_turn"))).accepted
             await asyncio.wait_for(closing.wait(), 3)
-            assert (await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "第二条"}))).accepted
+            assert (await scheduler.submit(InteractionCommand("s", "human_turn", {"message": "第二条"}))).accepted
             released.set()
             await asyncio.wait_for(second.wait(), 3)
         finally:

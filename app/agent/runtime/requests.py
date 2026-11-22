@@ -18,7 +18,6 @@ class ExecutionEvent:
 
     context_id: str
     run_id: str
-    origin_channel: str
     event: AgentEvent
 
 

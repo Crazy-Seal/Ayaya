@@ -18,13 +18,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.dependencies import (
-    get_runtime_scheduler, get_interaction_event_hub, get_channel_subscription_service,
+    get_runtime_scheduler, get_interaction_event_hub,
 )
 from app.http_errors import install_http_error_handlers
 from app.agent.core.events import AgentEvent, EventType
 from app.agent.state.manager import SessionStateManager
 from app.interaction.interaction_event_hub import InteractionEventHub
-from app.services.channel_subscription_service import ChannelSubscriptionService
 from app.routes.agent import router as agent_router
 from app.routes.tools import router as tools_router
 from app.schemas.runtime_types import CommandReceipt, CommandStatus
@@ -51,12 +50,11 @@ def test_http_command_reaches_real_scheduler_and_sse_subscriber(tmp_path, delive
     class Agent(RuntimeAgentStub):
         """只替代模型执行，保留真人输入的真实保存和交付通知。"""
 
-        async def run(self, message, *, origin_channel, inbox_input, emit, **kwargs):
+        async def run(self, message, *, inbox_input, emit, **kwargs):
             """保存输入后通知界面，再保存正常结果并结束。
 
             Args:
                 message (str): HTTP 提交的用户正文。
-                origin_channel (str): 输入来源渠道。
                 inbox_input (InboxEnvelope): Scheduler 读取的输入。
                 **kwargs (dict): 本轮控制等未使用参数。
 
@@ -64,14 +62,14 @@ def test_http_command_reaches_real_scheduler_and_sse_subscriber(tmp_path, delive
                 AgentEvent: 文字及正常完成事件。
             """
             outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
-            await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": origin_channel, "resumed": False}))
+            await emit(AgentEvent(EventType.RUN_STARTED, {"resumed": False}))
             if delivery_failure:
                 raise OSError("交付失败")
             manager = SessionStateManager("s", SqliteFactory(path))
             try:
                 # 1. checkpoint 与 Inbox 交付同事务保存后，才通知显示真人消息。
                 state = await manager.load()
-                human = state.add_user_message(message, origin_channel=origin_channel)
+                human = state.add_user_message(message)
                 await manager.save(state, checkpoint_type="intermediate", inbox_inputs=(inbox_input,))
                 await emit(AgentEvent(EventType.HUMAN_INPUT_COMMITTED, {"message": human, "input_sequence": inbox_input.id}))
                 await emit(AgentEvent(EventType.TEXT_CHUNK, "收到：" + message))           # 2. 模拟真实 Agent 的正常完成事务，队列仅在这里放行。
@@ -98,9 +96,8 @@ def test_http_command_reaches_real_scheduler_and_sse_subscriber(tmp_path, delive
         assert session_id == "s"
         return Agent()
 
-    subscriptions = ChannelSubscriptionService(SqliteFactory(path))
     scheduler = build_test_scheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
-        agent_factory=create_agent, subscriptions=subscriptions,
+        agent_factory=create_agent,
         session_state_manager_factory=partial(SessionStateManager, sqlite_factory=SqliteFactory(path)),
     )
     hub = runtime_hub(scheduler)
@@ -144,17 +141,8 @@ def test_http_command_reaches_real_scheduler_and_sse_subscriber(tmp_path, delive
         """
         return hub
 
-    def subscriptions_override():
-        """返回命令与分发共享的配置。
-
-        Returns:
-            ChannelSubscriptionService: 测试实例。
-        """
-        return subscriptions
-
     app.dependency_overrides[get_runtime_scheduler] = runtime_override
     app.dependency_overrides[get_interaction_event_hub] = hub_override
-    app.dependency_overrides[get_channel_subscription_service] = subscriptions_override
 
     @app.post("/test/end-events")
     async def end_events():
@@ -200,7 +188,7 @@ def test_http_command_reaches_real_scheduler_and_sse_subscriber(tmp_path, delive
             assert snapshot_response.status_code == 200
             assert snapshot_response.json()["payload"]["phase"] == "idle"
             response = client.post("/agent/commands", json={
-                "session_id": "s", "origin_channel": "desktop", "kind": "human_turn",
+                "session_id": "s", "kind": "human_turn",
                 "payload": {"message": "你好"},
             })
             assert response.status_code == 200
@@ -230,18 +218,8 @@ def test_http_command_reaches_real_scheduler_and_sse_subscriber(tmp_path, delive
         assert [frame["event_sequence"] for frame in frames] == list(range(1, 5))
 
 
-@pytest.mark.parametrize("origin,status,detail", [
-    ("desktop", "invalid", "未知运行命令"),
-    ("unknown", "failed", "交互渠道未注册或已关闭"),
-])
-def test_unknown_command_keeps_http_200_business_rejection(origin: str, status: str, detail: str) -> None:
-    """未知命令和未注册渠道仍由调度器返回 HTTP 200 拒绝回执。
-
-    Args:
-        origin (str): 提交命令的渠道。
-        status (str): 调度器原有的拒绝状态。
-        detail (str): 调度器原有的错误正文。
-    """
+def test_unknown_command_keeps_http_200_business_rejection() -> None:
+    """未知命令由调度器返回 HTTP 200 拒绝回执。"""
     def unexpected_agent(session_id: str, _manager):
         """禁止未知命令触发真实执行。
 
@@ -280,10 +258,10 @@ def test_unknown_command_keeps_http_200_business_rejection(origin: str, status: 
     app.dependency_overrides[get_runtime_scheduler] = runtime_override
     with TestClient(app) as client:
         response = client.post("/agent/commands", json={
-            "session_id": "s", "origin_channel": origin, "kind": "future_command", "payload": {},
+            "session_id": "s", "kind": "future_command", "payload": {},
         })
     assert response.status_code == 200
-    assert response.json() == {"accepted": False, "status": status, "context_id": "s", "detail": detail, "run_id": None}
+    assert response.json() == {"accepted": False, "status": "invalid", "context_id": "s", "detail": "未知运行命令", "run_id": None}
 
 
 def test_idle_sse_heartbeats_preserve_pending_event_and_close_source(monkeypatch) -> None:
@@ -317,10 +295,9 @@ def test_idle_sse_heartbeats_preserve_pending_event_and_close_source(monkeypatch
                 super().unsubscribe(subscriber)
                 closed.set()
 
-        subscriptions = ChannelSubscriptionService(SqliteFactory())
-        hub = Hub(subscriptions=subscriptions)
+        hub = Hub()
         source = Source()
-        response = await subscribe_events("desktop", hub, subscriptions)
+        response = await subscribe_events(hub)
         stream = response.body_iterator
         try:
             # 1. 就绪帧之后空闲两次，心跳保持订阅缓冲有效。
@@ -350,8 +327,7 @@ def test_approval_arguments_are_json_objects_in_increment_and_snapshot() -> None
             "authorization_request", "确认命令", {"arguments": call.args},
         ).to_client()
 
-        subscriptions = ChannelSubscriptionService(SqliteFactory())
-        hub = InteractionEventHub(subscriptions=subscriptions)
+        hub = InteractionEventHub()
 
         class Events:
             """只替换快照查询，线路和订阅缓冲使用真实实现。"""
@@ -362,12 +338,12 @@ def test_approval_arguments_are_json_objects_in_increment_and_snapshot() -> None
                 return InteractionEvent(session_id, "session_snapshot", {"interrupt": approval},
                     stream_epoch=epoch, event_sequence=sequence)
 
-        response = await subscribe_events("desktop", hub, subscriptions)
+        response = await subscribe_events(hub)
         stream = response.body_iterator
         try:
             assert json.loads((await anext(stream))[6:])["kind"] == "stream_ready"
             from app.agent.state.messages import to_json_value
-            frames = [to_json_value(asdict(await get_session_snapshot("s", "desktop", hub, subscriptions, Events())))]
+            frames = [to_json_value(asdict(await get_session_snapshot("s", Events())))]
             hub.publish(InteractionEvent("s", "interrupt", {"value": approval}))
             frames.append(json.loads((await anext(stream))[6:]))
         finally:
@@ -386,7 +362,7 @@ class _Scheduler:
     """提供隔离测试替身，用于验证：_Scheduler。
 
     Attributes:
-        commands (list[ChannelCommand]): 测试观测到的已提交命令。
+        commands (list[InteractionCommand]): 测试观测到的已提交命令。
     """
     def __init__(self) -> None:
         """初始化测试替身的观测记录。"""
@@ -396,7 +372,7 @@ class _Scheduler:
         """记录测试命令并返回受理回执。
 
         Args:
-            command (ChannelCommand): 统一渠道命令或需要执行的命令正文，类型决定其含义。
+            command (InteractionCommand): 统一渠道命令或需要执行的命令正文，类型决定其含义。
         """
         self.commands.append(command)
         return CommandReceipt(CommandStatus.ACCEPTED, run_id="run-1")
@@ -424,8 +400,7 @@ def test_command_route_forwards_approval_identity() -> None:
     app.dependency_overrides[get_runtime_scheduler] = lambda: scheduler
     with TestClient(app) as client:
         response = client.post("/agent/commands", json={
-            "session_id": "session-a", "origin_channel": "desktop",
-            "kind": "resolve_authorization", "request_id": "interrupt-123",
+            "session_id": "session-a", "kind": "resolve_authorization", "request_id": "interrupt-123",
             "payload": {"kind": "reject"},
         })
         assert client.post("/chat", json={"message": "旧入口"}).status_code == 404

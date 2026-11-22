@@ -11,7 +11,7 @@ from app.agent.runtime.agent_execution import AgentExecution
 from app.agent.runtime.requests import RuntimeRequest, SessionClosed
 from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
 from app.agent.state.manager import SessionStateManager
-from app.interaction.interaction_contract import ChannelCommand, InteractionEvent
+from app.interaction.interaction_contract import InteractionCommand, InteractionEvent
 from app.schemas.runtime_types import AgentRunOutcome, AgentRunOutcomeKind, ApprovalDecisionKind, ApprovalWait, CommandStatus, InboxKind, InteractionEventKind, ParentMessageWait, SessionState
 from app.schemas.subagent_types import SubagentDefinition, SubagentInteractionKind, SubagentPublicStatus, SubagentSummary
 from app.services.subagent_service import SubagentService
@@ -178,11 +178,11 @@ class SubagentSession:
                 self._wakeup.set()
             return receipt
 
-    async def resolve_authorization(self, command: ChannelCommand) -> CommandReceipt:
+    async def resolve_authorization(self, command: InteractionCommand) -> CommandReceipt:
         """保存首个有效审批决定，原 worker 顺序恢复审批或交付新指令。
 
         Args:
-            command (ChannelCommand): 实际子上下文的审批决定。
+            command (InteractionCommand): 实际子上下文的审批决定。
 
         Returns:
             CommandReceipt: 决定的持久受理结果。

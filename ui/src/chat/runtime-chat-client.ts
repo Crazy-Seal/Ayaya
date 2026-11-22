@@ -4,7 +4,7 @@ import { iconMarkup } from "../ui/icons.js";
 import { ToolApprovalDialog } from "./tool-approval-dialog.js";
 import { BackgroundTaskEntry } from "./background-task-entry.js";
 import {
-  CommandKind, DESKTOP_CHANNEL, InteractionEventKind, InterruptKind, SessionPhase,
+  CommandKind, InteractionEventKind, InterruptKind, SessionPhase,
 } from "../../shared-types.js";
 import type { ChatAttentionUpdate, ChatHistoryItem, FailedInteractionInput, PluginStatusNotice, ToolCompletedData } from "../../shared-types.js";
 import type { PluginStatusNotices } from "./plugin-status-notices.js";
@@ -76,7 +76,6 @@ export interface RuntimeChatClientOptions {
  *     sessionId (string): 当前会话标识，用于丢弃跨会话迟到响应。
  *     phase (SessionPhase): 后端投影的会话阶段，原始快照字段仅在接收处转换。
  *     runId (string | null): 当前运行标识，停止和引导命令用它限定目标。
- *     runOrigin (string): 当前回复所属入口渠道。
  *     partial (string): 当前页面实时收到的回复片段，不从快照恢复，展示前清洗标签。
  *     playedLabels (Set<string>): 当前轮次已经处理的表情标签，重连恢复不重播。
  *     streaming (boolean): 是否已经建立本轮流式草稿。
@@ -104,7 +103,6 @@ export class RuntimeChatClient {
   private sessionId: string;
   private phase: SessionPhase = SessionPhase.IDLE;
   private runId: string | null = null;
-  private runOrigin = DESKTOP_CHANNEL;
   private partial = "";
   private playedLabels = new Set<string>();
   private streaming = false;
@@ -308,12 +306,12 @@ export class RuntimeChatClient {
   }
 
   /**
-   * 为当前回复来源启动流式视图，避免重复创建草稿。
+   * 为当前回复启动流式视图并准备正文段落。
    */
   private startStreaming(): void {
     if (this.streaming) return;
     this.streaming = true;
-    this.options.chatHistory.startStreaming(this.runOrigin);
+    this.options.chatHistory.startStreaming();
     this.options.chatHistory.showTypingIndicator();
   }
 
@@ -517,7 +515,6 @@ export class RuntimeChatClient {
     try {
       const receipt = await this.bridge.submitInteractionCommand({
         session_id: this.sessionId,
-        origin_channel: DESKTOP_CHANNEL,
         kind: CommandKind.RESOLVE_AUTHORIZATION,
         request_id: requestId,
         ...(subagentId ? { subagent_id: subagentId } : {}),
@@ -569,8 +566,7 @@ export class RuntimeChatClient {
     const sessionId = this.sessionId;
     try {
       const receipt = await this.bridge.submitInteractionCommand({
-        session_id: sessionId, origin_channel: DESKTOP_CHANNEL,
-        kind: CommandKind.CANCEL_QUEUED, payload: { input_sequence: sequence },
+        session_id: sessionId, kind: CommandKind.CANCEL_QUEUED, payload: { input_sequence: sequence },
       });
       if (!receipt.accepted) throw new Error(receipt.detail || "排队消息无法撤销");
     } catch (error) {
@@ -643,7 +639,7 @@ export class RuntimeChatClient {
       // 2. 等待期间会话可能切换；只向发起点击时的会话重发原正文和图片。
       if (sessionId !== this.sessionId) return;
       const receipt = await this.bridge.submitInteractionCommand({
-        session_id: sessionId, origin_channel: DESKTOP_CHANNEL, kind: CommandKind.HUMAN_TURN,
+        session_id: sessionId, kind: CommandKind.HUMAN_TURN,
         payload: { message: input.message, images: input.images },
       });
       if (sessionId !== this.sessionId) return;
@@ -688,7 +684,6 @@ export class RuntimeChatClient {
       // 3. HTTP 只确认受理，真实消息和运行终态统一由事件更新。
       const receipt = await this.bridge.submitInteractionCommand({
         session_id: sessionId,
-        origin_channel: DESKTOP_CHANNEL,
         kind,
         target_run_id: kind === CommandKind.STOP_TURN || kind === CommandKind.HUMAN_STEER
           ? this.runId ?? undefined : undefined,
@@ -731,7 +726,7 @@ export class RuntimeChatClient {
    * 串行应用会话快照及增量，按 epoch 和序号过滤重复或过期事件。
    *
    * Args:
-   *     event (InteractionEvent): 渠道事件或 DOM 事件，由所属定义决定。
+   *     event (InteractionEvent): 交互事件或 DOM 事件，由所属定义决定。
    *
    * Returns:
    *     Promise<void>: 当前异步处理完成的等待结果。
@@ -763,7 +758,6 @@ export class RuntimeChatClient {
       const restoredRun = typeof snapshot.run_id === "string" ? snapshot.run_id : null;
       if (epochChanged || this.runId !== restoredRun) this.playedLabels.clear();
       this.runId = restoredRun;
-      this.runOrigin = String(snapshot.origin_channel || DESKTOP_CHANNEL);
       if (this.phase === SessionPhase.RUNNING || this.phase === SessionPhase.PENDING_INTERRUPT) {
         this.deferredRuns.add(this.replyKey(this.runId));
       }
@@ -852,8 +846,7 @@ export class RuntimeChatClient {
       return;
     }
     if (event.kind === InteractionEventKind.HUMAN_MESSAGE) {
-      if (event.origin_channel === DESKTOP_CHANNEL
-          && String(event.payload.message || "") === this.pendingSteerMessage) {
+      if (String(event.payload.message || "") === this.pendingSteerMessage) {
         this.pendingSteerMessage = null;
         this.options.chatHistory.clearPendingSteer?.();
       }
@@ -865,13 +858,11 @@ export class RuntimeChatClient {
         id: typeof event.payload.message_id === "string" ? event.payload.message_id : undefined,
         role: HistoryRole.HUMAN.toLowerCase() as HistoryRole, content: String(event.payload.message || ""),
         images: event.payload.images as string[] | undefined,
-        origin_channel: event.origin_channel || DESKTOP_CHANNEL,
         timestamp: new Date().toISOString(),
       });
     // 5. 排队受理与撤销更新输入序号列表，尚未交付的输入不伪装成历史。
     } else if (event.kind === InteractionEventKind.QUEUED_MESSAGE) {
-      if (event.origin_channel === DESKTOP_CHANNEL
-          && String(event.payload.message || "") === this.pendingSteerMessage) {
+      if (String(event.payload.message || "") === this.pendingSteerMessage) {
         this.pendingSteerMessage = null;
         this.options.chatHistory.clearPendingSteer?.();
       }
@@ -901,7 +892,6 @@ export class RuntimeChatClient {
       // 6.1. 新轮可再次播放相同表情；同 run 的工具恢复沿用已处理标签集合。
       if (this.runId !== nextRun || event.payload.resumed !== true) this.playedLabels.clear();
       this.runId = nextRun;
-      this.runOrigin = event.origin_channel || DESKTOP_CHANNEL;
       this.partial = "";
       if (this.deferredRuns.has(this.replyKey(this.runId))) {
         this.options.chatHistory.showTypingIndicator();
@@ -912,7 +902,6 @@ export class RuntimeChatClient {
     } else if (event.kind === InteractionEventKind.TEXT_CHUNK) {
       if (this.deferredRuns.has(this.replyKey(event.run_id || this.runId))) return;
       this.currentToolActive = false;
-      this.runOrigin = event.origin_channel || DESKTOP_CHANNEL;
       this.startStreaming();
       this.partial += String(event.payload.value || "");
       this.options.chatHistory.hideTypingIndicator();
@@ -1008,7 +997,7 @@ export class RuntimeChatClient {
         this.renderQueuedInputs();
         this.options.chatHistory.showFailedInput?.({
           role: HistoryRole.HUMAN.toLowerCase() as HistoryRole, content: failed.message, images: failed.images,
-          origin_channel: event.origin_channel || DESKTOP_CHANNEL, timestamp: new Date().toISOString(),
+          timestamp: new Date().toISOString(),
         }, detail, /** 用户点击后重发当前展示的原始输入。 */
         () => this.retryFailedInput(failed));
       } else {

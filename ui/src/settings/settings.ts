@@ -20,7 +20,6 @@ import { ContextStrategyPage } from "./pages/context-strategy-page.js";
 import { authorizeBaseUrlChange } from "./url-security.js";
 import { MotionPage } from "./pages/motion-page.js";
 import { McpPage } from "./pages/mcp-page.js";
-import { ChannelSubscriptionsPage } from "./pages/channel-subscriptions-page.js";
 import { BackgroundTasksPage } from "./pages/background-tasks-page.js";
 import { SubagentPanel } from "./pages/subagent-panel.js";
 import { InteractionEventKind } from "../../shared-types.js";
@@ -35,10 +34,9 @@ import type {
 } from "./types.js";
 
 /**
- * 装配模型设置、渠道订阅和后台任务等设置页面。
+ * 装配模型设置和后台任务等设置页面。
  *
  * Attributes:
- *     channelsPage (ChannelSubscriptionsPage): 当前会话的渠道订阅设置页。
  *     tasksPage (BackgroundTasksPage): 当前会话的任务记录和输出设置页。
  */
 class SettingsApp {
@@ -54,7 +52,6 @@ class SettingsApp {
   private contextStrategyPage: ISettingsPage;
   private motionPage: ISettingsPage;
   private mcpPage: ISettingsPage;
-  private channelsPage: ChannelSubscriptionsPage;
   private tasksPage: BackgroundTasksPage;
   private subagentPanel: SubagentPanel;
   private confirmDialog: ConfirmDialog;
@@ -158,7 +155,6 @@ class SettingsApp {
       this.getElement("#motion-system-prompt")
     );
     this.mcpPage = new McpPage(this.getElement("#mcp-page"), this.confirmDialog, this.toast);
-    this.channelsPage = new ChannelSubscriptionsPage(this.getElement("#channel-subscriptions-list"));
     this.tasksPage = new BackgroundTasksPage(
       this.getElement("#background-tasks-list"),
       this.getElement("#refresh-background-tasks"),
@@ -364,7 +360,7 @@ class SettingsApp {
   }
 
   /**
-   * 根据选中的设置页加载当前会话数据，包括渠道与任务页面。
+   * 根据选中的设置页加载当前会话数据和后台任务。
    *
    * Args:
    *     pageName (string): 当前定义使用的 pageName 参数。
@@ -382,9 +378,7 @@ class SettingsApp {
       // model 页面特殊处理
       if (pageName === "model") {
         void this.modelPage.refreshModelConfig();
-      // 1. 渠道和任务页按当前保存会话查询，不修改模型设置的保存流程。
-      } else if (pageName === "channels") {
-        await this.channelsPage.render(this.savedState.session_id);
+      // 1. 任务页按当前保存会话查询，不修改模型设置的保存流程。
       } else if (pageName === "tasks") {
         await this.tasksPage.render(this.savedState.session_id);
       } else if (pageName === "subagents") {

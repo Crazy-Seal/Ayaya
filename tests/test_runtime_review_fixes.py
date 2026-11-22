@@ -14,7 +14,7 @@ from app.agent.tools.authorization.manager import ToolAuthorization
 from app.agent.tools.core.base import BaseTool, ToolResult
 from app.crud.sqlite_factory import SqliteFactory
 from app.crud.task_record_dao import TaskRecordDao
-from app.interaction.interaction_contract import ChannelCommand
+from app.interaction.interaction_contract import InteractionCommand
 from app.schemas.chat_settings import ChatSettings
 from app.schemas.runtime_types import InteractionEventKind, SessionState
 from app.schemas.subagent_types import SubagentAction
@@ -111,9 +111,9 @@ def test_parent_stop_during_input_selection_prevents_execution(tmp_path: Path, m
             session_state_manager_factory=lambda context: SessionStateManager(context, factory), chat_settings_dao=settings)
         try:
             await runtime.start()
-            assert not (await runtime.submit(ChannelCommand("s", "desktop", "stop_turn"))).accepted
+            assert not (await runtime.submit(InteractionCommand("s", "stop_turn"))).accepted
             monkeypatch.setattr(SessionStateManager, "read_activation_batch", read)
-            await runtime.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "开始"}))
+            await runtime.submit(InteractionCommand("s", "human_turn", {"message": "开始"}))
             await asyncio.wait_for(entered.wait(), 3)
             session = runtime._sessions["s"]
             if delete:
@@ -121,7 +121,7 @@ def test_parent_stop_during_input_selection_prevents_execution(tmp_path: Path, m
                 runtime.schedule_parent_cleanup("s")
                 cleanup = runtime._parent_cleanup_workers["s"]
             else:
-                assert (await runtime.submit(ChannelCommand("s", "desktop", "stop_turn"))).accepted
+                assert (await runtime.submit(InteractionCommand("s", "stop_turn"))).accepted
             release.set()
             if delete:
                 await asyncio.wait_for(cleanup, 3)
@@ -207,7 +207,7 @@ def test_plugin_control_advances_waiting_parent(tmp_path: Path, kind):
             session_state_manager_factory=lambda context: SessionStateManager(context, factory), chat_settings_dao=configured_settings("s"))
         try:
             await runtime.start()
-            await runtime.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "开始"}))
+            await runtime.submit(InteractionCommand("s", "human_turn", {"message": "开始"}))
             event = await next_kind(runtime, InteractionEventKind.INTERRUPT)
             await runtime.runtime_queue.put(PluginRequest(kind=kind, session_id="s", plugin_name="test", name="control", text="改做新工作"))
             await next_kind(runtime, InteractionEventKind.AUTHORIZATION_RESOLVED)

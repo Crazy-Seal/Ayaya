@@ -1,4 +1,4 @@
-"""把运行对象提供的事实转换成渠道事件，保持业务决策在运行对象内。"""
+"""把运行对象提供的事实转换成交互事件，保持业务决策在运行对象内。"""
 
 from app.agent.core.events import EventType
 from app.agent.runtime.requests import ExecutionEvent
@@ -25,7 +25,7 @@ def to_interaction_event(value: ExecutionEvent | InteractionEvent) -> Interactio
         value (ExecutionEvent | InteractionEvent): 生产者已经确定的执行或业务事件。
 
     Returns:
-        InteractionEvent: 尚未分配输出序号的渠道事件。
+        InteractionEvent: 尚未分配输出序号的交互事件。
     """
     if isinstance(value, InteractionEvent):
         return value
@@ -34,12 +34,10 @@ def to_interaction_event(value: ExecutionEvent | InteractionEvent) -> Interactio
         message = event.data["message"]
         return InteractionEvent(value.context_id, InteractionEventKind.HUMAN_MESSAGE,
             {"message": message.text, "images": [part.storage_ref or part.url for part in message.content if isinstance(part, ImageContent)],
-             "input_sequence": event.data["input_sequence"], "message_id": message.message_id},
-            origin_channel=message.origin_channel)
+             "input_sequence": event.data["input_sequence"], "message_id": message.message_id})
     if event.type == EventType.RUN_STARTED:
         payload = {"resumed": bool(event.data["resumed"])}
     else:
         payload = {"value": event.data}
-    return InteractionEvent(value.context_id, AGENT_EVENT_KINDS[event.type], payload,
-        origin_channel=value.origin_channel, run_id=value.run_id,
+    return InteractionEvent(value.context_id, AGENT_EVENT_KINDS[event.type], payload, run_id=value.run_id,
         request_id=event.data.get("request_id") if event.type == EventType.INTERRUPT else None)

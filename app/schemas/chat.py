@@ -1,5 +1,4 @@
 from app.schemas.message_types import HistoryRole
-from app.schemas.runtime_types import DESKTOP_CHANNEL
 from pydantic import BaseModel, Field
 
 
@@ -13,7 +12,6 @@ class ChatHistoryItem(BaseModel):
         content (str): 当前可见项的真人正文、助手正文或工具调用提示。
         timestamp (str): 协议记录转换为本机时区后的显示时间。
         images (list[str] | None): 图片文件路径，未成功外置时可保留原图片地址。
-        origin_channel (str): 输入或本轮回复所属的渠道。
     """
     id: str
     role: HistoryRole
@@ -22,4 +20,3 @@ class ChatHistoryItem(BaseModel):
     timestamp: str
     # 图片文件路径列表
     images: list[str] | None = Field(default=None, description="List of image file paths")
-    origin_channel: str = DESKTOP_CHANNEL

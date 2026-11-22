@@ -13,7 +13,6 @@ from tests.runtime_support import RuntimeAgentStub
 from app.agent.state.manager import task_result_messages
 from tests.runtime_support import configured_settings
 from app.agent.core.events import AgentEvent, EventType
-from app.services.channel_subscription_service import ChannelSubscriptionService
 from tests.model_capture import result_parts
 from tests.model_capture import capture_input
 
@@ -28,7 +27,7 @@ from app.agent.state.messages import HumanMessage, TaskResultMessage, ToolCall, 
 from app.agent.state.messages import AssistantMessage, ImageContent, ToolMessage
 from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
 from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
-from app.interaction.interaction_contract import ChannelCommand
+from app.interaction.interaction_contract import InteractionCommand
 from app.interaction.interaction_event_hub import InteractionEventHub
 
 
@@ -57,7 +56,7 @@ def test_shutdown_retries_parent_resource_still_owned_by_session(tmp_path) -> No
                 state = await self.manager.load()
                 self.manager.append_human_input(state, message, None, inputs=kwargs["inbox_inputs"])
                 await self.manager.save(state, checkpoint_type=CheckpointType.INTERMEDIATE, inbox_inputs=kwargs["inbox_inputs"])
-                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False}))
+                await emit(AgentEvent(EventType.RUN_STARTED, {"resumed": False}))
                 entered.set()
                 await asyncio.Event().wait()
 
@@ -83,7 +82,7 @@ def test_shutdown_retries_parent_resource_still_owned_by_session(tmp_path) -> No
             session_state_manager_factory=lambda context: SessionStateManager(context, SqliteFactory(path)))
         try:
             await scheduler.start()
-            await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "执行任务"}))
+            await scheduler.submit(InteractionCommand("s", "human_turn", {"message": "执行任务"}))
             await asyncio.wait_for(entered.wait(), 2)
             await close_test_runtime(scheduler)
             assert released.is_set()
@@ -107,17 +106,17 @@ def test_restart_discards_humans_and_preserves_pending_notices(tmp_path) -> None
         manager = SessionStateManager("s", SqliteFactory(path))
         try:
             # 1. 已交付真人输入保留，其他真人输入覆盖读取和两种排队放行状态。
-            await inbox.submit_human("desktop", "已交付")
+            await inbox.submit_human("已交付")
             delivered = await inbox.read_next()
             state = AgentState.create_new("s")
             state.add_user_message("已交付")
             await manager.save(state, checkpoint_type="completed", inbox_inputs=(delivered,))
-            await inbox.submit_human("desktop", "已读取")
+            await inbox.submit_human("已读取")
             claimed_human = await inbox.read_next()
-            await inbox.submit_human("desktop", "已放行", queued=True)
+            await inbox.submit_human("已放行", queued=True)
             await inbox.release_queued()
-            await inbox.submit_human("desktop", "未放行", queued=True)
-            await inbox.submit_human("desktop", "立即输入")
+            await inbox.submit_human("未放行", queued=True)
+            await inbox.submit_human("立即输入")
             # 2. 遗留任务通知已读取但尚未交付，重启后仍然保留待交付状态。
             await records.insert_running("task", "s", "测试任务", 1, str(tmp_path / "out"))
             await records.finish_once("task", "completed", 0)
@@ -154,7 +153,7 @@ def test_restart_reset_preserves_humans_when_deletion_fails(tmp_path) -> None:
         inbox = SessionStateManager("s", SqliteFactory(path))
         records = TaskRecordDao(SqliteFactory(path))
         try:
-            await inbox.submit_human("desktop", "必须原子作废")
+            await inbox.submit_human("必须原子作废")
             await records.insert_running("task", "s", "任务", 1, str(tmp_path / "out"))
             await records.finish_once("task", "completed", 0)
             notice = (await inbox.read_task_terminals())[0]
@@ -276,8 +275,7 @@ def test_start_finalizes_abandoned_checkpoint_without_execution(tmp_path, case) 
                 interrupt = {
                     "type": "authorization_request",
                     "request_id": "old-request", "tool_call_id": first.id,
-                    "tool_name": first.name, "tool_args": {}, "origin_channel": "desktop",
-                    "resume_state": {},
+                    "tool_name": first.name, "tool_args": {}, "resume_state": {},
                     "data": {"arguments": {}},
                 }
                 if case == "approved":
@@ -355,7 +353,7 @@ def test_terminal_waits_for_new_human_and_shutdown_cannot_reactivate(tmp_path) -
                     AgentEvent: 轮次完成事件。
                 """
                 outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
-                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": kwargs.get("origin_channel", "desktop"), "resumed": False}))
+                await emit(AgentEvent(EventType.RUN_STARTED, {"resumed": False}))
                 manager = SessionStateManager("s", SqliteFactory(path))
                 try:
                     state = await manager.load()
@@ -382,7 +380,7 @@ def test_terminal_waits_for_new_human_and_shutdown_cannot_reactivate(tmp_path) -
                     AgentEvent: 轮次完成事件。
                 """
                 outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
-                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False}))
+                await emit(AgentEvent(EventType.RUN_STARTED, {"resumed": False}))
                 manager = SessionStateManager("s", SqliteFactory(path))
                 try:
                     state = await manager.load()
@@ -406,12 +404,12 @@ def test_terminal_waits_for_new_human_and_shutdown_cannot_reactivate(tmp_path) -
             session_state_manager_factory=lambda session: SessionStateManager(session, SqliteFactory(path)),
          chat_settings_dao=supervisor_settings, mutation_coordinator=supervisor_mutations)
         try:
-            assert not (await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "启动前"}))).accepted
+            assert not (await scheduler.submit(InteractionCommand("s", "human_turn", {"message": "启动前"}))).accepted
             await scheduler.start()
             event = await asyncio.wait_for(next_runtime_event(scheduler), 1)
             assert event.kind == "task_status"
             assert calls == []
-            assert (await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "新意图"}))).accepted
+            assert (await scheduler.submit(InteractionCommand("s", "human_turn", {"message": "新意图"}))).accepted
             await asyncio.wait_for(executed.wait(), 2)
             manager = SessionStateManager("s", SqliteFactory(path))
             try:
@@ -427,7 +425,7 @@ def test_terminal_waits_for_new_human_and_shutdown_cannot_reactivate(tmp_path) -
             await scheduler.begin_shutdown()
             await records.insert_running("closing", "s", "关闭任务", 1, str(tmp_path / "out"))
             await finish_task_record(supervisor, "closing", "stopped")
-            assert not (await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "关闭后"}))).accepted
+            assert not (await scheduler.submit(InteractionCommand("s", "human_turn", {"message": "关闭后"}))).accepted
             await close_test_runtime(scheduler)
             await close_test_runtime(scheduler)
             assert calls == ["新意图", "内部通知"]
@@ -494,7 +492,7 @@ def test_start_failure_closes_instance_and_new_instance_finishes_cleanup(tmp_pat
                 await scheduler.start()
             assert scheduler.phase == "stopped"
             assert scheduler._task_reader is None
-            assert not (await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "失败后"}))).accepted
+            assert not (await scheduler.submit(InteractionCommand("s", "human_turn", {"message": "失败后"}))).accepted
             monkeypatch.setattr(SessionStateManager, "finalize_abandoned_turn", original)
             with pytest.raises(RuntimeError, match="只能启动一次"):
                 await scheduler.start()
@@ -586,18 +584,16 @@ def test_shutdown_captures_real_agent_partial_and_closes_subscription(tmp_path, 
                 _manager.save = delayed_save
             return agent
 
-        subscriptions = ChannelSubscriptionService(sqlite_factory=SqliteFactory())
-        scheduler = build_test_scheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
-            subscriptions=subscriptions, agent_factory=make_agent,
+        scheduler = build_test_scheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(), agent_factory=make_agent,
             session_state_manager_factory=lambda session: SessionStateManager(session, SqliteFactory(path)),
         )
         hub = runtime_hub(scheduler)
         pass
         await scheduler.start()
-        stream = observe_session("s", "desktop", hub, scheduler)
+        stream = observe_session("s", hub, scheduler)
         await anext(stream)
         try:
-            await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "新任务"}))
+            await scheduler.submit(InteractionCommand("s", "human_turn", {"message": "新任务"}))
             while (await asyncio.wait_for(anext(stream), 2)).kind != "text_chunk":
                 pass
             if committing:

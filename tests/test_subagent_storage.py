@@ -78,8 +78,8 @@ def test_parent_and_child_state_and_inbox_are_isolated(tmp_path: Path) -> None:
         parent = SessionStateManager("same", SqliteFactory(database))
         child = SessionStateManager("same", SqliteFactory(database), storage_scope=AgentStorageScope.SUBAGENT)
         try:
-            first = await parent.submit_human("desktop", "父输入")
-            second = await child.submit_human("desktop", "子输入")
+            first = await parent.submit_human("父输入")
+            second = await child.submit_human("子输入")
             parent_state, child_state = await parent.load(), await child.load()
             parent.append_human_input(parent_state, "父输入", None, inputs=(first,))
             await parent.save(parent_state, checkpoint_type=CheckpointType.INTERMEDIATE, inbox_inputs=(first,))
@@ -136,7 +136,7 @@ def test_wrong_inbox_scope_rolls_back_child_checkpoint(tmp_path: Path) -> None:
         inbox = SessionInboxDao("same", SqliteFactory(database))
         child = AgentStateDao("same", SqliteFactory(database), storage_scope=AgentStorageScope.SUBAGENT)
         try:
-            item = await inbox.submit_human("desktop", "父输入")
+            item = await inbox.submit_human("父输入")
             with pytest.raises(ValueError):
                 await child.save(AgentState(session_id="same"), checkpoint_type=CheckpointType.INTERMEDIATE,
                                  inbox_inputs=(item,))
@@ -173,9 +173,9 @@ def test_retirement_keeps_history_and_blocks_late_task_inputs(tmp_path: Path, de
             state.add_assistant_message("已保存的最终回答")
             await child.save(state, checkpoint_type=CheckpointType.COMPLETED)
             await dao.append_message(definition, SubagentInteractionKind.STEER, "未交付的引导", "steer")
-            pending = await child.submit_human("desktop", "未交付输入")
-            parent_input = await parent.submit_human("desktop", "父输入")
-            other_input = await other.submit_human("desktop", "其他子输入")
+            pending = await child.submit_human("未交付输入")
+            parent_input = await parent.submit_human("父输入")
+            other_input = await other.submit_human("其他子输入")
             await tasks.insert_running("work", "parent", name="work", title="子后台工作", subagent_id="child",
                 notification_context_id="child", notification_scope=AgentStorageScope.SUBAGENT)
             if delivery == "before":

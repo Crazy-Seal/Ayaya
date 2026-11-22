@@ -22,12 +22,12 @@ async def save_authorization(manager: SessionStateManager) -> None:
         manager (SessionStateManager): 本次测试独有的会话状态业务对象。
     """
     state = await manager.load()
-    state.add_user_message("执行工具", origin_channel="qq")
+    state.add_user_message("执行工具")
     call = ToolCall(id="call", name="probe", args={})
-    state.record_assistant_step("", (call,), origin_channel="qq")
+    state.record_assistant_step("", (call,))
     state.clear_pending_tool_calls()
     state.set_interrupt({"type": "authorization_request", "request_id": "approval",
-        "tool_call_id": call.id, "tool_name": call.name, "tool_args": {}, "origin_channel": "qq"})
+        "tool_call_id": call.id, "tool_name": call.name, "tool_args": {}})
     await manager.save_progress(state)
 
 
@@ -43,9 +43,9 @@ def test_authorization_requires_saved_first_decision_and_matching_request(tmp_pa
         try:
             await save_authorization(manager)
             assert await manager.load_for_resume("approval") is None
-            assert await manager.record_authorization_decision("old", {"kind": "approve"}) is None
-            assert await manager.record_authorization_decision("approval", {"kind": "approve"}) == "qq"
-            assert await manager.record_authorization_decision("approval", {"kind": "reject"}) is None
+            assert await manager.record_authorization_decision("old", {"kind": "approve"}) is False
+            assert await manager.record_authorization_decision("approval", {"kind": "approve"}) is True
+            assert await manager.record_authorization_decision("approval", {"kind": "reject"}) is False
             assert await manager.load_for_resume("old") is None
             restored = await manager.load_for_resume("approval")
             assert restored.interrupt_data["runtime_decision"] == {"kind": "approve"}
@@ -125,9 +125,9 @@ def test_steer_accepts_input_without_marking_it_delivered(tmp_path) -> None:
         try:
             await save_authorization(manager)
             decision = {"kind": "steer", "message": "改做另一件事"}
-            assert await manager.record_authorization_decision("approval", decision, "desktop") == "qq"
+            assert await manager.record_authorization_decision("approval", decision) is True
             pending = await manager.pending_humans()
-            assert len(pending) == 1 and pending[0].origin_channel == "desktop"
+            assert len(pending) == 1
             assert pending[0].payload["message"] == decision["message"]
             assert await manager.status(pending[0].id) == "pending"
         finally:
@@ -176,7 +176,7 @@ def test_close_attempts_inbox_cleanup_when_state_close_fails(tmp_path, monkeypat
         """关闭真实连接后报告状态关闭故障，验证 finally 中的输入清理。"""
         manager = SessionStateManager("s", SqliteFactory(str(tmp_path / "state.sqlite3")))
         await manager.load()
-        await manager.submit_human("desktop", "待处理")
+        await manager.submit_human("待处理")
         original = manager._state_dao.close
 
         async def fail_close():

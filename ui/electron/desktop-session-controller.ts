@@ -91,7 +91,7 @@ export class DesktopSessionController {
       await this.ensureReady();
       if (!this.isCurrentView(view)) return;
       const response = await this.dependencies.fetchBackend(
-        `/agent/snapshot/${encodeURIComponent(sessionId)}?channel=desktop`, { signal: view.controller.signal },
+        `/agent/snapshot/${encodeURIComponent(sessionId)}`, { signal: view.controller.signal },
       );
       if (!this.isCurrentView(view)) return;
       if (!response.ok) throw new Error(`会话快照查询失败: ${response.status}`);
@@ -142,7 +142,7 @@ export class DesktopSessionController {
 
   /** 按会话去重，将初始化中的当前会话事件保留到快照之后。
    * Args:
-   *     event (InteractionEvent): 已由后端按渠道筛选的实时事件。
+   *     event (InteractionEvent): 后端发布的会话实时事件。
    */
   private receiveEvent(event: InteractionEvent): void {
     if (event.stream_epoch !== this.epoch || event.event_sequence <= (this.sequences.get(event.session_id) ?? -1)) return;
@@ -166,7 +166,7 @@ export class DesktopSessionController {
       try {
         if (this.dependencies.onConnected) await this.dependencies.onConnected(connection.signal);
         if (controller.signal.aborted) return;
-        const response = await this.dependencies.fetchBackend("/agent/events?channel=desktop", { signal: connection.signal });
+        const response = await this.dependencies.fetchBackend("/agent/events", { signal: connection.signal });
         if (controller.signal.aborted) return;
         if (!response.ok) throw new Error(`事件订阅失败: ${response.status}`);
         for await (const frame of readSseJson<InteractionEvent | InteractionStreamReady>(response, connection.signal)) {

@@ -22,7 +22,7 @@ test("工具完成历史查询传递终点并保留消息身份和图片", /**
  */
 async () => {
   const item = { id: "result:images", role: "AI", content: "", timestamp: "2026-10-29",
-    images: ["screenshot/one.png"], origin_channel: "desktop" };
+    images: ["screenshot/one.png"], };
   let requested = "";
   globalThis.fetch = /**
    * 记录历史请求地址，返回工具图片的完整展示项。

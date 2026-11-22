@@ -23,7 +23,6 @@ from app.agent.state.manager import SessionStateManager
 from app.interaction.interaction_event_hub import InteractionEventHub
 from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
-from app.services.channel_subscription_service import ChannelSubscriptionService
 
 
 def unexpected_agent(session_id, _manager):
@@ -53,7 +52,6 @@ def create_scheduler(tmp_path, supervisor):
     return build_test_scheduler(runtime_queue=supervisor.runtime_queue,
         agent_factory=unexpected_agent,
         task_supervisor=supervisor,
-        subscriptions=ChannelSubscriptionService(SqliteFactory(path)),
         session_state_manager_factory=partial(SessionStateManager, sqlite_factory=SqliteFactory(path)),
         chat_settings_dao=configured_settings(), mutation_coordinator=SettingsMutationCoordinator())
 
@@ -178,7 +176,7 @@ def test_hub_receives_background_status_but_not_foreground_status(tmp_path) -> N
         hub = runtime_hub(scheduler)
         await scheduler.start()
         pass
-        stream = observe_session("s", "desktop", hub, scheduler)
+        stream = observe_session("s", hub, scheduler)
         try:
             assert (await anext(stream)).kind == "session_snapshot"
             await insert_task(supervisor, "foreground", background=False)

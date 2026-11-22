@@ -227,7 +227,7 @@ function createPresentation(withTaskEntry = false) {
      * 记录公开命令，允许测试控制回执到达时机。
      *
      * Args:
-     *     command (ChannelCommand): 真人输入或重发命令。
+     *     command (InteractionCommand): 真人输入或重发命令。
      * Returns:
      *     Promise<CommandReceipt>: 测试指定的受理结果。
      */
@@ -291,8 +291,7 @@ function createPresentation(withTaskEntry = false) {
      *     Promise<void>: 当前事件已得到处理。
      */
     async emit(kind: InteractionEvent["kind"], payload: Record<string, unknown>, sequence: number, runId = "r") {
-      listener({ session_id: "s", kind, payload, origin_channel: "desktop",
-        run_id: runId, stream_epoch: "epoch", event_sequence: sequence });
+      listener({ session_id: "s", kind, payload, run_id: runId, stream_epoch: "epoch", event_sequence: sequence });
       await flushEvents();
     },
     /**
@@ -1580,8 +1579,7 @@ async () => {
     await flushEvents();
     assert.equal(button.disabled, true);
     assert.equal(view.submissions.commands.length, 1);
-    assert.deepEqual(view.submissions.commands[0], { session_id: "s", origin_channel: "desktop",
-      kind: "human_turn", payload: { message: "原正文", images: ["data:image/png;base64,YQ=="] } });
+    assert.deepEqual(view.submissions.commands[0], { session_id: "s", kind: "human_turn", payload: { message: "原正文", images: ["data:image/png;base64,YQ=="] } });
     release!();
     await flushEvents();
     assert.equal(button.disabled, false);

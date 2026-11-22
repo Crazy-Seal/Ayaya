@@ -20,7 +20,7 @@ class EventType(str, Enum):
 
 @dataclass
 class AgentEvent:
-    """由 Agent 或 Pipeline 产生，交给 Scheduler 转换为渠道可见事件。
+    """由 Agent 或 Pipeline 产生，交给 Scheduler 转换为界面可见事件。
 
     Attributes:
         type (EventType): 当前执行事件的类型。

@@ -140,20 +140,20 @@ def test_episodic_preserves_text_with_multiple_tool_calls(mark_as_history: bool)
     memory = EpisodicMemory.__new__(EpisodicMemory)
     memory.chat_settings = SimpleNamespace(address="主人", name="Ayaya")
     message = AssistantMessage(
-        content=text_content("我先看两个文件。\n然后比较内容。"), origin_channel="qq",
+        content=text_content("我先看两个文件。\n然后比较内容。"),
         created_at=datetime(2026, 11, 6, 2, tzinfo=timezone.utc),
         tool_calls=(
             ToolCall(id="a", name="read_file", args={"path": "a.py"}),
             ToolCall(id="b", name="read_file", args={"path": "b.py"}),
         ),
     )
-    expected = [f"Ayaya（回复 qq）: {render_timed_text(message.text, message.created_at)}"]
+    expected = [f"Ayaya: {render_timed_text(message.text, message.created_at)}"]
     if mark_as_history:
-        expected.extend(["Ayaya（回复 qq）：调用了工具 read_file"] * 2)
+        expected.extend(["Ayaya：调用了工具 read_file"] * 2)
     else:
         expected.extend([
-            'Ayaya（回复 qq）：调用工具 read_file，参数：{"path":"a.py"}',
-            'Ayaya（回复 qq）：调用工具 read_file，参数：{"path":"b.py"}',
+            'Ayaya：调用工具 read_file，参数：{"path":"a.py"}',
+            'Ayaya：调用工具 read_file，参数：{"path":"b.py"}',
         ])
 
     assert memory._format_messages([message], mark_as_history=mark_as_history) == "\n".join(expected)
@@ -180,7 +180,7 @@ def test_diary_format_skips_system_injected_tool_images() -> None:
     ("name", "address", "ai_label", "user_label"),
     [(" Ayaya ", " 主人 ", "Ayaya", "主人"), (None, None, "AI助手", "用户"), (" ", " ", "AI助手", "用户")],
 )
-def test_diary_uses_configured_speakers_and_preserves_message_sources(
+def test_diary_uses_configured_speakers_and_preserves_messages(
     name: str | None, address: str | None, ai_label: str, user_label: str,
 ) -> None:
     """验证发言、工具及通知带原消息时间，角色称呼和渠道来源保持可辨认。
@@ -196,9 +196,9 @@ def test_diary_uses_configured_speakers_and_preserves_message_sources(
     messages = [
         HumanMessage(content=text_content("第一行\nuser: 原文")),
         AssistantMessage(content=text_content("桌面回复")),
-        HumanMessage(content=text_content("渠道消息"), origin_channel="qq"),
+        HumanMessage(content=text_content("渠道消息")),
         AssistantMessage(
-            content=text_content("渠道回复"), origin_channel="qq",
+            content=text_content("渠道回复"),
             tool_calls=(ToolCall(id="call", name="read_file", args={"path": "a.py"}),),
         ),
         ToolMessage(content=text_content("文件正文"), tool_name="read_file", tool_call_id="call"),
@@ -208,8 +208,8 @@ def test_diary_uses_configured_speakers_and_preserves_message_sources(
     assert memory._format_messages(messages) == "\n".join([
         f"{user_label}：{render_timed_text(messages[0].text, messages[0].created_at)}",
         f"{ai_label}：{render_timed_text(messages[1].text, messages[1].created_at)}",
-        f"{user_label}（来自 qq）：{render_timed_text(messages[2].text, messages[2].created_at)}",
-        f"{ai_label}（回复 qq）：{render_timed_text(messages[3].text, messages[3].created_at)}",
+        f"{user_label}：{render_timed_text(messages[2].text, messages[2].created_at)}",
+        f"{ai_label}：{render_timed_text(messages[3].text, messages[3].created_at)}",
         f"{ai_label}：" + render_timed_text('调用工具 read_file，参数：{"path":"a.py"}', messages[3].created_at),
         f"工具结果：{render_timed_text(messages[4].text, messages[4].created_at)}",
         "[插件通知：test/notice]：" + render_timed_text("提醒内容", messages[5].created_at),

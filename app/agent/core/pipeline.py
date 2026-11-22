@@ -15,7 +15,7 @@ import logging
 from typing import Any, AsyncIterator, AsyncGenerator, Protocol, Awaitable, Callable, Mapping, cast
 
 from app.schemas.runtime_types import (
-    AUTHORIZATION_GRANTED_KIND, ApprovalDecisionKind, DESKTOP_CHANNEL,
+    AUTHORIZATION_GRANTED_KIND, ApprovalDecisionKind,
     InterruptKind,
 )
 from app.agent.context import ModelInputCoordinator, RuntimeContext
@@ -76,7 +76,7 @@ class ExecutionPipeline:
         permission_session_id: str | None = None,
         environment_provider: Callable[[], Awaitable[str]] | None = None,
     ) -> None:
-        """装配模型输入、授权和任务启动端口，管道不持有渠道连接。
+        """装配模型输入、授权和任务启动端口，流式输出交给事件接收端。
 
         Args:
             prompt_source (SystemPromptSource): 当前模型循环使用的系统提示来源。
@@ -361,8 +361,7 @@ class ExecutionPipeline:
             # 5. 将 Assistant 步骤加入状态，工具前写入 checkpoint 后标记已保存。
             if accumulated_content or tool_calls:
                 self._add_assistant_message(
-                    state, accumulated_content, tool_calls,
-                    origin_channel=runtime_context.origin_channel, provider_data=provider_data,
+                    state, accumulated_content, tool_calls, provider_data=provider_data,
                 )
                 if runtime_context.turn_control:
                     runtime_context.turn_control.partial_persisted = True
@@ -823,7 +822,7 @@ class ExecutionPipeline:
             resume_state (dict): 工具继续执行所需的私有恢复材料。
             pending_actions (list[ToolCall]): 当前中断之后尚未执行的同批工具调用。
             session_state_manager (SessionStateManager | None): 执行管道借用的会话状态业务对象。
-            runtime_context (RuntimeContext | None): 当前轮次的来源渠道、控制能力和临时输入材料。
+            runtime_context (RuntimeContext | None): 当前轮次的执行控制能力和临时输入材料。
         """
         # 1. 在候选状态准备暂停，钩子或提交失败时原执行仍保留可靠进度。
         candidate = state.model_copy(deep=True)
@@ -832,7 +831,7 @@ class ExecutionPipeline:
         interrupt.tool_args = dict(tool_call.args)
         interrupt.resume_state = resume_state
         candidate.set_interrupt(
-            {**interrupt.to_state(), "origin_channel": runtime_context.origin_channel if runtime_context else DESKTOP_CHANNEL},
+            {**interrupt.to_state()},
             pending_actions)
         candidate.clear_pending_tool_calls()
         await self._plugin_manager.run_hooks(PluginHook.ON_INTERRUPT, candidate, data={"interrupt": interrupt})
@@ -862,16 +861,13 @@ class ExecutionPipeline:
         state: AgentState,
         content: str,
         tool_calls: list[ToolCall],
-        *,
-        origin_channel: str = DESKTOP_CHANNEL,
-        provider_data: ProviderData | None = None,
+        *, provider_data: ProviderData | None = None,
     ) -> None:
-        """保存带入口来源的 Assistant 步骤，并登记需要闭合的工具调用。
+        """保存 Assistant 步骤，并登记需要闭合的工具调用。
 
         Args:
             state (AgentState): 当前 Agent 状态。
             content (str): Assistant 正文。
             tool_calls (list[ToolCall]): 本步模型请求的工具调用。
-            origin_channel (str): 输入或本轮回复所属的渠道。
         """
-        state.record_assistant_step(content, tool_calls, origin_channel=origin_channel, provider_data=provider_data)
+        state.record_assistant_step(content, tool_calls, provider_data=provider_data)

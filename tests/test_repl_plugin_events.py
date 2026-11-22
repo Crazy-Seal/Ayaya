@@ -44,7 +44,7 @@ def test_repl_capability_notices_keep_source_and_close_on_every_exit(tmp_path, e
         scheduler = build_test_scheduler(runtime_queue=queue, task_supervisor=supervisor,
             chat_settings_dao=configured_settings("capability"), agent_factory=unexpected_agent,
             session_state_manager_factory=lambda session: SessionStateManager(session, sqlite))
-        observer = observe_session("capability", "desktop", runtime_hub(scheduler), scheduler)
+        observer = observe_session("capability", runtime_hub(scheduler), scheduler)
         service = ReplService(workdir=tmp_path, execution_timeout=1,
                               on_event=create_repl_plugin_event_handler(supervisor, queue))
         manager = SessionStateManager("capability", sqlite)

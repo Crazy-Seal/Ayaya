@@ -17,10 +17,9 @@ from app.agent.core.events import AgentEvent, EventType
 from app.agent.state.manager import SessionStateManager
 from app.agent.state.model import AgentState
 from app.agent.state.messages import ToolCall
-from app.interaction.interaction_contract import ChannelCommand
+from app.interaction.interaction_contract import InteractionCommand
 from app.interaction.interaction_event_hub import InteractionEventHub
 from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
-from app.services.channel_subscription_service import ChannelSubscriptionService
 
 
 def test_receipt_does_not_reserve_run_and_hub_fans_out(tmp_path) -> None:
@@ -48,7 +47,7 @@ def test_receipt_does_not_reserve_run_and_hub_fans_out(tmp_path) -> None:
                     AgentEvent: 文字和本轮完成事件。
                 """
                 outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
-                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": kwargs.get("origin_channel", "desktop"), "resumed": False}))
+                await emit(AgentEvent(EventType.RUN_STARTED, {"resumed": False}))
                 await emit(AgentEvent(EventType.TEXT_CHUNK, message))
                 await release.wait()
                 await emit(AgentEvent(EventType.DONE, None))
@@ -70,29 +69,28 @@ def test_receipt_does_not_reserve_run_and_hub_fans_out(tmp_path) -> None:
             """
             return Agent()
 
-        subscriptions = ChannelSubscriptionService(SqliteFactory(path))
         scheduler = build_test_scheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
-            agent_factory=factory, subscriptions=subscriptions,
+            agent_factory=factory,
             session_state_manager_factory=partial(SessionStateManager, sqlite_factory=SqliteFactory(path)),
         )
         hub = runtime_hub(scheduler)
         await scheduler.start()
         pass
-        first = observe_session("s", "desktop", hub, scheduler)
-        second = observe_session("s", "desktop", hub, scheduler)
+        first = observe_session("s", hub, scheduler)
+        second = observe_session("s", hub, scheduler)
         try:
             assert (await anext(first)).payload["phase"] == "idle"
             await anext(second)
-            receipt = await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "你好"}))
+            receipt = await scheduler.submit(InteractionCommand("s", "human_turn", {"message": "你好"}))
             assert receipt.accepted and receipt.run_id is None
-            assert not (await scheduler.submit(ChannelCommand("s", "desktop", "stop_turn", target_run_id="expired-run"))).accepted
+            assert not (await scheduler.submit(InteractionCommand("s", "stop_turn", target_run_id="expired-run"))).accepted
             left = await asyncio.wait_for(anext(first), 1)
             right = await asyncio.wait_for(anext(second), 1)
             assert left == right and left.kind == "run_started" and left.run_id
             assert await anext(first) == await anext(second)
             assert (await scheduler.snapshot("s")).payload["run_id"] == left.run_id
-            assert (await scheduler.submit(ChannelCommand(
-                "s", "desktop", "stop_turn", target_run_id=left.run_id,
+            assert (await scheduler.submit(InteractionCommand(
+                "s", "stop_turn", target_run_id=left.run_id,
             ))).accepted
         finally:
             release.set()
@@ -137,7 +135,7 @@ def test_failed_turn_returns_idle_without_duplicate_errors(tmp_path, failure, ex
                     AgentEvent: 当前测试阶段的事件。
                 """
                 outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
-                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": kwargs.get("origin_channel", "desktop"), "resumed": False}))
+                await emit(AgentEvent(EventType.RUN_STARTED, {"resumed": False}))
                 await finish_test_turn(path, (kwargs["inbox_input"],), message=message)
                 if failure == "stream":
                     await emit(AgentEvent(EventType.TEXT_CHUNK, "片段"))
@@ -186,13 +184,13 @@ def test_failed_turn_returns_idle_without_duplicate_errors(tmp_path, failure, ex
         await scheduler.start()
         waiting = None
         try:
-            assert (await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "执行"}))).accepted
+            assert (await scheduler.submit(InteractionCommand("s", "human_turn", {"message": "执行"}))).accepted
             observed = [await asyncio.wait_for(next_runtime_event(scheduler), 1) for _ in expected]
             assert [event.kind for event in observed] == expected
             await asyncio.wait_for(cleaned.wait(), 1)
             snapshot = await scheduler.snapshot("s")
             assert snapshot.payload["phase"] == "idle" and snapshot.payload["run_id"] is None
-            assert not (await scheduler.submit(ChannelCommand("s", "desktop", "stop_turn", target_run_id="expired-run"))).accepted
+            assert not (await scheduler.submit(InteractionCommand("s", "stop_turn", target_run_id="expired-run"))).accepted
             waiting = asyncio.create_task(next_runtime_event(scheduler))
             await asyncio.sleep(0)
             assert not waiting.done()
@@ -255,7 +253,7 @@ def test_pending_approval_steer_or_decision_wakes_worker_immediately(tmp_path, a
                     AgentEvent: 审批或正常完成。
                 """
                 outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
-                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": kwargs.get("origin_channel", "desktop"), "resumed": False}))
+                await emit(AgentEvent(EventType.RUN_STARTED, {"resumed": False}))
                 nonlocal should_block
                 manager = SessionStateManager("s", SqliteFactory(path))
                 try:
@@ -268,7 +266,7 @@ def test_pending_approval_steer_or_decision_wakes_worker_immediately(tmp_path, a
                         state.set_interrupt({
                             "type": "authorization_request", "request_id": "request",
                             "tool_call_id": call.id, "tool_name": call.name,
-                            "tool_args": {}, "origin_channel": "desktop", "message": "批准？",
+                            "tool_args": {}, "message": "批准？",
                         })
                         await manager.save(state, checkpoint_type="intermediate", inbox_inputs=(inbox_input,))
                         should_block = action == "approve"
@@ -303,7 +301,7 @@ def test_pending_approval_steer_or_decision_wakes_worker_immediately(tmp_path, a
                     AgentEvent: 恢复后完成。
                 """
                 outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
-                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": True}))
+                await emit(AgentEvent(EventType.RUN_STARTED, {"resumed": True}))
                 manager = SessionStateManager("s", SqliteFactory(path))
                 try:
                     restored = await manager.load_for_resume(request_id)
@@ -337,30 +335,30 @@ def test_pending_approval_steer_or_decision_wakes_worker_immediately(tmp_path, a
         operation = None
         try:
             # 1. 通过真实受理入口建立当前轮次和持久审批，后续操作针对此轮编号。
-            await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "旧指令"}))
+            await scheduler.submit(InteractionCommand("s", "human_turn", {"message": "旧指令"}))
             started = await asyncio.wait_for(next_runtime_event(scheduler), 1)
             assert (await asyncio.wait_for(next_runtime_event(scheduler), 1)).kind == "interrupt"
             if action == "steer":
                 # 2. 有效引导必须取消旧审批；迟到批准不能覆盖，输入也不能留在排队列表。
-                receipt = await scheduler.submit(ChannelCommand("s", "desktop", "human_steer",
+                receipt = await scheduler.submit(InteractionCommand("s", "human_steer",
                     {"message": "新指令"}, target_run_id=started.run_id))
                 assert receipt.accepted
-                assert not (await scheduler.submit(ChannelCommand("s", "desktop", "resolve_authorization",
+                assert not (await scheduler.submit(InteractionCommand("s", "resolve_authorization",
                     {"kind": "approve"}, request_id="request"))).accepted
                 assert (await scheduler.snapshot("s")).payload["queued_inputs"] == []
             elif action == "approve":
                 # 2. worker 此时在会话锁内等待查询放行；批准任务只能先排队等锁。
                 await asyncio.wait_for(query_entered.wait(), 1)
-                operation = asyncio.create_task(scheduler.submit(ChannelCommand(
-                    "s", "desktop", "resolve_authorization", {"kind": "approve"}, request_id="request")))
+                operation = asyncio.create_task(scheduler.submit(InteractionCommand(
+                    "s", "resolve_authorization", {"kind": "approve"}, request_id="request")))
                 # 2.1. 先放行查询释放会话锁，再等待批准；反过来会让测试自己互相等待。
                 release_query.set()
                 assert (await asyncio.wait_for(operation, 1)).accepted
             else:
                 # 2. 批准先保存，旧输出后清理；清理只能移除控制对象，不能丢掉待恢复轮次。
                 await asyncio.wait_for(approval_cleanup_entered.wait(), 1)
-                receipt = await scheduler.submit(ChannelCommand(
-                    "s", "desktop", "resolve_authorization", {"kind": "approve"}, request_id="request"))
+                receipt = await scheduler.submit(InteractionCommand(
+                    "s", "resolve_authorization", {"kind": "approve"}, request_id="request"))
                 assert receipt.accepted and receipt.run_id == started.run_id
                 release_approval_cleanup.set()
             await asyncio.wait_for(processed.wait(), 1)

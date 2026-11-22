@@ -60,7 +60,6 @@ def test_subagent_queries_and_invalid_controls_preserve_http_business_contract(t
         assert client.get("/agent/subagents/another-parent/child").status_code == 404
         for subagent_id, payload in [("unknown", {"action": "stop"}), ("child", {"action": "command", "text": ""}),
                                       ("child", {"action": "invalid"})]:
-            rejected = client.post("/agent/commands", json={"session_id": "parent", "origin_channel": "desktop",
-                "kind": "interact_subagent", "subagent_id": subagent_id, "payload": payload})
+            rejected = client.post("/agent/commands", json={"session_id": "parent", "kind": "interact_subagent", "subagent_id": subagent_id, "payload": payload})
             assert rejected.status_code == 200
             assert rejected.json()["accepted"] is False

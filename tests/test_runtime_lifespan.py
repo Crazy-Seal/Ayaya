@@ -30,17 +30,16 @@ def test_shutdown_request_ends_existing_sse_before_lifespan_cleanup(tmp_path):
     from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
     from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
     from app.routes.agent import subscribe_events
-    from app.services.channel_subscription_service import ChannelSubscriptionService
+
 
     async def scenario():
         """从真实 SSE 响应读取快照和结束，保持运行时消费者到最终清理。"""
         queue = asyncio.Queue()
-        subscriptions = ChannelSubscriptionService(sqlite_factory=SqliteFactory())
+
         supervisor_settings = configured_settings()
         supervisor_mutations = SettingsMutationCoordinator()
         supervisor = TaskSupervisor(runtime_queue=queue, records=TaskRecordDao(SqliteFactory(str(tmp_path / "state.sqlite3"))))
-        scheduler = build_test_scheduler(runtime_queue=queue, task_supervisor=supervisor,
-            subscriptions=subscriptions, agent_factory=lambda session, manager: None,
+        scheduler = build_test_scheduler(runtime_queue=queue, task_supervisor=supervisor, agent_factory=lambda session, manager: None,
             session_state_manager_factory=lambda session: SessionStateManager(session, SqliteFactory(str(tmp_path / "state.sqlite3"))), chat_settings_dao=supervisor_settings, mutation_coordinator=supervisor_mutations)
         hub = runtime_hub(scheduler)
         application = FastAPI()
@@ -52,7 +51,7 @@ def test_shutdown_request_ends_existing_sse_before_lifespan_cleanup(tmp_path):
         try:
             await scheduler.start()
             pass
-            response = await subscribe_events("desktop", hub, subscriptions)
+            response = await subscribe_events(hub)
             stream = response.body_iterator
             assert "stream_ready" in await anext(stream)
             assert (await main.internal_shutdown(Request({"type": "http", "app": application}))).shutting_down

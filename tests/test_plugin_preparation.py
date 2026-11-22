@@ -116,7 +116,7 @@ def test_preparation_reuses_validated_config_and_mcp_declarations(tmp_path, monk
     validations.clear()
     resolutions.clear()
     scheduler = runtime_factory.create_runtime_scheduler(object(), asyncio.Queue(),
-        sqlite_factory=SqliteFactory(tmp_path / "runtime.sqlite3"), hub=object(), subscriptions=object(),
+        sqlite_factory=SqliteFactory(tmp_path / "runtime.sqlite3"), hub=object(),
         identity=object(), subagents=object(), repl_service=repl_service,
         settings_dao=dao, settings_service=service, plugin_service=service.plugin_service,
         mcp_manager=SimpleNamespace(disconnect_plugin=lambda session_id: None),

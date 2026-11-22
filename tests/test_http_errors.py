@@ -34,7 +34,6 @@ from app.schemas.chat_settings import ChatSettings
 from app.schemas.mcp import MCPServerConfig, MCPServersConfig, StdioMCPServerConfig
 from app.schemas.runtime_types import TaskStatus
 from app.schemas.task_types import TaskSnapshot
-from app.services.channel_subscription_service import ChannelSubscriptionService
 from app.services.chat_history_service import ChatHistoryService
 from app.services.chat_settings_service import ChatSettingsService
 from app.services.mcp_service import MCPService
@@ -111,8 +110,6 @@ def http_client(tmp_path: Path) -> Iterator[TestClient]:
     application.state.tool_permission_service = ToolPermissionService(dao, UnifiedToolCatalog(
         LocalToolCatalogAdapter(plugins.local_tools), MCPToolCatalogAdapter(mcp_dao, manager)), coordinator)
     application.state.chat_history_service = ChatHistoryService(ChatHistoryDao(sqlite))
-    application.state.channel_subscriptions = ChannelSubscriptionService(sqlite)
-    application.state.channel_subscriptions.register_channel("external", enabled=False)
     application.state.interaction_event_hub = Mock()
     application.state.runtime_scheduler = Mock()
     with TestClient(application, raise_server_exceptions=False) as client:
@@ -221,10 +218,6 @@ def test_missing_resources_return_404(
     ("POST", "/mcp/servers", SERVER, 409, "MCP server_id already exists: demo"),
     ("PUT", "/mcp/servers/demo", {**SERVER, "id": "changed"}, 409, "MCP server_id 不允许修改"),
     ("PUT", "/tool-permissions/session", {"tool_permissions": {"local:unknown": "allow"}}, 400, "包含未知工具权限: local:unknown"),
-    ("PUT", "/agent/channels/session/desktop", {"enabled": False}, 400, "桌面渠道不能修改"),
-    ("PUT", "/agent/channels/session/unknown", {"enabled": True}, 400, "交互渠道未注册或已关闭"),
-    ("GET", "/agent/events?channel=unknown", None, 400, "交互渠道未注册或已关闭"),
-    ("GET", "/agent/snapshot/session?channel=external", None, 400, "该会话未订阅此渠道"),
     ("POST", "/mcp/servers/demo/reconnect", None, 409, "MCP Server 'demo' 已禁用"),
 ])
 def test_rejected_operations_keep_saved_configuration(

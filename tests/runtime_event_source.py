@@ -25,23 +25,22 @@ class SnapshotSource(Protocol):
         ...
 
 
-async def observe_session(session_id: str, channel: str, hub: InteractionEventHub,
+async def observe_session(session_id: str, hub: InteractionEventHub,
                           source: SnapshotSource) -> AsyncIterator[InteractionEvent]:
     """模拟客户端连接全局流后查询当前快照，再衔接该会话增量。
 
     Args:
         session_id (str): 测试客户端正在展示的主会话。
-        channel (str): 观察渠道。
         hub (InteractionEventHub): 真实的全局事件分发对象。
         source (SnapshotSource): 调度器或可控快照源。
 
     Yields:
         InteractionEvent: 当前会话快照和后续可见事件。
     """
-    stream = observe_runtime(channel, hub)
+    stream = observe_runtime(hub)
     try:
         await anext(stream)
-        snapshot = hub.visible_snapshot(await source.snapshot(session_id), channel)
+        snapshot = await source.snapshot(session_id)
         yield snapshot
         sequence = snapshot.event_sequence
         async for event in stream:
@@ -97,6 +96,6 @@ class EventSource:
         if self.fail_snapshot:
             raise RuntimeError("模拟快照查询失败")
         return InteractionEvent(session_id, "session_snapshot", {
-            "phase": "idle", "run_id": None, "origin_channel": None, "interrupt": None,
+            "phase": "idle", "run_id": None, "interrupt": None,
             "pending_inputs": [], "queued_inputs": [], "tasks": [],
         }, stream_epoch=epoch, event_sequence=sequence)

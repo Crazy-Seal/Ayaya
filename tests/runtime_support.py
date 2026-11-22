@@ -23,7 +23,7 @@ _runtime_observers = WeakKeyDictionary()
 
 def build_test_scheduler(*, runtime_queue, agent_factory, session_state_manager_factory,
                          chat_settings_dao, mutation_coordinator=None, task_supervisor=None,
-                         subagent_factory=None, subagent_dao=None, subscriptions=None,
+                         subagent_factory=None, subagent_dao=None,
                          cleanup_session_connections=None, scheduler_type=None):
     """为场景装配真实共享持久化、Hub、父子工厂，模型由场景替换。
 
@@ -36,7 +36,6 @@ def build_test_scheduler(*, runtime_queue, agent_factory, session_state_manager_
         task_supervisor (TaskSupervisor | None): 场景指定的普通任务管理器。
         subagent_factory (Callable | None): 场景的子执行脚本。
         subagent_dao (SubagentDao | None): 场景指定的子存储。
-        subscriptions (ChannelSubscriptionService | None): 场景指定的渠道配置。
         cleanup_session_connections (Callable | None): 场景观察的共享连接关闭。
 
     Returns:
@@ -49,7 +48,7 @@ def build_test_scheduler(*, runtime_queue, agent_factory, session_state_manager_
     from app.services.subagent_service import SubagentService
     from app.services.agent_identity_service import AgentIdentityService
     from app.services.settings_mutation import SettingsMutationCoordinator
-    from app.services.channel_subscription_service import ChannelSubscriptionService
+
     from app.schemas.agent_storage import AgentStorageScope
     from app.interaction.interaction_event_hub import InteractionEventHub
 
@@ -75,8 +74,7 @@ def build_test_scheduler(*, runtime_queue, agent_factory, session_state_manager_
             await super().close()
             events.put_nowait(None)
 
-    channels = subscriptions or ChannelSubscriptionService(sqlite_factory)
-    hub = RecordingHub(subscriptions=channels)
+    hub = RecordingHub()
 
     def child_manager(definition):
         """让子历史使用与本用例主表相同的隔离文件和独立连接。"""
@@ -95,8 +93,7 @@ def build_test_scheduler(*, runtime_queue, agent_factory, session_state_manager_
     with replacement:
         scheduler = assemble_runtime_scheduler(runtime_queue=runtime_queue, agent_factory=agent_factory,
             subagent_factory=subagent_factory or unavailable_child, manager_factory=session_state_manager_factory,
-            child_manager_factory=child_manager, identity=identity, subagents=subagents, task_supervisor=supervisor,
-            subscriptions=channels, mutation_coordinator=mutation_coordinator or SettingsMutationCoordinator(), hub=hub,
+            child_manager_factory=child_manager, identity=identity, subagents=subagents, task_supervisor=supervisor, mutation_coordinator=mutation_coordinator or SettingsMutationCoordinator(), hub=hub,
             cleanup_session_connections=cleanup_session_connections)
     _runtime_observers[scheduler] = (hub, events, definitions, records, supervisor)
     return scheduler
@@ -219,7 +216,7 @@ async def finish_task_record(supervisor: TaskSupervisor, task_id: str, status: T
 
 
 async def finish_test_turn(
-    path, inputs, *, message=None, origin="desktop", runtime_inputs=(), release_queued=False,
+    path, inputs, *, message=None, runtime_inputs=(), release_queued=False,
 ) -> None:
     """模拟 Agent 的最终保存，使测试不依赖 Scheduler 重复放行。
 
@@ -227,7 +224,6 @@ async def finish_test_turn(
         path (str): 测试数据库路径。
         inputs (tuple[InboxEnvelope, ...]): 本次已经读取的输入。
         message (str | None): 真人消息正文，内部通知轮次为空。
-        origin (str): 真人输入来源。
         runtime_inputs (tuple): 要加入当前状态的内部通知。
         release_queued (bool): 仅正常真人轮次完成时放行排队输入。
     """
@@ -237,7 +233,7 @@ async def finish_test_turn(
         for item in runtime_inputs or task_result_messages(tuple(item for item in inputs if item.kind == InboxKind.TASK_TERMINAL)):
             state.append_input(item)
         if message is not None:
-            state.add_user_message(message, origin_channel=origin)
+            state.add_user_message(message)
         await manager.save(state, checkpoint_type="completed", inbox_inputs=inputs, release_queued=release_queued)
     finally:
         await manager.close()

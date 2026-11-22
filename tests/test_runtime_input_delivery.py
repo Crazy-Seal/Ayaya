@@ -26,10 +26,9 @@ from app.agent.plugins.base import BasePlugin, PluginHook
 from app.agent.state.manager import SessionStateManager, RequiredSaveError
 from app.agent.state.messages import ImageContent, TaskResultMessage
 from app.crud.task_record_dao import TaskRecordDao
-from app.interaction.interaction_contract import ChannelCommand
+from app.interaction.interaction_contract import InteractionCommand
 from app.interaction.interaction_event_hub import InteractionEventHub
 from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
-from app.services.channel_subscription_service import ChannelSubscriptionService
 
 
 class ProbeModel:
@@ -129,7 +128,7 @@ def test_human_commit_event_precedes_on_invoke_and_model(tmp_path) -> None:
         hooks = BlockingInputHooks()
         agent.register_plugin(hooks)
         inbox = SessionStateManager("s", SqliteFactory(str(tmp_path / "state.sqlite3")))
-        human = await inbox.submit_human("desktop", "你好")
+        human = await inbox.submit_human("你好")
         events = asyncio.Queue()
         release_commit = asyncio.Event()
 
@@ -186,7 +185,7 @@ def test_commit_stream_close_or_cancel_preserves_saved_fact(tmp_path, cancel_dur
         hooks = BlockingInputHooks()
         agent.register_plugin(hooks)
         inbox = SessionStateManager("s", SqliteFactory(str(tmp_path / "state.sqlite3")))
-        human = await inbox.submit_human("desktop", "保存后停止")
+        human = await inbox.submit_human("保存后停止")
         events = asyncio.Queue()
         release_commit = asyncio.Event()
 
@@ -249,7 +248,7 @@ def test_input_commit_failure_rolls_back_all_persistent_writes(tmp_path, entry, 
         try:
             await agent.session_state_manager.load()
             if entry == "human":
-                item = await inbox.submit_human("desktop", "原子保存")
+                item = await inbox.submit_human("原子保存")
             else:
                 await records.insert_running("task", "s", "任务", 1, str(tmp_path / "out"))
                 await records.finish_once("task", "completed", 0)
@@ -363,26 +362,25 @@ def test_hub_preserves_human_payload_before_blocked_on_invoke(tmp_path, with_ima
             assert session_id == "s"
             return agent
 
-        subscriptions = ChannelSubscriptionService(SqliteFactory(path))
         scheduler = build_test_scheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
-            agent_factory=factory, subscriptions=subscriptions,
+            agent_factory=factory,
             session_state_manager_factory=partial(SessionStateManager, sqlite_factory=SqliteFactory(path)),
         )
         hub = runtime_hub(scheduler)
         await scheduler.start()
         pass
-        stream = observe_session("s", "desktop", hub, scheduler)
+        stream = observe_session("s", hub, scheduler)
         observer = SessionStateManager("s", SqliteFactory(path))
         try:
             await anext(stream)
-            receipt = await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {
+            receipt = await scheduler.submit(InteractionCommand("s", "human_turn", {
                 "message": "立即显示", "images": images,
             }))
             assert receipt.accepted
             assert (await asyncio.wait_for(anext(stream), 2)).kind == "run_started"
             human = await asyncio.wait_for(anext(stream), 2)
             await asyncio.wait_for(hooks.entered.wait(), 1)
-            assert human.kind == "human_message" and human.origin_channel == "desktop"
+            assert human.kind == "human_message"
             assert human.run_id is None
             saved_message = (await agent.session_state_manager.load()).messages[-1]
             references = [part.storage_ref for part in saved_message.content if isinstance(part, ImageContent)]

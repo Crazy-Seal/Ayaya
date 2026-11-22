@@ -16,9 +16,6 @@ os.environ.setdefault("MEM0_TELEMETRY", "false")
 from mem0 import Memory
 from qdrant_client import QdrantClient
 
-from app.schemas.runtime_types import (
-    DESKTOP_CHANNEL,
-)
 from app.agent.plugins.memory.base import MemoryItem
 from app.agent.plugins.memory.config import MemoryConfig
 from app.agent.plugins.memory.materials import compress_tool_results, format_memory_notification
@@ -151,7 +148,7 @@ class Mem0SemanticMemory:
 
         logger.info("[Mem0SemanticMemory] 开始提取语义记忆")
 
-        # 1. 转换历史和当前材料，保留历史标记、时间和渠道来源，空材料不请求提取。
+        # 1. 转换历史和当前材料，保留历史标记和发言时间，空材料不请求提取。
         mem0_history = self._convert_messages(history, mark_as_history=True) if history else []
 
         mem0_messages = self._convert_messages(messages)
@@ -341,7 +338,7 @@ class Mem0SemanticMemory:
         messages: list[BaseMessage],
         mark_as_history: bool = False,
     ) -> list[dict[str, str]]:
-        """将发言正文和工具调用逐项交给 Mem0，保留时间及非桌面渠道来源。
+        """将发言正文和工具调用逐项交给 Mem0，保留发言时间和角色。
 
         Args:
             messages (list[BaseMessage]): 需要转换或交付的领域消息集合。
@@ -352,18 +349,17 @@ class Mem0SemanticMemory:
         """
         mem0_messages = []
 
-        # 1. 给非桌面输入和回复补来源正文标签，转换后的 role 保持 Mem0 契约。
+        # 1. 按消息类型确定 Mem0 角色，保留各条发言和工具结果正文。
         for msg in messages:
             if isinstance(msg, ToolMessage) and not msg.text:
                 continue
             if isinstance(msg, HumanMessage):
                 role = "user"
-                text = msg.text if msg.origin_channel == DESKTOP_CHANNEL else f"[来自 {msg.origin_channel}] {msg.text}"
+                text = msg.text
             elif isinstance(msg, AssistantMessage):
                 role = "assistant"
                 text = msg.text
-                if text.strip() and msg.origin_channel != DESKTOP_CHANNEL:
-                    text = f"[回复 {msg.origin_channel}] {text}"
+
             elif isinstance(msg, RuntimeInputMessage):
                 role = "assistant"
                 text = msg.text

@@ -22,7 +22,7 @@ from app.agent.tools.exec_command import ExecCommandTool
 from app.agent.tools.authorization.manager import ToolAuthorization
 from app.crud.sqlite_factory import SqliteFactory
 from app.crud.task_record_dao import TaskRecordDao
-from app.interaction.interaction_contract import ChannelCommand
+from app.interaction.interaction_contract import InteractionCommand
 from app.schemas.runtime_types import CommandStatus, InboxKind, InboxStatus, SessionState, TaskStatus
 from app.schemas.runtime_types import AgentRunOutcomeKind
 from app.schemas.chat_settings import ChatSettings
@@ -94,14 +94,14 @@ def test_stop_overrides_steer_and_keeps_pending_input_until_next_explicit_messag
         reader = SessionStateManager("s", factory)
         try:
             await runtime.start()
-            assert (await runtime.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "旧工作"}))).accepted
+            assert (await runtime.submit(InteractionCommand("s", "human_turn", {"message": "旧工作"}))).accepted
             await asyncio.wait_for(tool.entered.wait(), 5)
             run_id = (await runtime.snapshot("s")).payload["run_id"]
-            assert (await runtime.submit(ChannelCommand("s", "desktop", "human_steer", {"message": "保留的引导"},
+            assert (await runtime.submit(InteractionCommand("s", "human_steer", {"message": "保留的引导"},
                 target_run_id=run_id))).accepted
             pending = await reader.read_next(kind=InboxKind.HUMAN)
             assert pending is not None and pending.payload["message"] == "保留的引导"
-            assert (await runtime.submit(ChannelCommand("s", "desktop", "stop_turn", target_run_id=run_id))).accepted
+            assert (await runtime.submit(InteractionCommand("s", "stop_turn", target_run_id=run_id))).accepted
             await asyncio.wait_for(next_kind(runtime, "run_completed"), 5)
             assert tool.cleaned.is_set()
             assert await reader.status(pending.id) == InboxStatus.PENDING
@@ -112,7 +112,7 @@ def test_stop_overrides_steer_and_keeps_pending_input_until_next_explicit_messag
             assert (await runtime.snapshot("s")).payload["session_state"] == SessionState.PAUSED
             assert len(inputs) == 1
             assert await reader.status(pending.id) == InboxStatus.PENDING
-            assert (await runtime.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "恢复工作"}))).accepted
+            assert (await runtime.submit(InteractionCommand("s", "human_turn", {"message": "恢复工作"}))).accepted
             await asyncio.wait_for(next_kind(runtime, "run_completed"), 5)
             await asyncio.wait_for(next_kind(runtime, "run_completed"), 5)
             assert await reader.status(pending.id) == InboxStatus.DELIVERED
@@ -174,9 +174,9 @@ def test_stop_during_waiting_cleanup_saves_latest_control_reason(tmp_path: Path,
         entered, release = asyncio.Event(), asyncio.Event()
         completion = None
         try:
-            human = await manager.submit_human("desktop", "执行")
+            human = await manager.submit_human("执行")
             assert (await execution.execute((human,), prepare=prepare)).kind == AgentRunOutcomeKind.INTERRUPTED
-            steer = await manager.submit_human("desktop", "保留的引导")
+            steer = await manager.submit_human("保留的引导")
             assert execution.request_steer().accepted
             cancel = manager.cancel_pending_interrupt
 
@@ -241,7 +241,7 @@ def test_stop_during_prepared_turn_cleanup_returns_stopped(tmp_path: Path, monke
         cancel = manager.cancel_pending_interrupt
         completion = None
         try:
-            steer = await manager.submit_human("desktop", "保留的引导")
+            steer = await manager.submit_human("保留的引导")
 
             async def prepare(run_id: str) -> bool:
                 """准备期间受理引导，进入当前轮次的收尾流程。

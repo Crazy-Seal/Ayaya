@@ -4,7 +4,6 @@
  */
 
 /** 运行时协议的具名取值，Renderer 与 Electron 共享；类型由同一对象推导。 */
-export const DESKTOP_CHANNEL = "desktop";
 
 /**
  * 表示会话展示与调度阶段，与轮次内部执行阶段分别建模。
@@ -46,7 +45,7 @@ export const CommandKind = {
 export type CommandKind = typeof CommandKind[keyof typeof CommandKind];
 
 /**
- * 表示渠道可见事件，与 Agent 内部 EventType 通过显式映射衔接。
+ * 表示界面可见事件，与 Agent 内部 EventType 通过显式映射衔接。
  *
  * Attributes:
  *     SESSION_SNAPSHOT (string): 当前会话快照，协议值为 session_snapshot。
@@ -378,27 +377,21 @@ export type ChatHistoryItem = {
   content: string;
   timestamp: string;
   images?: string[];
-  /**
-   * 保存实际输入或回复来源，旧历史缺省为 desktop。
-   */
-  origin_channel?: string;
 };
 
 /**
- * 提交渠道归一化命令，受理结果与后续 Agent 事件分别取得。
+ * 提交统一会话命令，受理结果与后续 Agent 事件分别取得。
  *
  * Attributes:
  *     session_id (string): 共享 Ayaya 会话标识。
- *     origin_channel (string): 真人输入或回复所属渠道，旧记录缺省为 desktop。
  *     kind (CommandKind): 已知统一命令类别，原始未知命令仍由后端业务拒绝。
  *     target_run_id (string): 停止或引导针对的运行轮次，防止过期动作影响另一轮。
  *     request_id (string): 持久中断标识，关联审批决定或屏幕执行结果。
  *     task_id (string): 受管进程任务标识。
  *     payload (Record<string, unknown>): 对应种类的专用数据，命令中省略时后端采用空对象。
  */
-export type ChannelCommand = {
+export type InteractionCommand = {
   session_id: string;
-  origin_channel: string;
   kind: CommandKind;
   target_run_id?: string;
   request_id?: string;
@@ -432,21 +425,7 @@ export type CommandReceipt = {
 /** 当前进程中任务结果的保存故障，数据库仍保留最后已提交记录。 */
 export const TaskExecutionPhase = { SAVE_FAILED: "save_failed" } as const;
 
-/**
- * 表示共享会话中已注册渠道的启用配置和可用状态。
- *
- * Attributes:
- *     channel (string): 稳定注册渠道标识。
- *     display_name (string): 设置页展示名称。
- *     enabled (boolean): 渠道是否参与该会话双向互通。
- *     ready (boolean): 渠道注册描述中的可用状态，和订阅 enabled 分别保存。
- */
-export type ChannelSubscription = {
-  channel: string;
-  display_name: string;
-  enabled: boolean;
-  ready: boolean;
-};
+
 
 /**
  * 表示可查询的后台任务记录，终态与输出由后端持久保存。
@@ -531,13 +510,12 @@ export type BackgroundTaskOutput = {
 };
 
 /**
- * 承载当前接收渠道可见的会话状态，快照建立 epoch 和事件水位。
+ * 承载会话的可见状态，快照建立 epoch 和事件水位。
  *
  * Attributes:
  *     session_id (string): 共享 Ayaya 会话标识。
- *     kind (InteractionEventKind): 共享渠道的已知观察事件类别。
+ *     kind (InteractionEventKind): 已知会话观察事件类别。
  *     payload (Record<string, unknown>): 对应种类的专用数据，命令中省略时后端采用空对象。
- *     origin_channel (string | null): 真人输入或回复所属渠道，旧记录缺省为 desktop。
  *     run_id (string | null): 本次受理或事件关联的运行轮次。
  *     request_id (string | null): 持久中断标识，关联审批决定或屏幕执行结果。
  *     task_id (string | null): 受管进程任务标识。
@@ -548,7 +526,6 @@ export type InteractionEvent = {
   session_id: string;
   kind: InteractionEventKind;
   payload: Record<string, unknown>;
-  origin_channel?: string | null;
   run_id?: string | null;
   request_id?: string | null;
   task_id?: string | null;
@@ -686,39 +663,15 @@ export interface DesktopPetApi {
     sessionId: string, taskId: string, offset: number,
   ) => Promise<BackgroundTaskOutput>;
   /**
-   * 查询会话注册渠道及启用状态。
+   * 通过主进程提交会话命令。
    *
    * Args:
-   *     sessionId (string): 共享会话标识。
-   *
-   * Returns:
-   *     Promise<ChannelSubscription[]>: 桌面固定开启的渠道列表。
-   */
-  getChannelSubscriptions: (sessionId: string) => Promise<ChannelSubscription[]>;
-  /**
-   * 持久修改可选渠道的会话启用状态。
-   *
-   * Args:
-   *     sessionId (string): 共享会话标识。
-   *     channel (string): 注册渠道标识。
-   *     enabled (boolean): 是否参与双向互通。
-   *
-   * Returns:
-   *     Promise<ChannelSubscription[]>: 后端确认的更新列表。
-   */
-  setChannelSubscription: (
-    sessionId: string, channel: string, enabled: boolean,
-  ) => Promise<ChannelSubscription[]>;
-  /**
-   * 通过主进程提交桌面来源命令。
-   *
-   * Args:
-   *     command (ChannelCommand): 统一入站动作。
+   *     command (InteractionCommand): 统一入站动作。
    *
    * Returns:
    *     Promise<CommandReceipt>: 受理结果，实际运行状态通过事件取得。
    */
-  submitInteractionCommand: (command: ChannelCommand) => Promise<CommandReceipt>;
+  submitInteractionCommand: (command: InteractionCommand) => Promise<CommandReceipt>;
   /**
    * 初始化当前会话视图，复用应用的全局事件流。
    *

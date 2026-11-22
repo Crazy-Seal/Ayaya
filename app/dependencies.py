@@ -9,7 +9,6 @@ from app.crud.chat_settings_dao import ChatSettingsDao
 from app.crud.mcp_settings_dao import MCPSettingsDao
 from app.interaction.interaction_event_hub import InteractionEventHub
 from app.mcp.mcp_connection_manager import MCPConnectionManager
-from app.services.channel_subscription_service import ChannelSubscriptionService
 from app.services.chat_history_service import ChatHistoryService
 from app.services.chat_settings_service import ChatSettingsService
 from app.services.mcp_service import MCPService
@@ -126,16 +125,6 @@ def get_interaction_event_hub(request: Request) -> InteractionEventHub:
     return request.app.state.interaction_event_hub
 
 
-def get_channel_subscription_service(request: Request) -> ChannelSubscriptionService:
-    """向渠道接口提供与命令处理共用的订阅设置服务。
-
-    Args:
-        request (Request): 提供当前应用实例的请求。
-
-    Returns:
-        ChannelSubscriptionService: 应用启动时创建的渠道设置服务。
-    """
-    return request.app.state.channel_subscriptions
 
 
 def get_chat_settings_service(request: Request) -> ChatSettingsService:

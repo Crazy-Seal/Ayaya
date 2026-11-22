@@ -44,7 +44,7 @@ npm run dev
 Electron 默认自动发现名为 `ayaya` 的 Conda 环境，并直接使用其中的 Python
 启动受管后端。可通过 `AYAYA_PYTHON_EXECUTABLE` 显式覆盖解释器。
 
-默认后端地址：`http://127.0.0.1:8000`。桌面所有会话事件共用 `/agent/events?channel=desktop`，当前会话快照通过 `/agent/snapshot/{session_id}?channel=desktop` 按需查询，屏幕执行器使用独立的 `/desktop-executor/requests` 流。
+默认后端地址：`http://127.0.0.1:8000`。桌面所有会话事件共用 `/agent/events`，当前会话快照通过 `/agent/snapshot/{session_id}` 按需查询，屏幕执行器使用独立的 `/desktop-executor/requests` 流。
 命令、SSE 事件、执行器、后台任务和 Electron bridge 的字段与交付时序见[前后端接口文档](<../API Docs.md>)。
 
 退出应用或后端重启会终止旧轮次，旧审批、桌面请求和未交付真人输入作废，不自动续跑工具。任务记录、输出和终态通知保留；遗留通知等待本次启动后新真人输入到达再交付。聊天事件重连仅恢复当前展示，不触发执行；同一后端进程内重连不会终止当前轮次。

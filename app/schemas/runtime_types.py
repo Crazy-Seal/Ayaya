@@ -159,9 +159,8 @@ class CheckpointType(StrEnum):
     COMPLETED = "completed"
 
 
-# 固定桌面渠道不是渠道枚举，未来 Adapter 的渠道标识仍可自由注册。
-DESKTOP_CHANNEL = "desktop"
-SYSTEM_INPUT_ORIGIN = "system"
+
+
 # 工具续跑的内部授权标记不是用户决定，不能加入 ApprovalDecisionKind。
 AUTHORIZATION_GRANTED_KIND = "authorization_granted"
 
@@ -228,7 +227,7 @@ class CommandKind(str, Enum):
 
 
 class InteractionEventKind(str, Enum):
-    """表示渠道可见事件，与 Agent 内部 EventType 通过显式映射衔接。
+    """表示界面可见事件，与 Agent 内部 EventType 通过显式映射衔接。
 
     Attributes:
         SESSION_SNAPSHOT (InteractionEventKind): 当前会话快照，协议值为 session_snapshot。

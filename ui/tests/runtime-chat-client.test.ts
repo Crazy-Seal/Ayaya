@@ -20,8 +20,8 @@ const subscribeWithoutDisconnect = (_callback: (sessionId: string) => void): (()
   return () => {};
 };
 
-test("桌面 Adapter 接收渠道消息，执行失败后显示错误并恢复发送", /**
- * 验证桌面 Adapter 接收渠道消息、提交输入，以及失败后的历史同步和发送恢复。
+test("桌面 Adapter 接收会话事件，执行失败后显示错误并恢复发送", /**
+ * 验证桌面 Adapter 接收会话事件、提交输入，以及失败后的历史同步和发送恢复。
  */
 async () => {
   // 1. 建立隔离 DOM、bridge 替身与事件监听，按场景安排输入和到达顺序。
@@ -29,8 +29,8 @@ async () => {
    * 提供测试占位回调，不产生额外副作用。
    */
   let listener: (event: InteractionEvent) => void = () => {};
-  const commands: Array<{ kind: string; origin_channel: string }> = [];
-  const added: Array<{ content: string; origin_channel?: string; images?: string[] }> = [];
+  const commands: Array<{ kind: string; }> = [];
+  const added: Array<{ content: string; images?: string[] }> = [];
   const errors: string[] = [];
   let historyLoads = 0;
   const bridge = {
@@ -69,12 +69,12 @@ async () => {
      * 记录测试命令并按场景返回预设受理回执。
      *
      * Args:
-     *     command ({ kind: string; origin_channel: string }): 带桌面来源的统一入站命令。
+     *     command ({ kind: string; }): 包含会话和业务内容的统一入站命令。
      *
      * Returns:
      *     Promise<{ accepted: boolean; run_id: string; }>: 后端对本次用户命令的受理回执。
      */
-    submitInteractionCommand: async (command: { kind: string; origin_channel: string }) => {
+    submitInteractionCommand: async (command: { kind: string; }) => {
       commands.push(command);
       return { accepted: true, status: "accepted" as const, run_id: "r1" };
     },
@@ -97,14 +97,14 @@ async () => {
   globalThis.document = { /**
    * 返回当前用例预设的聊天控件。
    *
-   * 此定义用于：验证桌面 Adapter 接收其他渠道消息并用统一命令提交输入。
+   * 此定义用于：验证桌面 Adapter 接收会话事件并用统一命令提交输入。
    */
   getElementById: () => null } as unknown as Document;
   try {
     const input = { value: "桌面消息", style: { height: "40px" }, /**
      * 记录输入框焦点恢复。
      *
-     * 此定义用于：验证桌面 Adapter 接收其他渠道消息并用统一命令提交输入。
+     * 此定义用于：验证桌面 Adapter 接收会话事件并用统一命令提交输入。
      */
     focus: () => {} };
     const sendButton = {
@@ -120,7 +120,7 @@ async () => {
       bubble: { /**
        * 记录气泡正文更新，供检查流式和历史显示顺序。
        *
-       * 此定义用于：验证桌面 Adapter 接收其他渠道消息并用统一命令提交输入。
+       * 此定义用于：验证桌面 Adapter 接收会话事件并用统一命令提交输入。
        */
       setText: () => {} },
       chatHistory: {
@@ -128,16 +128,16 @@ async () => {
          * 记录测试收到的真人消息内容和来源。
          *
          * Args:
-         *     message ({ content: string; origin_channel?: string }): 当前真人草稿正文。
+         *     message ({ content: string; }): 当前真人草稿正文。
          */
-        addMessage: (message: { content: string; origin_channel?: string; images?: string[] }) => { added.push(message); },
+        addMessage: (message: { content: string; images?: string[] }) => { added.push(message); },
         /**
          * 提供测试占位回调，不产生额外副作用。
          */
         showTypingIndicator: () => {}, /**
          * 记录正在输入提示被隐藏。
          *
-         * 此定义用于：验证桌面 Adapter 接收其他渠道消息并用统一命令提交输入。
+         * 此定义用于：验证桌面 Adapter 接收会话事件并用统一命令提交输入。
          */
         hideTypingIndicator: () => {},
         /**
@@ -146,7 +146,7 @@ async () => {
         startStreaming: () => {}, /**
          * 记录最新助手消息显示。
          *
-         * 此定义用于：验证桌面 Adapter 接收其他渠道消息并用统一命令提交输入。
+         * 此定义用于：验证桌面 Adapter 接收会话事件并用统一命令提交输入。
          */
         updateLastAiMessage: () => {},
         /**
@@ -155,7 +155,7 @@ async () => {
         finalizeStreamingMessage: () => {}, /**
          * 记录流式显示中止，供检查轮次切换。
          *
-         * 此定义用于：验证桌面 Adapter 接收其他渠道消息并用统一命令提交输入。
+         * 此定义用于：验证桌面 Adapter 接收会话事件并用统一命令提交输入。
          */
         abortStreaming: () => {},
         /**
@@ -164,7 +164,7 @@ async () => {
         showToolCallMessage: () => {}, /**
          * 记录工具提示完成，供检查轮次收尾。
          *
-         * 此定义用于：验证桌面 Adapter 接收其他渠道消息并用统一命令提交输入。
+         * 此定义用于：验证桌面 Adapter 接收会话事件并用统一命令提交输入。
          */
         finalizeToolCallIndicator: () => {},
         /**
@@ -198,7 +198,7 @@ async () => {
         dismiss: () => {}, /**
          * 返回测试审批框当前是否打开。
          *
-         * 此定义用于：验证桌面 Adapter 接收其他渠道消息并用统一命令提交输入。
+         * 此定义用于：验证桌面 Adapter 接收会话事件并用统一命令提交输入。
          */
         isOpen: () => false,
       } as RuntimeChatClientOptions["confirmDialog"],
@@ -206,11 +206,11 @@ async () => {
     listener({ session_id: "s", kind: "session_snapshot", payload: { phase: "idle" },
       stream_epoch: "epoch", event_sequence: 0 });
     listener({ session_id: "s", kind: "human_message", payload: { message: "QQ 消息", images: ["attachment.png"] },
-      origin_channel: "qq", stream_epoch: "epoch", event_sequence: 1 });
+      stream_epoch: "epoch", event_sequence: 1 });
     await new Promise<void>(/**
      * 由 Promise 构造器立即调用，取得本用例指定的条目或响应，供外层断言处理结果。
      *
-     * 此定义用于：验证桌面 Adapter 接收其他渠道消息并用统一命令提交输入。
+     * 此定义用于：验证桌面 Adapter 接收会话事件并用统一命令提交输入。
      *
      * Args:
      *     resolve ((value: void | PromiseLike<void>) => void): 准备成功或等待结束时完成 Promise 的函数。
@@ -218,12 +218,10 @@ async () => {
     (resolve) => setImmediate(resolve));
     assert.equal(added.length, 1);
     assert.equal(added[0].content, "QQ 消息");
-    assert.equal(added[0].origin_channel, "qq");
     assert.deepEqual(added[0].images, ["attachment.png"]);
     await client.sendMessage();
     assert.equal(commands.length, 1);
     assert.equal(commands[0].kind, "human_turn");
-    assert.equal(commands[0].origin_channel, "desktop");
     assert.equal(input.value, "");
     // 2. 开始后空草稿按钮用于停止；错误到达后应读取历史并恢复普通发送。
     listener({ session_id: "s", kind: "run_started", payload: {}, run_id: "r1",
@@ -721,7 +719,7 @@ async () => {
          * 记录测试命令并按场景返回预设受理回执。
          *
          * Args:
-         *     command (ChannelCommand): 带桌面来源的统一入站命令。
+         *     command (InteractionCommand): 包含会话和业务内容的统一入站命令。
          *
          * Returns:
          *     Promise<{ accepted: true; }>: 后端对本次用户命令的受理回执。
@@ -909,7 +907,7 @@ async () => {
          */
         submitInteractionCommand: async () => {
           listener({ session_id: "s", kind: "human_message", payload: { message: "改做这个" },
-            origin_channel: "desktop", stream_epoch: "epoch", event_sequence: 1 });
+            stream_epoch: "epoch", event_sequence: 1 });
           await new Promise<void>(/**
            * 由 Promise 构造器立即调用，取得本用例指定的条目或响应，供外层断言处理结果。
            *

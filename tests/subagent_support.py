@@ -27,7 +27,7 @@ from app.agent.tools.core.base import BaseTool
 from app.agent.tools.core.runtime import ToolRuntime
 from app.agent.tools.authorization.manager import ToolAuthorization
 from app.agent.tools._subagent_support import MessageParentTool
-from app.interaction.interaction_contract import ChannelCommand
+from app.interaction.interaction_contract import InteractionCommand
 from app.schemas.tool_identity import ToolIdentity
 from app.schemas.subagent_types import SubagentPublicStatus
 
@@ -109,7 +109,7 @@ class SubagentHarness:
             async def run(self, message, *, turn_control, inbox_inputs, emit, **kwargs):
                 """保存真人发起动作并创建一个子身份。"""
                 outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
-                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False}))
+                await emit(AgentEvent(EventType.RUN_STARTED, {"resumed": False}))
                 state = await self.manager.load()
                 self.manager.append_human_input(state, message, None, inputs=inbox_inputs)
                 await self.manager.save(state, checkpoint_type=CheckpointType.INTERMEDIATE, inbox_inputs=inbox_inputs)
@@ -128,7 +128,7 @@ class SubagentHarness:
             async def run_runtime_inputs(self, *, inbox_inputs, emit, **kwargs):
                 """通过实际 Manager 消费后台报告并通知测试观察者。"""
                 outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
-                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False}))
+                await emit(AgentEvent(EventType.RUN_STARTED, {"resumed": False}))
                 state = await self.manager.load()
                 self.manager.append_runtime_inputs(state, None, inbox_inputs)
                 await self.manager.save(state, checkpoint_type=CheckpointType.INTERMEDIATE, inbox_inputs=inbox_inputs)
@@ -179,7 +179,7 @@ class SubagentHarness:
 
     async def create(self, text: str = "第一项任务"):
         """通过父公开命令开始创建，取得受理回执。"""
-        result = await self.scheduler.submit(ChannelCommand("parent", "desktop", "human_turn", {"message": text}))
+        result = await self.scheduler.submit(InteractionCommand("parent", "human_turn", {"message": text}))
         assert result.accepted
         return await asyncio.wait_for(self.created.get(), 3)
 

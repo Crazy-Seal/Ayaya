@@ -102,12 +102,10 @@ def convert_message(raw: dict, owner: dict | None = None) -> dict:
     content = raw.get("content", "")
     if kind == "human":
         meta = raw.get("_human") or {}
-        result.update(content=convert_content(content, kind="human", refs=meta.get("image_filenames")),
-                      origin_channel=meta.get("origin_channel", "desktop"))
+        result.update(content=convert_content(content, kind="human", refs=meta.get("image_filenames")))
     elif kind == "assistant":
         result.update(content=convert_content(content, kind="human"),
-            tool_calls=[convert_call(call, owner) for call in raw.get("tool_calls") or []],
-            origin_channel=(raw.get("_assistant") or {}).get("origin_channel", "desktop"), provider_data=None)
+            tool_calls=[convert_call(call, owner) for call in raw.get("tool_calls") or []], provider_data=None)
     elif kind == "tool":
         result.update(content=convert_content(content, kind="tool"), tool_name=raw.get("name"),
             tool_call_id=raw.get("tool_call_id"), compressible=bool((raw.get("_tool") or {}).get("compressible", False)))

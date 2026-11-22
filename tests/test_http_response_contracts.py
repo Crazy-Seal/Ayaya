@@ -92,7 +92,7 @@ def test_history_response_documents_and_preserves_message_fields(has_messages: b
             if not has_messages:
                 return []
             return [{"id": "message", "role": "Human", "content": "你好", "timestamp": "2026-11-21T10:00:00+00:00",
-                     "images": None, "origin_channel": "desktop"}]
+                     "images": None}]
 
     application = FastAPI()
     application.include_router(history_router)
@@ -100,7 +100,7 @@ def test_history_response_documents_and_preserves_message_fields(has_messages: b
     with TestClient(application) as client:
         response = client.get("/chat_history/parent")
     expected = [{"id": "message", "role": "Human", "content": "你好",
-        "timestamp": "2026-11-21T10:00:00+00:00", "images": None, "origin_channel": "desktop"}] if has_messages else []
+        "timestamp": "2026-11-21T10:00:00+00:00", "images": None}] if has_messages else []
     assert response.json() == {"data": expected, "msg": "success", "code": 200}
     schema = application.openapi()
     reference = schema["paths"]["/chat_history/{session_id}"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
@@ -254,7 +254,7 @@ def test_command_receipt_keeps_computed_acceptance_and_null_fields(status: Comma
             """接收未知类别并记录原始动态载荷。
 
             Args:
-                command (ChannelCommand): 路由从请求构造的业务命令。
+                command (InteractionCommand): 路由从请求构造的业务命令。
 
             Returns:
                 CommandReceipt: 当前用例指定的业务受理结果。
@@ -266,8 +266,7 @@ def test_command_receipt_keeps_computed_acceptance_and_null_fields(status: Comma
     application.include_router(router)
     application.dependency_overrides[get_runtime_scheduler] = Scheduler
     with TestClient(application) as client:
-        response = client.post("/agent/commands", json={"session_id": "parent", "origin_channel": "desktop",
-            "kind": "unknown", "payload": {"nested": [None, {"flag": True}]}})
+        response = client.post("/agent/commands", json={"session_id": "parent", "kind": "unknown", "payload": {"nested": [None, {"flag": True}]}})
     assert response.status_code == 200
     assert response.json() == {"status": status.value, "accepted": accepted, "context_id": None, "run_id": None, "detail": None}
     assert calls == [("unknown", {"nested": [None, {"flag": True}]})]

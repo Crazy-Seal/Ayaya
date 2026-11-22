@@ -65,34 +65,10 @@ const desktopPetApi: DesktopPetApi = {
   getBackgroundTaskOutput: (sessionId, taskId, offset) =>
     ipcRenderer.invoke(IpcChannel.GET_BACKGROUND_TASK_OUTPUT, sessionId, taskId, offset),
   /**
-   * 通过主进程读取每会话渠道订阅列表。
+   * 提交统一交互命令并返回受理结果，Agent 回复从独立事件流取得。
    *
    * Args:
-   *     sessionId (string): 共享 Ayaya 会话标识。
-   *
-   * Returns:
-   *     Promise<any>: 当前会话的渠道启用状态列表。
-   */
-  getChannelSubscriptions: (sessionId) =>
-    ipcRenderer.invoke(IpcChannel.GET_CHANNEL_SUBSCRIPTIONS, sessionId),
-  /**
-   * 通过主进程保存渠道启用状态并返回更新后的列表。
-   *
-   * Args:
-   *     sessionId (string): 共享 Ayaya 会话标识。
-   *     channel (string): 已注册渠道标识。
-   *     enabled (boolean): 该渠道是否参与此会话的双向互通。
-   *
-   * Returns:
-   *     Promise<any>: 后端保存后的渠道订阅列表。
-   */
-  setChannelSubscription: (sessionId, channel, enabled) =>
-    ipcRenderer.invoke(IpcChannel.SET_CHANNEL_SUBSCRIPTION, sessionId, channel, enabled),
-  /**
-   * 提交统一渠道命令并返回受理结果，Agent 回复从独立事件流取得。
-   *
-   * Args:
-   *     command (ChannelCommand): 带桌面来源的统一入站命令。
+   *     command (InteractionCommand): 包含会话和业务内容的统一入站命令。
    *
    * Returns:
    *     Promise<any>: 后端对本次用户命令的受理回执。
@@ -115,7 +91,7 @@ const desktopPetApi: DesktopPetApi = {
   /** 接收自动重连时的快照查询错误。 */
   onInteractionSnapshotFailed: (listener) => subscribe(IpcChannel.INTERACTION_SNAPSHOT_FAILED, listener),
   /**
-   * 监听主进程转发的渠道事件，返回只移除当前监听器的函数。
+   * 监听主进程转发的交互事件，返回只移除当前监听器的函数。
    *
    * Args:
    *     listener ((event: InteractionEvent) => void): 收到主进程事件时执行的 Renderer 回调。

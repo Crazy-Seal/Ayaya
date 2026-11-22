@@ -12,8 +12,7 @@ import { FRONTEND_SETTINGS_PATH } from "./config.js";
 import { readFrontendSettings, saveFrontendSettings } from "./frontend-settings-store.js";
 import { backendFetch } from "./backend-client.js";
 import { submitInteractionCommand, initializeDesktopSession, ensureDesktopStream } from "./interaction-adapter.js";
-import type { ChannelCommand, ChatAttentionUpdate } from "../shared-types.js";
-import { DESKTOP_CHANNEL } from "../shared-types.js";
+import type { InteractionCommand, ChatAttentionUpdate } from "../shared-types.js";
 import type {
   ChatSettingsData,
   ModelTransformPayload,
@@ -1048,63 +1047,18 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
   });
 
   // 聊天请求
-  trustedIpc.handle(IpcChannel.GET_CHANNEL_SUBSCRIPTIONS, /**
-   * 渠道设置页读取当前会话的渠道订阅状态。
-   *
-   * Args:
-   *     _event (IpcMainInvokeEvent): Electron 传入的事件对象，不作为业务载荷使用。
-   *     sessionId (string): 当前操作所属的会话编号。
-   *
-   * Returns:
-   *     Promise<unknown[]>: 渠道订阅记录列表。
-   */
-  async (_event, sessionId: string) => {
-    const response = await backendFetch(`/agent/channels/${encodeURIComponent(sessionId)}`);
-    if (!response.ok) throw new Error(`读取渠道订阅失败: ${response.status}`);
-    const data = await response.json() as { channels: unknown[] };
-    return data.channels;
-  });
-  trustedIpc.handle(IpcChannel.SET_CHANNEL_SUBSCRIPTION, /**
-   * 渠道设置页保存一个渠道的启用状态，等待后端更新后返回结果。
-   *
-   * Args:
-   *     _event (IpcMainInvokeEvent): Electron 传入的事件对象，不作为业务载荷使用。
-   *     sessionId (string): 当前操作所属的会话编号。
-   *     channel (string): 主进程与页面约定的 IPC 事件名称。
-   *     enabled (boolean): 是否启用当前界面选项。
-   *
-   * Returns:
-   *     Promise<unknown[]>: 保存后的渠道订阅状态。
-   */
-  async (
-    _event, sessionId: string, channel: string, enabled: boolean,
-  ) => {
-    const response = await backendFetch(
-      `/agent/channels/${encodeURIComponent(sessionId)}/${encodeURIComponent(channel)}`,
-      {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled }),
-      },
-    );
-    if (!response.ok) throw new Error(`更新渠道订阅失败: ${response.status}`);
-    const data = await response.json() as { channels: unknown[] };
-    return data.channels;
-  });
-
-  // 聊天请求
   trustedIpc.handle(IpcChannel.INTERACTION_COMMAND, /**
-   * 桌面页提交统一命令时先禁止冒用其他渠道，再交给后端处理。
+   * 桌面页将统一会话命令交给后端并接收受理回执。
    *
    * Args:
    *     _event (IpcMainInvokeEvent): Electron 传入的事件对象，不作为业务载荷使用。
-   *     command (ChannelCommand): 要启动的可执行程序。
+   *     command (InteractionCommand): 所属会话、动作类别和业务内容组成的统一命令。
    *
    * Returns:
    *     Promise<CommandReceipt>: 后端命令回执。
    */
-  async (_event, command: ChannelCommand) => {
-    if (command.origin_channel !== DESKTOP_CHANNEL) throw new Error("桌面入口不能冒用其他渠道");
+  async (_event, command: InteractionCommand) => {
+
     return await submitInteractionCommand(command);
   });
   trustedIpc.handle(IpcChannel.ENSURE_DESKTOP_STREAM, /** 等待应用全局事件连接就绪。 */

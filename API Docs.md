@@ -13,7 +13,7 @@
 
 | 状态码 | 触发情况 |
 | --- | --- |
-| 400 | 提交未知工具权限；渠道未注册、会话未订阅该渠道或试图修改桌面固定订阅；任务没有终端输出；MCP 测试或显式重连失败。 |
+| 400 | 提交未知工具权限；任务没有终端输出；MCP 测试或显式重连失败。 |
 | 404 | 会话、MCP 服务、子 Agent、任务或历史查询终点不存在；子 Agent、任务或历史终点属于其他会话。 |
 | 409 | 会话或 MCP 服务编号已存在；尝试修改 MCP 稳定编号；重连已禁用的 MCP 服务。 |
 | 422 | 请求字段或查询参数无效，包括非法分页；插件参数无效时 `detail` 为字段错误列表。 |
@@ -38,7 +38,7 @@
 
 运行时取值由后端 `app/schemas/runtime_types.py` 的字符串枚举集中定义；前端 `ui/shared-types.ts` 使用同值的具名常量及联合类型。HTTP、SSE、SQLite 中仍保存既有字符串，不输出枚举成员名称。会话阶段 `SessionPhase`、轮次执行阶段 `TurnPhase`、受管进程 `TaskStatus` 和模型通知 `TaskResultStatus` 分别建模；任务停止仍从 `stopped` 映射为通知的 `cancelled`，混合终态仍为 `mixed`。Agent 内部 `done` 仍映射到交互 `run_completed`。
 
-取值枚举与生命周期分别负责分类和执行资格：运行期间未知命令仍返回 HTTP 200 的 `accepted=false` 业务回执，未知展示事件沿既有忽略路径处理。渠道 ID 仍可动态注册，`desktop` 只是固定桌面渠道常量。两端共享 `tests/fixtures/runtime-protocol-values.json` 的固定协议样例进行取值与序列化回归检查，协议变更时须同步审核定义和样例。
+取值枚举与生命周期分别负责分类和执行资格：运行期间未知命令仍返回 HTTP 200 的 `accepted=false` 业务回执，未知展示事件沿既有忽略路径处理。两端共享 `tests/fixtures/runtime-protocol-values.json` 的固定协议样例进行取值与序列化回归检查，协议变更时须同步审核定义和样例。
 
 ## 启动与退出语义
 
@@ -52,7 +52,7 @@
 
 ## 对话命令与会话事件
 
-`POST /agent/commands` 接收 `ChannelCommand`，只返回受理回执，不等待 Agent 回复。请求字段为必填的 `session_id`、`origin_channel`、`kind`，以及可选的 `payload`（默认为 `{}`）、`target_run_id`、`request_id`、`task_id`。空的会话或来源被 HTTP 请求模型拒绝；未注册或未订阅的渠道由运行时返回 `accepted=false`。当前生产渠道只有 `desktop`；测试渠道只在测试中注册。桌面与将来的外部渠道共享同一 Ayaya 会话。
+`POST /agent/commands` 接收 `InteractionCommand`，返回受理回执，后续回复通过 SSE 取得。必填字段为 `session_id`、`kind`，可选字段为 `payload`（默认 `{}`）、`target_run_id`、`request_id`、`task_id`、`subagent_id`。空会话编号由 HTTP 请求模型拒绝，具体命令的业务条件由运行时检查。
 
 | `kind` | 必要字段与行为 |
 | --- | --- |
@@ -61,7 +61,7 @@
 | `queue_turn` | 同真人输入，仅在有运行中、待审批或待执行的轮次时受理；前一真人轮次正常完成后放行，可用 `cancel_queued` 撤销尚未领取的消息。 |
 | `stop_turn` | 可附 `target_run_id` 限定轮次；当前轮次进入最终提交阶段后不再接受停止。 |
 | `resolve_authorization` | `request_id` 指向待审批请求；`payload.kind` 为 `approve`、`reject` 或 `steer`。`steer` 另需非空 `payload.message`。两端均可提交，后端只接受第一个有效决定。 |
-| `cancel_queued` | `payload.input_sequence` 为 Inbox 消息编号；仅消息来源渠道能撤销尚未领取的排队输入。 |
+| `cancel_queued` | `payload.input_sequence` 为 Inbox 消息编号；撤销本会话尚未交付的指定排队输入。 |
 | `stop_background_task` | `task_id` 指向同一会话的后台任务。 |
 
 回执包含 `status`、`accepted`、`context_id`、`run_id` 和 `detail`，例如 `{"status":"accepted","accepted":true,"context_id":"default","run_id":null,"detail":null}`。拒绝时 `accepted=false`，`detail` 说明原因，`context_id` 和 `run_id` 允许为空。未知命令仍返回 HTTP 200，例如 `{"status":"invalid","accepted":false,"context_id":"default","run_id":null,"detail":"未知运行命令"}`。`accepted=true` 只表示命令已受理，不表示输入已交付模型、工具已执行或本轮已经完成。本版没有通用 `command_id` 或自动重发／去重命令机制。
@@ -69,39 +69,39 @@
 例如，桌面发送一句话：
 
 ```json
-{"session_id":"default","origin_channel":"desktop","kind":"human_turn","payload":{"message":"你好","images":[]}}
+{"session_id":"default","kind":"human_turn","payload":{"message":"你好","images":[]}}
 ```
 
-`GET /agent/events?channel=desktop` 是覆盖所有会话的全局 SSE 订阅，不拥有 Agent 生命周期。每条记录是 `data: <JSON>\n\n`。后端加载渠道订阅配置并登记连接后，首先发送 `{"kind":"stream_ready","stream_epoch":"..."}`，随后发送各会话的 `InteractionEvent`；就绪控制帧由主进程消费。桌面固定接收所有会话，其他渠道按会话启用配置和事件来源筛选。连接不批量查询快照；断线和慢订阅溢出结束当前连接，Agent 继续执行。
+`GET /agent/events` 是覆盖所有会话的全局 SSE 订阅，不拥有 Agent 生命周期。每条记录是 `data: <JSON>\n\n`。后端登记观察连接后，首先发送 `{"kind":"stream_ready","stream_epoch":"..."}`，随后发送各会话的 `InteractionEvent`；就绪控制帧由主进程消费。每条观察连接接收所有会话事件。连接不批量查询快照；断线和慢订阅溢出结束当前连接，Agent 继续执行。
 
-`GET /agent/snapshot/{session_id}?channel=desktop` 直接返回该会话的 `session_snapshot` 事件 JSON。未注册或未启用的渠道返回 HTTP 400。查询复用运行状态及水位，保持事件编号。客户端先收到全局流就绪，再缓冲当前会话事件并查询快照；先应用快照和历史，再处理同 epoch 且序号更大的增量。不同会话分别比较序号。
+`GET /agent/snapshot/{session_id}` 直接返回该会话的 `session_snapshot` 事件 JSON。查询复用运行状态及水位，保持事件编号。客户端先收到全局流就绪，再缓冲当前会话事件并查询快照；先应用快照和历史，再处理同 epoch 且序号更大的增量。不同会话分别比较序号。
 
 Electron 主进程在后端就绪后维持一条流，切换会话和刷新页面复用连接。启动、切换及重连只初始化当前会话的快照与历史；已有待审批通过快照恢复。后台会话的实时未读和审批参与窗口标题及任务栏闪烁，打开当前会话只清除它的普通未读。其他会话在连接建立前或断线期间的状态按需恢复，不保证立即补出提醒；事件分片不留存重放。
 
 会话展示流和桌面执行流在连续空闲 60 秒后发送注释心跳 `: ping\n\n`，不占事件序号、不进入聊天，也不逐帧写日志。心跳不会取消待取的业务事件；连接关闭时只释放订阅读取。审批的 `data.arguments` 和 `prepared_action` 必须是标准 JSON 容器，不输出 Python 内部不可变对象的字符串表示。
 
-事件公共字段为 `session_id`、`kind`、`payload`、`origin_channel`、`run_id`、`request_id`、`task_id`、`stream_epoch`、`event_sequence`、`timestamp`；不适用的关联字段为 `null`。`stream_epoch` 在后端进程重启后改变；`event_sequence` 在同一 epoch 内按会话递增。快照沿用生成时的序号作为水位，接收端以新快照替换旧视图，只对同一 epoch 的后续增量作顺序比较。
+事件公共字段为 `session_id`、`kind`、`payload`、`run_id`、`request_id`、`task_id`、`stream_epoch`、`event_sequence`、`timestamp`；不适用的关联字段为 `null`。`stream_epoch` 在后端进程重启后改变；`event_sequence` 在同一 epoch 内按会话递增。快照沿用生成时的序号作为水位，接收端以新快照替换旧视图，只对同一 epoch 的后续增量作顺序比较。
 
 SSE 文本分片示例（每条记录后有一个空行；以下标识仅为示例）：
 
 ```text
-data: {"session_id":"default","kind":"text_chunk","payload":{"value":"你好"},"origin_channel":"desktop","run_id":"run-1","request_id":null,"task_id":null,"stream_epoch":"epoch-1","event_sequence":3,"timestamp":"2026-10-08T00:00:00+00:00"}
+data: {"session_id":"default","kind":"text_chunk","payload":{"value":"你好"},"run_id":"run-1","request_id":null,"task_id":null,"stream_epoch":"epoch-1","event_sequence":3,"timestamp":"2026-10-08T00:00:00+00:00"}
 
 ```
 
 | `kind` | 主要 `payload` 与用途 |
 | --- | --- |
-| `session_snapshot` | `phase`、`run_id`、`origin_channel`、当前 `interrupt`、`pending_inputs`、`queued_inputs`；桌面还包含 `tasks`，不携带正在生成的正文。 |
-| `human_message` | 输入事务提交后立即发布 `message`、`images`、`input_sequence`、`message_id`，不等待模型首个分片。外部渠道的真人输入也发给桌面。 |
+| `session_snapshot` | `phase`、`run_id`、当前 `interrupt`、`pending_inputs`、`queued_inputs`、`tasks`，不携带正在生成的正文。 |
+| `human_message` | 输入事务提交后立即发布 `message`、`images`、`input_sequence`、`message_id`，不等待模型首个分片。 |
 | `queued_message` / `queued_cancelled` | 排队消息的 `input_sequence`，入队事件还含 `message`、`images`。 |
 | `run_started` / `run_completed` | 轮次开始／结束；恢复开始时有 `resumed=true`，结束事件的 `payload.value` 为 Agent 完成值或打断标记。 |
 | `text_chunk` / `tool_call` | Agent 事件包在 `payload.value`，分别为文本片段、工具名。 |
 | `interrupt` | `payload.value` 是中断展示对象；审批的 `type=authorization_request`，屏幕执行的 `type=continuation_request`。顶层 `request_id` 对应该中断。 |
-| `authorization_resolved` | `payload.outcome` 为 `approve`、`reject`、`steer` 或 `cancelled`，`actor_channel` 表示处理入口；顶层 `request_id` 指定应关闭的审批。 |
-| `task_status` | `task_id`、`status`、`exit_code`；任务状态及自动唤醒回复暂只投递桌面。 |
+| `authorization_resolved` | `payload.outcome` 为 `approve`、`reject`、`steer` 或 `cancelled`；顶层 `request_id` 指定应关闭的审批。 |
+| `task_status` | `task_id`、`status`、`exit_code`。 |
 | `error` | `payload.detail` 或 Agent 错误值。 |
 
-普通轮次事件投递给桌面和该轮的来源渠道，不转给其他外部渠道；后台唤醒只送桌面。`authorization_resolved` 仍按原审批请求来源投递，即使决定由另一入口提交。审批的决定经命令接口提交，其他端由事件更新展示。历史消息仍须通过历史接口查询；事件快照不是完整聊天记录。
+所有会话的可见事件投递给各观察连接，客户端按 `session_id` 选择展示内容。审批决定经命令接口提交，观察连接通过事件更新展示。完整聊天记录通过历史接口查询。
 
 ## 桌面执行器与后台任务
 
@@ -130,13 +130,9 @@ data: {"session_id":"default","kind":"text_chunk","payload":{"value":"你好"},"
 
 `run_ps` 直接启动非交互 `powershell.exe`，继承后端进程的环境变量，并以仓库的 `agent_workspace/` 文件夹为工作目录；不自动激活同名 Conda 环境。程序已经输出并刷新的内容持续保存到任务日志，运行期间即可分页读取。
 
-## 渠道订阅与桌面 bridge
+## 桌面 bridge
 
-`GET /agent/channels/{session_id}` 返回 `{"channels":[{"channel":"desktop","display_name":"桌面","enabled":true,"ready":true}]}`；`PUT /agent/channels/{session_id}/{channel}` 请求 `{"enabled":true|false}`，返回更新后的同形列表。订阅设置按会话持久化；桌面固定启用、不可修改。当前设置页仅能显示真实注册的桌面渠道；没有真实 QQ Adapter。
-
-修改未注册渠道或桌面固定订阅时返回 400。全局 SSE 建立连接前检查渠道是否注册；快照接口还会检查该会话是否启用本渠道，无效请求返回 400。
-
-聊天 Renderer 不直接建立上述 HTTP/SSE 连接。Electron preload 向 Renderer 暴露 `submitInteractionCommand()`、`initializeDesktopSession()`、`ensureDesktopStream()`、`onInteractionEvent()`、`getChannelSubscriptions()`、`setChannelSubscription()`、`getBackgroundTasks()` 和 `getBackgroundTaskOutput()`；其类型在 `ui/shared-types.ts` 的 `DesktopPetApi` 中。主进程处理对应 IPC，把全局 SSE 中的会话事件通过 `desktop-pet:interaction-event` 转给 Renderer，并独立持有屏幕执行订阅。桌面提交命令时固定 `origin_channel=desktop`。
+聊天 Renderer 不直接建立上述 HTTP/SSE 连接。Electron preload 向 Renderer 暴露 `submitInteractionCommand()`、`initializeDesktopSession()`、`ensureDesktopStream()`、`onInteractionEvent()`、`getBackgroundTasks()` 和 `getBackgroundTaskOutput()`；其类型在 `ui/shared-types.ts` 的 `DesktopPetApi` 中。主进程处理对应 IPC，把全局 SSE 中的会话事件通过 `desktop-pet:interaction-event` 转给 Renderer，并独立持有屏幕执行订阅。
 
 新聊天页面通过 `initializeDesktopSession(sessionId)` 查询当前会话快照，用户提交命令前通过 `ensureDesktopStream()` 等待全局流就绪。页面先注册事件监听，应用快照并结束历史查询后允许发送或排队；历史查询失败时显示错误，并应用快照中的运行状态。全局断线会使旧视图查询失效，重连后仅恢复当前会话。主进程先处理全部会话提醒，再将事件转发给页面；页面只处理当前会话。
 
@@ -182,9 +178,13 @@ ChatSettings 包含 `session_id`、`model_name`、`openai_api_key`、`openai_bas
 
 - `GET /chat_history/{session_id}?start=0&limit=200`：在可见消息投影后分页；`start` 不小于 0，`limit` 不小于 1。
 - `GET /chat_history_last_n/{session_id}?n=100`：读取最后 N 条可见消息，按时间升序返回；`n` 范围为 1–500。可加 `through_message_id` 限定读取到某条消息；该消息不存在或属于其他会话时返回 404。
-- 两者均返回 `Result.data` 数组，元素为 `{id,role,content,timestamp,images,origin_channel}`。`role` 可能是 `Human`、`AI` 或 `AI_Tool_Calling`；真人和 Assistant 的来源由 `origin_channel` 标识，旧记录按 `desktop` 解释。**工具产生的图片也可投影为带 `images` 的 `AI` 消息**，并非只有 `Human` 才有图片。
+- 两者均返回 `Result.data` 数组，元素为 `{id,role,content,timestamp,images}`。`role` 可能是 `Human`、`AI` 或 `AI_Tool_Calling`；**工具产生的图片也可投影为带 `images` 的 `AI` 消息**，并非只有 `Human` 才有图片。
 - `GET /images/{relative_path}` 读取授权范围内的已保存图片；历史 `images` 字段是本地相对路径，请交给桌面端图片 URL 解析逻辑处理，不要假设它始终是根目录文件名。
 
 原始工具消息和旧记录不等同于历史 UI 投影；如果协议行与当前消息契约不兼容，历史接口返回 HTTP 500，而不会静默回退到旧表。
 
 未指定查询终点且没有历史时返回成功的空数组；分页参数无效时返回 422。
+
+## 删除渠道结构的离线迁移
+
+关闭后端后，使用 `conda run -n ayaya python -B scripts/remove_channels.py --db memory/sqlite/agent_checkpoints.sqlite3 --check` 读取迁移统计，将 `--check` 改为 `--apply` 后执行。迁移在同一事务删除渠道订阅表及主、子 Inbox 的渠道列，并清理消息和 checkpoint 的框架渠道字段。消息正文、工具参数、插件状态、输入编号及审批恢复材料保持原值；失败时整体回滚，重复执行保持已迁移数据。

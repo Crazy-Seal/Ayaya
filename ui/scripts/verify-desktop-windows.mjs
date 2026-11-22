@@ -74,7 +74,7 @@ const history = [
  */
 const event = (kind, payload, extra = {}) => ({
   kind, payload, session_id: currentSession, stream_epoch: "desktop-test",
-  event_sequence: ++sequence, origin_channel: "desktop", ...extra,
+  event_sequence: ++sequence, ...extra,
 });
 
 /**
@@ -184,10 +184,6 @@ async (input, init = {}) => {
         notify_agent: false, result: "日记整理完成", status: "completed" },
     ] });
   }
-  if (route.startsWith("/agent/channels/")) return json({ channels: [
-    { channel: "desktop", display_name: "桌面", ready: true, enabled: true },
-    { channel: "test-channel", display_name: "测试渠道", ready: false, enabled: false },
-  ] });
   if (route === "/tools") return json({ code: 200, data: { tools: [] } });
   if (route.startsWith("/tool-permissions")) return json({ code: 200, data: { tools: process.argv.includes("--plugin-capabilities") ? [
     { stable_key: "plugin:demo:local:read", policy_key: "local:read", source: "local", name: "read", display_name: "读取游戏", description: "本地读取", policy: "ask", plugin_name: "demo", available: true },
@@ -695,7 +691,7 @@ try {
   const sizes = await settingsWindow.webContents.executeJavaScript("['open-log-window-btn','exit-application-btn'].map(id=>{const r=document.getElementById(id).getBoundingClientRect();return [r.width,r.height]})");
   assert.deepEqual(sizes[0], sizes[1]);
   await capture(settingsWindow, "settings");
-  for (const page of ["llm", "motion", "memory", "contextStrategy", "tools", "mcp", "channels", "tasks"]) {
+  for (const page of ["llm", "motion", "memory", "contextStrategy", "tools", "mcp", "tasks"]) {
     await settingsWindow.webContents.executeJavaScript(`document.querySelector('[data-page="${page}"].settings-tab').click()`);
     await pause(150);
     if (page === "tasks") {

@@ -99,7 +99,7 @@ class ChatHistoryDao:
             return [{**base, "role": HistoryRole.PLUGIN, "content": notification_text(message)}]
         if isinstance(message, HumanMessage):
             return [{**base, "role": HistoryRole.HUMAN, "content": message.text,
-                     "images": images or None, "origin_channel": message.origin_channel}]
+                     "images": images or None}]
         # 2. 工具文字仍隐藏，图片保持独立可见气泡并使用稳定派生编号。
         if isinstance(message, ToolMessage):
             return [{**base, "id": f"{message.message_id}:images", "role": HistoryRole.AI,
@@ -108,10 +108,10 @@ class ChatHistoryDao:
             return []
         result = []
         if message.text:
-            result.append({**base, "role": HistoryRole.AI, "content": message.text, "origin_channel": message.origin_channel})
+            result.append({**base, "role": HistoryRole.AI, "content": message.text})
         if message.tool_calls:
             result.append({**base, "id": f"{message.message_id}:tools", "role": HistoryRole.AI_TOOL_CALLING,
-                "content": "调用了工具: " + ", ".join(call.name for call in message.tool_calls), "origin_channel": message.origin_channel})
+                "content": "调用了工具: " + ", ".join(call.name for call in message.tool_calls)})
         return result
 
 

@@ -18,7 +18,7 @@ from app.crud.sqlite_save import run_sqlite_save, sqlite_transaction, SqliteRoll
 
 from app.agent.runtime.session_inbox import InboxEnvelope, InputNoLongerPending
 from app.schemas.agent_storage import AgentStorageScope
-from app.schemas.runtime_types import InboxDeliveryMode, InboxKind, InboxStatus, SYSTEM_INPUT_ORIGIN
+from app.schemas.runtime_types import InboxDeliveryMode, InboxKind, InboxStatus
 
 
 INBOX_SCHEMA_SQL = """
@@ -26,7 +26,6 @@ CREATE TABLE IF NOT EXISTS session_inbox (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL,
     kind TEXT NOT NULL CHECK (kind IN ('human', 'task_terminal', 'plugin_notification', 'agent_command', 'subagent', 'parent_reply')),
-    origin_channel TEXT NOT NULL,
     payload_json TEXT NOT NULL,
     delivery_mode TEXT NOT NULL DEFAULT 'immediate'
         CHECK (delivery_mode IN ('immediate', 'queued')),
@@ -41,8 +40,7 @@ CREATE TABLE IF NOT EXISTS session_inbox (
 
 async def append_input_in_transaction(
     db: aiosqlite.Connection, context_id: str, kind: InboxKind,
-    payload: dict[str, object], storage_scope: AgentStorageScope, *,
-    origin_channel: str = SYSTEM_INPUT_ORIGIN,
+    payload: dict[str, object], storage_scope: AgentStorageScope,
 ) -> int:
     """用调用方事务保存一条输入，返回编号，由调用方统一提交。
 
@@ -52,14 +50,13 @@ async def append_input_in_transaction(
         kind (InboxKind): 真人、父命令或内部通知类别。
         payload (dict[str, object]): 正文及来源。
         storage_scope (AgentStorageScope): 接收方存储范围。
-        origin_channel (str): 输入来源渠道。
 
     Returns:
         int: 已写入、尚待提交的输入编号。
     """
     cursor = await db.execute(
-        f"INSERT INTO {storage_scope.inbox_table}(session_id,kind,origin_channel,payload_json,created_at) VALUES (?,?,?,?,?)",
-        (context_id, kind.value, origin_channel, json.dumps(payload, ensure_ascii=False), datetime.now(timezone.utc).isoformat()),
+        f"INSERT INTO {storage_scope.inbox_table}(session_id,kind,payload_json,created_at) VALUES (?,?,?,?)",
+        (context_id, kind.value, json.dumps(payload, ensure_ascii=False), datetime.now(timezone.utc).isoformat()),
     )
     if cursor.lastrowid is None:
         raise RuntimeError("数据库未返回新输入编号")
@@ -178,9 +175,9 @@ async def append_task_terminal_in_transaction(
     # 1. 沿用现有通知载荷和默认 pending、immediate、未排队状态，等待 worker 读取。
     await db.execute(
         f"INSERT INTO {storage_scope.inbox_table} "
-        "(session_id, kind, origin_channel, payload_json, created_at) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (session_id, InboxKind.TASK_TERMINAL.value, SYSTEM_INPUT_ORIGIN, json.dumps({
+        "(session_id, kind, payload_json, created_at) "
+        "VALUES (?, ?, ?, ?)",
+        (session_id, InboxKind.TASK_TERMINAL.value, json.dumps({
             "task_id": task_id, "task_name": task_name, "status": status, "result": result,
             **({"error": error} if error else {}),
             **({"tool_name": tool_name, "exit_code": exit_code, "output_ref": output_ref}
@@ -282,10 +279,9 @@ class SessionInboxDao:
             id=int(row[0]),
             session_id=str(row[1]),
             kind=InboxKind(row[2]),
-            origin_channel=str(row[3]),
-            payload=json.loads(row[4]),
-            status=InboxStatus(row[5]),
-            delivery_mode=InboxDeliveryMode(row[6]),
+            payload=json.loads(row[3]),
+            status=InboxStatus(row[4]),
+            delivery_mode=InboxDeliveryMode(row[5]),
             storage_scope=self.storage_scope,
         )
 
@@ -304,8 +300,8 @@ class SessionInboxDao:
             """提交本次已准备的业务材料，失败后由共享规则决定安全重试。"""
             async with self._transaction() as db:
                 await db.execute(
-                    f"INSERT INTO {self.storage_scope.inbox_table} (session_id, kind, origin_channel, payload_json, created_at) VALUES (?, ?, ?, ?, ?)",
-                    (self.session_id, InboxKind.PLUGIN_NOTIFICATION.value, SYSTEM_INPUT_ORIGIN,
+                    f"INSERT INTO {self.storage_scope.inbox_table} (session_id, kind, payload_json, created_at) VALUES (?, ?, ?, ?)",
+                    (self.session_id, InboxKind.PLUGIN_NOTIFICATION.value,
                      json.dumps({"plugin_name": plugin_name, "name": name, "text": text}, ensure_ascii=False),
                      prepared_at))
 
@@ -316,13 +312,12 @@ class SessionInboxDao:
         return tuple(item for item in await self._pending(None, False) if item.kind != InboxKind.HUMAN)
 
     async def submit_human(
-        self, origin_channel: str, message: str, *, images: list[str] | None = None,
+        self, message: str, *, images: list[str] | None = None,
         queued: bool = False, discarded_ids: tuple[int, ...] = (),
     ) -> InboxEnvelope:
         """校验真人内容并持久写入 pending 输入，返回值不代表已交付模型。
 
         Args:
-            origin_channel (str): 输入或本轮回复所属的渠道。
             message (str): 真人文本或类型声明对应的内部通知。
             images (list[str] | None): 真人附件的图片 data URL 列表。
             queued (bool): 是否等前一真人轮次正常完成后才交付。
@@ -333,11 +328,11 @@ class SessionInboxDao:
             InboxEnvelope: 已持久受理但尚未交付模型的输入快照。
 
         Raises:
-            ValueError: 消息来源和内容不可为空。
+            ValueError: 消息内容不能为空。
             RuntimeError: 数据库未返回 Inbox ID。
         """
-        if not origin_channel or (not message.strip() and not images):
-            raise ValueError("消息来源和内容不可为空")
+        if not message.strip() and not images:
+            raise ValueError("消息内容不能为空")
         payload = {"message": message, "images": list(images or [])}
         prepared_at = datetime.now(timezone.utc).isoformat()
         async def save_attempt() -> InboxEnvelope:
@@ -351,16 +346,16 @@ class SessionInboxDao:
                 # 2. 先写 pending 记录并提交，再返回 input_sequence；此时尚未交付模型。
                 cursor = await db.execute(
                     f"INSERT INTO {self.storage_scope.inbox_table} "
-                    "(session_id, kind, origin_channel, payload_json, delivery_mode, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    (self.session_id, InboxKind.HUMAN.value, origin_channel, json.dumps(payload, ensure_ascii=False),
+                    "(session_id, kind, payload_json, delivery_mode, created_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (self.session_id, InboxKind.HUMAN.value, json.dumps(payload, ensure_ascii=False),
                      (InboxDeliveryMode.QUEUED if queued else InboxDeliveryMode.IMMEDIATE).value,
                      prepared_at),
                 )
                 if cursor.lastrowid is None:
                     raise RuntimeError("数据库未返回 Inbox ID")
                 return InboxEnvelope(
-                    int(cursor.lastrowid), self.session_id, InboxKind.HUMAN, origin_channel,
+                    int(cursor.lastrowid), self.session_id, InboxKind.HUMAN,
                     payload, InboxStatus.PENDING, InboxDeliveryMode.QUEUED if queued else InboxDeliveryMode.IMMEDIATE,
                     self.storage_scope,
                 )
@@ -381,7 +376,7 @@ class SessionInboxDao:
             db = await self._get_db()
             kind_value = kind.value if isinstance(kind, InboxKind) else kind
             rows = list(await db.execute_fetchall(
-                "SELECT id, session_id, kind, origin_channel, payload_json, status, delivery_mode "
+                "SELECT id, session_id, kind, payload_json, status, delivery_mode "
                 f"FROM {self.storage_scope.inbox_table} WHERE session_id = ? AND status = ? "
                 "AND (? IS NULL OR kind = ?) "
                 "AND (delivery_mode = ? OR (? AND queue_ready = 1)) ORDER BY id",
@@ -474,11 +469,8 @@ class SessionInboxDao:
                 row = await cursor.fetchone()
             return InboxStatus(row[0]) if row else None
 
-    async def pending_humans(self, *, origin_channel: str | None = None) -> list[InboxEnvelope]:
-        """查询未交付真人输入，按需限定来源以生成接收方快照。
-
-        Args:
-            origin_channel (str | None): 输入或本轮回复所属的渠道。
+    async def pending_humans(self) -> list[InboxEnvelope]:
+        """按会话和输入顺序查询尚未交付的真人输入。
 
         Returns:
             list[InboxEnvelope]: 按输入序号排序的未交付真人输入。
@@ -486,33 +478,32 @@ class SessionInboxDao:
         async with self._write_lock:
             db = await self._get_db()
             rows = list(await db.execute_fetchall(
-                "SELECT id, session_id, kind, origin_channel, payload_json, status, "
+                "SELECT id, session_id, kind, payload_json, status, "
                 f"delivery_mode FROM {self.storage_scope.inbox_table} "
                 "WHERE session_id = ? AND kind = ? AND status != ? "
-                "AND (? IS NULL OR origin_channel = ?) ORDER BY id",
-                (self.session_id, InboxKind.HUMAN.value, InboxStatus.DELIVERED.value, origin_channel, origin_channel),
+                "ORDER BY id",
+                (self.session_id, InboxKind.HUMAN.value, InboxStatus.DELIVERED.value),
             ))
             return [self._from_row(row) for row in rows]
 
-    async def cancel_queued(self, envelope_id: int, origin_channel: str) -> bool:
-        """仅删除当前来源尚未交付的排队消息，保存成功的输入不能撤销。
+    async def cancel_queued(self, envelope_id: int) -> bool:
+        """删除本会话仍处于待交付状态的指定排队消息。
 
         Args:
             envelope_id (int): Inbox 自增输入编号。
-            origin_channel (str): 输入或本轮回复所属的渠道。
 
         Returns:
-            bool: 只有同来源尚未交付的排队记录实际被删除时为真。
+            bool: 本会话待交付的排队记录实际被删除时为真。
         """
         async def save_attempt() -> bool:
             """提交本次已准备的业务材料，失败后由共享规则决定安全重试。"""
             async with self._transaction() as db:
-                # 1. 条件删除同时约束会话、来源、排队模式和 pending，已经交付的输入不可撤销。
+                # 1. 条件删除同时约束会话、输入编号、排队模式和 pending，已经交付的输入不可撤销。
                 cursor = await db.execute(
                     f"DELETE FROM {self.storage_scope.inbox_table} WHERE session_id = ? AND id = ? "
-                    "AND origin_channel = ? AND kind = ? "
+                    "AND kind = ? "
                     "AND delivery_mode = ? AND status = ?",
-                    (self.session_id, envelope_id, origin_channel, InboxKind.HUMAN.value,
+                    (self.session_id, envelope_id, InboxKind.HUMAN.value,
                      InboxDeliveryMode.QUEUED.value, InboxStatus.PENDING.value),
                 )
                 return cursor.rowcount == 1

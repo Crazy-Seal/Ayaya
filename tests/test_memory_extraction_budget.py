@@ -100,7 +100,7 @@ def extraction_messages() -> tuple[list[BaseMessage], list[BaseMessage]]:
     """
     timestamp = datetime(2026, 10, 10, 2, 0, tzinfo=timezone.utc)
     current = [
-        HumanMessage(content=text_content("当前偏好"), origin_channel="qq", created_at=timestamp),
+        HumanMessage(content=text_content("当前偏好"), created_at=timestamp),
         AssistantMessage(tool_calls=(ToolCall(id="call", name="read_file", args={"path": "a.py"}),)),
         ToolMessage(content=text_content("头" * 1_200 + "中" * 5_000 + "尾" * 1_200),
                     tool_name="read_file", tool_call_id="call"),
@@ -132,7 +132,7 @@ def test_extractors_budget_actual_materials_without_mutating_shared_messages(lim
         converted = semantic._memory.requests[0]
         semantic_text = "\n".join(item["content"] for item in converted)
         for text in (prompt, semantic_text):
-            assert "当前偏好" in text and "qq" in text and "发送时间" in text
+            assert "当前偏好" in text and "发送时间" in text
             assert '参数：{"path":"a.py"}' in text
             assert history[0].text in text
             assert "历史工具结果不应进入材料" not in text

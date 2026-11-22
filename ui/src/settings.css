@@ -958,16 +958,6 @@
     grid-template-columns: 1fr;
   }
 }
-/* 交互方式页沿用窗口共享控件，卡片内边距与 MCP 等设置页保持一致。 */
-.channel-subscriptions-panel { padding: var(--spacing-lg); }
-.channel-subscription-row {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 10px 0;
-}
-.channel-subscription-row span:first-child { flex: 1; font-weight: 700; }
-
 /* 每个任务独立显示卡片，完整输出展开在对应卡片内部。 */
 #background-tasks-list { display: grid; gap: var(--spacing-lg); min-width: 0; }
 .background-task-card { padding: var(--spacing-lg); min-width: 0; }

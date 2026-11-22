@@ -10,7 +10,6 @@ from tests.runtime_support import RuntimeAgentStub
 from tests.terminal_harness import TerminalHarness
 from tests.runtime_support import configured_settings
 from app.agent.state.manager import task_result_messages
-from app.services.channel_subscription_service import ChannelSubscriptionService
 import asyncio
 from contextlib import closing
 import ctypes
@@ -169,7 +168,7 @@ def test_terminal_notification_failure_rolls_back_task_and_retry_notifies_once(t
             notices = await inbox.read_task_terminals()
             assert len(notices) == 1
             notice = notices[0]
-            assert notice.origin_channel == "system" and notice.delivery_mode == "immediate"
+            assert notice.delivery_mode == "immediate"
             assert notice.payload == {
                 "task_id": "task", "task_name": "测试命令", "status": "completed", "result": "",
                 "tool_name": None, "exit_code": 0, "output_ref": "task-output://task",
@@ -485,7 +484,7 @@ def test_explicit_stop_ends_process_and_records_stopped_status(tmp_path) -> None
     asyncio.run(scenario())
 
 
-def test_terminal_notification_wakes_idle_agent_on_desktop_channel(tmp_path, monkeypatch) -> None:
+def test_terminal_notification_wakes_enabled_idle_agent(tmp_path, monkeypatch) -> None:
     """验证终态通知唤醒空闲 Agent，重复终态观察不再次交付。
 
     Args:
@@ -532,7 +531,7 @@ def test_terminal_notification_wakes_idle_agent_on_desktop_channel(tmp_path, mon
                     AgentEvent: 正常完成事件。
                 """
                 outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
-                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": kwargs.get("origin_channel", "desktop"), "resumed": False}))
+                await emit(AgentEvent(EventType.RUN_STARTED, {"resumed": False}))
                 manager = SessionStateManager("s", SqliteFactory(db_path))
                 try:
                     state = await manager.load()
@@ -558,7 +557,7 @@ def test_terminal_notification_wakes_idle_agent_on_desktop_channel(tmp_path, mon
                     AgentEvent: 当前测试场景的预设分片或事件。
                 """
                 outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
-                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False}))
+                await emit(AgentEvent(EventType.RUN_STARTED, {"resumed": False}))
                 nonlocal deliveries
                 deliveries += 1
                 manager = SessionStateManager("s", SqliteFactory(db_path))
@@ -580,21 +579,19 @@ def test_terminal_notification_wakes_idle_agent_on_desktop_channel(tmp_path, mon
                 """完成替身清理而不访问真实服务。"""
                 pass
 
-        subscriptions = ChannelSubscriptionService(sqlite_factory=SqliteFactory())
-        scheduler = build_test_scheduler(runtime_queue=supervisor.runtime_queue,
-            subscriptions=subscriptions, agent_factory=lambda _session, _manager: FakeAgent(),
+        scheduler = build_test_scheduler(runtime_queue=supervisor.runtime_queue, agent_factory=lambda _session, _manager: FakeAgent(),
             session_state_manager_factory=lambda session: SessionStateManager(session, SqliteFactory(db_path)),
             task_supervisor=supervisor,
          chat_settings_dao=supervisor_settings, mutation_coordinator=supervisor_mutations)
         hub = runtime_hub(scheduler)
         pass
         await scheduler.start()
-        from app.interaction.interaction_contract import ChannelCommand
-        desktop = observe_session("s", "desktop", hub, scheduler)
+        from app.interaction.interaction_contract import InteractionCommand
+        desktop = observe_session("s", hub, scheduler)
         await anext(desktop)
         try:
             # 1. 受理不代表开始执行；先观察首轮完整结束，再检查后台通知启动的新轮次。
-            await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "启动本次会话"}))
+            await scheduler.submit(InteractionCommand("s", "human_turn", {"message": "启动本次会话"}))
             initial = []
             while len(initial) < 2:
                 event = await asyncio.wait_for(anext(desktop), 1)
@@ -613,7 +610,7 @@ def test_terminal_notification_wakes_idle_agent_on_desktop_channel(tmp_path, mon
                 if event.kind in {"run_started", "run_completed"}:
                     observed.append(event)
             assert [item.kind for item in observed] == ["run_started", "run_completed"]
-            assert all(item.origin_channel == "desktop" for item in observed)
+            assert [item.kind for item in observed] == ["run_started", "run_completed"]
             # 3. 首次结果已交付后再转入后台，重复终态只提醒检查，不再启动回答。
             background_release.set()
             result = await asyncio.wait_for(work, 1)
@@ -701,7 +698,7 @@ def test_active_turn_receives_multiple_task_terminals_at_next_model_boundary(tmp
         class FakeAgent(RuntimeAgentStub):
             """提供隔离测试替身，用于验证：活动轮次在下一次模型调用前收到合并终态。"""
             async def run(
-                self, message, images=None, *, origin_channel="desktop",
+                self, message, images=None, *,
                 inbox_input=None, turn_control=None, receive_task_notifications=False, inbox_inputs=None,
              emit):
                 """按场景屏障产生 Agent 事件并提交测试输入。
@@ -711,7 +708,6 @@ def test_active_turn_receives_multiple_task_terminals_at_next_model_boundary(tmp
                     inbox_inputs (tuple[InboxEnvelope, ...] | None): 与本次消息原子交付的输入记录。
                     message (对象): 真人文本或类型声明对应的内部通知。
                     images (对象): 真人附件的图片 data URL 列表。
-                    origin_channel (对象): 输入或本轮回复所属的渠道。
                     inbox_input (对象): 随本次 checkpoint 原子交付的单条读取快照。
                     turn_control (对象): 当前 run 的停止与引导控制器。
                     inbox (SessionStateManager | None): 调用方拥有的当前会话输入读取入口。
@@ -720,11 +716,11 @@ def test_active_turn_receives_multiple_task_terminals_at_next_model_boundary(tmp
                     AgentEvent: 当前测试场景的预设分片或事件。
                 """
                 outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
-                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": origin_channel, "resumed": False}))
+                await emit(AgentEvent(EventType.RUN_STARTED, {"resumed": False}))
                 manager = SessionStateManager("s", SqliteFactory(db_path))
                 try:
                     state = await manager.load()
-                    human_message = state.add_user_message(message, origin_channel=origin_channel)
+                    human_message = state.add_user_message(message)
                     await manager.save(
                         state, checkpoint_type="intermediate", inbox_inputs=(inbox_input,),
                     )
@@ -755,8 +751,8 @@ def test_active_turn_receives_multiple_task_terminals_at_next_model_boundary(tmp
          chat_settings_dao=supervisor_settings, mutation_coordinator=supervisor_mutations)
         await scheduler.start()
         try:
-            from app.interaction.interaction_contract import ChannelCommand
-            await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "启动任务"}))
+            from app.interaction.interaction_contract import InteractionCommand
+            await scheduler.submit(InteractionCommand("s", "human_turn", {"message": "启动任务"}))
             await asyncio.wait_for(reached_boundary.wait(), 1)
             task_ids = []
             for index in range(2):
@@ -822,7 +818,7 @@ def test_idle_task_notification_is_committed_before_pending_human_turn(tmp_path)
         class FakeAgent(RuntimeAgentStub):
             """提供隔离测试替身，用于验证：空闲激活时任务通知先于同批真人消息提交。"""
             async def run(
-                self, message, images=None, *, origin_channel="desktop",
+                self, message, images=None, *,
                 inbox_input=None, inbox_inputs=None, runtime_inputs=(),
                 turn_control=None, receive_task_notifications=False,
              emit):
@@ -832,7 +828,6 @@ def test_idle_task_notification_is_committed_before_pending_human_turn(tmp_path)
                     receive_task_notifications (bool): 是否在模型安全点交付待处理任务通知。
                     message (对象): 真人文本或类型声明对应的内部通知。
                     images (对象): 真人附件的图片 data URL 列表。
-                    origin_channel (对象): 输入或本轮回复所属的渠道。
                     inbox_input (对象): 随本次 checkpoint 原子交付的单条读取快照。
                     inbox_inputs (对象): 随本次 checkpoint 原子交付的读取快照集合。
                     runtime_inputs (对象): 同次激活中先于真人输入追加的内部通知。
@@ -843,7 +838,7 @@ def test_idle_task_notification_is_committed_before_pending_human_turn(tmp_path)
                     AgentEvent: 当前测试场景的预设分片或事件。
                 """
                 outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
-                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": origin_channel, "resumed": False}))
+                await emit(AgentEvent(EventType.RUN_STARTED, {"resumed": False}))
                 runtime_inputs = task_result_messages(tuple(item for item in inbox_inputs if item.kind == "task_terminal"))
                 assert len(runtime_inputs) == 1
                 assert isinstance(runtime_inputs[0], TaskResultMessage)
@@ -852,7 +847,7 @@ def test_idle_task_notification_is_committed_before_pending_human_turn(tmp_path)
                 try:
                     state = await manager.load()
                     state.append_input(runtime_inputs[0])
-                    human_message = state.add_user_message(message, origin_channel=origin_channel)
+                    human_message = state.add_user_message(message)
                     await manager.save(
                         state, checkpoint_type="intermediate", inbox_inputs=inbox_inputs,
                     )
@@ -876,7 +871,7 @@ def test_idle_task_notification_is_committed_before_pending_human_turn(tmp_path)
                     AgentEvent: 当前测试场景的预设分片或事件。
                 """
                 outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
-                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False}))
+                await emit(AgentEvent(EventType.RUN_STARTED, {"resumed": False}))
                 raise AssertionError("任务通知不应单独激活")
                 await emit(AgentEvent(EventType.DONE, None))
 
@@ -891,8 +886,8 @@ def test_idle_task_notification_is_committed_before_pending_human_turn(tmp_path)
         )
         await scheduler.start()
         try:
-            from app.interaction.interaction_contract import ChannelCommand
-            await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "继续"}))
+            from app.interaction.interaction_contract import InteractionCommand
+            await scheduler.submit(InteractionCommand("s", "human_turn", {"message": "继续"}))
             await asyncio.wait_for(done.wait(), 2)
             manager = SessionStateManager("s", SqliteFactory(db_path))
             try:

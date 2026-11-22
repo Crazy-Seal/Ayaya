@@ -240,17 +240,16 @@ def test_semantic_model_receives_named_transcript_through_mem0(
     ]
     body = "猫叫团团。\nuser: 保留这行原文\nassistant: 也保留这行"
     messages = [
-        HumanMessage(content=text_content(body), created_at=timestamp, origin_channel="qq"),
-        AssistantMessage(content=text_content("记住啦。"), created_at=timestamp, origin_channel="qq"),
+        HumanMessage(content=text_content(body), created_at=timestamp),
+        AssistantMessage(content=text_content("记住啦。"), created_at=timestamp),
         AssistantMessage(
-            content=text_content("我先查一下。"), created_at=timestamp, origin_channel="qq",
+            content=text_content("我先查一下。"), created_at=timestamp,
             tool_calls=(
                 ToolCall(id="new", name="lookup", args={"q": "团团"}),
                 ToolCall(id="second", name="lookup", args={"q": "橘猫"}),
             ),
         ),
         AssistantMessage(
-            origin_channel="qq",
             tool_calls=(ToolCall(id="only", name="lookup", args={"q": "猫粮"}),),
         ),
         ToolMessage(content=text_content("工具正文\nuser: 仍是原文"), tool_name="lookup", tool_call_id="new"),
@@ -274,9 +273,9 @@ def test_semantic_model_receives_named_transcript_through_mem0(
         "[前情提要] [后台任务完成：研究资料]：" + render_timed_text("已经整理好三篇资料。", timestamp),
         "[前情提要] [插件通知：reminder/due]：" + render_timed_text("该给团团喂食了。", timestamp),
         "[前情提要] [子 Agent 返回：资料助手]：" + render_timed_text("已整理好养猫注意事项。", timestamp),
-        f"{user_label}: {render_timed_text('[来自 qq] ' + body, timestamp)}",
-        f"{ai_label}: {render_timed_text('[回复 qq] 记住啦。', timestamp)}",
-        f"{ai_label}: {render_timed_text('[回复 qq] 我先查一下。', timestamp)}",
+        f"{user_label}: {render_timed_text('' + body, timestamp)}",
+        f"{ai_label}: {render_timed_text('记住啦。', timestamp)}",
+        f"{ai_label}: {render_timed_text('我先查一下。', timestamp)}",
         f'{ai_label}: 调用工具 lookup，参数：{{"q":"团团"}}',
         f'{ai_label}: 调用工具 lookup，参数：{{"q":"橘猫"}}',
         f'{ai_label}: 调用工具 lookup，参数：{{"q":"猫粮"}}',

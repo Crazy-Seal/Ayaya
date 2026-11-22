@@ -34,8 +34,7 @@ from app.agent.state.messages import BaseMessage, HumanMessage, TaskResultMessag
 from app.agent.tools.core.base import BaseTool, InterruptEvent, ToolContext, ToolResult
 from app.schemas.runtime_types import InteractionEventKind, InterruptKind, TaskStatus
 from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
-from app.services.channel_subscription_service import ChannelSubscriptionService
-from app.interaction.interaction_contract import ChannelCommand, InteractionEvent
+from app.interaction.interaction_contract import InteractionCommand, InteractionEvent
 from app.interaction.interaction_event_hub import InteractionEventHub
 import app.agent.plugins.memory.memory as memory_plugin_module
 
@@ -398,21 +397,20 @@ def test_mid_turn_notification_preserves_batch_until_next_activation(tmp_path: P
         manager = create_manager(SESSION_ID)
         inbox = create_inbox(SESSION_ID)
         records = TaskRecordDao(SqliteFactory(str(db_path)))
-        subscriptions = ChannelSubscriptionService(sqlite_factory=SqliteFactory())
-        scheduler = build_test_scheduler(chat_settings_dao=configured_settings(SESSION_ID), runtime_queue=asyncio.Queue(),
-            subscriptions=subscriptions, agent_factory=create_agent, session_state_manager_factory=create_inbox,
+
+        scheduler = build_test_scheduler(chat_settings_dao=configured_settings(SESSION_ID), runtime_queue=asyncio.Queue(), agent_factory=create_agent, session_state_manager_factory=create_inbox,
         )
         hub = runtime_hub(scheduler)
         pass
-        stream = observe_session(SESSION_ID, "desktop", hub, scheduler)
+        stream = observe_session(SESSION_ID, hub, scheduler)
         try:
             # 1. 保存旧完整轮次后启动真实运行时，再提交达到阈值的真人输入。
             await seed_history(manager, completed, 9)
             await scheduler.start()
             await anext(stream)
             current = completed + 1
-            assert (await scheduler.submit(ChannelCommand(
-                SESSION_ID, "desktop", "human_turn", {"message": f"human-{current}"},
+            assert (await scheduler.submit(InteractionCommand(
+                SESSION_ID, "human_turn", {"message": f"human-{current}"},
             ))).accepted
             await asyncio.wait_for(models[0].requests.get(), WAIT_SECONDS)
             assert memory_count(await manager.load()) == 10
@@ -437,8 +435,8 @@ def test_mid_turn_notification_preserves_batch_until_next_activation(tmp_path: P
             cutoff = await memory.chat_history_store.get_latest_message_id(SESSION_ID)
 
             # 4. 下一真人激活才消费批次；真实日志查询应选当前十轮，并包含中途任务事实。
-            assert (await scheduler.submit(ChannelCommand(
-                SESSION_ID, "desktop", "human_turn", {"message": f"human-{current + 1}"},
+            assert (await scheduler.submit(InteractionCommand(
+                SESSION_ID, "human_turn", {"message": f"human-{current + 1}"},
             ))).accepted
             await asyncio.wait_for(models[1].requests.get(), WAIT_SECONDS)
             await asyncio.wait_for(memory.extracted.wait(), WAIT_SECONDS)
@@ -653,7 +651,7 @@ def test_mixed_activation_and_repeated_notices_use_one_activation_hook_pair(tmp_
             # 1. 真人和既有任务通知同批读取，通过真人入口只执行一组激活钩子。
             await seed_history(manager, 9, 9)
             await publish_terminal(records, db_path, "initial")
-            await inbox.submit_human("desktop", "human-10")
+            await inbox.submit_human("human-10")
             batch = await inbox.read_activation_batch()
             terminals = tuple(input_record for input_record in batch if input_record.kind == "task_terminal")
             running = asyncio.create_task(collect_agent_events(agent.run, 'human-10', inbox_inputs=batch, receive_task_notifications=True))
@@ -753,7 +751,7 @@ def test_resuming_original_turn_does_not_commit_another_activation(tmp_path: Pat
         try:
             # 1. 达到阈值的真人输入已持久提交，但工具中断使该轮尚无普通助手回复。
             await seed_history(manager, 9, 9)
-            await inbox.submit_human("desktop", "human-10")
+            await inbox.submit_human("human-10")
             human = await inbox.read_next()
             model.replies.put_nowait((StreamChunk(tool_call=ToolCall(
                 id="pause-1", name="activation_pause", args={},
@@ -839,7 +837,7 @@ def test_failed_activation_commit_preserves_batch_and_retry_extracts_frozen_hist
             await seed_history(manager, 10, 10)
             cutoff = await memory.chat_history_store.get_latest_message_id(SESSION_ID)
             if activation == "human":
-                await inbox.submit_human("desktop", "human-11")
+                await inbox.submit_human("human-11")
                 inputs = (await inbox.read_next(),)
             else:
                 await publish_terminal(records, db_path, "retry-notice")

@@ -1,5 +1,5 @@
 import type { DesktopPetApi, SubagentDetail, SubagentSummary } from "../../types.js";
-import { CommandKind, DESKTOP_CHANNEL, SubagentStatus } from "../../../shared-types.js";
+import { CommandKind, SubagentStatus } from "../../../shared-types.js";
 import { TASK_REFRESH_INTERVAL_MS } from "../../../runtime-constants.js";
 import type { SettingsNotifier } from "../components/settings-toast.js";
 
@@ -156,8 +156,7 @@ export class SubagentPanel {
   private async stop(sessionId: string, subagentId: string, button: HTMLButtonElement): Promise<void> {
     button.disabled = true;
     try {
-      const receipt = await this.bridge.submitInteractionCommand({ session_id: sessionId, origin_channel: DESKTOP_CHANNEL,
-        kind: CommandKind.INTERACT_SUBAGENT, subagent_id: subagentId, payload: { action: "stop" } });
+      const receipt = await this.bridge.submitInteractionCommand({ session_id: sessionId, kind: CommandKind.INTERACT_SUBAGENT, subagent_id: subagentId, payload: { action: "stop" } });
       if (!receipt.accepted) throw new Error(receipt.detail || "停止未受理");
       if (sessionId === this.sessionId) await this.render(sessionId);
     } catch (error) {

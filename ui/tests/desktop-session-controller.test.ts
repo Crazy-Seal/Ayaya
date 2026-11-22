@@ -72,7 +72,7 @@ test("启动只连接全局流，就绪前不查询快照，切换会话复用�
   try {
     h.controller.start();
     await flush();
-    assert.deepEqual(h.paths, ["/agent/events?channel=desktop"]);
+    assert.deepEqual(h.paths, ["/agent/events"]);
     const first = h.controller.initializeSession("A");
     await flush();
     assert.equal(h.snapshots.length, 0);
@@ -85,7 +85,7 @@ test("启动只连接全局流，就绪前不查询快照，切换会话复用�
     h.snapshot(1, "B", 0);
     await second;
     assert.equal(h.streams.length, 1);
-    assert.deepEqual(h.snapshots.map((s) => s.path), ["/agent/snapshot/A?channel=desktop", "/agent/snapshot/B?channel=desktop"]);
+    assert.deepEqual(h.snapshots.map((s) => s.path), ["/agent/snapshot/A", "/agent/snapshot/B"]);
   } finally { h.controller.stop(); }
 });
 
@@ -130,7 +130,7 @@ test("断线取消当前快照，重连只刷新最后选择的会话并拒绝�
     assert.equal(h.disconnected, 1);
     assert.equal(h.snapshots[1].signal.aborted, true);
     h.ready(); await flush();
-    assert.equal(h.snapshots[2].path, "/agent/snapshot/B?channel=desktop");
+    assert.equal(h.snapshots[2].path, "/agent/snapshot/B");
     h.snapshot(2, "B", 4); await flush();
     h.snapshot(1, "B", 2); await second;
     assert.deepEqual(h.events.map((e) => [e.session_id, e.event_sequence]), [["A", 0], ["B", 4]]);

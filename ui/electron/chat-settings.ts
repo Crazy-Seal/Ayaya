@@ -266,7 +266,6 @@ export const fetchChatHistoryLastN = async (
    */
   (item) => ({
     id: item.id,
-    origin_channel: item.origin_channel,
     role: String(item.role ?? "") as HistoryRole,
     content: String(item.content ?? ""),
     timestamp: String(item.timestamp ?? ""),

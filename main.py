@@ -34,7 +34,6 @@ from app.crud.mcp_settings_dao import MCPSettingsDao
 from app.schemas.agent_storage import AgentStorageScope
 from app.agent.state.manager import SessionStateManager
 from app.services.agent_identity_service import AgentIdentityService
-from app.services.channel_subscription_service import ChannelSubscriptionService
 from app.services.subagent_service import SubagentService
 from app.schemas.chat_settings import ChatSettings
 from app.schemas.mcp import MCPConnectionConfig
@@ -134,8 +133,6 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         application.state.tool_permission_service = ToolPermissionService(settings_dao, catalog, mutations)
         sqlite_factory = SqliteFactory()
         application.state.sqlite_factory = sqlite_factory
-        subscriptions = ChannelSubscriptionService(sqlite_factory)
-        application.state.channel_subscriptions = subscriptions
         history_dao = ChatHistoryDao(sqlite_factory)
         application.state.chat_history_dao = history_dao
         application.state.chat_history_service = ChatHistoryService(history_dao)
@@ -162,14 +159,14 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
 
         subagents = SubagentService(definitions, task_records, identity, manager_factory=child_manager)
         application.state.subagent_service = subagents
-        hub = InteractionEventHub(subscriptions=subscriptions)
+        hub = InteractionEventHub()
         application.state.interaction_event_hub = hub
         # 2.1. 准备 Python 和终端工具共用的工作目录，再装配执行入口。
         WORKDIR.mkdir(exist_ok=True)
         repl = ReplService(workdir=WORKDIR, on_event=create_repl_plugin_event_handler(supervisor, runtime_queue))
         application.state.repl_service = repl
         scheduler = create_runtime_scheduler(supervisor, runtime_queue, sqlite_factory=sqlite_factory,
-            hub=hub, subscriptions=subscriptions, identity=identity, subagents=subagents, repl_service=repl,
+            hub=hub, identity=identity, subagents=subagents, repl_service=repl,
             settings_dao=settings_dao, settings_service=settings_service, plugin_service=plugins,
             mcp_manager=mcp_manager, authorization=authorization, mutation_coordinator=mutations)
         application.state.runtime_scheduler = scheduler

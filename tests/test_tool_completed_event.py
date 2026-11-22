@@ -139,7 +139,7 @@ def test_scheduler_forwards_tool_completed_before_following_reply(tmp_path: Path
         tmp_path (Path): 当前调度器和 Agent 共用的隔离数据库目录。
     """
     from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
-    from app.interaction.interaction_contract import ChannelCommand
+    from app.interaction.interaction_contract import InteractionCommand
     from app.schemas.runtime_types import InteractionEventKind
 
     async def scenario() -> None:
@@ -155,7 +155,7 @@ def test_scheduler_forwards_tool_completed_before_following_reply(tmp_path: Path
         )
         try:
             await scheduler.start()
-            assert (await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "执行"}))).accepted
+            assert (await scheduler.submit(InteractionCommand("s", "human_turn", {"message": "执行"}))).accepted
             events = []
             while True:
                 event = await asyncio.wait_for(next_runtime_event(scheduler), 3)

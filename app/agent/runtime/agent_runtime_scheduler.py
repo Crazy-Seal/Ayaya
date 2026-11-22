@@ -20,14 +20,13 @@ from app.agent.runtime.subagent_requests import (
 )
 from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
 from app.agent.state.manager import SessionStateManager
-from app.interaction.interaction_contract import ChannelCommand, InteractionEvent
+from app.interaction.interaction_contract import InteractionCommand, InteractionEvent
 from app.interaction.runtime_events import to_interaction_event
 from app.schemas.agent_storage import AgentStorageScope
 from app.schemas.runtime_types import CommandKind, CommandStatus, InboxDeliveryMode, InteractionEventKind, InterruptKind, RuntimePhase, TaskExecutionPhase, TaskStatus
 from app.schemas.subagent_types import SubagentAction, SubagentDefinition, SubagentInteractionKind, SubagentRecord, SubagentSummary, TaskRecordKind
 from app.schemas.task_types import PluginRequest, PluginRequestKind, TaskRecord, TaskStopRequest
 from app.services.agent_identity_service import AgentIdentityService
-from app.services.channel_subscription_service import ChannelSubscriptionService
 from app.services.settings_mutation import SettingsMutationCoordinator
 from app.services.subagent_service import SubagentService
 
@@ -50,8 +49,7 @@ class AgentRuntimeScheduler:
                  child_factory: Callable[[SubagentDefinition], SubagentSession],
                  manager_factory: Callable[[str], SessionStateManager],
                  identity: AgentIdentityService, subagents: SubagentService,
-                 task_supervisor: TaskSupervisor, subscriptions: ChannelSubscriptionService,
-                 mutation_coordinator: SettingsMutationCoordinator,
+                 task_supervisor: TaskSupervisor, mutation_coordinator: SettingsMutationCoordinator,
                  publish: Callable[[InteractionEvent], InteractionEvent],
                  watermark: Callable[[str], tuple[str, int]],
                  cleanup_session_connections: Callable[[str], Awaitable[None]] | None = None) -> None:
@@ -65,13 +63,12 @@ class AgentRuntimeScheduler:
             identity (AgentIdentityService): 显式命令的身份查询。
             subagents (SubagentService): 应用持有的子持久业务。
             task_supervisor (TaskSupervisor): 普通任务执行及查询入口。
-            subscriptions (ChannelSubscriptionService): 渠道配置。
             mutation_coordinator (SettingsMutationCoordinator): 配置删除和命令受理的短操作协调。
             publish (Callable): Hub 提供的同步发布能力。
             watermark (Callable): Hub 提供的只读输出水位。
             cleanup_session_connections (Callable | None): 父删除后释放所属共享连接。
         """
-        self.runtime_queue, self.task_supervisor, self.subscriptions = runtime_queue, task_supervisor, subscriptions
+        self.runtime_queue, self.task_supervisor = runtime_queue, task_supervisor
         self._parent_factory, self._child_factory, self._manager_factory = parent_factory, child_factory, manager_factory
         self._identity, self._subagents = identity, subagents
         self._subagent_dao, self._settings_dao = subagents.definitions, identity.settings
@@ -303,11 +300,11 @@ class AgentRuntimeScheduler:
                 return CommandReceipt(CommandStatus.CLOSED, subagent_id)
             return await self._interact_subagent(session_id, subagent_id, SubagentAction(action), text, source_id=source_id)
 
-    async def submit(self, command: ChannelCommand) -> CommandReceipt:
-        """核验应用和渠道后调用会话公开操作，调用方保持会话锁为私有细节。
+    async def submit(self, command: InteractionCommand) -> CommandReceipt:
+        """核验应用及会话后调用会话公开操作，调用方保持会话锁为私有细节。
 
         Args:
-            command (ChannelCommand): 渠道归一化的用户动作。
+            command (InteractionCommand): 会话中的统一用户动作。
 
         Returns:
             CommandReceipt: 命令规定操作的真实受理结果。
@@ -316,9 +313,6 @@ class AgentRuntimeScheduler:
             if self.phase != RuntimePhase.RUNNING or not self._settings_dao.exists(command.session_id):
                 return CommandReceipt(CommandStatus.CLOSED, command.session_id, detail="运行时关闭或父配置已删除")
             try:
-                self.subscriptions.validate_source(command.origin_channel)
-                if not await self.subscriptions.is_enabled(command.session_id, command.origin_channel):
-                    raise ValueError("该会话未订阅此渠道")
                 if command.kind == CommandKind.INTERACT_SUBAGENT:
                     if not command.subagent_id:
                         return CommandReceipt(CommandStatus.INVALID, command.session_id, detail="缺少子编号")
@@ -491,10 +485,9 @@ class AgentRuntimeScheduler:
             pending = await manager.pending_humans()
         finally:
             await manager.close()
-        payload["pending_inputs"] = [{"input_sequence": item.id, "origin_channel": item.origin_channel,
-            "delivery_mode": item.delivery_mode} for item in pending]
+        payload["pending_inputs"] = [{"input_sequence": item.id, "delivery_mode": item.delivery_mode} for item in pending]
         payload["queued_inputs"] = [{"input_sequence": item.id, "message": item.payload["message"],
-            "images": item.payload.get("images") or [], "origin_channel": item.origin_channel}
+            "images": item.payload.get("images") or []}
             for item in pending if item.delivery_mode == InboxDeliveryMode.QUEUED]
         payload["tasks"] = [asdict(item) for item in await self.task_supervisor.list_tasks(session_id)]
         payload["subagents"] = [asdict(item) for item in await self.snapshot_subagents(session_id)]

@@ -9,7 +9,7 @@ from typing import Any, Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
-from app.schemas.runtime_types import DESKTOP_CHANNEL, ApprovalDecisionKind, AuthorizationResolutionKind, InterruptKind
+from app.schemas.runtime_types import ApprovalDecisionKind, AuthorizationResolutionKind, InterruptKind
 from app.schemas.message_types import MediaKind
 from app.agent.state.messages import (
     AssistantMessage,
@@ -132,15 +132,13 @@ class AgentState(BaseModel):
         *,
         image_urls: Sequence[str] = (),
         image_filenames: Sequence[str] = (),
-        origin_channel: str = DESKTOP_CHANNEL,
     ) -> HumanMessage:
-        """构造带来源的真人消息并追加到经过协议校验的输入序列。
+        """构造真人消息并追加到经过协议校验的输入序列。
 
         Args:
             text (str): 需要保存或追加的文本。
             image_urls (Sequence[str]): 真人附件的模型图片地址。
             image_filenames (Sequence[str]): 已外置保存的附件路径。
-            origin_channel (str): 输入或本轮回复所属的渠道。
 
         Returns:
             HumanMessage: 已追加到内存的真人消息，尚未保存 checkpoint。
@@ -149,7 +147,7 @@ class AgentState(BaseModel):
             raise ValueError("真人图片与本地引用数量不一致")
         message = HumanMessage(
             content=(*text_content(text), *(ImageContent(url, storage_ref=image_filenames[index] if image_filenames else None)
-                for index, url in enumerate(image_urls))), origin_channel=origin_channel,
+                for index, url in enumerate(image_urls))),
         )
         self.append_input(message)
         return message
@@ -158,16 +156,14 @@ class AgentState(BaseModel):
         self,
         content: str,
         tool_calls: Sequence[ToolCall] = (),
-        *,
-        origin_channel: str = DESKTOP_CHANNEL,
-        provider_data: ProviderData | None = None,
+        *, provider_data: ProviderData | None = None,
     ) -> AssistantMessage:
-        """记录带来源的 Assistant 步骤，上一批工具未闭合时禁止开始下一批。
+        """记录 Assistant 步骤，并登记本步需要处理的工具调用。
 
         Args:
             content (str): Assistant 正文。
             tool_calls (Sequence[ToolCall]): 本步模型请求的工具调用。
-            origin_channel (str): 输入或本轮回复所属的渠道。
+            provider_data (ProviderData | None): 供应商返回的可持久恢复材料。
 
         Returns:
             AssistantMessage: 已追加的助手消息，工具请求同时登记到未完成批次。
@@ -178,22 +174,21 @@ class AgentState(BaseModel):
         calls = tuple(tool_calls)
         if self.pending_tool_calls:
             raise ValueError("上一批工具调用尚未闭合，不能记录新的 assistant step")
-        message = AssistantMessage(content=text_content(content), tool_calls=calls, origin_channel=origin_channel, provider_data=provider_data)
+        message = AssistantMessage(content=text_content(content), tool_calls=calls, provider_data=provider_data)
         self._append(message)
         self.pending_tool_calls = calls
         return message
 
-    def add_assistant_message(self, content: str, *, origin_channel: str = DESKTOP_CHANNEL) -> AssistantMessage:
-        """通过统一 Assistant 步骤入口记录纯文本回复及来源。
+    def add_assistant_message(self, content: str) -> AssistantMessage:
+        """通过统一 Assistant 步骤入口记录纯文本回复。
 
         Args:
             content (str): Assistant 正文。
-            origin_channel (str): 输入或本轮回复所属的渠道。
 
         Returns:
             AssistantMessage: 通过统一入口追加的纯文本助手消息。
         """
-        return self.record_assistant_step(content, origin_channel=origin_channel)
+        return self.record_assistant_step(content)
 
     def record_tool_result(
         self, tool_call: ToolCall, content: Sequence[ContentPart], *, compressible: bool = False,

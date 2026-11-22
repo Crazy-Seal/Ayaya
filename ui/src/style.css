@@ -14,7 +14,6 @@
 .message-item.ai { justify-content: flex-start; }
 .message-bubble { max-width: 88%; padding: var(--spacing-md) var(--spacing-lg); border-radius: var(--radius-lg); border: 1px solid var(--color-border-subtle); box-shadow: var(--shadow-clay-elevated); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--color-text-primary); background: var(--color-bg-base); }
 .message-item.human .message-bubble { background: var(--color-bg-message-human); border-color: var(--color-border-primary); }
-.message-origin-label { display: block; margin-bottom: var(--spacing-xs); color: var(--color-text-muted); font-size: var(--font-size-helper); }
 .message-images { display: flex; gap: var(--spacing-sm); flex-wrap: wrap; }
 .message-images img { max-width: 180px; max-height: 180px; object-fit: contain; border-radius: var(--radius-sm); cursor: pointer; }
 .message-images img:focus-visible { outline: 2px solid var(--color-text-accent); outline-offset: 2px; }

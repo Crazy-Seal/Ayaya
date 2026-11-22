@@ -7,7 +7,7 @@ import asyncio
 from dataclasses import replace
 import logging
 
-from app.schemas.runtime_types import CheckpointType, DESKTOP_CHANNEL, InboxKind, InboxStatus, InterruptKind, TaskResultStatus, TaskStatus, TurnInterruptReason
+from app.schemas.runtime_types import CheckpointType, InboxKind, InboxStatus, InterruptKind, TaskResultStatus, TaskStatus, TurnInterruptReason
 from app.agent.runtime.session_inbox import InboxEnvelope, InputNoLongerPending
 from app.agent.state.model import AgentState
 from app.agent.state.messages import (
@@ -154,8 +154,7 @@ def runtime_input_messages(inputs: tuple[InboxEnvelope, ...]) -> tuple[HumanMess
             messages.extend(task_result_messages(tuple(tasks)))
             tasks.clear()
             if item.kind == InboxKind.AGENT_COMMAND:
-                messages.append(HumanMessage(content=text_content(str(item.payload["text"])),
-                                             origin_channel=item.origin_channel))
+                messages.append(HumanMessage(content=text_content(str(item.payload["text"]))))
             else:
                 messages.append(SubagentMessage(subagent_id=str(item.payload["subagent_id"]),
                                                  subagent_name=str(item.payload["subagent_name"]),
@@ -210,7 +209,7 @@ class SessionStateManager:
         self._input_completion_lock = asyncio.Lock()
     #=====================接收消息和管理排队输入======================
 
-    async def submit_human(self, origin_channel: str, message: str, *, images: list[str] | None = None,
+    async def submit_human(self, message: str, *, images: list[str] | None = None,
                            queued: bool = False, discarded_ids: tuple[int, ...] = ()) -> InboxEnvelope:
         """用户发送消息时将正文和附件存入 Inbox，等待会话开始处理。
 
@@ -218,7 +217,6 @@ class SessionStateManager:
         Agent 开始执行时追加本次输入，提交前钩子准备插件状态，随后与输入一起保存。
 
         Args:
-            origin_channel (str): 用户发送消息的界面或渠道。
             message (str): 用户正文；仅发送图片时可以为空。
             images (list[str] | None): 用户附件的图片地址。
             queued (bool): 是否等待当前真人轮次正常结束后再允许处理。
@@ -226,10 +224,10 @@ class SessionStateManager:
             discarded_ids (tuple[int, ...]): 前次交付失败且由本会话明确放弃的输入编号。
 
         Returns:
-            InboxEnvelope: 已存入数据库的待处理输入，包含编号、来源、内容和排队方式。
+            InboxEnvelope: 已存入数据库的待处理输入，包含编号、内容和排队方式。
         """
         async with self._input_completion_lock:
-            return await self._inbox_dao.submit_human(origin_channel, message, images=images, queued=queued, discarded_ids=discarded_ids)
+            return await self._inbox_dao.submit_human(message, images=images, queued=queued, discarded_ids=discarded_ids)
 
     async def submit_plugin_notification(self, plugin_name: str, name: str, text: str) -> None:
         """父会话受理插件通知或引导时，将正文存入 Inbox 等待 Agent 读取。
@@ -244,28 +242,24 @@ class SessionStateManager:
         """
         await self._inbox_dao.submit_plugin_notification(plugin_name, name, text)
 
-    async def pending_humans(self, *, origin_channel: str | None = None) -> list[InboxEnvelope]:
+    async def pending_humans(self) -> list[InboxEnvelope]:
         """查询用户已经发送、尚未加入 Agent 对话的消息，供会话快照显示。
-
-        Args:
-            origin_channel (str | None): 限定用户消息的发送来源，省略时查询所有来源。
 
         Returns:
             list[InboxEnvelope]: 按输入编号排列的待处理真人消息，包含尚在排队的消息。
         """
-        return await self._inbox_dao.pending_humans(origin_channel=origin_channel)
+        return await self._inbox_dao.pending_humans()
 
-    async def cancel_queued(self, envelope_id: int, origin_channel: str) -> bool:
-        """用户撤回排队消息时，尝试撤销同一来源尚未处理的那条输入。
+    async def cancel_queued(self, envelope_id: int) -> bool:
+        """用户撤回排队消息时，按本会话和输入编号撤销待交付记录。
 
         Args:
             envelope_id (int): 用户要撤回的 Inbox 输入编号。
-            origin_channel (str): 发起撤回的界面或渠道，用于检查消息来源。
 
         Returns:
-            bool: 输入属于该来源且仍可撤销时返回 True；已处理、已删除或不符合条件时返回 False。
+            bool: 本会话的待交付排队记录实际被删除时为真。
         """
-        return await self._inbox_dao.cancel_queued(envelope_id, origin_channel)
+        return await self._inbox_dao.cancel_queued(envelope_id)
 
     async def status(self, envelope_id: int) -> InboxStatus | None:
         """处理输入失败后查询其保存结果，供 Scheduler 决定重试还是报告完成。
@@ -363,9 +357,8 @@ class SessionStateManager:
                 USER_CANCELLED_PENDING_TOOL_RESULT, INTERRUPTED_TOOL_RESULT):
             await self.complete_turn(state)
 
-    def append_human_input(self, state: AgentState, message: str, images: list[str] | None, *,
-                                 origin_channel: str = DESKTOP_CHANNEL,
-                                 inputs: tuple[InboxEnvelope, ...] = ()) -> HumanMessage:
+    def append_human_input(self, state: AgentState, message: str, images: list[str] | None,
+                                 *, inputs: tuple[InboxEnvelope, ...] = ()) -> HumanMessage:
         """把同批通知和真人输入追加到内存状态，供提交前钩子读取。
 
         Agent 在本方法返回后执行提交前钩子，再调用 save 将对话历史、插件状态
@@ -375,7 +368,6 @@ class SessionStateManager:
             state (AgentState): 已加载并整理完上轮工具调用的当前会话状态。
             message (str): 本轮用户正文。
             images (list[str] | None): 本轮用户附件的图片地址。
-            origin_channel (str): 用户消息的实际来源渠道。
             inputs (tuple[InboxEnvelope, ...]): 随本次对话保存一起标记为已交付的 Inbox 记录。
 
         Returns:
@@ -384,7 +376,7 @@ class SessionStateManager:
         # 1. 先把同批任务结果和插件通知加入对话，这些内部消息沿用各自来源。
         self.append_runtime_inputs(state, None, inputs)
         # 2. 真人输入放在同批通知之后，插件可从最新消息识别本次用户输入。
-        return state.add_user_message(message, image_urls=images or (), origin_channel=origin_channel)
+        return state.add_user_message(message, image_urls=images or ())
 
     def append_runtime_inputs(self, state: AgentState, messages: tuple[HumanMessage | RuntimeInputMessage, ...] | None,
                               inputs: tuple[InboxEnvelope, ...]) -> None:
@@ -457,34 +449,32 @@ class SessionStateManager:
         except Exception as exc:
             raise RequiredSaveError(str(exc)) from exc
 
-    async def record_authorization_decision(self, request_id: str | None, decision: dict,
-                                            actor_channel: str = DESKTOP_CHANNEL) -> str | None:
+    async def record_authorization_decision(self, request_id: str | None, decision: dict) -> bool:
         """保存用户的工具审批决定，供 Scheduler 恢复原调用或开始引导消息的新轮次。
 
         所属会话 已检查命令内容并串行处理当前会话的决定。这里加载等待状态，
         核对请求编号；引导正文与首次决定使用同一事务写入 Inbox 和执行快照。
-        返回来源后，Scheduler 通知界面：批准、拒绝由 Agent 恢复原调用并处理决定，
+        保存成功后，Scheduler 通知界面：批准、拒绝由 Agent 恢复原调用并处理决定，
         引导则结束旧轮次，再安排新消息开始执行。
 
         Args:
             request_id (str | None): 用户这次处理的审批请求编号，与当前等待请求比较。
             decision (dict): 已校验的批准、拒绝或引导决定，引导决定包含新正文。
-            actor_channel (str): 用户作出决定的渠道，作为引导正文的消息来源。
 
         Returns:
-            str | None: 决定保存成功后的原回答渠道；请求不匹配或已经记录决定时为空。
+            bool: 决定首次保存成功时为真，请求过期或已有决定时为假。
         """
         # 1. 读取当前等待的审批，只处理编号匹配且尚未作出决定的请求。
         state = await self.load()
         interrupt = state.get_pending_authorization(request_id)
         if interrupt is None:
-            return None
+            return False
         # 2. 准备首次决定，引导正文和决定在同一事务保存。
         if not state.record_authorization_decision(request_id, decision):
-            return None
-        saved = await self._state_dao.commit_interrupt_decision(state, origin_channel=actor_channel,
+            return False
+        saved = await self._state_dao.commit_interrupt_decision(state,
             parent_session_id=self._parent_session_id if self.storage_scope == AgentStorageScope.SUBAGENT else None)
-        return str(interrupt.get("origin_channel") or DESKTOP_CHANNEL) if saved else None
+        return saved
 
     async def load_for_resume(self, request_id: str) -> AgentState | None:
         """Agent 恢复暂停的工具调用前，加载状态并检查这次恢复请求是否仍有效。
@@ -508,25 +498,25 @@ class SessionStateManager:
             return None
         return state
 
-    async def cancel_pending_interrupt(self) -> tuple[str, str] | None:
+    async def cancel_pending_interrupt(self) -> str | None:
         """新用户消息已经保存时，取消当前仍在等待处理的旧工具请求。
 
         所属会话 在新输入替代审批或用户停止等待时调用。这里保存取消决定；
-        返回旧请求编号和原回答渠道后，Session 发布已提交事件，再整理旧轮。
+        返回旧请求编号后，Session 发布已提交事件，再整理旧轮。
 
         Returns:
-            tuple[str, str] | None: 已取消的请求编号和原回答渠道；没有等待请求或已有决定时为空。
+            str | None: 已取消的请求编号；没有等待请求或已有决定时为空。
         """
         # 1. 读取旧等待信息，尝试记录取消决定；已有决定时保持原处理结果。
         state = await self.load()
         interrupt = state.interrupt_data or {}
         if not state.cancel_pending_interrupt():
             return None
-        # 2. 保存取消后的执行进度，再返回编号和渠道供 Session 发布取消结果。
-        saved = await self._state_dao.commit_interrupt_decision(state, origin_channel=str(interrupt.get("origin_channel") or DESKTOP_CHANNEL))
+        # 2. 保存取消后的执行进度，再返回编号供 Session 发布取消结果。
+        saved = await self._state_dao.commit_interrupt_decision(state)
         if not saved:
             return None
-        return str(interrupt.get("request_id") or ""), str(interrupt.get("origin_channel") or DESKTOP_CHANNEL)
+        return str(interrupt.get("request_id") or "")
 
     #=====================正常结束和主动打断======================
 
@@ -549,8 +539,7 @@ class SessionStateManager:
             state.clear_temporary_context()
             return await self.save(state, checkpoint_type=CheckpointType.COMPLETED, release_queued=release_queued)
 
-    async def finish_interrupted_turn(self, state: AgentState, *, reason: TurnInterruptReason, partial: str, partial_persisted: bool,
-                                      origin_channel: str) -> None:
+    async def finish_interrupted_turn(self, state: AgentState, *, reason: TurnInterruptReason, partial: str, partial_persisted: bool) -> None:
         """当前轮次被停止或引导时，保存工具取消结果及已显示的回答片段。
 
         Agent 的执行中断和 Execution 的等待结束流程调用本方法。为未结束的工具调用补上取消结果，
@@ -562,7 +551,6 @@ class SessionStateManager:
             reason (TurnInterruptReason): 已受理的停止或引导原因，决定未完成调用的结束正文。
             partial (str): 当前模型步骤已向界面显示的正文。
             partial_persisted (bool): 当前步骤是否已经加入内存中的助手消息，需要沿用其消息编号。
-            origin_channel (str): 被打断回答所属的界面或渠道。
 
         Raises:
             RuntimeError: 调用方声明片段已经加入助手消息，但当前状态中找不到对应消息。
@@ -574,11 +562,11 @@ class SessionStateManager:
         rewritten_message_id = None
         # 2. 片段尚未加入会话时新增消息；已经加入时替换原消息并保留其编号。
         if partial.strip() and not partial_persisted:
-            state.add_assistant_message(partial + "……（被用户打断）", origin_channel=origin_channel)
+            state.add_assistant_message(partial + "……（被用户打断）")
         elif partial_persisted and partial.strip():
             # 2.1. 按当前步骤正文和来源找到原助手消息，缺失时报告状态不一致。
             previous = next((item for item in reversed(state.messages) if isinstance(item, AssistantMessage)
-                and item.text == partial and item.origin_channel == origin_channel), None)
+                and item.text == partial), None)
             if previous is None:
                 raise RuntimeError("已保存的流式文本缺少对应 assistant 消息")
             state.replace_message(replace(previous, content=text_content(previous.text + "……（被用户打断）")))
@@ -587,21 +575,19 @@ class SessionStateManager:
         state.clear_temporary_context()
         await self.save(state, checkpoint_type=CheckpointType.COMPLETED, rewritten_message_id=rewritten_message_id)
 
-    async def finish_failed_turn(self, state: AgentState, *, error: str, partial: str = "",
-                                 origin_channel: str = DESKTOP_CHANNEL) -> None:
+    async def finish_failed_turn(self, state: AgentState, *, error: str, partial: str = "") -> None:
         """保存执行失败说明并补齐旧工具协议，使下次明确输入从已结束的轮次继续。
 
         Args:
             state (AgentState): 本次失败前仍可信的会话状态。
             error (str): 模型或业务执行的最终失败原因。
             partial (str): 已展示且尚未保存的本步骤正文。
-            origin_channel (str): 失败回答所属渠道。
         """
         # 1. 已完成的工具结果保留，尚未完成的调用统一记录本次执行失败。
         detail = f"本轮执行失败：{error}"
         state.close_unfinished_tools(detail, detail, detail)
         state.clear_temporary_context()
-        state.add_assistant_message(f"{partial}\n\n{detail}" if partial else detail, origin_channel=origin_channel)
+        state.add_assistant_message(f"{partial}\n\n{detail}" if partial else detail)
         # 2. 失败结束独立提交，排队输入继续等待后续明确操作。
         await self.save(state, checkpoint_type=CheckpointType.COMPLETED)
 
@@ -619,8 +605,7 @@ class SessionStateManager:
                 if kind == CheckpointType.INTERMEDIATE or state.get("interrupt_data") or state.get("pending_tool_calls")]
 
     async def finalize_abandoned_turn(
-        self, *, partial: str = "", partial_persisted: bool = False,
-        origin_channel: str = DESKTOP_CHANNEL, partial_message_id: str | None = None,
+        self, *, partial: str = "", partial_persisted: bool = False, partial_message_id: str | None = None,
     ) -> bool:
         """应用启动或退出整理时，为已经失去执行者的旧轮次保存结束结果。
 
@@ -631,7 +616,6 @@ class SessionStateManager:
         Args:
             partial (str): 退出前捕获的当前模型步骤已显示正文，启动时没有片段可传入。
             partial_persisted (bool): 片段在退出前是否已加入助手消息；本方法仍检查数据库中的消息。
-            origin_channel (str): 捕获的回答片段所属渠道。
             partial_message_id (str | None): 当前助手消息编号，优先按编号查找需要补充结束说明的消息。
 
         Returns:
@@ -663,16 +647,16 @@ class SessionStateManager:
                                  if isinstance(item, AssistantMessage)
                                  and item.message_id == partial_message_id), None)
             elif partial_persisted:
-                # 3.2. 没有编号但调用方记录过该片段时，按正文和回答来源查找。
+                # 3.2. 没有编号但调用方记录过该片段时，按正文查找。
                 previous = next((item for item in reversed(state.messages)
                                  if isinstance(item, AssistantMessage) and item.text == partial
-                                 and item.origin_channel == origin_channel), None)
+                                ), None)
             if previous is not None:
                 state.replace_message(with_text(previous, previous.text + suffix))
                 rewritten_message_id = previous.message_id
             else:
                 # 3.3. 数据库中尚无这一步骤时，新增捕获的正文及退出说明。
-                state.add_assistant_message(partial + suffix, origin_channel=origin_channel)
+                state.add_assistant_message(partial + suffix)
         # 4. 清除本轮临时背景，统一保存工具结果、回答片段和已结束快照。
         state.clear_temporary_context()
         await self.save(state, checkpoint_type=CheckpointType.COMPLETED, rewritten_message_id=rewritten_message_id)

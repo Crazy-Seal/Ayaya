@@ -17,7 +17,6 @@ from app.agent.state.messages import (
 )
 from app.agent.state.time import render_timed_text
 from app.agent.utils.domain.token_estimation import RoughTokenEstimator
-from app.schemas.runtime_types import DESKTOP_CHANNEL
 from app.agent.plugins.memory.config import MemoryConfig
 from app.agent.plugins.memory.store.episodic_chroma_store import EpisodicChromaStore
 from app.agent.plugins.memory.store.episodic_sqlite_store import EpisodicSqliteStore
@@ -416,7 +415,7 @@ class EpisodicMemory:
             raise
 
     def _format_messages(self, messages: list[BaseMessage], *, mark_as_history: bool = False) -> str:
-        """按角色称呼构造情景提取文本，保留发言正文、工具调用及渠道时间。
+        """按角色称呼构造情景提取文本，保留发言正文、工具调用及发言时间。
 
         Args:
             messages (list[BaseMessage]): 当前批次或前情提要的领域消息。
@@ -435,13 +434,13 @@ class EpisodicMemory:
             if isinstance(msg, ToolMessage) and not msg.text:
                 continue
             if isinstance(msg, HumanMessage):
-                role = user_name if msg.origin_channel == DESKTOP_CHANNEL else f"{user_name}（来自 {msg.origin_channel}）"
+                role = user_name
                 content = msg.text
             elif isinstance(msg, RuntimeInputMessage):
                 lines.append(format_memory_notification(msg))
                 continue
             elif isinstance(msg, AssistantMessage):
-                role = ai_name if msg.origin_channel == DESKTOP_CHANNEL else f"{ai_name}（回复 {msg.origin_channel}）"
+                role = ai_name
                 if msg.text:
                     lines.append(f"{role}: {render_timed_text(msg.text, msg.created_at)}")
                 # 1.1. 当前调用保留参数，历史调用只保留名称，沿用原有证据解释方式。

@@ -11,7 +11,7 @@ from typing import Any, ClassVar, Iterator, Mapping, Sequence
 from uuid import uuid4
 
 from app.schemas.message_types import MessageType, MediaKind
-from app.schemas.runtime_types import DESKTOP_CHANNEL, TaskResultStatus
+from app.schemas.runtime_types import TaskResultStatus
 from app.agent.state.time import normalize_utc, utc_now
 
 
@@ -499,17 +499,14 @@ class BaseMessage(ABC):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class HumanMessage(BaseMessage):
-    """保存当前 Agent 接收的用户正文和入口渠道。"""
+    """保存当前 Agent 接收的用户正文。"""
     message_type: ClassVar[MessageType] = MessageType.HUMAN
     content: tuple[ContentPart, ...]
-    origin_channel: str = DESKTOP_CHANNEL
 
     def __post_init__(self) -> None:
-        """固定正文并校验来源，图片文件引用位于图片块中。"""
+        """固定用户正文，图片文件引用位于图片块中。"""
         BaseMessage.__post_init__(self)
         object.__setattr__(self, "content", validate_content(self.content))
-        if not self.origin_channel:
-            raise ValueError("用户输入来源不能为空")
 
     @property
     def text(self) -> str:
@@ -527,7 +524,6 @@ class AssistantMessage(BaseMessage):
     message_type: ClassVar[MessageType] = MessageType.ASSISTANT
     content: tuple[ContentPart, ...] = ()
     tool_calls: tuple[ToolCall, ...] = ()
-    origin_channel: str = DESKTOP_CHANNEL
     provider_data: ProviderData | None = None
 
     def __post_init__(self) -> None:
@@ -535,8 +531,8 @@ class AssistantMessage(BaseMessage):
         BaseMessage.__post_init__(self)
         object.__setattr__(self, "content", validate_content(self.content))
         object.__setattr__(self, "tool_calls", tuple(self.tool_calls))
-        if not all(isinstance(call, ToolCall) for call in self.tool_calls) or not self.origin_channel:
-            raise ValueError("助手调用或来源无效")
+        if not all(isinstance(call, ToolCall) for call in self.tool_calls):
+            raise ValueError("助手调用无效")
         if self.provider_data is not None and not isinstance(self.provider_data, ProviderData):
             raise TypeError("助手恢复材料必须是 ProviderData")
 

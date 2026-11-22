@@ -9,12 +9,11 @@ from app.schemas.runtime_types import CommandKind, InteractionEventKind
 
 
 @dataclass(frozen=True, slots=True)
-class ChannelCommand:
-    """描述渠道归一化后的用户动作，不是模型消息，也不包含自动重试标识。
+class InteractionCommand:
+    """描述会话中的统一用户动作，不是模型消息，也不包含自动重试标识。
 
     Attributes:
         session_id (str): 共享 Ayaya 会话标识。
-        origin_channel (str): 输入或本轮回复所属的渠道。
         kind (CommandKind | str): 已知命令使用枚举，未知字符串留给 Scheduler 业务拒绝。
         payload (dict[str, Any]): 该类别携带的专用载荷。
         target_run_id (str | None): 停止或引导针对的活动 run，省略时按命令规则处理。
@@ -22,7 +21,6 @@ class ChannelCommand:
         task_id (str | None): 受管进程任务标识。
     """
     session_id: str
-    origin_channel: str
     kind: CommandKind | str
     payload: dict[str, Any] = field(default_factory=dict)
     target_run_id: str | None = None
@@ -55,13 +53,12 @@ class InteractionStreamReady:
 
 @dataclass(frozen=True, slots=True)
 class InteractionEvent:
-    """承载渠道可见状态，发布序号只控制界面快照和增量的衔接。
+    """承载会话可见状态，发布序号只控制界面快照和增量的衔接。
 
     Attributes:
         session_id (str): 共享 Ayaya 会话标识。
         kind (InteractionEventKind | str): 已知交互事件或沿原路径透传的扩展事件。
         payload (dict[str, Any]): 该类别携带的专用载荷。
-        origin_channel (str | None): 输入或本轮回复所属的渠道。
         run_id (str | None): 当前运行轮次标识。
         request_id (str | None): checkpoint 中的持久中断标识。
         task_id (str | None): 受管进程任务标识。
@@ -72,7 +69,6 @@ class InteractionEvent:
     session_id: str
     kind: InteractionEventKind | str
     payload: dict[str, Any]
-    origin_channel: str | None = None
     run_id: str | None = None
     request_id: str | None = None
     task_id: str | None = None
@@ -86,31 +82,3 @@ class InteractionEvent:
             object.__setattr__(self, "kind", InteractionEventKind(self.kind))
         except (ValueError, TypeError):
             pass
-
-
-@dataclass(frozen=True, slots=True)
-class ChannelDescriptor:
-    """保存渠道注册描述及默认启用和可用状态。
-
-    Attributes:
-        channel (str): 已注册渠道标识。
-        display_name (str): 渠道在设置页的展示名称。
-        enabled (bool): 未保存会话配置时采用的默认启用值。
-        ready (bool): 渠道是否声明可接收事件。
-    """
-    channel: str
-    display_name: str
-    enabled: bool = True
-    ready: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class DeliveryResult:
-    """表示渠道是否接下投递的预留结果类型，当前生产路径尚未使用。
-
-    Attributes:
-        accepted (bool): 是否受理，不保证后续执行已经完成。
-        reason (str | None): 拒绝接收投递的原因，可为空。
-    """
-    accepted: bool
-    reason: str | None = None

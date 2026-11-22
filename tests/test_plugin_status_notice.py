@@ -51,7 +51,7 @@ def test_status_notice_lifecycle_keeps_source_and_does_not_become_agent_input(tm
             chat_settings_dao=configured_settings("s"), agent_factory=create_agent,
             session_state_manager_factory=lambda session: SessionStateManager(session, sqlite))
         manager = SessionStateManager("s", sqlite)
-        observer = observe_session("s", "desktop", runtime_hub(scheduler), scheduler)
+        observer = observe_session("s", runtime_hub(scheduler), scheduler)
         runtime = PluginRuntime("demo", "s", task_id="source-task",
             _supervisor=supervisor, _runtime_queue=queue)
         try:

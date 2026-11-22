@@ -15,10 +15,9 @@ import pytest
 
 from app.agent.core.events import AgentEvent, EventType
 from app.agent.state.manager import SessionStateManager
-from app.interaction.interaction_contract import ChannelCommand, InteractionEvent
+from app.interaction.interaction_contract import InteractionCommand, InteractionEvent
 from app.interaction.interaction_event_hub import InteractionEventHub
 from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
-from app.services.channel_subscription_service import ChannelSubscriptionService
 from tests.runtime_event_source import EventSource
 
 
@@ -31,7 +30,7 @@ def test_snapshot_failure_or_cancellation_allows_reconnection(cancelled: bool) -
     """
     async def scenario() -> None:
         """反复终止首次查询，再验证新连接和正常输出。"""
-        source = EventSource(InteractionEventHub(subscriptions=ChannelSubscriptionService(SqliteFactory())))
+        source = EventSource(InteractionEventHub())
         source.fail_snapshot = True
         if cancelled:
             source.release_snapshot = asyncio.Event()
@@ -40,7 +39,7 @@ def test_snapshot_failure_or_cancellation_allows_reconnection(cancelled: bool) -
         try:
             for _ in range(3):
                 source.snapshot_entered.clear()
-                stream = observe_session("s", "desktop", hub, source)
+                stream = observe_session("s", hub, source)
                 waiting = asyncio.create_task(anext(stream))
                 await asyncio.wait_for(source.snapshot_entered.wait(), 1)
                 if cancelled:
@@ -53,7 +52,7 @@ def test_snapshot_failure_or_cancellation_allows_reconnection(cancelled: bool) -
                 await stream.aclose()
             source.fail_snapshot = False
             source.release_snapshot = None
-            recovered = observe_session("s", "desktop", hub, source)
+            recovered = observe_session("s", hub, source)
             try:
                 assert (await anext(recovered)).payload["phase"] == "idle"
                 await source.publish(InteractionEvent("s", "text_chunk", {"value": "恢复后输出"}))
@@ -93,11 +92,10 @@ def test_event_during_inbox_query_reaches_old_and_new_connection(
         class WaitingInbox(SessionStateManager):
             """只暂停状态查询，领取和保存仍使用真实 SQLite。"""
 
-            async def pending_humans(self, *, origin_channel=None):
+            async def pending_humans(self):
                 """让新连接停在数据库查询之前。
 
                 Args:
-                    origin_channel (str | None): 原渠道过滤条件。
 
                 Returns:
                     list[InboxEnvelope]: 真实待处理输入。
@@ -105,7 +103,7 @@ def test_event_during_inbox_query_reaches_old_and_new_connection(
                 if block_query:
                     query_entered.set()
                     await release_query.wait()
-                return await super().pending_humans(origin_channel=origin_channel)
+                return await super().pending_humans()
 
         class Agent(RuntimeAgentStub):
             """按测试控制的时机输出一条状态变化。"""
@@ -129,7 +127,7 @@ def test_event_during_inbox_query_reaches_old_and_new_connection(
                     AgentEvent: 已知片段及指定的并发事件。
                 """
                 outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
-                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": kwargs.get("origin_channel", "desktop"), "resumed": False}))
+                await emit(AgentEvent(EventType.RUN_STARTED, {"resumed": False}))
                 state = await self.manager.load()
                 self.manager.append_human_input(state, message, None, inputs=kwargs["inbox_inputs"])
                 await self.manager.save(state, checkpoint_type=CheckpointType.INTERMEDIATE, inbox_inputs=kwargs["inbox_inputs"])
@@ -169,20 +167,19 @@ def test_event_during_inbox_query_reaches_old_and_new_connection(
             """
             return Agent(_manager)
 
-        subscriptions = ChannelSubscriptionService(SqliteFactory(path))
         scheduler = build_test_scheduler(chat_settings_dao=configured_settings(), runtime_queue=asyncio.Queue(),
-            agent_factory=factory, subscriptions=subscriptions,
+            agent_factory=factory,
             session_state_manager_factory=partial(WaitingInbox, sqlite_factory=SqliteFactory(path)),
         )
         hub = runtime_hub(scheduler)
         await scheduler.start()
         pass
-        old = observe_session("s", "desktop", hub, scheduler)
-        new = observe_session("s", "desktop", hub, scheduler)
+        old = observe_session("s", hub, scheduler)
+        new = observe_session("s", hub, scheduler)
         waiting = None
         try:
             await anext(old)
-            await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "开始"}))
+            await scheduler.submit(InteractionCommand("s", "human_turn", {"message": "开始"}))
             await asyncio.wait_for(anext(old), 1)
             previous = await asyncio.wait_for(anext(old), 1)
             assert previous.payload["value"] == "今天"
@@ -219,10 +216,10 @@ def test_event_already_reflected_in_snapshot_is_not_delivered_again() -> None:
     """状态已包含但尚未被 Hub 领取的事件不会向新连接重复交付。"""
     async def scenario() -> None:
         """先产生事件，随后同时启动领取和首次状态查询。"""
-        source = EventSource(InteractionEventHub(subscriptions=ChannelSubscriptionService(SqliteFactory())))
+        source = EventSource(InteractionEventHub())
         await source.publish(InteractionEvent("s", "text_chunk", {"value": "状态之前"}))
         hub = source.hub
-        stream = observe_session("s", "desktop", hub, source)
+        stream = observe_session("s", hub, source)
         try:
             assert (await anext(stream)).event_sequence == 1
             pass

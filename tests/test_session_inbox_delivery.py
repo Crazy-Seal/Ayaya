@@ -26,11 +26,11 @@ def test_inbox_input_and_checkpoint_commit_as_one_delivery(tmp_path) -> None:
         manager = SessionStateManager("shared", sqlite_factory=SqliteFactory(db_path))
         inbox = SessionStateManager("shared", sqlite_factory=SqliteFactory(db_path))
         try:
-            envelope = await inbox.submit_human("qq", "请截图")
+            envelope = await inbox.submit_human("请截图")
             input_record = await inbox.read_next()
             assert input_record is not None and input_record.id == envelope.id
             state = AgentState.create_new("shared")
-            state.add_user_message(input_record.payload["message"], origin_channel=input_record.origin_channel)
+            state.add_user_message(input_record.payload["message"])
             await manager.save(state, checkpoint_type="intermediate", inbox_inputs=(input_record,))
             assert await inbox.status(envelope.id) == "delivered"
             # 2. 从独立连接确认 checkpoint、协议历史和交付记录均已持久提交。
@@ -43,11 +43,38 @@ def test_inbox_input_and_checkpoint_commit_as_one_delivery(tmp_path) -> None:
                 ).fetchone()
                 assert status == "delivered" and delivered_at is not None
             restored = await manager.load()
-            assert restored.messages[-1].origin_channel == "qq"
+
         finally:
             await manager.close()
             await inbox.close()
 
+    asyncio.run(scenario())
+
+
+def test_queue_cancellation_is_scoped_to_session_and_pending_input(tmp_path: Path) -> None:
+    """指定输入编号只撤销本会话的待交付排队消息。
+
+    Args:
+        tmp_path (Path): 测试专用 SQLite 目录。
+    """
+    async def scenario() -> None:
+        """在同一数据库保存两个会话的输入，再按各自归属撤销。"""
+        factory = SqliteFactory(str(tmp_path / "state.sqlite3"))
+        first = SessionStateManager("first", factory)
+        second = SessionStateManager("second", factory)
+        try:
+            own = await first.submit_human("本会话排队", queued=True)
+            other = await second.submit_human("其他会话排队", queued=True)
+            immediate = await first.submit_human("立即交付")
+            assert not await first.cancel_queued(other.id)
+            assert not await first.cancel_queued(immediate.id)
+            assert await first.cancel_queued(own.id)
+            assert not await first.cancel_queued(own.id)
+            assert [item.id for item in await second.pending_humans()] == [other.id]
+            assert [item.id for item in await first.pending_humans()] == [immediate.id]
+        finally:
+            await first.close()
+            await second.close()
     asyncio.run(scenario())
 
 
@@ -66,14 +93,14 @@ def test_later_cancelled_input_rolls_back_checkpoint_protocol_and_earlier_delive
             # 1. 保存空的旧 checkpoint，然后读取两条尚未写入协议历史的真人输入。
             state = AgentState.create_new("shared")
             baseline_id = await manager.save(state, checkpoint_type="intermediate")
-            await inbox.submit_human("desktop", "第一条")
+            await inbox.submit_human("第一条")
             first = await inbox.read_next()
-            second = await inbox.submit_human("desktop", "第二条", queued=True)
+            second = await inbox.submit_human("第二条", queued=True)
             assert first is not None and second is not None
             state.add_user_message("第一条")
             state.add_user_message("第二条")
             # 2. 第一条允许更新，第二条已经撤销，数据库必须撤销前面的全部写入。
-            assert await inbox.cancel_queued(second.id, "desktop")
+            assert await inbox.cancel_queued(second.id)
             with pytest.raises(RuntimeError, match="输入已失效"):
                 await manager.save(
                     state, checkpoint_type="intermediate",
@@ -122,7 +149,7 @@ def test_invalid_input_session_leaves_no_checkpoint(
         manager = SessionStateManager("shared", SqliteFactory(path))
         try:
             # 1. 保留数据库中的有效读取，只破坏交给保存入口的快照。
-            await inbox.submit_human("desktop", "合法输入")
+            await inbox.submit_human("合法输入")
             input_record = await inbox.read_next()
             assert input_record is not None
             state = AgentState.create_new("shared")
@@ -162,10 +189,10 @@ def test_queued_release_failure_rolls_back_completed_checkpoint_and_delivery(tmp
             # 1. 保留旧 checkpoint，安排本轮输入和等待本轮完成的下一条输入。
             state = AgentState.create_new("shared")
             baseline_id = await manager.save(state, checkpoint_type="intermediate")
-            await inbox.submit_human("desktop", "本轮输入")
+            await inbox.submit_human("本轮输入")
             input_record = await inbox.read_next()
             assert input_record is not None
-            queued = await inbox.submit_human("desktop", "下一轮输入", queued=True)
+            queued = await inbox.submit_human("下一轮输入", queued=True)
             state.add_user_message("本轮输入")
             with closing(sqlite3.connect(path)) as inspection:
                 inspection.execute(
@@ -226,19 +253,19 @@ def test_release_only_touches_pending_queued_humans_in_current_session(
         records = TaskRecordDao(SqliteFactory(path))
         try:
             # 1. 先形成已交付和已读取的排队输入，再加入仍在等待的各类输入。
-            delivered = await inbox.submit_human("desktop", "已交付", queued=True)
+            delivered = await inbox.submit_human("已交付", queued=True)
             await inbox.release_queued()
             input_record = await inbox.read_next()
             assert input_record is not None
             state = AgentState.create_new("shared")
             state.add_user_message("已交付")
             await manager.save(state, checkpoint_type="intermediate", inbox_inputs=(input_record,))
-            input_record = await inbox.submit_human("desktop", "已读取", queued=True)
+            input_record = await inbox.submit_human("已读取", queued=True)
             await inbox.release_queued()
             assert (await inbox.read_next()).id == input_record.id
-            target = await inbox.submit_human("desktop", "应放行", queued=True)
-            await inbox.submit_human("desktop", "立即输入")
-            await other.submit_human("desktop", "其他会话", queued=True)
+            target = await inbox.submit_human("应放行", queued=True)
+            await inbox.submit_human("立即输入")
+            await other.submit_human("其他会话", queued=True)
             await records.insert_running("task", "shared", "任务", 1, str(tmp_path / "out"))
             assert await records.finish_once("task", "completed", 0)
             # 2. 即使重复更新不会改变值，也禁止放行 SQL 触及非目标记录。
@@ -291,7 +318,7 @@ def test_queued_input_survives_connection_reopen_and_task_terminal_does_not_rele
         inbox = SessionStateManager("shared", SqliteFactory(db_path))
         records = TaskRecordDao(SqliteFactory(db_path))
         try:
-            queued = await inbox.submit_human("desktop", "稍后执行", queued=True)
+            queued = await inbox.submit_human("稍后执行", queued=True)
             await records.insert_running("task-1", "shared", "任务", 1, str(tmp_path / "out"))
             assert await records.finish_once("task-1", "completed", 0)
             batch = await inbox.read_activation_batch()
@@ -334,7 +361,7 @@ def test_activation_batch_groups_later_task_terminal_before_human_projection(tmp
         inbox = SessionStateManager("shared", SqliteFactory(db_path))
         records = TaskRecordDao(SqliteFactory(db_path))
         try:
-            human = await inbox.submit_human("desktop", "用户指令")
+            human = await inbox.submit_human("用户指令")
             await records.insert_running("task-1", "shared", "任务", 1, str(tmp_path / "out"))
             assert await records.finish_once("task-1", "completed", 0)
             batch = await inbox.read_activation_batch()
@@ -361,7 +388,7 @@ def test_completed_checkpoint_releases_queued_input_in_same_transaction(tmp_path
         inbox = SessionStateManager("shared", SqliteFactory(db_path))
         manager = SessionStateManager("shared", SqliteFactory(db_path))
         try:
-            queued = await inbox.submit_human("desktop", "随后执行", queued=True)
+            queued = await inbox.submit_human("随后执行", queued=True)
             await manager.save(
                 AgentState.create_new("shared"), checkpoint_type="completed",
                 release_queued=True,

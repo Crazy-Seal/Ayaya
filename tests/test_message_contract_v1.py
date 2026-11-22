@@ -12,7 +12,7 @@ from app.schemas.runtime_types import TaskResultStatus
 
 def test_domain_message_roundtrip_is_independent_of_provider_roles() -> None:
     """所有业务类型按自己的字段往返，不保存供应商角色。"""
-    messages = [HumanMessage(content=text_content("你好"), origin_channel="inbox"),
+    messages = [HumanMessage(content=text_content("你好")),
         AssistantMessage(content=text_content("回答")), ToolMessage(content=text_content("结果"), tool_name="read_file", tool_call_id="c"),
         TaskResultMessage(task_id="task", task_name="命令", status=TaskResultStatus.COMPLETED, result="完成")]
     for message in messages:

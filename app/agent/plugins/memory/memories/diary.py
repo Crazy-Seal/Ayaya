@@ -7,9 +7,6 @@ from app.crud.sqlite_factory import SqliteFactory
 from dataclasses import dataclass, field
 from datetime import date
 
-from app.schemas.runtime_types import (
-    DESKTOP_CHANNEL,
-)
 from app.agent.plugins.memory.config import MemoryConfig
 from app.agent.plugins.memory.materials import format_memory_notification
 from app.agent.plugins.memory.store.chat_history_store import ChatHistoryStore
@@ -331,7 +328,7 @@ xxxxxxxxx，xxxxxxxxxxxxx......
         )
 
     def _format_messages(self, messages: list[BaseMessage]) -> str:
-        """按角色设置给日记对话标注称呼和时间，并保留渠道、工具及运行时来源。
+        """按角色设置给日记对话标注称呼和时间，保留工具调用及运行时通知。
 
         Args:
             messages (list[BaseMessage]): 按对话顺序排列的消息集合。
@@ -342,19 +339,19 @@ xxxxxxxxx，xxxxxxxxxxxxx......
         user_name = (self.chat_settings.address or "").strip() or "用户"
         ai_name = (self.chat_settings.name or "").strip() or "AI助手"
         lines: list[str] = []
-        # 1. 将来源纳入日记材料，运行时通知保持独立标签，避免当成真人发言。
+        # 1. 按角色生成日记材料，运行时通知使用独立业务标签。
         for message in messages:
             if isinstance(message, ToolMessage) and not message.text:
                 continue
             if isinstance(message, HumanMessage):
-                source = "" if message.origin_channel == DESKTOP_CHANNEL else f"（来自 {message.origin_channel}）"
-                lines.append(f"{user_name}{source}：{render_timed_text(message.text, message.created_at)}")
+
+                lines.append(f"{user_name}：{render_timed_text(message.text, message.created_at)}")
             elif isinstance(message, RuntimeInputMessage):
                 lines.append(format_memory_notification(message))
             elif isinstance(message, AssistantMessage):
                 if message.text:
-                    source = "" if message.origin_channel == DESKTOP_CHANNEL else f"（回复 {message.origin_channel}）"
-                    lines.append(f"{ai_name}{source}：{render_timed_text(message.text, message.created_at)}")
+
+                    lines.append(f"{ai_name}：{render_timed_text(message.text, message.created_at)}")
                 for call in message.tool_calls:
                     call_text = f"调用工具 {call.name}，参数：{format_tool_arguments(call)}"
                     lines.append(

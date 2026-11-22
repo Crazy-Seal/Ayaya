@@ -68,8 +68,8 @@ def legacy_database(path: Path) -> None:
         db.execute("CREATE TABLE audit(value TEXT)")
         db.execute("CREATE INDEX custom_inbox ON session_inbox(created_at)")
         db.execute("CREATE TRIGGER custom_trigger AFTER INSERT ON session_inbox BEGIN INSERT INTO audit VALUES(new.session_id); END")
-        db.execute("INSERT INTO session_inbox(id,session_id,kind,origin_channel,payload_json,created_at) VALUES(40,'parent','human','desktop','{}','date')")
-        db.execute("INSERT INTO session_inbox(id,session_id,kind,origin_channel,payload_json,created_at) VALUES(90,'deleted','human','desktop','{}','date')")
+        db.execute("INSERT INTO session_inbox(id,session_id,kind,payload_json,created_at) VALUES(40,'parent','human','{}','date')")
+        db.execute("INSERT INTO session_inbox(id,session_id,kind,payload_json,created_at) VALUES(90,'deleted','human','{}','date')")
         db.execute("DELETE FROM session_inbox WHERE id=90")
 
 
@@ -85,7 +85,7 @@ def test_subagent_migration_is_explicit_preserves_objects_and_is_repeatable(tmp_
     assert migrate(path, apply=True)["applied"] is False
     with sqlite3.connect(path) as db:
         assert db.execute("SELECT id,session_id FROM session_inbox").fetchall() == [(40, "parent")]
-        db.execute("INSERT INTO session_inbox(session_id,kind,origin_channel,payload_json,created_at) VALUES('child','subagent','desktop','{}','date')")
+        db.execute("INSERT INTO session_inbox(session_id,kind,payload_json,created_at) VALUES('child','subagent','{}','date')")
         assert db.execute("SELECT max(id) FROM session_inbox").fetchone() == (91,)
         assert db.execute("SELECT value FROM audit ORDER BY rowid DESC LIMIT 1").fetchone() == ("child",)
         assert db.execute("SELECT name FROM sqlite_master WHERE name='custom_inbox'").fetchone()

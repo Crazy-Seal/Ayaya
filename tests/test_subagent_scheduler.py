@@ -23,7 +23,7 @@ from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.agent.runtime.subagent_requests import CreateSubagentRequest, SubagentSource, InteractSubagentRequest
 from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
 from app.agent.state.manager import SessionStateManager
-from app.interaction.interaction_contract import ChannelCommand
+from app.interaction.interaction_contract import InteractionCommand
 from app.schemas.subagent_types import SubagentAction
 from app.schemas.runtime_types import TaskStatus
 from tests.subagent_support import SubagentHarness, wait_for_subagent_worker, subagent_worker_running
@@ -77,7 +77,7 @@ def test_child_final_report_and_context_retention(tmp_path: Path, retain: bool) 
             async def run(self, message, *, turn_control, inbox_inputs, emit, **kwargs):
                 """保存父真人输入并通过共享队列创建一个子 Agent。"""
                 outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
-                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False}))
+                await emit(AgentEvent(EventType.RUN_STARTED, {"resumed": False}))
                 state = await self.manager.load()
                 self.manager.append_human_input(state, message, None, inputs=inbox_inputs)
                 await self.manager.save(state, checkpoint_type=CheckpointType.INTERMEDIATE, inbox_inputs=inbox_inputs)
@@ -92,7 +92,7 @@ def test_child_final_report_and_context_retention(tmp_path: Path, retain: bool) 
             async def run_runtime_inputs(self, *, inbox_inputs, emit, **kwargs):
                 """接收子完成报告，保持父不重新创建子 Agent。"""
                 outcome = AgentRunOutcome(AgentRunOutcomeKind.COMPLETED)
-                await emit(AgentEvent(EventType.RUN_STARTED, {"origin_channel": "desktop", "resumed": False}))
+                await emit(AgentEvent(EventType.RUN_STARTED, {"resumed": False}))
                 state = await self.manager.load()
                 self.manager.append_runtime_inputs(state, None, inbox_inputs)
                 await self.manager.save(state, checkpoint_type=CheckpointType.INTERMEDIATE, inbox_inputs=inbox_inputs)
@@ -116,7 +116,7 @@ def test_child_final_report_and_context_retention(tmp_path: Path, retain: bool) 
             session_state_manager_factory=lambda context: SessionStateManager(context, SqliteFactory(path)), chat_settings_dao=supervisor_settings, mutation_coordinator=supervisor_mutations)
         try:
             await scheduler.start()
-            assert (await scheduler.submit(ChannelCommand("parent", "desktop", "human_turn", {"message": "开始"}))).accepted
+            assert (await scheduler.submit(InteractionCommand("parent", "human_turn", {"message": "开始"}))).accepted
             receipt, source = await asyncio.wait_for(created.get(), 3)
             assert subagent_worker_running(scheduler, receipt.context_id)
             assert len(await scheduler.snapshot_subagents("parent")) == 1

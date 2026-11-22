@@ -22,7 +22,7 @@ from app.agent.state.manager import SessionStateManager
 from app.agent.state.messages import ToolCall
 from app.agent.runtime.tasks.base import BaseTask
 from app.agent.tools.core.base import BaseTool, InterruptEvent, ToolContext, ToolResult
-from app.interaction.interaction_contract import ChannelCommand
+from app.interaction.interaction_contract import InteractionCommand
 from app.agent.runtime.agent_runtime_scheduler import AgentRuntimeScheduler
 from app.agent.runtime.tasks.task_supervisor import TaskSupervisor
 from app.schemas.runtime_types import InterruptKind, TaskStatus
@@ -110,17 +110,17 @@ def test_queued_plugin_control_targets_execution_at_acceptance(tmp_path, action)
             chat_settings_dao=configured_settings())
         try:
             await scheduler.start()
-            await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "A 轮"}))
+            await scheduler.submit(InteractionCommand("s", "human_turn", {"message": "A 轮"}))
             assert await asyncio.wait_for(started.get(), 2) == 1
             runtime = PluginRuntime("game", "s", _supervisor=supervisor, _runtime_queue=queue)
-            await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "B 轮"}))
+            await scheduler.submit(InteractionCommand("s", "human_turn", {"message": "B 轮"}))
             assert await asyncio.wait_for(started.get(), 2) == 2
             if action == "stop":
                 await runtime.stop_turn()
             else:
                 await runtime.steer_turn("优先躲避攻击")
             await asyncio.wait_for(blocked.wait(), 2)
-            await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "C 轮"}))
+            await scheduler.submit(InteractionCommand("s", "human_turn", {"message": "C 轮"}))
             assert await asyncio.wait_for(started.get(), 2) == 3
             accept_control.set()
             runs = [await next_event_kind(scheduler, "run_started") for _ in range(3)]
@@ -216,7 +216,7 @@ def test_plugin_control_respects_idle_and_final_save_policy(tmp_path, kind):
             assert execution.snapshot().phase == ExecutionPhase.IDLE
             pending = await manager.read_activation_batch()
             assert len(pending) == (0 if request_kind == PluginRequestKind.STOP_TURN else 1)
-            await session.accept_human(ChannelCommand("s", "desktop", "human_turn", {"message": "开始回答"}))
+            await session.accept_human(InteractionCommand("s", "human_turn", {"message": "开始回答"}))
             await asyncio.wait_for(saving.wait(), 2)
             before = execution.snapshot()
             assert before.phase == ExecutionPhase.COMMITTING
@@ -340,7 +340,7 @@ def test_background_task_survives_approval_and_turn_end_until_explicit_stop(tmp_
         manager = SessionStateManager("s", SqliteFactory(path))
         try:
             await scheduler.start()
-            await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "连接游戏"}))
+            await scheduler.submit(InteractionCommand("s", "human_turn", {"message": "连接游戏"}))
             pending = await next_event_kind(scheduler, "interrupt")
             runtime = PluginRuntime("game", "s", _supervisor=supervisor, _runtime_queue=queue)
             task_id = await runtime.submit_task(GameWatchTask(), name="watch", title="游戏观察", notify_agent=False)
@@ -353,14 +353,14 @@ def test_background_task_survives_approval_and_turn_end_until_explicit_stop(tmp_
             assert len(await manager.read_activation_batch()) == 1
 
             if decision == "human":
-                command = ChannelCommand("s", "desktop", "human_turn", {"message": "改做其他事情"})
+                command = InteractionCommand("s", "human_turn", {"message": "改做其他事情"})
             elif decision == "stop":
-                command = ChannelCommand("s", "desktop", "stop_turn", target_run_id=pending.run_id)
+                command = InteractionCommand("s", "stop_turn", target_run_id=pending.run_id)
             else:
                 payload = {"kind": decision}
                 if decision == "steer":
                     payload["message"] = "改做其他事情"
-                command = ChannelCommand("s", "desktop", "resolve_authorization", payload, request_id=pending.request_id)
+                command = InteractionCommand("s", "resolve_authorization", payload, request_id=pending.request_id)
             assert (await scheduler.submit(command)).accepted
             if decision == "stop":
                 await next_event_kind(scheduler, "run_completed")
@@ -430,7 +430,7 @@ def test_steer_storage_failure_keeps_current_model_waiting(tmp_path):
         manager = SessionStateManager("s", SqliteFactory(path))
         try:
             await scheduler.start()
-            await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "开始"}))
+            await scheduler.submit(InteractionCommand("s", "human_turn", {"message": "开始"}))
             await asyncio.wait_for(entered.wait(), 2)
             original = (await scheduler.snapshot("s")).payload["run_id"]
             runtime = PluginRuntime("game", "s", _supervisor=supervisor, _runtime_queue=queue)
@@ -549,7 +549,7 @@ def test_game_watch_reports_changes_controls_current_turn_and_cleans_connection(
             session_state_manager_factory=lambda session: SessionStateManager(session, SqliteFactory(path)), chat_settings_dao=supervisor_settings, mutation_coordinator=supervisor_mutations)
         try:
             await scheduler.start()
-            await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "开始游戏"}))
+            await scheduler.submit(InteractionCommand("s", "human_turn", {"message": "开始游戏"}))
             await asyncio.wait_for(waiting.wait(), 2)
             source = (await scheduler.snapshot("s")).payload["run_id"]
             runtime = PluginRuntime("game", "s", _supervisor=supervisor, _runtime_queue=queue)
@@ -652,7 +652,7 @@ def test_after_response_commit_notifications_start_followup_turns(tmp_path):
         manager = SessionStateManager("s", SqliteFactory(path))
         try:
             await scheduler.start()
-            await scheduler.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "开始"}))
+            await scheduler.submit(InteractionCommand("s", "human_turn", {"message": "开始"}))
             completed = [await next_event_kind(scheduler, "run_completed") for _ in range(3)]
             assert len(requests) == 3 and len({event.run_id for event in completed}) == 3
             assert committed == ["s", "s", "s"]

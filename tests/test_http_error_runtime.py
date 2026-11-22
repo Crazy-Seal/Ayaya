@@ -18,7 +18,7 @@ from app.agent.tools.terminal.task import read_terminal_output
 from app.crud.chat_settings_dao import ChatSettingsDao
 from app.crud.sqlite_factory import SqliteFactory
 from app.errors import InvalidOperationError
-from app.interaction.interaction_contract import ChannelCommand
+from app.interaction.interaction_contract import InteractionCommand
 from tests.runtime_event_source import observe_session
 from app.schemas.runtime_types import TaskStatus
 from app.schemas.task_types import TaskRecord
@@ -81,10 +81,10 @@ async def test_missing_subagent_keeps_tool_error_text(tmp_path: Path) -> None:
         agent_factory=create_agent, session_state_manager_factory=lambda sid: SessionStateManager(sid, sqlite))
     hub = runtime_hub(scheduler)
     await scheduler.start()
-    stream = observe_session("session", "desktop", hub, scheduler)
+    stream = observe_session("session", hub, scheduler)
     try:
         await anext(stream)
-        receipt = await scheduler.submit(ChannelCommand("session", "desktop", "human_turn", {"message": "查询"}))
+        receipt = await scheduler.submit(InteractionCommand("session", "human_turn", {"message": "查询"}))
         assert receipt.accepted is True
         while (event := await asyncio.wait_for(anext(stream), 5)).kind != "run_completed":
             assert event.kind != "error", event.payload
@@ -121,11 +121,11 @@ async def test_configuration_lookup_failure_keeps_sse_error_text(tmp_path: Path)
         agent_factory=create_agent, session_state_manager_factory=lambda sid: SessionStateManager(sid, sqlite))
     hub = runtime_hub(scheduler)
     await scheduler.start()
-    stream = stream_sse_json(observe_session("session", "desktop", hub, scheduler))
+    stream = stream_sse_json(observe_session("session", hub, scheduler))
     try:
         first = await asyncio.wait_for(anext(stream), 3)
         assert json.loads(first.removeprefix("data: "))["kind"] == "session_snapshot"
-        receipt = await scheduler.submit(ChannelCommand("session", "desktop", "human_turn", {"message": "你好"}))
+        receipt = await scheduler.submit(InteractionCommand("session", "human_turn", {"message": "你好"}))
         assert receipt.accepted is True
         frame = json.loads((await asyncio.wait_for(anext(stream), 3)).removeprefix("data: "))
         assert frame["kind"] == "error"

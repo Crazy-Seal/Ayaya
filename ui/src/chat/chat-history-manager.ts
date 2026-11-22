@@ -4,7 +4,6 @@
 import { HistoryRole, AYAYA_IMAGE_URI_PREFIX } from "../../shared-types.js";
 
 import type { ChatHistoryItem } from "../types.js";
-import { DESKTOP_CHANNEL } from "../../shared-types.js";
 import { TASK_NOTICE_DURATION_MS } from "../../runtime-constants.js";
 import { iconMarkup } from "../ui/icons.js";
 
@@ -34,8 +33,6 @@ const extractCompleteParagraphs = (text: string): { complete: string[]; remainin
  * 管理历史与流式气泡，使用消息身份和加载版本防止快照覆盖实时增量。
  *
  * Attributes:
- *     streamingOrigin (string): 流式回复的渠道来源。
- *     streamLabelShown (boolean): 当前流式气泡是否已显示来源标签。
  *     pendingSteerIndicator (HTMLDivElement | null): 已提交引导的本地等待元素。
  *     historyRevision (number): 历史和增量视图版本，防止旧查询覆盖新内容。
  *     historyRequest (number): 历史请求代次，clear 或新查询使旧响应失效。
@@ -46,8 +43,6 @@ export class ChatHistoryManager {
   private messages: ChatHistoryItem[] = [];
   private isStreaming = false;
   private streamingContent = "";
-  private streamingOrigin = DESKTOP_CHANNEL;
-  private streamLabelShown = false;
   private streamingDraftItems: HTMLElement[] = [];
   private queuedParagraphCount = 0;
   private typingIndicator: HTMLDivElement | null = null;
@@ -394,20 +389,16 @@ export class ChatHistoryManager {
   }
 
   /**
-   * 为当前回复来源启动流式视图，避免重复创建草稿。
+   * 为当前回复启动流式视图并准备正文段落。
    *
-   * Args:
-   *     originChannel (string): 本轮回复所属渠道。
-   */
-  startStreaming(originChannel = DESKTOP_CHANNEL): void {
+*/
+  startStreaming(): void {
     this.historyRevision += 1;
     if (!this.isStreaming && this.paragraphQueue.length > 0) {
       this.flushFinalizedQueue();
     }
     this.abortStreaming();
     this.streamingContent = "";
-    this.streamingOrigin = originChannel;
-    this.streamLabelShown = false;
     this.isStreaming = true;
     this.queuedParagraphCount = 0;
     this.paragraphQueue = [];
@@ -437,7 +428,7 @@ export class ChatHistoryManager {
   }
 
   /**
-   * 更新当前流式正文，携带所属回复渠道。
+   * 更新当前回复的流式正文。
    *
    * Args:
    *     content (string): 完整的当前流式正文。
@@ -452,8 +443,7 @@ export class ChatHistoryManager {
         role: HistoryRole.AI.toLowerCase() as HistoryRole,
         content,
         timestamp: new Date().toISOString(),
-        origin_channel: this.streamingOrigin,
-      });
+        });
       return;
     }
 
@@ -469,7 +459,7 @@ export class ChatHistoryManager {
   }
 
   /**
-   * 收尾段落队列并保存本地回复项，保留跨端来源标识。
+   * 收尾段落队列并保存本地回复内容。
    */
   finalizeStreamingMessage(): void {
     if (!this.isStreaming) {
@@ -497,8 +487,7 @@ export class ChatHistoryManager {
         role: HistoryRole.AI.toLowerCase() as HistoryRole,
         content: this.streamingContent,
         timestamp: new Date().toISOString(),
-        origin_channel: this.streamingOrigin,
-      });
+        });
     }
 
     this.streamingContent = "";
@@ -578,7 +567,7 @@ export class ChatHistoryManager {
   }
 
   /**
-   * 追加流式段落气泡，仅首个可见气泡展示外部渠道来源。
+   * 按收到的段落追加流式回复气泡。
    *
    * Args:
    *     paragraph (string): 已经切分好的可见段落。
@@ -589,14 +578,6 @@ export class ChatHistoryManager {
 
     const bubble = document.createElement("div");
     bubble.className = "message-bubble";
-    // 1. 外部渠道来源只在本轮首个段落气泡显示，后续段落沿用同一来源。
-    if (!this.streamLabelShown && this.streamingOrigin !== DESKTOP_CHANNEL) {
-      const label = document.createElement("span");
-      label.className = "message-origin-label";
-      label.textContent = `Ayaya · ${this.streamingOrigin}`;
-      bubble.appendChild(label);
-      this.streamLabelShown = true;
-    }
     const text = document.createElement("span");
     text.textContent = paragraph;
     bubble.appendChild(text);
@@ -663,7 +644,7 @@ export class ChatHistoryManager {
     const paragraphs = this.splitIntoParagraphs(cleanContent);
 
     // 1. 先渲染文本气泡（如果有文本）
-    for (const [index, paragraph] of paragraphs.entries()) {
+    for (const paragraph of paragraphs) {
       if (!paragraph) continue;
 
       const item = document.createElement("div");
@@ -671,15 +652,6 @@ export class ChatHistoryManager {
 
       const bubble = document.createElement("div");
       bubble.className = "message-bubble";
-
-      if (index === 0 && msg.origin_channel && msg.origin_channel !== DESKTOP_CHANNEL) {
-        const label = document.createElement("span");
-        label.className = "message-origin-label";
-        label.textContent = isHuman
-          ? `你 · ${msg.origin_channel}`
-          : `Ayaya · ${msg.origin_channel}`;
-        bubble.appendChild(label);
-      }
 
       // 渲染文本
       const textNode = document.createTextNode(paragraph);

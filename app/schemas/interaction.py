@@ -1,16 +1,15 @@
-"""交互命令与渠道订阅的 HTTP 请求和响应模型。"""
+"""会话交互命令的 HTTP 请求和响应模型。"""
 
 from pydantic import BaseModel, Field
 
 from app.schemas.runtime_types import CommandStatus
 
 
-class ChannelCommandRequest(BaseModel):
+class InteractionCommandRequest(BaseModel):
     """定义统一 HTTP 命令请求，具体 kind 的业务约束由 Scheduler 验证。
 
     Attributes:
         session_id (str): 共享 Ayaya 会话标识。
-        origin_channel (str): 输入或本轮回复所属的渠道。
         kind (str): 此契约对应的命令、事件或输入类别。
         target_run_id (str | None): 停止或引导针对的活动 run，省略时按命令规则处理。
         request_id (str | None): checkpoint 中的持久中断标识。
@@ -18,7 +17,6 @@ class ChannelCommandRequest(BaseModel):
         payload (dict): 该类别携带的专用载荷。
     """
     session_id: str = Field(min_length=1)
-    origin_channel: str = Field(min_length=1)
     # 未知命令仍由 Scheduler 业务拒绝，不因枚举整理变成 HTTP 422。
     kind: str
     target_run_id: str | None = None
@@ -28,13 +26,6 @@ class ChannelCommandRequest(BaseModel):
     payload: dict = Field(default_factory=dict)
 
 
-class ChannelSubscriptionRequest(BaseModel):
-    """定义可选渠道的会话订阅启用设置。
-
-    Attributes:
-        enabled (bool): 渠道是否参与该会话的双向互通。
-    """
-    enabled: bool
 
 
 class CommandReceiptResponse(BaseModel):
@@ -53,29 +44,3 @@ class CommandReceiptResponse(BaseModel):
     context_id: str | None
     run_id: str | None
     detail: str | None
-
-
-class ChannelSubscriptionResponse(BaseModel):
-    """向界面交付一个渠道的订阅与可用状态。
-
-    Attributes:
-        channel (str): 已注册渠道的标识。
-        display_name (str): 界面显示的渠道名称。
-        enabled (bool): 当前会话是否启用该渠道。
-        ready (bool): 渠道是否已经准备好交互。
-    """
-
-    channel: str
-    display_name: str
-    enabled: bool
-    ready: bool
-
-
-class ChannelListResponse(BaseModel):
-    """交付当前会话的全部渠道配置。
-
-    Attributes:
-        channels (list[ChannelSubscriptionResponse]): 渠道订阅列表。
-    """
-
-    channels: list[ChannelSubscriptionResponse]

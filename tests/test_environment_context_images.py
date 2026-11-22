@@ -148,7 +148,7 @@ def test_environment_images_restore_without_entering_history_and_clear_on_end(
             elif ending == "stop":
                 from app.schemas.runtime_types import TurnInterruptReason
                 await manager.finish_interrupted_turn(restored, reason=TurnInterruptReason.STOP,
-                    partial="", partial_persisted=False, origin_channel="desktop")
+                    partial="", partial_persisted=False)
             else:
                 assert await manager.finalize_abandoned_turn()
             assert (await manager.load()).temporary_context == {}

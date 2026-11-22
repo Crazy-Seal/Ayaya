@@ -17,7 +17,7 @@ from app.agent.tools.authorization.manager import ToolAuthorization
 from app.agent.tools.core.runtime import ToolRuntime
 from app.agent.utils.infra.bounded_operation import close_resources
 from app.crud.sqlite_factory import SqliteFactory
-from app.interaction.interaction_contract import ChannelCommand
+from app.interaction.interaction_contract import InteractionCommand
 from app.schemas.chat_settings import ChatSettings
 from app.schemas.runtime_types import CommandStatus, SessionState
 from app.schemas.subagent_types import SubagentAction, SubagentPublicStatus
@@ -96,13 +96,13 @@ def test_parent_new_input_before_old_stop_completion_stays_enabled(tmp_path: Pat
             chat_settings_dao=configured_settings("s"))
         try:
             await runtime.start()
-            await runtime.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "旧工作"}))
+            await runtime.submit(InteractionCommand("s", "human_turn", {"message": "旧工作"}))
             await asyncio.wait_for(running.wait(), 3)
             old_run = (await runtime.snapshot("s")).payload["run_id"]
             monkeypatch.setattr(SessionStateManager, "finish_interrupted_turn", finish)
-            assert (await runtime.submit(ChannelCommand("s", "desktop", "stop_turn"))).accepted
+            assert (await runtime.submit(InteractionCommand("s", "stop_turn"))).accepted
             await asyncio.wait_for(saving.wait(), 3)
-            assert (await runtime.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "新明确工作"}))).accepted
+            assert (await runtime.submit(InteractionCommand("s", "human_turn", {"message": "新明确工作"}))).accepted
             assert (await runtime.snapshot("s")).payload["session_state"] == SessionState.ENABLED
             release.set()
             first = await asyncio.wait_for(next_kind(runtime, "run_completed"), 3)
@@ -207,7 +207,7 @@ def test_final_checkpoint_attempts_and_failed_close_keep_business_truth(tmp_path
         try:
             await runtime.start()
             monkeypatch.setattr(AgentStateDao, "_write_state_in_transaction", save)
-            await runtime.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "保存固定材料"}))
+            await runtime.submit(InteractionCommand("s", "human_turn", {"message": "保存固定材料"}))
             events = []
             ending = "history_restored" if failures == 4 else "run_completed"
             while not events or events[-1].kind != ending:
@@ -312,13 +312,13 @@ def test_approval_notice_and_queue_events_share_order_without_slow_observer_bloc
         slow = None
         try:
             await runtime.start()
-            slow = await runtime_hub(runtime).register("s", "desktop")
-            await runtime.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "等待审批"}))
+            slow = await runtime_hub(runtime).register()
+            await runtime.submit(InteractionCommand("s", "human_turn", {"message": "等待审批"}))
             events = []
             while not events or events[-1].kind != "interrupt":
                 events.append(await asyncio.wait_for(next_runtime_event(runtime), 3))
             approval = events[-1]
-            assert (await runtime.submit(ChannelCommand("s", "desktop", "queue_turn", {"message": "审批后的队列"}))).accepted
+            assert (await runtime.submit(InteractionCommand("s", "queue_turn", {"message": "审批后的队列"}))).accepted
             task_runtime = ToolRuntime("s", approval.run_id, "work", "call", runtime.task_supervisor, runtime.runtime_queue)
             task_id = await task_runtime.submit_task(Work(), name="work", title="审批独立任务", notify_agent=True)
             assert (await runtime.task_supervisor.wait(task_id, timeout_ms=2000)).status == "completed"
@@ -341,7 +341,7 @@ def test_approval_notice_and_queue_events_share_order_without_slow_observer_bloc
                     plugin_name="acceptance", name="notice", payload={"text": str(index)}))
             await asyncio.wait_for(runtime.runtime_queue.join(), 3)
             assert slow is not None and slow.queue.get_nowait() is None
-            assert (await asyncio.wait_for(runtime.submit(ChannelCommand("s", "desktop", "stop_turn")), 1)).accepted
+            assert (await asyncio.wait_for(runtime.submit(InteractionCommand("s", "stop_turn")), 1)).accepted
             await asyncio.wait_for(next_kind(runtime, "authorization_resolved"), 3)
             assert model_calls == 1
         finally:
@@ -571,9 +571,9 @@ def test_parent_accepts_input_while_close_budget_expires(tmp_path: Path, monkeyp
             chat_settings_dao=configured_settings("s"))
         try:
             await runtime.start()
-            await runtime.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "首次工作"}))
+            await runtime.submit(InteractionCommand("s", "human_turn", {"message": "首次工作"}))
             await asyncio.wait_for(closing.wait(), 3)
-            assert (await runtime.submit(ChannelCommand("s", "desktop", "human_turn", {"message": "关闭期间的新输入"}))).accepted
+            assert (await runtime.submit(InteractionCommand("s", "human_turn", {"message": "关闭期间的新输入"}))).accepted
             await asyncio.wait_for(second.wait(), 3)
             assert created == 2
             assert any("释放资源失败" in item.message for item in caplog.records)
@@ -620,7 +620,7 @@ def test_shutdown_rejects_new_input_child_and_ordinary_task(tmp_path: Path) -> N
             await asyncio.wait_for(wait_for_subagent_worker(harness.scheduler, child.context_id), 3)
             await harness.scheduler.begin_shutdown()
             await harness.supervisor.begin_shutdown()
-            assert (await harness.scheduler.submit(ChannelCommand("parent", "desktop", "human_turn", {"message": "迟到输入"}))).status == CommandStatus.CLOSED
+            assert (await harness.scheduler.submit(InteractionCommand("parent", "human_turn", {"message": "迟到输入"}))).status == CommandStatus.CLOSED
             future = asyncio.get_running_loop().create_future()
             request = CreateSubagentRequest(SubagentSource("parent", "old-run", "late-create"),
                 "迟到子", "测试", "迟到指令", frozenset(), True, future)

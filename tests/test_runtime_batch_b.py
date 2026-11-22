@@ -23,7 +23,7 @@ from app.crud.agent_state_dao import AgentStateDao
 from app.crud.session_inbox_dao import SessionInboxDao
 from app.crud.sqlite_factory import SqliteFactory
 from app.crud.subagent_dao import SubagentDao
-from app.interaction.interaction_contract import ChannelCommand
+from app.interaction.interaction_contract import InteractionCommand
 from app.schemas.runtime_types import CheckpointType, CommandKind, InboxKind, SessionState
 from app.schemas.subagent_types import SubagentDefinition
 from tests.runtime_support import build_test_scheduler, close_test_runtime, configured_settings, finish_task_record, next_runtime_event
@@ -74,7 +74,7 @@ def test_connection_configuration_uses_same_save_attempt_budget_and_releases_fai
             operation = dao.save(state, checkpoint_type=CheckpointType.INTERMEDIATE)
             table = "checkpoints"
         elif owner == "inbox":
-            operation = dao.submit_human("desktop", "相同材料")
+            operation = dao.submit_human("相同材料")
             table = "session_inbox"
         else:
             definition = SubagentDefinition("child", "s", "助手", "任务", frozenset(), True, datetime.now(timezone.utc))
@@ -176,7 +176,7 @@ def test_final_save_fault_preserves_committed_tools_and_independent_task(tmp_pat
                 inspection.execute("CREATE TRIGGER reject_final BEFORE INSERT ON checkpoints "
                     "WHEN NEW.checkpoint_type='completed' BEGIN SELECT RAISE(ABORT, 'final rejected'); END")
                 inspection.commit()
-            assert (await runtime.submit(ChannelCommand("s", "desktop", CommandKind.HUMAN_TURN, {"message": "执行工作"}))).accepted
+            assert (await runtime.submit(InteractionCommand("s", CommandKind.HUMAN_TURN, {"message": "执行工作"}))).accepted
             events = []
             while not any(event.kind == "history_restored" for event in events):
                 events.append(await asyncio.wait_for(next_runtime_event(runtime), 2))
@@ -202,7 +202,7 @@ def test_final_save_fault_preserves_committed_tools_and_independent_task(tmp_pat
             with closing(factory.connect_sync()) as inspection:
                 inspection.execute("DROP TRIGGER reject_final")
                 inspection.commit()
-            assert (await runtime.submit(ChannelCommand("s", "desktop", CommandKind.HUMAN_TURN, {"message": "继续新的工作"}))).accepted
+            assert (await runtime.submit(InteractionCommand("s", CommandKind.HUMAN_TURN, {"message": "继续新的工作"}))).accepted
             while (await asyncio.wait_for(next_runtime_event(runtime), 2)).kind != "run_completed":
                 pass
             assert side_effects == ["executed"] and model_calls == 3
@@ -239,7 +239,7 @@ def test_dao_commit_after_budget_and_repeated_cancellation_returns_actual_succes
             operation = dao.save(state, checkpoint_type=CheckpointType.INTERMEDIATE)
             table = "checkpoints"
         elif owner == "inbox":
-            operation = dao.submit_human("desktop", "固定输入")
+            operation = dao.submit_human("固定输入")
             table = "session_inbox"
         else:
             definition = SubagentDefinition("child", "s", "助手", "任务", frozenset(), True, datetime.now(timezone.utc))
@@ -276,8 +276,8 @@ def test_authorization_first_wins_across_independent_managers(tmp_path: Path) ->
             approved, steered = state.model_copy(deep=True), state.model_copy(deep=True)
             approved.record_authorization_decision("approval", {"kind": "approve"})
             steered.record_authorization_decision("approval", {"kind": "steer", "message": "新指令"})
-            results = await asyncio.gather(first.commit_interrupt_decision(approved, origin_channel="desktop"),
-                second.commit_interrupt_decision(steered, origin_channel="desktop"))
+            results = await asyncio.gather(first.commit_interrupt_decision(approved),
+                second.commit_interrupt_decision(steered))
             assert sorted(results) == [False, True]
             saved = await first.load()
             with closing(factory.connect_sync()) as inspection:
@@ -323,7 +323,7 @@ def test_failed_input_is_not_replayed_by_notice_or_next_explicit_message(tmp_pat
                 inspection.execute("CREATE TRIGGER reject_input BEFORE INSERT ON checkpoints "
                     "WHEN NEW.checkpoint_type='intermediate' BEGIN SELECT RAISE(ABORT, 'input rejected'); END")
                 inspection.commit()
-            assert (await runtime.submit(ChannelCommand("s", "desktop", CommandKind.HUMAN_TURN, {"message": "失败旧输入"}))).accepted
+            assert (await runtime.submit(InteractionCommand("s", CommandKind.HUMAN_TURN, {"message": "失败旧输入"}))).accepted
             events = []
             while not any(event.kind == "history_restored" for event in events):
                 events.append(await asyncio.wait_for(next_runtime_event(runtime), 2))
@@ -339,7 +339,7 @@ def test_failed_input_is_not_replayed_by_notice_or_next_explicit_message(tmp_pat
             with closing(factory.connect_sync()) as inspection:
                 inspection.execute("DROP TRIGGER reject_input")
                 inspection.commit()
-            assert (await runtime.submit(ChannelCommand("s", "desktop", CommandKind.HUMAN_TURN, {"message": "新的明确输入"}))).accepted
+            assert (await runtime.submit(InteractionCommand("s", CommandKind.HUMAN_TURN, {"message": "新的明确输入"}))).accepted
             while (await asyncio.wait_for(next_runtime_event(runtime), 2)).kind != "run_completed":
                 pass
             assert len(seen) == 1
@@ -410,7 +410,7 @@ def test_faulted_restore_requires_both_reads_and_only_explicit_input_retries(tmp
                 db.execute("CREATE TRIGGER reject_final BEFORE INSERT ON checkpoints WHEN NEW.checkpoint_type='completed' "
                            "BEGIN SELECT RAISE(ABORT,'final rejected'); END")
                 db.commit()
-            await runtime.submit(ChannelCommand("s", "desktop", CommandKind.HUMAN_TURN, {"message": "失败轮"}))
+            await runtime.submit(InteractionCommand("s", CommandKind.HUMAN_TURN, {"message": "失败轮"}))
             while (await asyncio.wait_for(next_runtime_event(runtime), 3)).kind != "error":
                 pass
             for _ in range(100):
@@ -428,7 +428,7 @@ def test_faulted_restore_requires_both_reads_and_only_explicit_input_retries(tmp
                 db.execute("DROP TRIGGER reject_final")
                 db.commit()
             blocked = False
-            await runtime.submit(ChannelCommand("s", "desktop", CommandKind.HUMAN_TURN, {"message": "新的明确输入"}))
+            await runtime.submit(InteractionCommand("s", CommandKind.HUMAN_TURN, {"message": "新的明确输入"}))
             kinds = []
             while "run_completed" not in kinds:
                 kinds.append((await asyncio.wait_for(next_runtime_event(runtime), 3)).kind)
@@ -565,7 +565,7 @@ def test_parent_and_two_children_control_independent_contexts(tmp_path: Path) ->
         supervisor = runtime.task_supervisor
         try:
             await runtime.start()
-            await runtime.submit(ChannelCommand("s", "desktop", CommandKind.HUMAN_TURN, {"message": "同时执行"}))
+            await runtime.submit(InteractionCommand("s", CommandKind.HUMAN_TURN, {"message": "同时执行"}))
             await asyncio.wait_for(parent_running.wait(), 3)
             await asyncio.wait_for(children_running.wait(), 3)
             assert len(child_running) == 2
@@ -576,7 +576,7 @@ def test_parent_and_two_children_control_independent_contexts(tmp_path: Path) ->
             assert child_cancelled == {first}
             parent = (await runtime.snapshot("s")).payload
             assert parent["run_id"] == parent_run and parent["phase"] == "running"
-            assert (await runtime.submit(ChannelCommand("s", "desktop", CommandKind.STOP_TURN, target_run_id=parent_run))).accepted
+            assert (await runtime.submit(InteractionCommand("s", CommandKind.STOP_TURN, target_run_id=parent_run))).accepted
             for _ in range(100):
                 if (await runtime.snapshot("s")).payload["phase"] == "idle":
                     break
@@ -617,7 +617,7 @@ def test_model_business_failure_commits_final_failure_without_replaying_model(tm
             session_state_manager_factory=lambda context: SessionStateManager(context, factory), chat_settings_dao=configured_settings("s"))
         try:
             await runtime.start()
-            await runtime.submit(ChannelCommand("s", "desktop", CommandKind.HUMAN_TURN, {"message": "开始"}))
+            await runtime.submit(InteractionCommand("s", CommandKind.HUMAN_TURN, {"message": "开始"}))
             events = []
             while not any(event.kind == "error" for event in events):
                 events.append(await asyncio.wait_for(next_runtime_event(runtime), 3))
@@ -693,12 +693,12 @@ def test_explicit_queue_rejects_idle_and_committing_without_saving_stranded_inpu
             session_state_manager_factory=lambda context: Manager(context, factory), chat_settings_dao=configured_settings("s"))
         try:
             await runtime.start()
-            queued = ChannelCommand("s", "desktop", CommandKind.QUEUE_TURN, {"message": "无法执行的队列"})
+            queued = InteractionCommand("s", CommandKind.QUEUE_TURN, {"message": "无法执行的队列"})
             assert not (await runtime.submit(queued)).accepted
-            await runtime.submit(ChannelCommand("s", "desktop", CommandKind.HUMAN_TURN, {"message": "第一条"}))
+            await runtime.submit(InteractionCommand("s", CommandKind.HUMAN_TURN, {"message": "第一条"}))
             await asyncio.wait_for(committing.wait(), 3)
             assert not (await runtime.submit(queued)).accepted
-            assert (await runtime.submit(ChannelCommand("s", "desktop", CommandKind.HUMAN_TURN, {"message": "第二条"}))).accepted
+            assert (await runtime.submit(InteractionCommand("s", CommandKind.HUMAN_TURN, {"message": "第二条"}))).accepted
             release.set()
             completed = 0
             while completed < 2:
@@ -769,9 +769,9 @@ def test_queue_save_delayed_before_final_commit_is_released_and_executed(tmp_pat
         pending = None
         try:
             await runtime.start()
-            await runtime.submit(ChannelCommand("s", "desktop", CommandKind.HUMAN_TURN, {"message": "第一条"}))
+            await runtime.submit(InteractionCommand("s", CommandKind.HUMAN_TURN, {"message": "第一条"}))
             await asyncio.wait_for(modeled.wait(), 3)
-            pending = asyncio.create_task(runtime.submit(ChannelCommand("s", "desktop", CommandKind.QUEUE_TURN, {"message": "稍慢的排队消息"})))
+            pending = asyncio.create_task(runtime.submit(InteractionCommand("s", CommandKind.QUEUE_TURN, {"message": "稍慢的排队消息"})))
             await asyncio.wait_for(saving_queue.wait(), 3)
             finish_model.set()
             await asyncio.wait_for(committing.wait(), 3)

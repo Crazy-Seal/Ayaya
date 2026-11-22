@@ -14,7 +14,7 @@ def legacy_fixture(path: Path, *, invalid: bool = False, compacted: bool = False
     """创建独立 v2 数据库，不读取生产数据。"""
     timestamp = "2026-10-12T02:00:00+00:00"
     base = {"_created_at": timestamp}
-    assistant = {**base, "_message_id": "assistant", "_message_type": "assistant", "role": "assistant", "content": "", "tool_calls": [{"id": "call", "type": "function", "function": {"name": "screenshot", "arguments": "{}"}}], "_assistant": {"origin_channel": "desktop"}}
+    assistant = {**base, "_message_id": "assistant", "_message_type": "assistant", "role": "assistant", "content": "", "tool_calls": [{"id": "call", "type": "function", "function": {"name": "screenshot", "arguments": "{}"}}], "_assistant": {}}
     tool = {**base, "_message_id": "tool", "_message_type": "tool", "role": "tool", "name": "screenshot", "tool_call_id": "call", "content": "截图成功", "_tool": {"compressible": True}}
     image = {**base, "_message_id": "image", "_message_type": "tool_media", "role": "user", "content": [{"type": "text", "text": "图片"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}}], "_tool_media": {"tool_name": "screenshot", "media_kind": "tool", "associated_message_id": "missing" if invalid else "tool", "payload": {"kind": "available", "storage_refs": ["tool/a.png"]}}}
     checkpoint_image = json.loads(json.dumps(image))

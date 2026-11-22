@@ -350,13 +350,12 @@ class AgentStateDao:
         return await run_sqlite_save(save_attempt, timeout_seconds=SQLITE_SAVE_TIMEOUT_SECONDS)
 
     async def commit_interrupt_decision(
-        self, state: AgentState, *, origin_channel: str, parent_session_id: str | None = None,
+        self, state: AgentState, *, parent_session_id: str | None = None,
     ) -> bool:
         """在写事务内确认首个有效决定，并与审批引导输入一起保存。
 
         Args:
             state (AgentState): 已准备决定、完整工具恢复材料的候选状态。
-            origin_channel (str): 作出决定的入口渠道。
             parent_session_id (str | None): 子审批引导的父归属。
 
         Returns:
@@ -381,8 +380,7 @@ class AgentStateDao:
                 if decision.get("kind") == ApprovalDecisionKind.STEER:
                     payload: dict[str, object] = ({"text": decision["message"], "parent_session_id": parent_session_id} if parent_session_id
                                              else {"message": decision["message"], "images": []})
-                    await append_input_in_transaction(db, self.session_id, kind, payload, self.storage_scope,
-                                                      origin_channel=origin_channel)
+                    await append_input_in_transaction(db, self.session_id, kind, payload, self.storage_scope)
                 await self._write_state_in_transaction(db, state, checkpoint_type=CheckpointType.INTERMEDIATE, created_at=created_at)
                 return True
 

@@ -13,7 +13,7 @@ from app.agent.state.messages import ToolCall, ToolMessage
 from app.agent.tools.core.base import BaseTool, ToolResult
 from app.crud.session_inbox_dao import SessionInboxDao
 from app.crud.subagent_dao import SubagentDao
-from app.interaction.interaction_contract import ChannelCommand
+from app.interaction.interaction_contract import InteractionCommand
 from app.schemas.agent_storage import AgentStorageScope
 from app.schemas.runtime_types import CommandKind, TaskStatus
 from app.schemas.subagent_types import SubagentAction, SubagentPublicStatus
@@ -462,7 +462,7 @@ def test_parent_stop_does_not_stop_child_or_allow_its_result_to_wake_parent(tmp_
         async with SubagentHarness(tmp_path / "state.sqlite3", script, parent_release=parent_release) as harness:
             receipt = await harness.create()
             await asyncio.wait_for(child_entered.wait(), 3)
-            assert (await harness.scheduler.submit(ChannelCommand("parent", "desktop", CommandKind.STOP_TURN))).accepted
+            assert (await harness.scheduler.submit(InteractionCommand("parent", CommandKind.STOP_TURN))).accepted
             parent_release.set()
             assert subagent_worker_running(harness.scheduler, receipt.context_id)
             child_release.set()
