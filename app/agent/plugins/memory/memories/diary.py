@@ -292,8 +292,7 @@ class DiaryMemory:
 {self._format_messages(messages)}
 
 格式示例：
-今天xxxxxxxxx，xxxxxxxxxxxxx......
-xxxxxxxxx，xxxxxxxxxxxxx......
+xxxxxxxxxx（日记主体）xxxxxxxxxxxxx......
 # 任务1
 - 目标：xxx
 - 约束条件：xxx
