@@ -386,7 +386,7 @@ def test_stopping_terminal_tool_keeps_registered_process_running(tmp_path: Path,
             assert record.status == TaskStatus.RUNNING
             assert record.background
             assert supervisor.get_task(task_id) is task
-            assert supervisor.active_task_count() == 1
+            assert supervisor.active_task_counts()[0] == 1
         finally:
             invocation.cancel()
             await asyncio.gather(invocation, return_exceptions=True)

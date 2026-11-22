@@ -164,7 +164,7 @@ async (input, init = {}) => {
         () => { taskSummaryAborted = true; reject(init.signal.reason); }, { once: true });
       });
     }
-    return json({ active_count: 2 });
+    return json({ active_count: 2, application_boot_active_count: 0 });
   }
   if (route.startsWith("/tasks/") && route.endsWith("/output")) {
     return json({ text: "完整终端输出：资料已读取。", next_offset: 42, has_more: false });

@@ -46,6 +46,8 @@ from app.services.chat_history_service import ChatHistoryService
 from app.services.chat_settings_service import ChatSettingsService
 from app.services.mcp_service import MCPService
 from app.services.plugin_service import PluginService
+from app.services.plugin_boot_task_manager import PluginBootTaskManager
+from app.agent.plugins.runtime import PluginRuntime
 from app.services.settings_mutation import SettingsMutationCoordinator
 from app.services.tool_permission_service import ToolPermissionService
 from app.interaction.interaction_event_hub import InteractionEventHub
@@ -67,6 +69,7 @@ async def begin_runtime_shutdown(application: FastAPI) -> None:
     Args:
         application (FastAPI): 本次启动的 FastAPI 应用及其共享对象。
     """
+    await application.state.plugin_boot_task_manager.close()
     await application.state.runtime_scheduler.begin_shutdown()
     # 1. 先结束网络订阅，服务器才能进入 lifespan 清理；内部消费者仍继续读取。
     application.state.interaction_event_hub.begin_shutdown()
@@ -102,11 +105,6 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         mcp_manager = MCPConnectionManager(mcp_settings_dao.load, plugin_config_loader=plugins.connection_config)
         cleanup.push_async_callback(mcp_manager.close)
         application.state.mcp_connection_manager = mcp_manager
-        settings_service = ChatSettingsService(
-            chat_settings_dao=settings_dao, mcp_settings_dao=mcp_settings_dao,
-            connection_manager=mcp_manager, mutation_coordinator=mutations, plugin_service=plugins,
-        )
-        application.state.chat_settings_service = settings_service
         authorization = ToolAuthorization(settings_dao.get_chat_settings)
         application.state.mcp_service = MCPService(
             settings_dao=mcp_settings_dao, chat_settings_dao=settings_dao,
@@ -145,6 +143,29 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         cleanup.push_async_callback(task_records.close)
         supervisor = TaskSupervisor(runtime_queue=runtime_queue, records=task_records)
         application.state.task_supervisor = supervisor
+
+        def plugin_runtime(plugin_name: str, session_id: str) -> PluginRuntime:
+            """为启动声明绑定插件和会话，具体任务编号由 Supervisor 注入。
+
+            Args:
+                plugin_name (str): 提供启动任务声明的插件。
+                session_id (str): 本次挂载所属的已保存会话。
+
+            Returns:
+                PluginRuntime: 借用应用共享任务入口和队列的调用对象。
+            """
+            return PluginRuntime(plugin_name, session_id, _supervisor=supervisor, _runtime_queue=runtime_queue)
+
+        boot_tasks = PluginBootTaskManager(settings_dao=settings_dao, plugins=plugins,
+            supervisor=supervisor, sqlite_factory=sqlite_factory, runtime_factory=plugin_runtime,
+            mutation_coordinator=mutations)
+        application.state.plugin_boot_task_manager = boot_tasks
+        settings_service = ChatSettingsService(
+            chat_settings_dao=settings_dao, mcp_settings_dao=mcp_settings_dao,
+            connection_manager=mcp_manager, mutation_coordinator=mutations, plugin_service=plugins,
+            boot_task_manager=boot_tasks,
+        )
+        application.state.chat_settings_service = settings_service
         def child_manager(definition: SubagentDefinition) -> SessionStateManager:
             """启动整理借用独立子历史连接，由使用该连接的业务负责关闭。
 
@@ -184,6 +205,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
             logging.getLogger(__name__).warning("默认 Shell 不可用，终端工具将返回环境错误")
         await scheduler.start()
         await supervisor.recover_orphaned()
+        await boot_tasks.start()
         preconnect_task = asyncio.create_task(mcp_manager.preconnect_enabled())
         try:
             yield
@@ -233,15 +255,16 @@ async def internal_ready() -> ReadyResponse:
 
 @app.get("/internal/tasks/active-summary")
 async def active_task_summary(request: Request) -> ActiveTaskSummary:
-    """退出确认前查询业务或结果保存尚未结束的任务，包含静默任务。
+    """向退出界面提供所有活动任务及启动声明任务的数量。
 
     Args:
         request (Request): 提供当前应用任务管理器的 HTTP 请求。
 
     Returns:
-        ActiveTaskSummary: 退出前仍需等待的任务数量。
+        ActiveTaskSummary: 活动总数和其中启动声明任务的数量。
     """
-    return ActiveTaskSummary(active_count=request.app.state.task_supervisor.active_task_count())
+    active_count, boot_count = request.app.state.task_supervisor.active_task_counts()
+    return ActiveTaskSummary(active_count=active_count, application_boot_active_count=boot_count)
 
 
 @app.post("/internal/shutdown", responses={503: {"description": "后端不由受控启动器管理"}})

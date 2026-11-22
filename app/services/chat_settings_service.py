@@ -12,6 +12,7 @@ from app.schemas.tool_permissions import ToolPolicy
 from app.mcp.mcp_connection_manager import MCPConnectionManager
 from app.services.settings_mutation import SettingsMutationCoordinator
 from app.services.plugin_service import PluginService, PreparedPlugin, PluginConfigurationError
+from app.services.plugin_boot_task_manager import PluginBootTaskManager
 from app.repl.contracts import PreparedReplCapability
 
 
@@ -31,7 +32,7 @@ class PreparedChatSettings:
 
 
 class ChatSettingsService:
-    """统一整理会话参数和工具权限，协调配置保存和 MCP 清理。"""
+    """统一整理会话参数和权限，配置提交后协调启动任务挂载及 MCP 清理。"""
 
     def __init__(
         self,
@@ -40,6 +41,7 @@ class ChatSettingsService:
         connection_manager: MCPConnectionManager | None = None,
         mutation_coordinator: SettingsMutationCoordinator | None = None,
         plugin_service: PluginService | None = None,
+        boot_task_manager: PluginBootTaskManager | None = None,
     ):
         """初始化模型配置服务。
 
@@ -49,12 +51,14 @@ class ChatSettingsService:
             connection_manager (MCPConnectionManager | None): 可选的 MCP 连接管理器。
             mutation_coordinator (SettingsMutationCoordinator | None): 可选的跨配置写入协调器。
             plugin_service (PluginService | None): 共用的插件参数校验和声明处理模块。
+            boot_task_manager (PluginBootTaskManager | None): 应用挂载的插件启动任务；独立配置处理可省略。
         """
         self.chat_settings_dao = chat_settings_dao
         self.mcp_settings_dao = mcp_settings_dao
         self.connection_manager = connection_manager
         self.mutation_coordinator = mutation_coordinator or SettingsMutationCoordinator()
         self.plugin_service = plugin_service or PluginService()
+        self.boot_task_manager = boot_task_manager
 
     def normalize(self, chat_settings: ChatSettings, *, validate_enabled: bool = True) -> ChatSettings:
         """校验插件参数，统一补齐独立工具和插件本地工具的会话权限。
@@ -118,7 +122,7 @@ class ChatSettingsService:
         return PreparedChatSettings(result, plugins, tuple(sorted(capabilities, key=lambda item: item.declaration.export_name)))
 
     async def add_chat_settings(self, chat_settings: ChatSettings) -> ChatSettings:
-        """新增模型配置并正规化 MCP 权限，保存成功后让记忆装配使用新配置。
+        """新增会话并整理权限，保存成功后挂载已启用插件的启动任务。
 
         Args:
             chat_settings (ChatSettings): 待新增的模型配置。
@@ -129,10 +133,12 @@ class ChatSettingsService:
         async with self.mutation_coordinator.lock:
             normalized = self._sanitize_plugins(self.normalize(chat_settings), None)
             saved = self.chat_settings_dao.add_chat_settings(self._sanitize_mcp(normalized, None))
+            if self.boot_task_manager is not None:
+                await self.boot_task_manager.sync_session(saved)
             return saved
 
     async def delete_chat_settings(self, session_id: str) -> None:
-        """删除配置并使缓存失效，文件替换成功后由 Scheduler 异步释放资源。
+        """删除配置及启动任务挂载关系，所属任务由 Scheduler 安排完整收尾。
 
         Args:
             session_id (str): 待删除配置的父身份。
@@ -141,6 +147,8 @@ class ChatSettingsService:
         async with self.mutation_coordinator.lock:
             async with self.mutation_coordinator.admission_lock:
                 self.chat_settings_dao.delete_chat_settings(session_id)
+            if self.boot_task_manager is not None:
+                self.boot_task_manager.remove_session(session_id)
 
     def get_chat_settings_by_session(self, session_id: str) -> ChatSettings:
         """读取会话设置并在内存副本中整理参数与工具权限，保留待修正参数。
@@ -157,7 +165,7 @@ class ChatSettingsService:
         return self.normalize(self.chat_settings_dao.get_chat_settings(session_id), validate_enabled=False)
 
     async def update_chat_settings(self, chat_settings: ChatSettings) -> ChatSettings:
-        """更新模型配置并安全合并 MCP 权限，保存成功后使旧记忆配置失效。
+        """更新会话配置，提交后同步插件启动任务并释放旧 MCP 连接。
 
         Args:
             chat_settings (ChatSettings): 更新后的完整模型配置。
@@ -173,6 +181,8 @@ class ChatSettingsService:
             normalized = self._sanitize_plugins(self.normalize(chat_settings), existing)
             sanitized = self._sanitize_mcp(normalized, existing)
             saved = self.chat_settings_dao.update_chat_settings(chat_settings.session_id, sanitized)
+            if self.boot_task_manager is not None:
+                await self.boot_task_manager.sync_session(saved)
             if existing is not None and self.connection_manager is not None:
                 for name, previous in existing.agent_plugins.items():
                     current = saved.agent_plugins.get(name)

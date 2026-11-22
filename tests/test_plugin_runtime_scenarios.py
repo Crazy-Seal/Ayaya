@@ -237,12 +237,14 @@ def test_plugin_control_respects_idle_and_final_save_policy(tmp_path, kind):
 
 
 @pytest.mark.parametrize("decision", ["human", "steer", "approve", "stop"])
-def test_background_task_survives_approval_and_turn_end_until_explicit_stop(tmp_path, decision):
+@pytest.mark.parametrize("activate_session", [False, True])
+def test_background_task_survives_approval_and_turn_end_until_explicit_stop(tmp_path, decision, activate_session):
     """审批、停止和引导均保留后台任务，显式停止时才执行任务清理。
 
     Args:
         tmp_path (Path): 本场景独占的任务和会话数据库目录。
         decision (str): 审批批准、普通引导、审批引导或停止当前回答。
+        activate_session (bool): 审批等待期间的新通知是否显式请求激活。
     """
     async def scenario():
         """通过真实审批和执行流程，确认后台任务独立运行并可显式清理。"""
@@ -345,7 +347,7 @@ def test_background_task_survives_approval_and_turn_end_until_explicit_stop(tmp_
             runtime = PluginRuntime("game", "s", _supervisor=supervisor, _runtime_queue=queue)
             task_id = await runtime.submit_task(GameWatchTask(), name="watch", title="游戏观察", notify_agent=False)
             await asyncio.wait_for(task_started.wait(), 1)
-            await runtime.notify(name="battle_started", text="审批期间发现敌人")
+            await runtime.notify(name="battle_started", text="审批期间发现敌人", activate_session=activate_session)
             await asyncio.wait_for(queue.join(), 1)
             assert (await runtime.get_task(task_id)).status == TaskStatus.RUNNING
             assert (await scheduler.snapshot("s")).payload["phase"] == "pending_interrupt"
@@ -436,7 +438,7 @@ def test_steer_storage_failure_keeps_current_model_waiting(tmp_path):
             runtime = PluginRuntime("game", "s", _supervisor=supervisor, _runtime_queue=queue)
             with sqlite3.connect(path) as db:
                 db.execute("CREATE TRIGGER refuse_plugin BEFORE INSERT ON session_inbox WHEN NEW.kind = 'plugin_notification' BEGIN SELECT RAISE(ABORT, 'plugin storage unavailable'); END")
-            await runtime.steer_turn("未保存的引导")
+            await runtime.steer_turn("未保存的引导", activate_session=True)
             await asyncio.wait_for(queue.join(), 1)
             assert (await scheduler.snapshot("s")).payload["run_id"] == original
             assert len(calls) == 1

@@ -7,6 +7,7 @@ from app.services.settings_mutation import SettingsMutationCoordinator
 import asyncio
 from tests.runtime_support import configured_settings
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -44,6 +45,7 @@ def test_shutdown_request_ends_existing_sse_before_lifespan_cleanup(tmp_path):
         hub = runtime_hub(scheduler)
         application = FastAPI()
         application.state.runtime_scheduler = scheduler
+        application.state.plugin_boot_task_manager = SimpleNamespace(close=AsyncMock())
         application.state.task_supervisor = supervisor
         application.state.interaction_event_hub = hub
         application.state.uvicorn_server = SimpleNamespace(should_exit=False)

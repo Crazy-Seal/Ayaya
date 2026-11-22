@@ -4,8 +4,8 @@ import { test } from "node:test";
 import { confirmApplicationExit } from "../src/ui/application-exit.js";
 import type { ConfirmDialogOptions } from "../src/ui/confirm-dialog.js";
 
-for (const activeCount of [0, 3]) {
-  test(`退出前查询全部任务，取消保留运行状态（活动任务 ${activeCount}）`, /**
+for (const [activeCount, bootCount] of [[0, 0], [3, 0], [3, 3], [5, 3]]) {
+  test(`退出始终确认，按普通任务选择文案（活动 ${activeCount}，启动 ${bootCount}）`, /**
    * 通过页面公开退出方法验证提示选择，取消不会向主进程请求关闭。
    */
   async () => {
@@ -15,7 +15,7 @@ for (const activeCount of [0, 3]) {
     globalThis.window = {
       desktopPetApi: {
         /** 返回全应用任务数量，数量包含其他会话和静默任务。 */
-        getActiveTaskSummary: async () => ({ active_count: activeCount }),
+        getActiveTaskSummary: async () => ({ active_count: activeCount, application_boot_active_count: bootCount }),
         /** 记录实际提交的退出请求。 */
         requestApplicationExit: async () => { exits += 1; },
       },
@@ -30,7 +30,7 @@ for (const activeCount of [0, 3]) {
       assert.equal(dialogs[0].title, "退出 Ayaya");
       assert.equal(dialogs[0].confirmText, "退出");
       assert.equal(dialogs[0].cancelText, "取消");
-      if (activeCount) {
+      if (activeCount > bootCount) {
         assert.equal(dialogs[0].message, "当前有正在进行的后台任务，确认要退出吗？");
         assert.equal(dialogs[0].variant, "warning");
       } else {
@@ -54,12 +54,12 @@ for (const lateResult of ["success", "error"] as const) {
     const previousWindow = globalThis.window;
     const dialogs: ConfirmDialogOptions[] = [];
     let exits = 0;
-    let resolveQuery!: (value: { active_count: number }) => void;
+    let resolveQuery!: (value: { active_count: number; application_boot_active_count: number }) => void;
     let rejectQuery!: (reason: Error) => void;
-    const query = new Promise<{ active_count: number }>(/**
+    const query = new Promise<{ active_count: number; application_boot_active_count: number }>(/**
      * 保留查询的完成和失败回调，模拟超时后的迟到响应。
      * Args:
-     *     resolve ((value: { active_count: number }) => void): 返回活动任务数量。
+     *     resolve ((value: { active_count: number; application_boot_active_count: number }) => void): 返回活动任务数量。
      *     reject ((reason: Error) => void): 报告查询失败。
      */
     (resolve, reject) => { resolveQuery = resolve; rejectQuery = reject; });
@@ -87,7 +87,7 @@ for (const lateResult of ["success", "error"] as const) {
       assert.equal(dialogs[0].cancelText, "取消");
       assert.equal(dialogs[0].confirmText, "退出");
       assert.equal(dialogs[0].variant, "warning");
-      if (lateResult === "success") resolveQuery({ active_count: 3 });
+      if (lateResult === "success") resolveQuery({ active_count: 3, application_boot_active_count: 0 });
       else rejectQuery(new Error("后端迟到的查询错误"));
       await Promise.resolve();
       context.mock.timers.tick(2000);
@@ -109,14 +109,14 @@ async (context) => {
   context.mock.timers.enable({ apis: ["setTimeout"] });
   const previousWindow = globalThis.window;
   const dialogs: ConfirmDialogOptions[] = [];
-  let resolveQuery!: (value: { active_count: number }) => void;
+  let resolveQuery!: (value: { active_count: number; application_boot_active_count: number }) => void;
   globalThis.window = {
     desktopPetApi: {
       /** 由测试在等待预算耗尽前返回数量。 */
-      getActiveTaskSummary: () => new Promise<{ active_count: number }>(/**
+      getActiveTaskSummary: () => new Promise<{ active_count: number; application_boot_active_count: number }>(/**
        * 保存本次查询的完成回调。
        * Args:
-       *     resolve ((value: { active_count: number }) => void): 返回查询数量。
+       *     resolve ((value: { active_count: number; application_boot_active_count: number }) => void): 返回查询数量。
        */
       (resolve) => { resolveQuery = resolve; }),
     },
@@ -127,7 +127,7 @@ async (context) => {
       open: async (options) => { dialogs.push(options); return false; },
     });
     context.mock.timers.tick(1999);
-    resolveQuery({ active_count: 3 });
+    resolveQuery({ active_count: 3, application_boot_active_count: 0 });
     await flow;
     context.mock.timers.tick(2000);
     assert.equal(dialogs.length, 1);
@@ -137,9 +137,9 @@ async (context) => {
   }
 });
 
-for (const confirmed of [false, true]) {
-  test(`任务查询报错后仍使用退出确认，用户${confirmed ? "确认才请求退出" : "取消保留应用"}`, /**
-   * 模拟查询失败，检查选择文案和实际退出请求，确认后使用真实页面锁定流程。
+for (const [queryFails, confirmed] of [[true, false], [false, false], [false, true]]) {
+  test(`${queryFails ? "查询报错" : "只有启动任务"}时保留确认，用户${confirmed ? "确认才请求退出" : "取消保留应用"}`, /**
+   * 检查查询失败或只有启动任务时的确认文案，确认后使用真实页面锁定流程。
    */
   async () => {
     const previousWindow = globalThis.window;
@@ -155,8 +155,11 @@ for (const confirmed of [false, true]) {
         querySelectorAll: () => [],
       },
       desktopPetApi: {
-        /** 模拟后端连接失败。 */
-        getActiveTaskSummary: async () => { throw new Error("后端不可达"); },
+        /** 模拟后端不可达，或仅剩启动监听任务。 */
+        getActiveTaskSummary: async () => {
+          if (queryFails) throw new Error("后端不可达");
+          return { active_count: 3, application_boot_active_count: 3 };
+        },
         /** 主进程仍未收到其他退出请求。 */
         getApplicationShutdownState: async () => false,
         /** 记录用户确认后实际提交的退出请求。 */
@@ -171,7 +174,9 @@ for (const confirmed of [false, true]) {
       });
       assert.equal(dialogs.length, 1);
       assert.equal(dialogs[0].title, "退出 Ayaya");
-      assert.equal(dialogs[0].message, "当前后台任务状态查询出错，退出前请人工确认后台任务情况。");
+      assert.equal(dialogs[0].message, queryFails
+        ? "当前后台任务状态查询出错，退出前请人工确认后台任务情况。"
+        : "确认要退出吗？");
       assert.equal(dialogs[0].cancelText, "取消");
       assert.equal(dialogs[0].confirmText, "退出");
       assert.equal(exits, confirmed ? 1 : 0);

@@ -55,19 +55,23 @@ class TaskExecution:
         runner (asyncio.Task[None] | None): 执行、保存及清理的完整协程。
         business (asyncio.Task[str | None] | None): 可由停止请求取消的业务协程。
         completion (asyncio.Event): 结果已保存或保存明确失败时唤醒观察者。
+        is_application_boot_task (bool): 本次执行是否来自插件的应用启动任务声明。
     """
 
-    def __init__(self, record: TaskRecord, task: BaseTask, runtime: TaskRuntime) -> None:
+    def __init__(self, record: TaskRecord, task: BaseTask, runtime: TaskRuntime, *,
+                 is_application_boot_task: bool = False) -> None:
         """建立刚登记的任务及独立结果等待通知。
 
         Args:
             record (TaskRecord): 已保存的初始记录。
             task (BaseTask): 具体业务及自有资源。
             runtime (TaskRuntime): 绑定 task_id 的调用来源。
+            is_application_boot_task (bool): 框架根据任务声明入口绑定的启动任务属性。
         """
         self.record = record
         self.task: BaseTask | None = task
         self.runtime: TaskRuntime | None = runtime
+        self.is_application_boot_task = is_application_boot_task
         self.runner: asyncio.Task[None] | None = None
         self.business: asyncio.Task[str | None] | None = None
         self.completion = asyncio.Event()

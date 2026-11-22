@@ -49,7 +49,7 @@ def test_diary_async_work_is_cancelled_without_waiting_for_unrelated_completion(
             await started.wait()
             await supervisor.stop_task(task_id)
             assert (await runtime.wait_task(task_id, timeout_ms=1000)).status == TaskStatus.STOPPED
-            assert cancelled.is_set() and supervisor.active_task_count() == 0
+            assert cancelled.is_set() and supervisor.active_task_counts()[0] == 0
         finally:
             await supervisor.close()
             await supervisor.records.close()

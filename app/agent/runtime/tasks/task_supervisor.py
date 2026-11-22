@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Sequence
 from uuid import uuid4
 
 from app.agent.runtime.requests import RuntimeRequest
@@ -45,7 +46,7 @@ class TaskSupervisor:
     async def submit(self, task: BaseTask, *, runtime: TaskRuntime, name: str,
                      title: str, notify_agent: bool, background: bool = True,
                      tool_name: str | None = None, origin_tool_call_id: str | None = None,
-                     origin_run_id: str | None = None) -> str:
+                     origin_run_id: str | None = None, is_application_boot_task: bool = False) -> str:
         """保存初始记录并接管执行，来源编号用于记录和按范围停止。
 
         Args:
@@ -58,16 +59,19 @@ class TaskSupervisor:
             tool_name (str | None): 来源工具。
             origin_tool_call_id (str | None): 来源工具调用编号。
             origin_run_id (str | None): 工具任务创建时的轮次，仅用于来源记录。
+            is_application_boot_task (bool): 是否由框架挂载的插件启动声明任务。
         Returns:
             str: 已登记任务编号。
         """
         return await complete_owned_work(self._register(task, runtime=runtime, name=name, title=title,
             notify_agent=notify_agent, background=background, tool_name=tool_name,
-            origin_tool_call_id=origin_tool_call_id, origin_run_id=origin_run_id))
+            origin_tool_call_id=origin_tool_call_id, origin_run_id=origin_run_id,
+            is_application_boot_task=is_application_boot_task))
 
     async def _register(self, task: BaseTask, *, runtime: TaskRuntime, name: str, title: str,
                         notify_agent: bool, background: bool, tool_name: str | None,
-                        origin_tool_call_id: str | None, origin_run_id: str | None) -> str:
+                        origin_tool_call_id: str | None, origin_run_id: str | None,
+                        is_application_boot_task: bool) -> str:
         """与管理器关闭排序登记，保存后立即持有任务。
 
         Args:
@@ -80,6 +84,7 @@ class TaskSupervisor:
             tool_name (str | None): 工具来源。
             origin_tool_call_id (str | None): 工具调用编号。
             origin_run_id (str | None): 工具任务的创建轮次。
+            is_application_boot_task (bool): 本次执行是否来自应用启动声明。
         Returns:
             str: 新任务编号。
         Raises:
@@ -97,7 +102,8 @@ class TaskSupervisor:
             record = await self.records.get(task_id)
             if record is None:
                 raise RuntimeError("任务登记成功后无法读取记录")
-            execution = TaskExecution(record, task, runtime.bind_task(task_id))
+            execution = TaskExecution(record, task, runtime.bind_task(task_id),
+                                      is_application_boot_task=is_application_boot_task)
             self._executions[task_id] = execution
             if background:
                 self.runtime_queue.put_nowait(record)
@@ -175,14 +181,19 @@ class TaskSupervisor:
                 pass
         return await self.get_task_snapshot(task_id)
 
-    def active_task_count(self) -> int:
-        """统计业务运行或结果保存尚未结束的任务。
+    def active_task_counts(self) -> tuple[int, int]:
+        """同时统计所有活动任务与其中来自插件启动声明的任务。
 
         Returns:
-            int: 排除已交付结果和保存失败任务的数量。
+            tuple[int, int]: 活动总数和启动声明活动数，供界面选择退出确认文案。
         """
-        return sum(item.phase in {TaskExecutionPhase.RUNNING, TaskExecutionPhase.STOPPING,
-                                 TaskExecutionPhase.COMMITTING} for item in self._executions.values())
+        active_count = boot_count = 0
+        for execution in self._executions.values():
+            if execution.phase in {TaskExecutionPhase.RUNNING, TaskExecutionPhase.STOPPING,
+                                    TaskExecutionPhase.COMMITTING}:
+                active_count += 1
+                boot_count += execution.is_application_boot_task
+        return active_count, boot_count
 
     async def recover_orphaned(self) -> None:
         """重启后保存旧任务的 orphaned 结果和唯一通知。"""
@@ -259,8 +270,8 @@ class TaskSupervisor:
             session_id (str): 所属父编号。
             subagent_id (str): 子上下文编号。
         """
-        await complete_owned_work(self._stop_tasks([key for key, item in self._executions.items()
-            if item.record.session_id == session_id and item.record.subagent_id == subagent_id]))
+        await self.stop_tasks([key for key, item in self._executions.items()
+            if item.record.session_id == session_id and item.record.subagent_id == subagent_id])
 
     async def stop_session_tasks(self, session_id: str) -> None:
         """按当前已登记归属停止父及子普通任务。
@@ -268,7 +279,15 @@ class TaskSupervisor:
         Args:
             session_id (str): 被删除的父编号。
         """
-        await complete_owned_work(self._stop_tasks([key for key, item in self._executions.items() if item.record.session_id == session_id]))
+        await self.stop_tasks([key for key, item in self._executions.items() if item.record.session_id == session_id])
+
+    async def stop_tasks(self, task_ids: Sequence[str]) -> None:
+        """停止指定任务，等待结果保存和资源清理完成后交还调用者。
+
+        Args:
+            task_ids (Sequence[str]): 本次要停止的已登记任务编号集合。
+        """
+        await complete_owned_work(self._stop_tasks(list(task_ids)))
 
     async def _stop_tasks(self, selected: list[str]) -> None:
         """停止本次选中的任务并等待其保存及自有资源关闭。
@@ -293,4 +312,4 @@ class TaskSupervisor:
     async def close(self) -> None:
         """停止当前任务并等待保存与具体任务的有界关闭，存储由应用关闭。"""
         await self.begin_shutdown()
-        await complete_owned_work(self._stop_tasks(list(self._executions)))
+        await self.stop_tasks(list(self._executions))

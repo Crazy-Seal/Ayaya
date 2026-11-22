@@ -633,8 +633,20 @@ export const InteractionStreamControlKind = { READY: "stream_ready" } as const;
 export type InteractionStreamReady = { kind: typeof InteractionStreamControlKind.READY; stream_epoch: string };
 
 /**
- * 约定页面可通过 preload 调用的桌面接口，统一聊天、设置、模型、日志和事件订阅能力。
+ * 提供全应用活动任务及其中启动声明任务的统计，供页面选择退出文案。
+ *
+ * Attributes:
+ *     active_count (number): 业务执行或结果保存尚未结束的任务总数。
+ *     application_boot_active_count (number): 活动总数中来自插件启动声明的数量。
  */
+export interface ActiveTaskSummary {
+  /** 所有业务运行、停止或结果保存中的任务数量。 */
+  active_count: number;
+  /** 活动任务中由插件启动声明挂载的数量。 */
+  application_boot_active_count: number;
+}
+
+/** 约定页面可通过 preload 调用的桌面接口，统一聊天、设置、模型、日志和事件订阅能力。 */
 export interface DesktopPetApi {
   /**
    * 读取会话任务记录。
@@ -758,8 +770,8 @@ export interface DesktopPetApi {
   forceApplicationExit: () => Promise<void>;
   /** 页面首次加载时查询是否正在退出，补齐早于页面加载完成的通知。 */
   getApplicationShutdownState: () => Promise<boolean>;
-  /** 退出确认前查询全应用执行或清理中的任务数量。 */
-  getActiveTaskSummary: () => Promise<{ active_count: number }>;
+  /** 退出确认前查询全应用执行或保存中的任务及启动声明任务数量。 */
+  getActiveTaskSummary: () => Promise<ActiveTaskSummary>;
   /** 监听应用开始退出，调用方立即锁定本页面的功能操作。 */
   onApplicationShutdown: (callback: () => void) => () => void;
   /**

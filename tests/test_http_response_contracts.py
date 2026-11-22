@@ -364,12 +364,13 @@ def test_process_control_responses_preserve_wire_format() -> None:
     application.add_api_route("/internal/tasks/active-summary", main.active_task_summary)
     application.add_api_route("/internal/shutdown", main.internal_shutdown, methods=["POST"])
     application.state.runtime_scheduler = SimpleNamespace(begin_shutdown=AsyncMock())
+    application.state.plugin_boot_task_manager = SimpleNamespace(close=AsyncMock())
     application.state.interaction_event_hub = SimpleNamespace(begin_shutdown=Mock())
-    application.state.task_supervisor = SimpleNamespace(begin_shutdown=AsyncMock(), active_task_count=lambda: 2)
+    application.state.task_supervisor = SimpleNamespace(begin_shutdown=AsyncMock(), active_task_counts=lambda: (2, 1))
     with TestClient(application) as client:
         assert client.get("/").json() == {"message": "Ayaya server is running"}
         assert client.get("/internal/ready").json() == {"ready": True, "pid": os.getpid()}
-        assert client.get("/internal/tasks/active-summary").json() == {"active_count": 2}
+        assert client.get("/internal/tasks/active-summary").json() == {"active_count": 2, "application_boot_active_count": 1}
         assert client.post("/internal/shutdown").status_code == 503
         server = SimpleNamespace(should_exit=False)
         application.state.uvicorn_server = server

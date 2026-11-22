@@ -514,7 +514,7 @@ def test_terminal_metadata_failure_reclaims_created_process(tmp_path: Path, monk
                 else:
                     with pytest.raises(ProcessLookupError):
                         os.kill(pid, 0)
-            assert supervisor.active_task_count() == 0
+            assert supervisor.active_task_counts()[0] == 0
         finally:
             await supervisor.close()
             await supervisor.records.close()

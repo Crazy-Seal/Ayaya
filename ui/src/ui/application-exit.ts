@@ -2,14 +2,15 @@ import type { ConfirmDialog } from "./confirm-dialog.js";
 import { lockApplicationShutdownUi } from "./application-shutdown.js";
 import { DIALOG_PRIORITY } from "./dialog-focus.js";
 import { EXIT_TASK_QUERY_TIMEOUT_MS } from "../../runtime-constants.js";
+import type { ActiveTaskSummary } from "../../shared-types.js";
 
 /**
  * 退出前有限等待任务数量，查询失败或超时后让用户人工确认任务情况。
  *
  * Returns:
- *     Promise<number | null>: 全应用活动任务数量，查询失败或超时时为空。
+ *     Promise<ActiveTaskSummary | null>: 全应用与启动声明活动任务数量，查询失败或超时时为空。
  */
-const readActiveTaskCount = async (): Promise<number | null> => {
+const readActiveTaskSummary = async (): Promise<ActiveTaskSummary | null> => {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     // 1. 页面等待包含 IPC 和后端查询，超过预算后立即使用状态未知的确认文案。
@@ -25,7 +26,7 @@ const readActiveTaskCount = async (): Promise<number | null> => {
         () => resolve(null), EXIT_TASK_QUERY_TIMEOUT_MS);
       }),
     ]);
-    return summary?.active_count ?? null;
+    return summary;
   } catch {
     // 2. 后端查询报错时同样提示人工确认，让用户继续选择是否退出。
     return null;
@@ -47,7 +48,8 @@ const readActiveTaskCount = async (): Promise<number | null> => {
 export const confirmApplicationExit = async (dialog: Pick<ConfirmDialog, "open">): Promise<void> => {
   try {
     // 1. 只读取全应用任务状态，用户取消之前保持对话和任务原样运行。
-    const activeCount = await readActiveTaskCount();
+    const summary = await readActiveTaskSummary();
+    const activeCount = summary === null ? null : summary.active_count - summary.application_boot_active_count;
     const message = activeCount === null
       ? "当前后台任务状态查询出错，退出前请人工确认后台任务情况。"
       : activeCount > 0

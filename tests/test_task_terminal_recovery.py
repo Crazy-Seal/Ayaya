@@ -87,7 +87,7 @@ def test_terminal_transaction_recovers_without_repeating_work(
                 release.set()
             await asyncio.wait_for(rejected.wait(), 3)
             assert (await supervisor.wait(task_id, timeout_ms=0)).phase == TaskExecutionPhase.COMMITTING
-            assert supervisor.active_task_count() == 1
+            assert supervisor.active_task_counts()[0] == 1
             assert not await inbox.read_task_terminals()
             assert (await supervisor.stop_task(task_id)).status == CommandStatus.TOO_LATE
             blocker.rollback()
@@ -165,7 +165,7 @@ def test_persistent_terminal_failure_does_not_block_shutdown_or_restart_recovery
             assert snapshot.phase == TaskExecutionPhase.SAVE_FAILED and snapshot.save_error
             assert snapshot.result == "原始结果"
             assert (await supervisor.list_tasks("parent"))[0] == snapshot
-            assert supervisor.active_task_count() == 0 and supervisor.get_task(task_id) is None
+            assert supervisor.active_task_counts()[0] == 0 and supervisor.get_task(task_id) is None
             assert attempts == 4
             assert (await records.get(task_id)).status == TaskStatus.RUNNING
             assert not await inbox.read_task_terminals()

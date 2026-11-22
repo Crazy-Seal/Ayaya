@@ -30,9 +30,11 @@ class ActiveTaskSummary(BaseModel):
 
     Attributes:
         active_count (int): 尚未结束的任务数量。
+        application_boot_active_count (int): 活动任务中由插件启动声明挂载的数量。
     """
 
     active_count: int
+    application_boot_active_count: int
 
 
 class ShutdownResponse(BaseModel):

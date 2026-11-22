@@ -887,7 +887,7 @@ export const registerIpcHandlers = (options: { requestApplicationExit: () => voi
     updateChatAttention(update);
   });
   trustedIpc.handle(IpcChannel.GET_ACTIVE_TASK_SUMMARY, /**
-   * 退出确认前查询整个后端的活动任务数量，查询本身不启动关闭。
+   * 退出确认前读取全部活动任务和启动声明任务数量，交给页面选择提示文案。
    */
   async () => {
     // 1. 查询超过退出确认预算时中止 HTTP 请求，页面按查询出错提示用户人工确认。

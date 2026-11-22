@@ -13,15 +13,33 @@ from app.schemas.mcp import MCPConnectionConfig
 from app.repl.repl_api import ReplCapability
 from app.crud.sqlite_factory import SqliteFactory
 from app.schemas.chat_settings import ChatSettings
+from app.agent.runtime.tasks.base import BaseTask
+
+
+@dataclass(frozen=True)
+class PluginBootTask:
+    """声明应用启动及插件启用时需要挂载的一项任务。
+
+    Attributes:
+        task (BaseTask): 计时、监听或一次性启动工作的执行对象。
+        name (str): 插件内部稳定的任务用途名称。
+        title (str): 后台任务列表中展示的任务说明。
+        notify_agent (bool): 任务结束时是否向所属会话保存结果通知。
+    """
+
+    task: BaseTask
+    name: str
+    title: str
+    notify_agent: bool = False
 
 
 @dataclass(frozen=True)
 class PluginContext:
-    """在插件装配时提供当前执行的配置快照和存储依赖。
+    """在插件装配或启动任务声明时提供独立会话配置快照和存储依赖。
 
     Attributes:
         sqlite_factory (SqliteFactory): 宿主提供的数据库位置和连接配置，连接由实际使用者打开并关闭。
-        chat_settings (ChatSettings | None): 当前 Agent 使用的独立会话配置快照；独立执行可省略。
+        chat_settings (ChatSettings | None): 当前 Agent 或启动任务所属会话的独立配置快照；独立执行可省略。
     """
 
     sqlite_factory: SqliteFactory
@@ -118,6 +136,23 @@ class BasePlugin(ABC):
         return tuple(tool_class() for tool_class in self.tools)
 
     @classmethod
+    def on_application_boot_tasks(cls, *, context: PluginContext,
+                                  config: dict[str, Any]) -> tuple[PluginBootTask, ...]:
+        """为启用插件的会话声明启动任务，资源由任务执行时获取。
+
+        应用启动、插件启用或参数改变时调用；具体任务的执行和清理由
+        Supervisor 接管，调用本方法时尚未创建 Agent。
+
+        Args:
+            context (PluginContext): 当前会话的独立配置快照与存储工厂。
+            config (dict[str, Any]): 经插件配置模型校验的独立参数副本。
+
+        Returns:
+            tuple[PluginBootTask, ...]: 本次需要挂载的任务，默认没有启动任务。
+        """
+        return ()
+
+    @classmethod
     def resolve_mcp_servers(cls, config: dict[str, Any]) -> tuple[MCPConnectionConfig, ...]:
         """根据会话插件参数返回连接声明，默认使用类中列出的服务。
 
@@ -157,4 +192,4 @@ class BasePlugin(ABC):
         pass
 
 
-__all__ = ["BasePlugin", "PluginContext", "HookContext", "PluginHook"]
+__all__ = ["BasePlugin", "PluginBootTask", "PluginContext", "HookContext", "PluginHook"]

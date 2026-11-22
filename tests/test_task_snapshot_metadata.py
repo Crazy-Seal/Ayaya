@@ -148,7 +148,7 @@ def test_metadata_read_failure_still_closes_task_resources(tmp_path: Path, monke
             assert raised.value is read_error
             await asyncio.wait_for(cleaned.wait(), 1)
             await supervisor.close()
-            assert cleanups == 1 and supervisor.active_task_count() == 0
+            assert cleanups == 1 and supervisor.active_task_counts()[0] == 0
             assert supervisor.get_task(task_id) is None
             assert any(entry.exc_info and entry.exc_info[1] is read_error for entry in caplog.records)
         finally:

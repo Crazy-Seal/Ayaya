@@ -102,6 +102,7 @@ class PluginRequest:
         name (str): 通知稳定名称或框架前端事件名称。
         text (str): 持久通知或引导正文。
         payload (dict[str, Any]): 发布前端事件时已复制的结构化内容。
+        activate_session (bool): 通知或引导保存成功后是否恢复会话执行资格。
     """
 
     kind: PluginRequestKind
@@ -112,6 +113,7 @@ class PluginRequest:
     name: str = ""
     text: str = ""
     payload: dict[str, Any] = field(default_factory=dict)
+    activate_session: bool = False
 
 
 @dataclass(frozen=True)

@@ -106,26 +106,28 @@ class PluginRuntime:
         """
         await self._send(PluginRequestKind.STOP_TASK, task_id=task_id)
 
-    async def notify(self, *, name: str, text: str) -> None:
+    async def notify(self, *, name: str, text: str, activate_session: bool = False) -> None:
         """投递持久插件通知，保存和后续交付由 Scheduler 安排。
 
         Args:
             name (str): 供查询或识别本次内容用途的稳定名称。
             text (str): 需要保存或显示的正文。
+            activate_session (bool): 保存成功后是否恢复所属会话的执行资格。
         """
-        await self._send(PluginRequestKind.NOTIFY, name=name, text=text)
+        await self._send(PluginRequestKind.NOTIFY, name=name, text=text, activate_session=activate_session)
 
     async def stop_turn(self) -> None:
         """请求结束受理时会话的当前执行，保留已有自动执行资格。"""
         await self._send(PluginRequestKind.STOP_TURN)
 
-    async def steer_turn(self, text: str) -> None:
+    async def steer_turn(self, text: str, *, activate_session: bool = False) -> None:
         """提交引导正文，Scheduler 先保存正文，再请求结束会话当前执行。
 
         Args:
             text (str): 需要保存或显示的正文。
+            activate_session (bool): 引导保存成功后是否恢复所属会话的执行资格。
         """
-        await self._send(PluginRequestKind.STEER_TURN, text=text)
+        await self._send(PluginRequestKind.STEER_TURN, text=text, activate_session=activate_session)
 
     async def publish_event(self, name: str, payload: dict[str, Any]) -> None:
         """投递框架支持的前端事件，复制载荷以保留投递时内容。

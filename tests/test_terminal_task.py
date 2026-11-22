@@ -33,7 +33,7 @@ def test_tool_runtime_submits_and_observes_terminal_task(tmp_path):
             assert "Hello, World!" in result.output
             page = await terminal.read_output(result.task_id, 0, 1024)
             assert "Hello, World!" in page["text"]
-            assert supervisor.active_task_count() == 0
+            assert supervisor.active_task_counts()[0] == 0
             assert await supervisor.list_tasks("s") == []
         finally:
             await supervisor.close()
@@ -117,7 +117,7 @@ def test_repeated_stop_keeps_process_creation_owned_until_cleanup(tmp_path, monk
             await supervisor.stop_task(record.task_id)
             closing = asyncio.create_task(supervisor.close())
             await asyncio.sleep(0.05)
-            assert supervisor.active_task_count() == 1
+            assert supervisor.active_task_counts()[0] == 1
             assert not closing.done()
             assert (await supervisor.get_task_snapshot(record.task_id)).status == TaskStatus.RUNNING
         finally:
@@ -130,5 +130,5 @@ def test_repeated_stop_keeps_process_creation_owned_until_cleanup(tmp_path, monk
                 await supervisor.close()
                 await supervisor.records.close()
         assert process.closed
-        assert supervisor.active_task_count() == 0
+        assert supervisor.active_task_counts()[0] == 0
     asyncio.run(scenario())

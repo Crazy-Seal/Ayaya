@@ -179,7 +179,7 @@ class ParentSession:
             return receipt
 
     async def accept_plugin(self, request: PluginRequest) -> CommandReceipt:
-        """保存插件内容并控制会话当前执行，通知沿用父会话的启用政策。
+        """保存插件内容，按激活意图恢复会话资格并处理当前执行的引导。
 
         Args:
             request (PluginRequest): 框架已经绑定来源的插件请求。
@@ -221,6 +221,9 @@ class ParentSession:
                 await self._manager.submit_plugin_notification(request.plugin_name, name, request.text)
             except Exception as exc:
                 return CommandReceipt(CommandStatus.FAILED, self.context_id, detail=str(exc))
+            # 3. 新通知保存成功后应用激活意图，worker 按会话现有规则交付输入。
+            if request.activate_session:
+                self._session_state = SessionState.ENABLED
             if request.kind == PluginRequestKind.STEER_TURN:
                 self._execution.request_steer()
             self.notify_inbox_changed()

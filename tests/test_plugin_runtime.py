@@ -111,7 +111,7 @@ def test_shutdown_repeated_cancellation_keeps_memory_work_active(tmp_path, monke
             assert await asyncio.to_thread(started.wait, 2)
             closing = asyncio.create_task(supervisor.close())
             await asyncio.sleep(0.05)
-            assert supervisor.active_task_count() == 1
+            assert supervisor.active_task_counts()[0] == 1
             assert not closing.done()
             assert (await runtime.get_task(task_id)).status == TaskStatus.RUNNING
         finally:
@@ -162,7 +162,7 @@ def test_cancel_during_committed_submission_keeps_task_owned(tmp_path, monkeypat
             record = await runtime.wait_task(records[0].task_id, timeout_ms=1000)
             assert record.status == TaskStatus.COMPLETED
             assert record.result == "Hello, World!"
-            assert supervisor.active_task_count() == 0
+            assert supervisor.active_task_counts()[0] == 0
         finally:
             await supervisor.close()
             await supervisor.records.close()
@@ -198,7 +198,7 @@ def test_cancel_during_terminal_registration_keeps_process_owned(tmp_path, monke
             records = await supervisor.list_tasks("s")
             assert len(records) == 1
             assert (await supervisor.wait(records[0].task_id, timeout_ms=2000)).status == TaskStatus.COMPLETED
-            assert supervisor.active_task_count() == 0
+            assert supervisor.active_task_counts()[0] == 0
         finally:
             await supervisor.close()
             await supervisor.records.close()
@@ -233,7 +233,7 @@ def test_failed_terminal_persistence_reports_save_failure_to_waiter(tmp_path, mo
             assert (await runtime.wait_task(task_id, timeout_ms=1000)).status == TaskExecutionPhase.SAVE_FAILED
             await supervisor.close()
             await supervisor.records.close()
-            assert supervisor.active_task_count() == 0
+            assert supervisor.active_task_counts()[0] == 0
         finally:
             release.set()
             await supervisor.close()
@@ -297,7 +297,7 @@ def test_shutdown_cleanup_cancellation_preserves_task_outcome(tmp_path, monkeypa
             await asyncio.wait_for(cleaning.wait(), 1)
             await asyncio.wait_for(supervisor.close(), 1)
             assert cleaned.is_set()
-            assert supervisor.active_task_count() == 0
+            assert supervisor.active_task_counts()[0] == 0
 
             # 2. 重新打开持久记录，检查关闭期间的取消处理后仍保留实际业务结果。
             inspector_settings = configured_settings()
@@ -488,13 +488,13 @@ def test_wait_timeout_and_cleanup_preserve_execution_and_result(tmp_path, fail_c
                 await waiter
             release_run.set()
             await cleaning.wait()
-            assert supervisor.active_task_count() == 0
+            assert supervisor.active_task_counts()[0] == 0
             assert (await runtime.wait_task(task_id, timeout_ms=1000)).status == TaskStatus.COMPLETED
             release_cleanup.set()
             record = await runtime.wait_task(task_id, timeout_ms=1000)
             assert record.result == "Hello, World!"
             assert record.status == TaskStatus.COMPLETED
-            assert supervisor.active_task_count() == 0
+            assert supervisor.active_task_counts()[0] == 0
             manager = SessionStateManager("s", SqliteFactory(str(tmp_path / "state.sqlite3")))
             try:
                 notices = await manager.read_task_terminals()
