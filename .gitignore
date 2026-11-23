@@ -49,3 +49,4 @@ app/agent/memory/import_demo.py
 # ===== docs =====
 /docs/*
 !/docs/plugin-development.md
+!/docs/terminology.md
