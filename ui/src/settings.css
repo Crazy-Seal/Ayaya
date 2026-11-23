@@ -815,6 +815,12 @@
   padding: var(--spacing-lg);
 }
 
+/* 服务说明在卡片内换行，保留原始段落并支持长链接。 */
+.mcp-server-card pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .mcp-server-header > div {
   color: var(--color-text-primary);
   font-weight: 600;
