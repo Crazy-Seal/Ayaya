@@ -19,7 +19,7 @@ from app.agent.state.messages import (
     AssistantMessage, HumanMessage, PluginNotificationMessage, SubagentMessage,
     TaskResultMessage, ToolCall, ToolMessage, text_content,
 )
-from app.schemas.runtime_types import TaskResultStatus
+from app.schemas.runtime_types import TaskResult
 from app.agent.state.time import render_timed_text
 
 
@@ -217,7 +217,7 @@ def test_semantic_model_receives_named_transcript_through_mem0(
     timestamp = datetime(2026, 11, 6, 2, tzinfo=timezone.utc)
     notifications = [
         TaskResultMessage(
-            task_id="research", task_name="研究资料", status=TaskResultStatus.COMPLETED,
+            task_id="research", task_name="研究资料", status=TaskResult.COMPLETED,
             result="已经整理好三篇资料。", created_at=timestamp,
         ),
         PluginNotificationMessage(

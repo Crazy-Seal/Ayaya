@@ -408,15 +408,15 @@ class TaskStatus(str, Enum):
     ORPHANED = "orphaned"
 
 
-class TaskResultStatus(str, Enum):
+class TaskResult(str, Enum):
     """表示交付给 Agent 的单项或批量任务结果状态。
 
     Attributes:
-        COMPLETED (TaskResultStatus): 单项任务成功，或批次内任务均成功。
-        FAILED (TaskResultStatus): 单项任务失败，或批次内任务均失败。
-        CANCELLED (TaskResultStatus): 单项任务被停止，或批次内任务均被停止。
-        ORPHANED (TaskResultStatus): 单项任务真实结果无法确认，或批次内任务均处于该状态。
-        MIXED (TaskResultStatus): 批次内任务转换后的结果状态不同。
+        COMPLETED (TaskResult): 单项任务成功，或批次内任务均成功。
+        FAILED (TaskResult): 单项任务失败，或批次内任务均失败。
+        CANCELLED (TaskResult): 单项任务被停止，或批次内任务均被停止。
+        ORPHANED (TaskResult): 单项任务真实结果无法确认，或批次内任务均处于该状态。
+        MIXED (TaskResult): 批次内任务转换后的结果状态不同。
     """
     COMPLETED = "completed"
     FAILED = "failed"

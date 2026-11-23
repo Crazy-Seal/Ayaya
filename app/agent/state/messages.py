@@ -11,7 +11,7 @@ from typing import Any, ClassVar, Iterator, Mapping, Sequence
 from uuid import uuid4
 
 from app.schemas.message_types import MessageType, MediaKind
-from app.schemas.runtime_types import TaskResultStatus
+from app.schemas.runtime_types import TaskResult
 from app.agent.state.time import normalize_utc, utc_now
 
 
@@ -658,13 +658,13 @@ class TaskResultMessage(RuntimeInputMessage):
         message_type (ClassVar[MessageType]): 该消息对应的领域类型常量。
         task_id (str): 受管进程任务标识。
         task_name (str): 后台通知展示的任务名称，当前由命令正文或批次标题产生。
-        status (TaskResultStatus): 交付给模型的通知终态，不与受管进程状态混用。
+        status (TaskResult): 此条通知交付给 Agent 的任务结果分类。
         result (str): 桌面执行结果或任务终态输出摘要。
     """
     message_type: ClassVar[MessageType] = MessageType.TASK_RESULT
     task_id: str
     task_name: str
-    status: TaskResultStatus
+    status: TaskResult
     result: str
 
     def __post_init__(self) -> None:
@@ -677,9 +677,9 @@ class TaskResultMessage(RuntimeInputMessage):
         BaseMessage.__post_init__(self)
         if not self.task_id or not self.task_name:
             raise ValueError("后台任务标识与名称不能为空")
-        if self.status not in set(TaskResultStatus):
+        if self.status not in set(TaskResult):
             raise ValueError(f"未知后台任务状态: {self.status!r}")
-        object.__setattr__(self, "status", TaskResultStatus(self.status))
+        object.__setattr__(self, "status", TaskResult(self.status))
         if not isinstance(self.result, str):
             raise TypeError("TaskResultMessage.result 必须是字符串")
 
@@ -832,11 +832,11 @@ def notification_text(message: BaseMessage) -> str:
         str: 供历史、记忆和日志使用的业务文字。
     """
     if isinstance(message, TaskResultMessage):
-        labels = {TaskResultStatus.COMPLETED: "完成",
-                  TaskResultStatus.FAILED: "失败",
-                  TaskResultStatus.CANCELLED: "取消",
-                  TaskResultStatus.ORPHANED: "状态未知",
-                  TaskResultStatus.MIXED: "状态汇总"}
+        labels = {TaskResult.COMPLETED: "完成",
+                  TaskResult.FAILED: "失败",
+                  TaskResult.CANCELLED: "取消",
+                  TaskResult.ORPHANED: "状态未知",
+                  TaskResult.MIXED: "状态汇总"}
         return f"[后台任务{labels[message.status.value]}：{message.task_name}]\n{message.result}"
     if isinstance(message, PluginNotificationMessage):
         return f"[插件通知：{message.plugin_name}/{message.name}]\n{message.text}"

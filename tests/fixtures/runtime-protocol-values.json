@@ -76,7 +76,7 @@
     "stopped",
     "orphaned"
   ],
-  "TaskResultStatus": [
+  "TaskResult": [
     "completed",
     "failed",
     "cancelled",

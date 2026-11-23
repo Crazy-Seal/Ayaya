@@ -33,7 +33,7 @@ from app.agent.state.messages import (
 )
 from app.agent.plugins.memory.memory import MemoryPlugin
 from app.agent.state.time import render_timed_text
-from app.schemas.runtime_types import TaskResultStatus
+from app.schemas.runtime_types import TaskResult
 from app.agent.state import AgentState
 import app.agent.plugins.memory.memory as memory_plugin_module
 
@@ -219,9 +219,9 @@ def test_diary_uses_configured_speakers_and_preserves_messages(
 @pytest.mark.parametrize(
     ("message", "label"),
     [
-        (TaskResultMessage(task_id="t", task_name="研究资料", status=TaskResultStatus.COMPLETED,
+        (TaskResultMessage(task_id="t", task_name="研究资料", status=TaskResult.COMPLETED,
                            result="第一篇资料\n第二篇资料"), "[后台任务完成：研究资料]"),
-        (TaskResultMessage(task_id="t", task_name="研究资料", status=TaskResultStatus.FAILED,
+        (TaskResultMessage(task_id="t", task_name="研究资料", status=TaskResult.FAILED,
                            result="读取失败"), "[后台任务失败：研究资料]"),
         (PluginNotificationMessage(plugin_name="reminder", name="due", text="该给团团喂食了。"),
          "[插件通知：reminder/due]"),

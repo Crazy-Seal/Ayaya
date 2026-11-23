@@ -7,7 +7,7 @@ import asyncio
 from dataclasses import replace
 import logging
 
-from app.schemas.runtime_types import CheckpointType, InboxKind, InboxStatus, InterruptKind, TaskResultStatus, TaskStatus, TurnInterruptReason
+from app.schemas.runtime_types import CheckpointType, InboxKind, InboxStatus, InterruptKind, TaskResult, TaskStatus, TurnInterruptReason
 from app.agent.runtime.session_inbox import InboxEnvelope, InputNoLongerPending
 from app.agent.state.model import AgentState
 from app.agent.state.messages import (
@@ -53,20 +53,20 @@ def _task_result_message(inputs: tuple[InboxEnvelope, ...]) -> TaskResultMessage
         status = payload.get("status")
         return TaskResultMessage(
             task_id=str(payload["task_id"]), task_name=str(payload["task_name"]),
-            status=(TaskResultStatus.CANCELLED if status == TaskStatus.STOPPED else
-                    TaskResultStatus.COMPLETED if status == TaskStatus.COMPLETED else
-                    TaskResultStatus.ORPHANED if status == TaskStatus.ORPHANED else TaskResultStatus.FAILED),
+            status=(TaskResult.CANCELLED if status == TaskStatus.STOPPED else
+                    TaskResult.COMPLETED if status == TaskStatus.COMPLETED else
+                    TaskResult.ORPHANED if status == TaskStatus.ORPHANED else TaskResult.FAILED),
             result=_task_notice_text(payload),
         )
     # 2. 多条通知合并展示；结束状态不同时使用 mixed，各任务的状态仍写在正文中。
     statuses = {item.payload.get("status") for item in inputs}
     mapped_statuses = {
-        TaskResultStatus.CANCELLED if status == TaskStatus.STOPPED else
-        TaskResultStatus.COMPLETED if status == TaskStatus.COMPLETED else
-        TaskResultStatus.ORPHANED if status == TaskStatus.ORPHANED else TaskResultStatus.FAILED
+        TaskResult.CANCELLED if status == TaskStatus.STOPPED else
+        TaskResult.COMPLETED if status == TaskStatus.COMPLETED else
+        TaskResult.ORPHANED if status == TaskStatus.ORPHANED else TaskResult.FAILED
         for status in statuses
     }
-    combined_status = mapped_statuses.pop() if len(mapped_statuses) == 1 else TaskResultStatus.MIXED
+    combined_status = mapped_statuses.pop() if len(mapped_statuses) == 1 else TaskResult.MIXED
     details = "\n".join(
         f"{item.payload['task_id']} [{item.payload.get('status')}]: "
         f"{_task_notice_text(item.payload)}"

@@ -7,14 +7,14 @@ from app.agent.state.messages import (AssistantMessage, BaseMessage, ContextSumm
     RuntimeInputMessage, SystemMessage, TaskResultMessage, ToolCall, ToolMessage, ProviderData,
     EnvironmentPerceptionMessage,
     TextContent, ImageContent, text_content, message_from_storage_format, MessageContractError, notification_text)
-from app.schemas.runtime_types import TaskResultStatus
+from app.schemas.runtime_types import TaskResult
 
 
 def test_domain_message_roundtrip_is_independent_of_provider_roles() -> None:
     """所有业务类型按自己的字段往返，不保存供应商角色。"""
     messages = [HumanMessage(content=text_content("你好")),
         AssistantMessage(content=text_content("回答")), ToolMessage(content=text_content("结果"), tool_name="read_file", tool_call_id="c"),
-        TaskResultMessage(task_id="task", task_name="命令", status=TaskResultStatus.COMPLETED, result="完成")]
+        TaskResultMessage(task_id="task", task_name="命令", status=TaskResult.COMPLETED, result="完成")]
     for message in messages:
         stored = message.to_storage_format()
         assert "role" not in stored and message_from_storage_format(stored) == message
@@ -51,7 +51,7 @@ def test_environment_message_is_request_only_and_cannot_activate_agent() -> None
 
 def test_unknown_and_mixed_task_results_keep_business_status() -> None:
     """未知与混合任务终态的通知文字不伪称成功。"""
-    for status, label in ((TaskResultStatus.ORPHANED, "状态未知"), (TaskResultStatus.MIXED, "状态汇总")):
+    for status, label in ((TaskResult.ORPHANED, "状态未知"), (TaskResult.MIXED, "状态汇总")):
         message = TaskResultMessage(task_id="t", task_name="任务", status=status, result="结果")
         assert label in notification_text(message)
 
