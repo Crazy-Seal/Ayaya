@@ -638,7 +638,7 @@ class ExecutionPipeline:
             prepared_action = prepared_invocation.prepared_action
 
         # 7. 已退役的执行中断不能重新进入等待；当前公开协议只支持统一审批。
-        if result.interrupt and result.interrupt.type not in {InterruptKind.AUTHORIZATION_REQUEST, InterruptKind.PARENT_MESSAGE}:
+        if result.interrupt and result.interrupt.type not in {InterruptKind.AUTHORIZATION_REQUEST, InterruptKind.WAIT_FOR_PARENT}:
             return ToolResult.success("错误: 工具返回不支持的中断；准备阶段只能请求只读准备数据")
 
         # 8. 只有工具实际完成才运行 AFTER_TOOL，等待中断不提前触发完成钩子。
@@ -838,7 +838,7 @@ class ExecutionPipeline:
 
         async def save_interrupt() -> None:
             """提交完整暂停后确认状态与阶段，取消等待也先完成已取得所有权的提交。"""
-            if interrupt.type == InterruptKind.PARENT_MESSAGE:
+            if interrupt.type == InterruptKind.WAIT_FOR_PARENT:
                 if session_state_manager is None:
                     raise RuntimeError("父消息等待需要运行时状态存储")
                 if not await session_state_manager.commit_parent_interrupt(candidate):

@@ -160,7 +160,7 @@ class AgentRuntimeScheduler:
                 return
         if event.kind == InteractionEventKind.INTERRUPT:
             data = event.payload.get("value") or {}
-            if data.get("type") == InterruptKind.PARENT_MESSAGE:
+            if data.get("type") == InterruptKind.WAIT_FOR_PARENT:
                 self._parent(parent_id).notify_inbox_changed()
             elif event.request_id:
                 self._approval_queue.enqueue(parent_id, event.session_id, event.request_id)

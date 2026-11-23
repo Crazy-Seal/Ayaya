@@ -28,7 +28,7 @@ def test_parent_interrupt_replay_does_not_duplicate_parent_input(tmp_path) -> No
             await dao.create_with_command(definition, '开始', 'create')
             state = await child.load()
             state.record_assistant_step('', (ToolCall(id='question', name='message_parent', args={'text': '哪个文件？'}),))
-            state.set_interrupt({'type': InterruptKind.PARENT_MESSAGE, 'request_id': 'run:question',
+            state.set_interrupt({'type': InterruptKind.WAIT_FOR_PARENT, 'request_id': 'run:question',
                                  'tool_call_id': 'question', 'tool_name': 'message_parent',
                                  'data': {'parent_session_id': 'parent', 'subagent_name': '助手', 'text': '哪个文件？'}}, [])
             state.clear_pending_tool_calls()
@@ -61,7 +61,7 @@ def test_parent_interrupt_failure_rolls_back_every_write(tmp_path, table: str) -
             state.record_assistant_step('', (ToolCall(id='question', name='message_parent', args={}),))
             await child.save_progress(state)
             candidate = state.model_copy(deep=True)
-            candidate.set_interrupt({'type': InterruptKind.PARENT_MESSAGE, 'request_id': 'question',
+            candidate.set_interrupt({'type': InterruptKind.WAIT_FOR_PARENT, 'request_id': 'question',
                 'tool_call_id': 'question', 'tool_name': 'message_parent',
                 'data': {'parent_session_id': 'parent', 'subagent_name': '助手', 'text': '哪个文件？'}}, [])
             candidate.clear_pending_tool_calls()

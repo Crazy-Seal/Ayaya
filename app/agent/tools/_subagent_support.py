@@ -67,7 +67,7 @@ class MessageParentTool(BaseTool):
         request_id = f"{runtime.run_id}:{runtime.tool_call_id}"
         if bool(args.get("expect_reply", True)):
             return ToolResult(content=(), interrupt=InterruptEvent(
-                InterruptKind.PARENT_MESSAGE, request_id, text,
+                InterruptKind.WAIT_FOR_PARENT, request_id, text,
                 {"parent_session_id": runtime.session_id, "subagent_id": runtime.subagent_id, "text": text}))
         reply = asyncio.get_running_loop().create_future()
         await runtime.runtime_queue.put(ParentMessageRequest(_source(runtime), request_id, text, reply))

@@ -324,7 +324,7 @@ class AgentStateDao:
             if self.storage_scope != AgentStorageScope.SUBAGENT:
                 raise ValueError("只有子 Agent 可以提交父消息等待")
             interrupt = state.interrupt_data or {}
-            if interrupt.get("type") != InterruptKind.PARENT_MESSAGE:
+            if interrupt.get("type") != InterruptKind.WAIT_FOR_PARENT:
                 raise ValueError("缺少父消息中断材料")
             data = interrupt["data"]
             source_id = str(interrupt["request_id"])

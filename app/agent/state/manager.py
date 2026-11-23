@@ -351,7 +351,7 @@ class SessionStateManager:
             state (AgentState): 新用户消息加入前加载的会话状态，可能包含上轮遗留的工具调用。
         """
         # 1. 根据旧轮工具的执行情况补齐结果；确有修改时保存旧轮结束状态。
-        interrupted_result = (PARENT_MESSAGE_DELIVERED if (state.interrupt_data or {}).get("type") == InterruptKind.PARENT_MESSAGE
+        interrupted_result = (PARENT_MESSAGE_DELIVERED if (state.interrupt_data or {}).get("type") == InterruptKind.WAIT_FOR_PARENT
                               else USER_REJECTED_INTERRUPTED_TOOL_RESULT)
         if state.close_unfinished_tools(interrupted_result,
                 USER_CANCELLED_PENDING_TOOL_RESULT, INTERRUPTED_TOOL_RESULT):
@@ -557,7 +557,7 @@ class SessionStateManager:
         """
         # 1. 为当前尚未结束的工具调用追加取消结果，保留前面已经完成的工具结果。
         cancelled = USER_STOPPED_TOOL_RESULT if reason == TurnInterruptReason.STOP else "用户打断，本次工具调用已取消。"
-        interrupted_result = (PARENT_MESSAGE_DELIVERED if (state.interrupt_data or {}).get("type") == InterruptKind.PARENT_MESSAGE else cancelled)
+        interrupted_result = (PARENT_MESSAGE_DELIVERED if (state.interrupt_data or {}).get("type") == InterruptKind.WAIT_FOR_PARENT else cancelled)
         state.close_unfinished_tools(interrupted_result, cancelled, cancelled)
         rewritten_message_id = None
         # 2. 片段尚未加入会话时新增消息；已经加入时替换原消息并保留其编号。
@@ -633,7 +633,7 @@ class SessionStateManager:
         # 2. 按既有中断类型结束遗留调用，通用工具结果保持原有保存流程。
         interrupt = state.interrupt_data or {}
         content = APPLICATION_EXIT_RESULT
-        if interrupt.get("type") == InterruptKind.PARENT_MESSAGE:
+        if interrupt.get("type") == InterruptKind.WAIT_FOR_PARENT:
             content = PARENT_MESSAGE_DELIVERED
         state.close_unfinished_tools(content, APPLICATION_EXIT_RESULT, APPLICATION_EXIT_UNKNOWN_RESULT)
         # 3. 保存退出前已显示的回答；数据库中已有同一步骤时修改原消息，否则新增消息。
