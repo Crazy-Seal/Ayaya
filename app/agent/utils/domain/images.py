@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 IMAGE_CATEGORIES = frozenset({MediaKind.TOOL, MediaKind.MCP, MediaKind.ENVIRONMENT})
 IMAGE_CACHE_SIZE = 32
+IMAGE_URI_PREFIX = "image://"
 
 
 def resolve_image_path(storage_ref: str, *, images_dir: Path | None = None) -> Path:

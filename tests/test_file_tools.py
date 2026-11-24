@@ -308,3 +308,82 @@ def test_tool_registry_exposes_new_tools_without_internal_modules() -> None:
     assert "result_artifacts" not in names
     assert "result_limits" not in names
     assert "result_normalizer" not in names
+
+
+def test_read_image_accepts_image_uri_reference(tmp_path: Path, monkeypatch) -> None:
+    """验证 image:// 引用读取图片存储目录中的图片。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
+    """
+    import base64
+
+    import app.agent.utils.domain.images as images_module
+
+    images_dir = tmp_path / "images"
+    (images_dir / "tool").mkdir(parents=True)
+    png = b"\x89PNG\r\n\x1a\n" + b"stored"
+    (images_dir / "tool" / "shot.png").write_bytes(png)
+    monkeypatch.setattr(images_module, "get_images_dir", lambda: images_dir)
+
+    raw = asyncio.run(getattr(read_image, "_tool_func")(paths=["image://tool/shot.png"]))
+    normalized = ToolResultNormalizer().normalize(raw)
+
+    urls = image_urls(normalized)
+    assert len(urls) == 1
+    assert base64.b64encode(png).decode("ascii") in urls[0]
+
+
+def test_image_uri_and_workspace_paths_read_different_files(tmp_path: Path, monkeypatch) -> None:
+    """验证同名文件在工作区和图片存储目录中分别由不同地址读取。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
+    """
+    import base64
+
+    import app.agent.utils.domain.images as images_module
+    import app.agent.utils.infra.safe_path as safe_path_module
+
+    images_dir = tmp_path / "images"
+    (tmp_path / "tool").mkdir()
+    (images_dir / "tool").mkdir(parents=True)
+    workspace_png = b"\x89PNG\r\n\x1a\n" + b"workspace"
+    stored_png = b"\x89PNG\r\n\x1a\n" + b"stored"
+    (tmp_path / "tool" / "same.png").write_bytes(workspace_png)
+    (images_dir / "tool" / "same.png").write_bytes(stored_png)
+    monkeypatch.setattr(safe_path_module, "WORKDIR", tmp_path)
+    monkeypatch.setattr(images_module, "get_images_dir", lambda: images_dir)
+
+    raw = asyncio.run(getattr(read_image, "_tool_func")(
+        paths=["tool/same.png", "image://tool/same.png"],
+    ))
+    normalized = ToolResultNormalizer().normalize(raw)
+
+    urls = image_urls(normalized)
+    assert len(urls) == 2
+    assert base64.b64encode(workspace_png).decode("ascii") in urls[0]
+    assert base64.b64encode(stored_png).decode("ascii") in urls[1]
+
+
+def test_image_uri_rejects_path_outside_image_store(tmp_path: Path, monkeypatch) -> None:
+    """验证 image:// 引用不能读取图片存储目录之外的文件。
+
+    Args:
+        tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
+        monkeypatch (pytest.MonkeyPatch): Pytest 提供的替换工具，用例结束后恢复环境变量和依赖。
+    """
+    import app.agent.utils.domain.images as images_module
+
+    images_dir = tmp_path / "images"
+    images_dir.mkdir()
+    (tmp_path / "secret.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"secret")
+    monkeypatch.setattr(images_module, "get_images_dir", lambda: images_dir)
+
+    raw = asyncio.run(getattr(read_image, "_tool_func")(paths=["image://../secret.png"]))
+    normalized = ToolResultNormalizer().normalize(raw)
+
+    assert image_urls(normalized) == []
+    assert "未读取的图片" in normalized.text
