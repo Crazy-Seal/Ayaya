@@ -70,7 +70,7 @@ class ComputerUsePlugin(BasePlugin):
             context (HookContext): 本次模型请求的状态及临时背景接口。
         """
         context.agent_state.set_temporary_context(GUIDE_KEY, TemporaryContextItem(
-            title="屏幕操作", text="Python REPL 已预装 cua；首次使用请执行 cua.help() 阅读观察、操作与停止说明。",
+            title="屏幕操作", text="Python REPL 已预装 cua，无需你 import；首次使用请执行 cua.help() 阅读观察、操作与停止说明。",
         ))
         # 1. 先移除上一请求的环境画面，捕获失败时由插件管理器记录错误。
         context.agent_state.remove_temporary_context(SCREEN_KEY)

@@ -54,11 +54,3 @@ class AxState:
     """向模型提供最新控件编号、层级和可操作信息。"""
 
     nodes: tuple[AxNode, ...]
-
-
-@dataclass(frozen=True)
-class WindowState:
-    """返回同一个窗口的一次控件和图片联合观察。"""
-
-    ax_state: AxState
-    screenshot: Screenshot

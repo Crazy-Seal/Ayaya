@@ -144,8 +144,8 @@ def test_window_binding_reports_closed_window_separately() -> None:
     desktop.user.IsWindow.assert_called_once_with(132198)
 
 
-def test_window_observation_outputs_tree_and_image_once(capsys) -> None:
-    """窗口绑定不输出，联合观察把结构化数据、文字和一张图片交给调用方。"""
+def test_window_observation_outputs_tree_and_image_separately(capsys) -> None:
+    """窗口绑定不输出，控件观察只打印控件树，截图观察只输出一张图片。"""
     from app.agent.plugins.computer_use.repl.ayaya_computer_use.api import Cua
     from app.agent.plugins.computer_use.repl.ayaya_computer_use.types import AxNode, AxState, CaptureRegion, Screenshot, WindowInfo
 
@@ -169,9 +169,13 @@ def test_window_observation_outputs_tree_and_image_once(capsys) -> None:
     cua = Cua(host, desktop=Desktop())
     app = cua.get_app(window_id="42")
     assert not capsys.readouterr().out
-    state = app.get_ax_state_and_screenshot()
-    assert state.ax_state.nodes[0].name == "Run"
-    assert state.screenshot.region.left == 300
+
+    state = app.get_ax_state()
+    assert state.nodes[0].name == "Run"
+    assert host.images == []
+
+    screenshot = app.get_screenshot()
+    assert screenshot.region.left == 300
     assert host.images == [b"encoded PNG"]
     assert "Run" in capsys.readouterr().out
     assert host.events == [] and host.cleanups == []

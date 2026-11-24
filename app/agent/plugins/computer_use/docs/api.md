@@ -8,7 +8,7 @@
 ```python
 windows = cua.list_windows()
 app = cua.get_app(window_id=windows[0].window_id)
-state = app.get_ax_state_and_screenshot()
+state = app.get_ax_state()
 ```
 
 根据清单中的标题、程序名和 PID 选择准确 `window_id`，同名窗口也有各自编号。
@@ -24,9 +24,8 @@ state = app.get_ax_state_and_screenshot()
 | `cua.get_screenshot()` | 主屏幕 Screenshot，同时输出图片 |
 | `app.get_ax_state()` | AxState，同时打印控件树、文本、焦点、状态及可用动作 |
 | `app.get_screenshot()` | 该窗口的 Screenshot，同时输出图片 |
-| `app.get_ax_state_and_screenshot()` | WindowState，同时输出控件信息和一张窗口图片 |
 
-`WindowState.ax_state.nodes` 是控件列表，`WindowState.screenshot` 是图片结果。
+`AxState.nodes` 是控件列表。
 节点包含 `element_index`、`parent_index`、`name`、`role`、`bounds`、`enabled`、
 `focused`、`text` 和 `actions`。密码控件不输出值。
 

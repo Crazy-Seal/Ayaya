@@ -9,7 +9,7 @@ from inspect import signature
 from itertools import count
 from typing import TYPE_CHECKING, NoReturn, ParamSpec, TypeVar
 
-from .types import AxState, Screenshot, WindowInfo, WindowState
+from .types import AxState, Screenshot, WindowInfo
 from .accessibility import Accessibility, PATTERN_ACTIONS
 
 if TYPE_CHECKING:
@@ -604,15 +604,6 @@ class Window:
         self._cua._print_capture(screenshot)
         self._cua._host.emit_image(screenshot.image)
         return screenshot
-
-    @api_method
-    def get_ax_state_and_screenshot(self) -> WindowState:
-        """输出同一目标窗口的控件信息及一张截图。
-
-        Returns:
-            WindowState: 代码可继续读取的控件和图片联合结果。
-        """
-        return WindowState(self.get_ax_state(), self.get_screenshot())
 
 
 def create(config: dict[str, JsonValue], host: ReplHost) -> Cua:
