@@ -358,7 +358,7 @@ class ExecutionPipeline:
             if runtime_context.turn_control:
                 runtime_context.turn_control.check()
 
-            # 5. 将 Assistant 步骤加入状态，工具前写入 checkpoint 后标记已保存。
+            # 5. 记录已生成的助手步骤，并在执行工具前保存进度。
             if accumulated_content or tool_calls:
                 self._add_assistant_message(
                     state, accumulated_content, tool_calls, provider_data=provider_data,

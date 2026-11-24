@@ -12,6 +12,7 @@ state = app.get_ax_state_and_screenshot()
 ```
 
 根据清单中的标题、程序名和 PID 选择准确 `window_id`，同名窗口也有各自编号。
+`window_id` 是十进制字符串。可直接传入窗口清单中某一项的 `window.window_id`；手动填写时需加引号，例如 `cua.get_app(window_id="132198")`。
 `get_app` 只绑定该窗口。独立弹窗需要重新列举并绑定。
 绑定不主动截图、读取控件或取得前台。
 
@@ -19,7 +20,7 @@ state = app.get_ax_state_and_screenshot()
 
 | 方法 | 返回值及输出 |
 | --- | --- |
-| `cua.list_windows()` | 窗口信息列表，同时打印准确编号、标题、PID 和可取得的程序名 |
+| `cua.list_windows()` | 窗口信息列表，同时按属性名打印 `window_id`、`pid`、`process_name` 和 `title` |
 | `cua.get_screenshot()` | 主屏幕 Screenshot，同时输出图片 |
 | `app.get_ax_state()` | AxState，同时打印控件树、文本、焦点、状态及可用动作 |
 | `app.get_screenshot()` | 该窗口的 Screenshot，同时输出图片 |

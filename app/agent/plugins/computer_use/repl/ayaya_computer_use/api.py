@@ -229,10 +229,13 @@ class Cua:
         """绑定窗口清单中的准确窗口编号。
 
         Args:
-            window_id (str): list_windows 输出的准确窗口编号。
+            window_id (str): list_windows 返回的准确窗口编号，使用十进制字符串。
 
         Returns:
             Window: 保留窗口身份及最近观察的操作对象。
+
+        Raises:
+            ValueError: 窗口编号的类型或格式无效，或对应窗口已经失效。
         """
         return Window(self, self._read(lambda: self.desktop.window(window_id)))
 
@@ -398,7 +401,8 @@ class Cua:
         """
         windows = self._read(self.desktop.list_windows)
         for window in windows:
-            print(f"window_id={window.window_id} pid={window.pid} process={window.process_name} title={window.title}")
+            print(f"window_id={window.window_id} pid={window.pid} "
+                  f"process_name={window.process_name} title={window.title}")
         return windows
 
     @api_method

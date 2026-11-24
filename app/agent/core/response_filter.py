@@ -1,22 +1,15 @@
 """流式助手输出的协议清洗。"""
 
 import re
-from datetime import datetime
-
-from app.agent.state.time import WEEKDAYS
 
 
 ASSISTANT_TIME_PREFIX_START = "[发送时间："
-ASSISTANT_TIME_PREFIX_PATTERN = re.compile(
-    r"^\[发送时间：(?P<datetime>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} "
-    r"[+-]\d{4}) (?P<weekday>星期[一二三四五六日])\]"
-)
+ASSISTANT_TIME_PREFIX_PATTERN = re.compile(r"^\[发送时间：[^]]*\]")
 
 
 class AssistantTimePrefixFilter:
     """在流式回复开始时识别并去掉模型复述的发送时间标签，保留表情标签和正常正文。"""
 
-    MAX_TIME_PREFIX_LENGTH = 96
     MAX_EXPRESSION_TAG_LENGTH = 256
 
     def __init__(self) -> None:
@@ -42,7 +35,7 @@ class AssistantTimePrefixFilter:
         prefix_offset, leading_is_incomplete = self._prefix_offset()
         candidate = self._buffer[prefix_offset:]
         match = ASSISTANT_TIME_PREFIX_PATTERN.match(candidate)
-        if match and self._is_valid_prefix(match):
+        if match:
             leading = self._buffer[:prefix_offset]
             remainder = candidate[match.end():]
             self._buffer = ""
@@ -92,7 +85,7 @@ class AssistantTimePrefixFilter:
             index = closing + 1
 
     def _is_possible_prefix(self, candidate: str) -> bool:
-        """判断已收到的开头是否仍可能构成发送时间标签，并限制等待确认的长度。
+        """判断发送时间标签是否仍在等待流式输出补齐。
 
         Args:
             candidate (str): 尚未匹配完整时间标签的开头文本。
@@ -100,33 +93,12 @@ class AssistantTimePrefixFilter:
         Returns:
             bool: 尚需等待后续文字才能确认标签时为 True。
         """
-        if len(candidate) > self.MAX_TIME_PREFIX_LENGTH:
-            return False
         if ASSISTANT_TIME_PREFIX_START.startswith(candidate):
             return True
         return (
             candidate.startswith(ASSISTANT_TIME_PREFIX_START)
             and "]" not in candidate
         )
-
-    @staticmethod
-    def _is_valid_prefix(match: re.Match[str]) -> bool:
-        """核对时间前缀中的日期和星期，避免删除仅在格式上相似的正常正文。
-
-        Args:
-            match (re.Match[str]): 正则匹配得到的发送时间前缀。
-
-        Returns:
-            bool: 日期可解析且星期一致时为 True。
-        """
-        try:
-            timestamp = datetime.strptime(
-                match.group("datetime"),
-                "%Y-%m-%d %H:%M:%S %z",
-            )
-        except ValueError:
-            return False
-        return WEEKDAYS[timestamp.weekday()] == match.group("weekday")
 
     def _after_prefix(self, content: str) -> str:
         """时间标签删除后最多移除一个分隔符，跨片段到达的 CRLF 作为一个换行处理。

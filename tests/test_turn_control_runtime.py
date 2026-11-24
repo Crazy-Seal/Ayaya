@@ -1,6 +1,5 @@
 from tests.runtime_support import make_execution_control
 from app.crud.sqlite_factory import SqliteFactory
-from tests.model_capture import result_parts
 import asyncio
 from pathlib import Path
 import pytest
@@ -74,15 +73,15 @@ def test_stopping_pure_tool_turn_closes_call_without_fake_text(tmp_path) -> None
     asyncio.run(scenario())
 
 
-def test_stopping_after_text_and_tool_keeps_one_assistant_history_message(tmp_path) -> None:
-    """验证工具前文本被打断后仍只保留一个 Assistant 历史项。
+def test_stopping_after_completed_text_preserves_history_and_cancels_tool(tmp_path) -> None:
+    """验证停止工具调用时保留已输出的正文，并为工具记录取消结果。
 
     Args:
         tmp_path (Path): Pytest 创建的隔离临时目录。
     """
     # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
     async def scenario() -> None:
-        """在隔离异步环境中安排并验证：工具前文本被打断后仍只保留一个 Assistant 历史项。"""
+        """在隔离异步环境中安排并验证已输出正文及工具取消结果。"""
         # 1. 安排隔离存储、替身与必要屏障，构造该回归场景的初始条件。
         db_path = str(tmp_path / "state.sqlite3")
         agent = Agent.__new__(Agent)
@@ -90,7 +89,6 @@ def test_stopping_after_text_and_tool_keeps_one_assistant_history_message(tmp_pa
         state = AgentState.create_new("s")
         call = ToolCall(id="tool-1", name="example", args={})
         state.record_assistant_step("正在操作", (call,))
-        state.record_tool_result(call, result_parts('工具完成', (), 'tool'))
         await agent.session_state_manager.save(state, checkpoint_type="intermediate")
         execution_state, control = make_execution_control("run-1")
         control.partial = "正在操作"
@@ -103,7 +101,10 @@ def test_stopping_after_text_and_tool_keeps_one_assistant_history_message(tmp_pa
             )
             assistant = [item for item in state.messages if isinstance(item, AssistantMessage)]
             assert len(assistant) == 1
-            assert assistant[0].text == "正在操作……（被用户打断）"
+            assert assistant[0].text == "正在操作"
+            restored = await agent.session_state_manager.load()
+            results = [item for item in restored.messages if isinstance(item, ToolMessage)]
+            assert [(item.tool_call_id, item.text) for item in results] == [(call.id, "被用户取消，工具调用未完成")]
             history = await ChatHistoryDao(sqlite_factory=SqliteFactory(Path(db_path))).list_chat_history_last_n_async("s")
             visible = [item for item in history if item["role"] == "AI"]
             assert len(visible) == 1

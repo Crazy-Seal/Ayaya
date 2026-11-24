@@ -99,7 +99,8 @@ def test_destroy_preserves_partial_response_and_finishes_tool_history(
                 state = await reader.load()
                 assert reader.last_loaded_checkpoint_type == CheckpointType.COMPLETED
                 assistants = [item for item in state.messages if isinstance(item, AssistantMessage)]
-                assert len(assistants) == 1 and assistants[0].text == partial + "……（被用户打断）"
+                expected = partial if waiting_tool else partial + "……（被用户打断）"
+                assert [item.text for item in assistants] == [expected]
                 assert not state.pending_tool_calls and not state.interrupt_data
                 if waiting_tool:
                     assert cancelled.is_set()

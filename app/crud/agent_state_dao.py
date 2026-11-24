@@ -19,8 +19,6 @@ from app.crud.sqlite_save import run_sqlite_save, sqlite_transaction, SqliteRoll
 from app.schemas.runtime_types import ApprovalDecisionKind, CheckpointType, InboxKind, InterruptKind
 from app.schemas.agent_storage import AgentStorageScope
 from app.crud.agent_storage_sql import agent_state_schema
-from app.schemas.message_types import MessageType
-from app.agent.state.messages import BaseMessage
 from app.agent.state.model import AgentState, CHECKPOINT_SCHEMA_VERSION
 from app.agent.state.time import utc_now
 from app.agent.runtime.session_inbox import InboxEnvelope
@@ -35,6 +33,8 @@ from app.schemas.subagent_types import SubagentInteractionKind
 
 
 logger = logging.getLogger(__name__)
+
+_HISTORY_ID_QUERY_BATCH_SIZE = 500
 
 
 LATEST_CHECKPOINT_SQL = """
@@ -150,17 +150,52 @@ class AgentStateDao:
 
 
 
-    @classmethod
-    def _protocol_rows(cls, state: AgentState) -> list[tuple[Any, ...]]:
-        """为原子事务准备业务历史行，系统提示词和摘要不归档。
+    async def _append_protocol_messages(self, db: aiosqlite.Connection, state: AgentState) -> None:
+        """归档这次保存中新增的对话消息，供历史查询与记忆处理使用。
 
         Args:
-            state (AgentState): 需要保存、恢复或投影的会话业务状态。
+            db (aiosqlite.Connection): 正在保存当前会话状态的事务连接。
+            state (AgentState): 包含本次待归档消息的会话状态。
         """
-        return [(state.session_id, message.message_id, message.created_at.isoformat(),
-                 "protocol", "exact", None, message.message_type,
-                 json.dumps(message.to_storage_format(), ensure_ascii=False, separators=(",", ":")))
-                for message in state.messages if message.enters_protocol_log]
+        table = self.storage_scope.messages_table
+        tail = await db.execute_fetchall(
+            f"SELECT message_id FROM {table} WHERE session_id = ? ORDER BY id DESC LIMIT 1",
+            (state.session_id,),
+        )
+        # 1. 从当前消息末尾收集尚未归档的消息，遇到历史末条即确定本次追加范围。
+        pending = []
+        last_message_id = tail[0][0] if tail else None
+        for message in reversed(state.messages):
+            if message.message_id == last_message_id:
+                break
+            if message.enters_protocol_log:
+                pending.append(message)
+        else:
+            # 1.1. 压缩或恢复后历史末条缺席时，批量核对候选编号以找出新增消息。
+            if tail and pending:
+                existing: set[str] = set()
+                for start in range(0, len(pending), _HISTORY_ID_QUERY_BATCH_SIZE):
+                    batch = pending[start:start + _HISTORY_ID_QUERY_BATCH_SIZE]
+                    placeholders = ",".join("?" for _ in batch)
+                    rows = await db.execute_fetchall(
+                        f"SELECT message_id FROM {table} WHERE session_id = ? AND message_id IN ({placeholders})",
+                        (state.session_id, *(message.message_id for message in batch)),
+                    )
+                    existing.update(row[0] for row in rows)
+                pending = [message for message in pending if message.message_id not in existing]
+
+        # 2. 按对话顺序编码并插入新增消息。
+        if pending:
+            await db.executemany(
+                f"INSERT INTO {table} (session_id, message_id, created_at, record_kind, fidelity, "
+                "legacy_source_id, message_type, message_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    (state.session_id, message.message_id, message.created_at.isoformat(),
+                     "protocol", "exact", None, message.message_type,
+                     json.dumps(message.to_storage_format(), ensure_ascii=False, separators=(",", ":")))
+                    for message in reversed(pending)
+                ),
+            )
 
     async def load(self) -> AgentState | None:
         """读取本会话编号最大的 checkpoint 并校验恢复材料，没有历史时返回空值。
@@ -206,7 +241,6 @@ class AgentStateDao:
         *,
         checkpoint_type: CheckpointType,
         inbox_inputs: tuple[InboxEnvelope, ...] = (),
-        rewritten_message_id: str | None = None,
         release_queued: bool = False,
     ) -> int:
         """在同一事务中提交 checkpoint、协议日志、Inbox 交付和排队放行。
@@ -218,7 +252,6 @@ class AgentStateDao:
             state (AgentState): 当前 Agent 状态。
             checkpoint_type (CheckpointType): 中间态或完成态检查点类型。
             inbox_inputs (tuple[InboxEnvelope, ...]): 随本次 checkpoint 原子交付的输入快照集合。
-            rewritten_message_id (str | None): 需要同步更新协议行的既有 Assistant 消息标识。
             release_queued (bool): 是否随正常完成的 checkpoint 原子放行排队输入。
 
         Returns:
@@ -235,14 +268,14 @@ class AgentStateDao:
             async with self._transaction() as db:
                 checkpoint_id = await self._write_state_in_transaction(
                     db, state, checkpoint_type=checkpoint_type, created_at=created_at, inbox_inputs=inbox_inputs,
-                    rewritten_message_id=rewritten_message_id, release_queued=release_queued)
+                    release_queued=release_queued)
                 return checkpoint_id
 
         return await run_sqlite_save(save_attempt, timeout_seconds=SQLITE_SAVE_TIMEOUT_SECONDS)
 
     async def _write_state_in_transaction(
         self, db: aiosqlite.Connection, state: AgentState, *, checkpoint_type: CheckpointType, created_at: str,
-        inbox_inputs: tuple[InboxEnvelope, ...] = (), rewritten_message_id: str | None = None,
+        inbox_inputs: tuple[InboxEnvelope, ...] = (),
         release_queued: bool = False,
     ) -> int:
         """在调用方事务内写入检查点、协议和交付标记，提交归具名入口负责。
@@ -253,11 +286,9 @@ class AgentStateDao:
             checkpoint_type (CheckpointType): 标记输入进展或回答已经结束的检查点类别。
             created_at (str): 保存尝试前固定的检查点时间。
             inbox_inputs (tuple[InboxEnvelope, ...]): 与本次状态一起确认交付的输入快照。
-            rewritten_message_id (str | None): 本次改写历史的起始消息编号。
             release_queued (bool): 是否随回答提交放行排队消息。
         """
         state_json = json.dumps(state.to_checkpoint(), ensure_ascii=False)
-        protocol_rows = self._protocol_rows(state)
         cursor = await db.execute(
             f"""
             INSERT INTO {self.storage_scope.checkpoints_table} (
@@ -283,24 +314,8 @@ class AgentStateDao:
                 (self.session_id,),
             )
             await self._prune_completed(db)
-        if protocol_rows:
-            await db.executemany(f"""INSERT INTO {self.storage_scope.messages_table} (
-                session_id,message_id,created_at,record_kind,fidelity,legacy_source_id,message_type,message_json)
-                VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(session_id,message_id) DO NOTHING""", protocol_rows)
-        # 3. 打断后缀重写已有 Assistant 行，保留 message_id，避免历史出现重复气泡。
-        if rewritten_message_id is not None:
-            rewritten = next(
-                (row for row in protocol_rows if row[1] == rewritten_message_id), None,
-            )
-            if rewritten is None or rewritten[6] != MessageType.ASSISTANT:
-                raise ValueError("仅允许重写当前状态中的 assistant 消息")
-            result = await db.execute(
-                f"UPDATE {self.storage_scope.messages_table} SET message_json = ? "
-                "WHERE session_id = ? AND message_id = ?",
-                (rewritten[7], self.session_id, rewritten_message_id),
-            )
-            if result.rowcount != 1:
-                raise RuntimeError("中断文本对应的协议消息不存在")
+        # 3. 保存新增的对话历史。
+        await self._append_protocol_messages(db, state)
         # 4. Inbox 用当前连接校验并更新交付记录，不单独提交，失败时回滚前面的状态写入。
         await mark_delivered_in_transaction(db, self.session_id, inbox_inputs, storage_scope=self.storage_scope)
         # 5. 调用方请求放行时，复用 Inbox 规则；完成状态和排队资格必须一起提交。

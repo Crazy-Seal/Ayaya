@@ -14,6 +14,8 @@ from app.agent.models.openai_message_names import MCP_TOOL_IMAGE_MESSAGE_NAME, T
 from tests.model_capture import result_parts
 from tests.model_capture import capture_input
 import asyncio
+import sqlite3
+from contextlib import closing
 from copy import deepcopy
 from pathlib import Path
 
@@ -1140,13 +1142,13 @@ def test_new_message_after_llm_failure_counts_each_committed_human_input(tmp_pat
 
 
 def test_initial_empty_response_commits_failure_and_keeps_user_input(tmp_path: Path) -> None:
-    """验证首次模型空回复保留真人输入中间 checkpoint。
+    """验证模型空回复后，完成 checkpoint 和对话历史只保存用户输入。
 
     Args:
         tmp_path (Path): Pytest 为当前用例创建的临时目录，不访问生产存储。
     """
     async def scenario() -> None:
-        """由外层测试调用，完成“首次模型空回复保留真人输入中间 checkpoint”的异步步骤。"""
+        """执行空回复场景并检查两个持久化视图。"""
         agent = await make_agent(
             tmp_path / "checkpoints.sqlite3",
             [[StreamChunk(finish_reason="stop")]],
@@ -1160,7 +1162,9 @@ def test_initial_empty_response_commits_failure_and_keeps_user_input(tmp_path: P
             state = await agent.session_state_manager.load()
             assert isinstance(state.messages[0], HumanMessage)
             assert "在吗" in state.messages[0].text
-            assert "本轮执行失败" in state.messages[-1].text
+            assert len(state.messages) == 1
+            with closing(sqlite3.connect(tmp_path / "checkpoints.sqlite3")) as db:
+                assert db.execute("SELECT message_type FROM conversation_messages").fetchall() == [("human",)]
         finally:
             await agent.close()
 

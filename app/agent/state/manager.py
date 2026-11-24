@@ -12,7 +12,7 @@ from app.agent.runtime.session_inbox import InboxEnvelope, InputNoLongerPending
 from app.agent.state.model import AgentState
 from app.agent.state.messages import (
     AssistantMessage, ContentPart, HumanMessage, ImageContent, RuntimeInputMessage, ToolMessage,
-    TaskResultMessage, PluginNotificationMessage, SubagentMessage, text_content, with_text,
+    TaskResultMessage, PluginNotificationMessage, SubagentMessage, text_content,
 )
 from app.agent.utils.domain.images import save_multiple_images
 from app.crud.sqlite_factory import SqliteFactory
@@ -29,6 +29,7 @@ APPLICATION_EXIT_RESULT = "应用退出，本轮已终止；本次工具调用�
 APPLICATION_EXIT_UNKNOWN_RESULT = "应用退出，本轮已终止；工具执行结果未知，本次不会自动重试。"
 PARENT_MESSAGE_DELIVERED = "消息已投递。"
 USER_STOPPED_TOOL_RESULT = "被用户取消，工具调用未完成"
+FAILED_TURN_TOOL_RESULT = "本轮执行失败，工具调用未完成。"
 
 TASK_NOTICE_BATCH_MAX_CHARS = 8192
 
@@ -542,53 +543,39 @@ class SessionStateManager:
     async def finish_interrupted_turn(self, state: AgentState, *, reason: TurnInterruptReason, partial: str, partial_persisted: bool) -> None:
         """当前轮次被停止或引导时，保存工具取消结果及已显示的回答片段。
 
-        Agent 的执行中断和 Execution 的等待结束流程调用本方法。为未结束的工具调用补上取消结果，
-        在本步骤的回答后添加打断说明，清除临时背景并保存本轮结束；排队消息
-        继续等待后续明确的处理安排。
+        仅为仍在生成的正文片段添加打断说明。模型已完成的步骤保留正文，工具取消
+        通过对应工具结果记录。
 
         Args:
             state (AgentState): 被打断的 Agent 正在使用的会话状态。
-            reason (TurnInterruptReason): 已受理的停止或引导原因，决定未完成调用的结束正文。
+            reason (TurnInterruptReason): 已受理的停止或引导原因。
             partial (str): 当前模型步骤已向界面显示的正文。
-            partial_persisted (bool): 当前步骤是否已经加入内存中的助手消息，需要沿用其消息编号。
-
-        Raises:
-            RuntimeError: 调用方声明片段已经加入助手消息，但当前状态中找不到对应消息。
+            partial_persisted (bool): 当前模型步骤是否已经加入 Agent 状态。
         """
-        # 1. 为当前尚未结束的工具调用追加取消结果，保留前面已经完成的工具结果。
+        # 1. 为尚未结束的工具调用追加取消结果。
         cancelled = USER_STOPPED_TOOL_RESULT if reason == TurnInterruptReason.STOP else "用户打断，本次工具调用已取消。"
         interrupted_result = (PARENT_MESSAGE_DELIVERED if (state.interrupt_data or {}).get("type") == InterruptKind.WAIT_FOR_PARENT else cancelled)
         state.close_unfinished_tools(interrupted_result, cancelled, cancelled)
-        rewritten_message_id = None
-        # 2. 片段尚未加入会话时新增消息；已经加入时替换原消息并保留其编号。
+        # 2. 保存用户在停止前看到的未完成正文片段。
         if partial.strip() and not partial_persisted:
             state.add_assistant_message(partial + "……（被用户打断）")
-        elif partial_persisted and partial.strip():
-            # 2.1. 按当前步骤正文和来源找到原助手消息，缺失时报告状态不一致。
-            previous = next((item for item in reversed(state.messages) if isinstance(item, AssistantMessage)
-                and item.text == partial), None)
-            if previous is None:
-                raise RuntimeError("已保存的流式文本缺少对应 assistant 消息")
-            state.replace_message(replace(previous, content=text_content(previous.text + "……（被用户打断）")))
-            rewritten_message_id = previous.message_id
-        # 3. 清除本轮背景，保存工具取消结果和回答片段；已有助手消息同步重写历史记录。
+        # 3. 清除本轮背景并保存结束状态。
         state.clear_temporary_context()
-        await self.save(state, checkpoint_type=CheckpointType.COMPLETED, rewritten_message_id=rewritten_message_id)
+        await self.save(state, checkpoint_type=CheckpointType.COMPLETED)
 
-    async def finish_failed_turn(self, state: AgentState, *, error: str, partial: str = "") -> None:
-        """保存执行失败说明并补齐旧工具协议，使下次明确输入从已结束的轮次继续。
+    async def finish_failed_turn(self, state: AgentState, *, partial: str = "") -> None:
+        """保存失败轮次的真实正文和工具结果，使后续输入可以继续处理。
 
         Args:
             state (AgentState): 本次失败前仍可信的会话状态。
-            error (str): 模型或业务执行的最终失败原因。
             partial (str): 已展示且尚未保存的本步骤正文。
         """
-        # 1. 已完成的工具结果保留，尚未完成的调用统一记录本次执行失败。
-        detail = f"本轮执行失败：{error}"
-        state.close_unfinished_tools(detail, detail, detail)
+        # 1. 结束遗留工具调用，让下次模型请求能配对工具调用和结果。
+        state.close_unfinished_tools(FAILED_TURN_TOOL_RESULT, FAILED_TURN_TOOL_RESULT, FAILED_TURN_TOOL_RESULT)
+        # 2. 保存用户已经看到的模型正文，错误详情由执行层报告。
+        if partial.strip():
+            state.add_assistant_message(partial)
         state.clear_temporary_context()
-        state.add_assistant_message(f"{partial}\n\n{detail}" if partial else detail)
-        # 2. 失败结束独立提交，排队输入继续等待后续明确操作。
         await self.save(state, checkpoint_type=CheckpointType.COMPLETED)
 
     #=====================应用启动退出时整理遗留执行======================
@@ -616,7 +603,7 @@ class SessionStateManager:
         Args:
             partial (str): 退出前捕获的当前模型步骤已显示正文，启动时没有片段可传入。
             partial_persisted (bool): 片段在退出前是否已加入助手消息；本方法仍检查数据库中的消息。
-            partial_message_id (str | None): 当前助手消息编号，优先按编号查找需要补充结束说明的消息。
+            partial_message_id (str | None): 当前助手消息编号，用于确认对应正文是否已保存。
 
         Returns:
             bool: 已保存旧轮结束结果时为 True；会话已有结束快照且没有遗留调用时为 False。
@@ -636,8 +623,7 @@ class SessionStateManager:
         if interrupt.get("type") == InterruptKind.WAIT_FOR_PARENT:
             content = PARENT_MESSAGE_DELIVERED
         state.close_unfinished_tools(content, APPLICATION_EXIT_RESULT, APPLICATION_EXIT_UNKNOWN_RESULT)
-        # 3. 保存退出前已显示的回答；数据库中已有同一步骤时修改原消息，否则新增消息。
-        rewritten_message_id = None
+        # 3. 保存退出前已显示、尚未写入 checkpoint 的正文。
         if partial.strip():
             suffix = "……（应用退出，本轮已终止）"
             previous = None
@@ -651,15 +637,11 @@ class SessionStateManager:
                 previous = next((item for item in reversed(state.messages)
                                  if isinstance(item, AssistantMessage) and item.text == partial
                                 ), None)
-            if previous is not None:
-                state.replace_message(with_text(previous, previous.text + suffix))
-                rewritten_message_id = previous.message_id
-            else:
-                # 3.3. 数据库中尚无这一步骤时，新增捕获的正文及退出说明。
-                state.add_assistant_message(partial + suffix)
+            if previous is None:
+                state.add_assistant_message(partial if partial_persisted else partial + suffix)
         # 4. 清除本轮临时背景，统一保存工具结果、回答片段和已结束快照。
         state.clear_temporary_context()
-        await self.save(state, checkpoint_type=CheckpointType.COMPLETED, rewritten_message_id=rewritten_message_id)
+        await self.save(state, checkpoint_type=CheckpointType.COMPLETED)
         return True
 
     async def reset_after_restart(self) -> None:
@@ -673,7 +655,7 @@ class SessionStateManager:
     #=====================统一保存状态和图片======================
 
     async def save(self, state: AgentState, *, checkpoint_type: CheckpointType,
-                   inbox_inputs: tuple[InboxEnvelope, ...] = (), rewritten_message_id: str | None = None,
+                   inbox_inputs: tuple[InboxEnvelope, ...] = (),
                    release_queued: bool = False) -> int:
         """将会话状态保存为可恢复的快照，并同步保存对话历史和输入处理结果。
 
@@ -685,7 +667,6 @@ class SessionStateManager:
             state (AgentState): 调用方正在使用、准备保存的会话状态。
             checkpoint_type (CheckpointType): intermediate 表示还会继续执行，completed 表示轮次已结束。
             inbox_inputs (tuple[InboxEnvelope, ...]): 已加入本次对话、需同时标记为已交付的 Inbox 记录。
-            rewritten_message_id (str | None): 本次修改的已有助手消息编号，用于同步重写其历史记录。
             release_queued (bool): 是否在本次事务中将排队真人输入设为允许处理。
 
         Returns:
@@ -699,7 +680,7 @@ class SessionStateManager:
         # 2. 由同一个数据库事务保存会话进度、消息历史和输入状态，成功后返回快照编号。
         try:
             return await self._state_dao.save(state, checkpoint_type=checkpoint_type,
-                inbox_inputs=inbox_inputs, rewritten_message_id=rewritten_message_id, release_queued=release_queued)
+                inbox_inputs=inbox_inputs, release_queued=release_queued)
         except (InputNoLongerPending, ValueError):
             raise
         except Exception as exc:

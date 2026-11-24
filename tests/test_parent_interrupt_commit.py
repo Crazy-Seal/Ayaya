@@ -58,9 +58,9 @@ def test_parent_interrupt_failure_rolls_back_every_write(tmp_path, table: str) -
             await dao.create_with_command(definition, '开始', 'create')
             await parent.read_activation_batch()
             state = await child.load()
-            state.record_assistant_step('', (ToolCall(id='question', name='message_parent', args={}),))
             await child.save_progress(state)
             candidate = state.model_copy(deep=True)
+            candidate.record_assistant_step('', (ToolCall(id='question', name='message_parent', args={}),))
             candidate.set_interrupt({'type': InterruptKind.WAIT_FOR_PARENT, 'request_id': 'question',
                 'tool_call_id': 'question', 'tool_name': 'message_parent',
                 'data': {'parent_session_id': 'parent', 'subagent_name': '助手', 'text': '哪个文件？'}}, [])

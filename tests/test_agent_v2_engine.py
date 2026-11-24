@@ -675,11 +675,9 @@ def test_pipeline_handles_crlf_separator_split_across_chunks():
     ("chunks", "expected"),
     [
         (["[TODO] ", "保留这段内容"], "[TODO] 保留这段内容"),
-        (["[发送", "时间：明天] 保留"], "[发送时间：明天] 保留"),
-        (
-            ["[发送时间：2026-99-99 99:99:99 +9999 星期四] ", "保留"],
-            "[发送时间：2026-99-99 99:99:99 +9999 星期四] 保留",
-        ),
+        (["[发送", "时间：明天] 保留"], "保留"),
+        (["[发送时间：2026-11-24 01:08:51 +0800 星期四] ", "<开心>保留"], "<开心>保留"),
+        (["[发送时间：" + "任意内容" * 30, "]保留"], "保留"),
         (
             ["正文中的 ", "[发送时间：2026-09-10 10:11:12 +0800 星期四] 要保留"],
             "正文中的 [发送时间：2026-09-10 10:11:12 +0800 星期四] 要保留",
@@ -687,15 +685,15 @@ def test_pipeline_handles_crlf_separator_split_across_chunks():
         (["<开心>", "普通回复"], "<开心>普通回复"),
     ],
 )
-def test_pipeline_preserves_non_prefix_assistant_text(chunks, expected):
-    """验证普通助手正文不会误当时间前缀删除。
+def test_pipeline_removes_only_opening_time_label(chunks, expected):
+    """验证只删除回复开头的发送时间标签，保留其他正文。
 
     Args:
         chunks (Any): 本次模型流按顺序提供的片段。
         expected (Any): 当前参数化用例预期的输出或状态。
     """
     async def run():
-        """由外层测试调用，完成“普通助手正文不会误当时间前缀删除”的异步步骤。"""
+        """由外层测试调用，验证分片输出和保存的助手正文。"""
         script = [StreamChunk(content=chunk) for chunk in chunks]
         script.append(StreamChunk(finish_reason="stop"))
         agent = _PipelineHarness(_FakeLLM(scripts=[script]), tools=[])

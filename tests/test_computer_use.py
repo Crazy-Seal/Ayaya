@@ -100,6 +100,50 @@ def test_computer_use_is_prebound_without_starting_control(tmp_path: Path) -> No
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize(("window_id", "diagnostic"), [
+    (132198, "收到 int"),
+    (132198.0, "收到 float"),
+    (True, "收到 bool"),
+    (None, "收到 NoneType"),
+    ("", "非空十进制字符串"),
+    (" 132198", "非空十进制字符串"),
+    ("0x20466", "非空十进制字符串"),
+    ("window_id=132198", "非空十进制字符串"),
+])
+def test_window_binding_reports_invalid_id_before_system_lookup(window_id, diagnostic: str) -> None:
+    """窗口编号类型或格式错误时，绑定失败并提示调用者如何传入编号。
+
+    Args:
+        window_id (object): 类型或格式不符合要求的窗口编号。
+        diagnostic (str): 调用者需要看到的具体参数错误原因。
+    """
+    from app.agent.plugins.computer_use.repl.ayaya_computer_use.api import Cua
+    from app.agent.plugins.computer_use.repl.ayaya_computer_use.screen_helper import ScreenHelper
+
+    desktop = ScreenHelper.__new__(ScreenHelper)
+    cua = Cua(RecordingHost(), desktop=desktop)
+    with pytest.raises(ValueError, match=diagnostic) as error:
+        cua.get_app(window_id=window_id)
+    assert "window.window_id" in str(error.value)
+    if not isinstance(window_id, str):
+        assert 'cua.get_app(window_id="132198")' in str(error.value)
+
+
+def test_window_binding_reports_closed_window_separately() -> None:
+    """格式正确的窗口编号已失效时，提示调用者重新列举窗口。"""
+    from unittest.mock import Mock
+    from app.agent.plugins.computer_use.repl.ayaya_computer_use.api import Cua
+    from app.agent.plugins.computer_use.repl.ayaya_computer_use.screen_helper import ScreenHelper
+
+    desktop = ScreenHelper.__new__(ScreenHelper)
+    desktop.user = Mock()
+    desktop.user.IsWindow.return_value = False
+    cua = Cua(RecordingHost(), desktop=desktop)
+    with pytest.raises(ValueError, match="窗口已经失效"):
+        cua.get_app(window_id="132198")
+    desktop.user.IsWindow.assert_called_once_with(132198)
+
+
 def test_window_observation_outputs_tree_and_image_once(capsys) -> None:
     """窗口绑定不输出，联合观察把结构化数据、文字和一张图片交给调用方。"""
     from app.agent.plugins.computer_use.repl.ayaya_computer_use.api import Cua

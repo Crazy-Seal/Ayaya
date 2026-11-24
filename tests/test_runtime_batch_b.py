@@ -5,6 +5,7 @@ import asyncio
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
+import json
 import sqlite3
 
 import pytest
@@ -592,7 +593,7 @@ def test_parent_and_two_children_control_independent_contexts(tmp_path: Path) ->
 
 
 def test_model_business_failure_commits_final_failure_without_replaying_model(tmp_path: Path) -> None:
-    """模型失败保存明确失败结果和已显示片段，下一次启动整理不会把它冒充完成回答。"""
+    """模型失败后报告错误事件，并在两张表中保留已经显示的模型正文。"""
     async def scenario() -> None:
         """在实际模型流中抛出业务错误，检查一次错误输出及最终持久位置。"""
         factory = SqliteFactory(tmp_path / "model-failure.sqlite3")
@@ -627,7 +628,12 @@ def test_model_business_failure_commits_final_failure_without_replaying_model(tm
             try:
                 state = await manager.load()
                 assert manager.last_loaded_checkpoint_type == CheckpointType.COMPLETED
-                assert state.messages[-1].text == "失败前已显示的片段\n\n本轮执行失败：模型协议失败"
+                assert state.messages[-1].text == "失败前已显示的片段"
+                with closing(sqlite3.connect(tmp_path / "model-failure.sqlite3")) as db:
+                    rows = db.execute("SELECT message_json FROM conversation_messages WHERE message_type = 'assistant'").fetchall()
+                    assert [json.loads(row[0])["content"] for row in rows] == [
+                        [{"type": "text", "text": "失败前已显示的片段"}],
+                    ]
                 assert not state.pending_tool_calls and not state.interrupt_data
             finally:
                 await manager.close()

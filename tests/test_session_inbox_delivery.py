@@ -404,3 +404,38 @@ def test_completed_checkpoint_releases_queued_input_in_same_transaction(tmp_path
             await restarted.close()
 
     asyncio.run(scenario())
+
+
+def test_checkpoint_saves_allocate_history_ids_only_for_new_messages(tmp_path: Path) -> None:
+    """重复保存与压缩保留历史，历史编号只随新消息追加。
+
+    Args:
+        tmp_path (Path): 本次测试独立使用的数据库目录。
+    """
+    async def scenario() -> None:
+        """在常规保存和历史边界缺失时检查真实的对话记录。"""
+        path = tmp_path / "state.sqlite3"
+        manager = SessionStateManager("session", sqlite_factory=SqliteFactory(path))
+        state = AgentState.create_new("session")
+        first = state.add_user_message("已归档的输入")
+        last = state.add_assistant_message("已归档的回答")
+        try:
+            await manager.save_progress(state)
+            await manager.save_progress(state)
+            with closing(sqlite3.connect(path)) as db:
+                assert db.execute("SELECT seq FROM sqlite_sequence WHERE name = 'conversation_messages'").fetchone() == (2,)
+
+            state.commit_compaction((first,))
+            next_input = state.add_user_message("压缩后的新输入")
+            await manager.save_progress(state)
+
+            next_reply = state.add_assistant_message("新的回答")
+            await manager.save_progress(state)
+            with closing(sqlite3.connect(path)) as db:
+                rows = db.execute("SELECT id, message_id FROM conversation_messages ORDER BY id").fetchall()
+                assert rows == [(1, first.message_id), (2, last.message_id),
+                                (3, next_input.message_id), (4, next_reply.message_id)]
+        finally:
+            await manager.close()
+
+    asyncio.run(scenario())

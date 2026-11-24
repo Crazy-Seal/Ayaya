@@ -224,14 +224,14 @@ def test_abandoned_result_preserves_media_and_commit_failure_is_retryable(tmp_pa
 
 @pytest.mark.parametrize("persisted", [False, True])
 def test_shutdown_preserves_partial_once_and_keeps_message_identity(tmp_path, persisted) -> None:
-    """验证关闭时的真实片段保存一次，已持久片段只更新原消息。
+    """验证关闭时保存未结束的正文片段，已完成的正文保持原样。
 
     Args:
         tmp_path (Path): 隔离数据库目录。
         persisted (bool): 片段是否已进入 checkpoint。
     """
     async def scenario() -> None:
-        """调用无执行收尾入口检查消息身份和终止后缀。"""
+        """调用退出收尾入口检查正文只保存一次。"""
         path = str(tmp_path / "state.sqlite3")
         manager = SessionStateManager("s", SqliteFactory(path))
         state = AgentState.create_new("s")
@@ -243,7 +243,7 @@ def test_shutdown_preserves_partial_once_and_keeps_message_identity(tmp_path, pe
             closed = await manager.load()
             assistants = [item for item in closed.messages if isinstance(item, AssistantMessage)]
             assert len(assistants) == 1
-            assert assistants[0].text == "可见片段……（应用退出，本轮已终止）"
+            assert assistants[0].text == ("可见片段" if persisted else "可见片段……（应用退出，本轮已终止）")
             if message is not None:
                 assert assistants[0].message_id == message.message_id
             assert not await manager.finalize_abandoned_turn( partial="可见片段", partial_persisted=persisted)

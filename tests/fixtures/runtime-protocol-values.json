@@ -40,7 +40,7 @@
   ],
   "InterruptKind": [
     "authorization_request",
-    "parent_message"
+    "wait_for_parent"
   ],
   "ApprovalDecisionKind": [
     "approve",
@@ -58,8 +58,7 @@
     "task_terminal",
     "plugin_notification",
     "agent_command",
-    "subagent",
-    "parent_reply"
+    "subagent"
   ],
   "InboxStatus": [
     "pending",

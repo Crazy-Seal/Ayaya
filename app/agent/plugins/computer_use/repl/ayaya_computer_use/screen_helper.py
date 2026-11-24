@@ -40,9 +40,21 @@ class ScreenHelper:
 
         Returns:
             WindowInfo: 存活窗口的进程与可读名称。
+
+        Raises:
+            ValueError: 窗口编号的类型或格式无效，或对应窗口已经失效。
         """
-        if not isinstance(window_id, str) or not window_id.isdecimal():
-            raise ValueError("window_id 必须来自 cua.list_windows()；请参考 cua.help()")
+        if not isinstance(window_id, str):
+            raise ValueError(
+                f"window_id 必须为十进制字符串（str），收到 {type(window_id).__name__}；"
+                '请直接使用窗口清单中的 window.window_id，或传入带引号的编号，例如 cua.get_app(window_id="132198")；'
+                "请参考 cua.help()"
+            )
+        if not window_id.isdecimal():
+            raise ValueError(
+                "window_id 必须为非空十进制字符串；"
+                "请使用 cua.list_windows() 返回的 window.window_id；请参考 cua.help()"
+            )
         hwnd = int(window_id)
         if hwnd <= 0 or hwnd >= 1 << (ctypes.sizeof(ctypes.c_void_p) * 8) or not self.user.IsWindow(hwnd):
             raise ValueError("窗口已经失效，请重新列举窗口")

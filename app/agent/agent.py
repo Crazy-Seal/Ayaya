@@ -676,7 +676,7 @@ class Agent:
             turn_control.begin_failed_commit()
             already_saved = any(message.message_id == turn_control.partial_message_id for message in state.messages)
             partial = "" if already_saved else turn_control.partial
-        await self.session_state_manager.finish_failed_turn(state, error=error, partial=partial)
+        await self.session_state_manager.finish_failed_turn(state, partial=partial)
         return AgentRunOutcome(AgentRunOutcomeKind.FAILED, error=error)
 
     async def _perform(self, operation: Awaitable[AgentRunOutcome], *, turn_control: TurnControl | None) -> AgentRunOutcome:

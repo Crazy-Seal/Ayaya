@@ -326,7 +326,7 @@ class AgentExecution:
             if self._control is not None:
                 self._control.begin_failed_commit()
             state = await self._manager.load()
-            await self._manager.finish_failed_turn(state, error=str(exc))
+            await self._manager.finish_failed_turn(state)
         except Exception as save_error:
             return await self._fault(save_error)
         self._events.put_nowait(InteractionEvent(self.context_id, InteractionEventKind.ERROR,
